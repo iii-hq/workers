@@ -25,4 +25,9 @@ SHIM=$(cd "$RUN" && pwd -P)/shim/iii
 t shell::exec '{"command":"sh","args":["-c","command -v iii"]}' | jq -e --arg s "$SHIM" '.stdout == $s + "\n"' >/dev/null
 "$SHIM" trigger context-base::status --json '{"session_id":"none"}' | jq -e '.found == false' >/dev/null
 if "$SHIM" trigger --engine ws://127.0.0.1:1 engine::workers::list 2>/dev/null; then echo "shim let --engine through" >&2; exit 1; fi
+# A scoped exec (as an episode's) writes cargo's download caches but not the rest of ~/.cargo or ~/.rustup.
+PROBE='for p in ~/.cargo/.bench-probe ~/.rustup/.bench-probe; do touch "$p" 2>/dev/null && { rm -f "$p"; exit 1; }; done
+touch ~/.cargo/registry/.bench-probe && rm ~/.cargo/registry/.bench-probe'
+t shell::exec "$(jq -nc --arg s "$PROBE" --arg r "$(cd "$RUN" && pwd -P)/workspace" \
+  '{command: "sh", args: ["-c", $s], fs_scope: {root: $r, boundary: "workspace"}}')" | jq -e '.exit_code == 0' >/dev/null
 echo "smoke ok"

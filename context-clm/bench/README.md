@@ -24,6 +24,7 @@ Run from the repository root of the checkout that holds this bench.
 python3 -m venv context-clm/bench/.venv
 context-clm/bench/.venv/bin/pip install tiktoken==0.14.0
 (cd context-clm/bench/arms && pnpm install --frozen-lockfile)
+rustup toolchain install 1.97.1                       # the coding snapshots' rust-toolchain.toml
 (cd harness && cargo build --release --locked)        # its build.rs runs pnpm in harness/ui
 (cd context-clm && cargo build --release --locked)
 for w in state queue session-manager context-manager cron llm-router provider-anthropic ide; do
@@ -32,7 +33,8 @@ done
 ```
 
 The last loop builds the unchanged workers in the main checkout (`MAIN`, override with `MAIN=/path`), which
-`boot.sh` copies.
+`boot.sh` copies. Install the toolchain before any run: episodes cannot write `~/.rustup`, so rustup cannot install it
+for them.
 
 Offline checks (no stack, no API calls):
 
@@ -54,6 +56,12 @@ context-clm/bench/down.sh                      # when done
 `boot.sh` refuses to start while something listens on `:49250` (another run's stack: stop it with `down.sh` and its
 `RUN`). ide execs find `$RUN/shim/iii` first on `PATH`: it runs only `iii trigger`, pinned to the bench engine, so an
 exec never reaches the live `:49134` through the CLI's default URL. `run.py` refuses a `BENCH_ENGINE` on `:49134`.
+
+An episode's execs are Landlock-confined to its workspace plus `/tmp`, `/dev`, `~/.cargo/registry` and `~/.cargo/git`
+(cargo's download caches). The rest of `~/.cargo` (`bin/`, `config.toml`) and `~/.rustup` are read-only to them, so an
+episode cannot plant a `cargo`, a cargo config or a toolchain that the grader or your own builds would run. Ceiling: an
+episode can still edit crate sources that cargo extracted under `~/.cargo/registry/src`. Cargo does not check them
+again, so the unconfined grader and your later builds compile the edited copy.
 
 ## Regression bench (spec §7.1)
 

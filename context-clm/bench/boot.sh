@@ -42,7 +42,8 @@ printf 'adapter:\n  name: builtin\n  config:\n    store_method: file_based\n    
 printf 'adapter:\n  name: fs\n  config:\n    data_dir: %s/sessions\n' "$RUN" >"$RUN/session-manager.yaml"
 printf 'lease_dir: %s/context-leases\n' "$RUN" >"$RUN/context-manager.yaml"
 # Execs inherit only PATH/HOME/LANG/LC_ALL/TERM (no API keys) and are Landlock-confined to their scope root plus
-# temp, devices and the Rust toolchain caches; timeouts fit a cold cargo build.
+# temp, devices and cargo's download caches; timeouts fit a cold cargo build. The rest of ~/.cargo (bin/, config) and
+# ~/.rustup stay read-only: a cargo, config or toolchain written there would run in the grader and the user's builds.
 cat >"$RUN/ide.yaml" <<EOF
 working_dir: $RUN/workspace
 max_timeout_ms: 600000
@@ -50,7 +51,7 @@ default_timeout_ms: 300000
 fs:
   host_roots: [$RUN/workspace]
   exec_confinement: landlock
-  exec_writable: [/tmp, /dev, ~/.cargo, ~/.rustup]
+  exec_writable: [/tmp, /dev, ~/.cargo/registry, ~/.cargo/git]
 EOF
 # ide execs see this shim first on PATH, so an `iii` they run reaches only this stack's engine, never the live
 # :49134 (the iii CLI defaults to it, and execs get no III_URL).

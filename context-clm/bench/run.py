@@ -478,8 +478,8 @@ GRADE_ENV = ("PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME", "LANG")
 
 
 def cargo_config():
-    """The user's cargo config files (None when absent). Episode execs may write ~/.cargo (boot.sh), and cargo would
-    apply a config written there (rustflags, runner, alias) to every later grade."""
+    """The user's cargo config files (None when absent). Cargo applies a config there (rustflags, runner, alias) to
+    every grade. Episode execs cannot write it (boot.sh's exec_writable), but anything else on the host can."""
     home = Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
     return {n: (home / n).read_bytes() if (home / n).is_file() else None for n in ("config", "config.toml")}
 
