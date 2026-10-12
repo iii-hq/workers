@@ -207,7 +207,8 @@ pub async fn assemble<D: Delegate>(
 /// Learn from a delegated call of the request CLM sent: the model's usable
 /// room, and context-manager's count of that request (`initial_token_count`,
 /// before its own reductions, less `overhead`, the request's) beside CLM's
-/// raw count of it. True when the state changed.
+/// raw count of it, and the tool schemas' share of that count
+/// (`breakdown.tools_tokens`, 0 when absent). True when the state changed.
 fn learn(st: &mut SessionState, model: &ModelRef, overhead: u64, resp: &AssembleResponse) -> bool {
     let tokens = resp
         .applied
@@ -215,11 +216,27 @@ fn learn(st: &mut SessionState, model: &ModelRef, overhead: u64, resp: &Assemble
         .and_then(Value::as_u64)
         .unwrap_or(resp.token_count)
         .saturating_sub(overhead);
+    let tools = resp
+        .rest
+        .get("breakdown")
+        .and_then(|b| b.get("tools_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let key = model_key(model);
-    let learned = (resp.usable, tokens, st.raw_sent);
-    let changed = (st.last_usable, st.last_cm_tokens, st.last_cm_raw) != learned
+    let learned = (resp.usable, tokens, st.raw_sent, tools);
+    let changed = (
+        st.last_usable,
+        st.last_cm_tokens,
+        st.last_cm_raw,
+        st.last_cm_tools,
+    ) != learned
         || st.last_usable_model != key;
-    (st.last_usable, st.last_cm_tokens, st.last_cm_raw) = learned;
+    (
+        st.last_usable,
+        st.last_cm_tokens,
+        st.last_cm_raw,
+        st.last_cm_tools,
+    ) = learned;
     st.last_usable_model = key;
     changed
 }
@@ -247,20 +264,27 @@ fn note_rewrite(st: &mut SessionState, returned: &[Msg]) -> bool {
 }
 
 /// The model's room for this request in CLM's raw ruler: context-manager's
-/// usable room, less this request's overhead, converted by the ratio of the
-/// two counts of the last request CLM sent to this model. That factor covers
-/// what context-manager counts and the ruler does not (JSON framing, ids,
-/// signatures, tools). `None` until a delegated call to this model taught it.
+/// usable room, less this request's overhead and the tool schemas, converted
+/// by the ratio of the two counts of the last request CLM sent to this model
+/// (context-manager's without its tools). That factor covers what
+/// context-manager counts and the ruler does not (JSON framing, ids,
+/// signatures); the tools are a fixed term that does not grow with the
+/// window, so they come off both sides. `None` until a delegated call to this
+/// model taught it.
 fn room_raw(st: &SessionState, model: &ModelRef, overhead: u64) -> Option<u64> {
+    let counted = st.last_cm_tokens.saturating_sub(st.last_cm_tools);
     if st.last_usable == 0
-        || st.last_cm_tokens == 0
+        || counted == 0
         || st.last_cm_raw == 0
         || st.last_usable_model != model_key(model)
     {
         return None;
     }
-    let room = u128::from(st.last_usable.saturating_sub(overhead)) * u128::from(st.last_cm_raw)
-        / u128::from(st.last_cm_tokens);
+    let usable = st
+        .last_usable
+        .saturating_sub(overhead)
+        .saturating_sub(st.last_cm_tools);
+    let room = u128::from(usable) * u128::from(st.last_cm_raw) / u128::from(counted);
     Some(u64::try_from(room).unwrap_or(u64::MAX))
 }
 
@@ -345,6 +369,7 @@ fn run_step(
             last_usable_model: old.last_usable_model,
             last_cm_tokens: old.last_cm_tokens,
             last_cm_raw: old.last_cm_raw,
+            last_cm_tools: old.last_cm_tools,
             section_limit: old.section_limit,
             ..SessionState::default()
         };
@@ -933,6 +958,9 @@ mod tests {
         strict: bool,
         /// Return this message rewritten (as an emergency reduction would).
         rewrite: Option<usize>,
+        /// Tokens of the tool schemas, a fixed term of context-manager's
+        /// count (`breakdown.tools_tokens`) the ruler never sees.
+        tools: u64,
     }
 
     impl Default for Fake {
@@ -943,6 +971,7 @@ mod tests {
                 scale: 0,
                 strict: false,
                 rewrite: None,
+                tools: 0,
             }
         }
     }
@@ -972,7 +1001,7 @@ mod tests {
                     let overhead = payload["options"]["request_overhead_tokens"]
                         .as_u64()
                         .unwrap_or(0);
-                    k * raw_count(system, &msgs) + overhead
+                    k * raw_count(system, &msgs) + self.tools + overhead
                 }
             };
             let preview = payload["options"]["preview_only"] == true;
@@ -996,6 +1025,7 @@ mod tests {
                 "usable": self.usable,
                 "effective_max_output_tokens": 4096,
                 "applied": { "compacted": false, "initial_token_count": token_count },
+                "breakdown": { "tools_tokens": self.tools },
             }))
         }
     }
@@ -1463,15 +1493,17 @@ mod tests {
         for scale in [1, 2] {
             let (_dir, root, mut d) = setup(ClmConfig::default());
             (d.delegate.usable, d.delegate.scale) = (20_000, scale);
+            d.delegate.tools = 5_000;
             let mut raw = vec![user("task")];
             assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
             raw.extend([call("c1", "ls"), result("c1", "a.txt")]);
             assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
             limits.push(d.store.load(SID).unwrap().unwrap().budget - 2_048);
         }
-        // context-manager counts twice the ruler: the room in ruler tokens halves.
+        // The tool schemas take a fixed 5000 off the room; context-manager
+        // counts twice the ruler for the rest: the room in ruler tokens halves.
         let a = nudge_allowance(&compaction_hint(&mirror_rel(SID)));
-        assert_eq!(limits, [20_000 - a, 10_000 - a]);
+        assert_eq!(limits, [15_000 - a, 7_500 - a]);
     }
 
     #[tokio::test]
@@ -1504,12 +1536,15 @@ mod tests {
         };
         let (_dir, root, mut d) = setup(cfg);
         (d.delegate.usable, d.delegate.scale, d.delegate.strict) = (20_000, 1, true);
+        // The tool schemas: a fixed term the overflowing count carries.
+        d.delegate.tools = 5_000;
         // ~40k tokens from before the session opted in: under the configured
-        // limit, over the model, whose room CLM has not learned yet.
+        // limit, over the model, whose room CLM has not learned yet. Small
+        // steps, so the rollback lands close to its target.
         let mut raw = vec![user("task")];
-        for i in 1..=10 {
+        for i in 1..=40 {
             let id = format!("c{i}");
-            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(16_000))]);
+            raw.extend([call(&id, "cat part"), result(&id, &"y".repeat(4_000))]);
         }
         let err = assemble(&d, request(&raw, Some(&root), 1))
             .await
@@ -1533,7 +1568,8 @@ mod tests {
             ..ClmConfig::default()
         };
         let (_dir, root, mut d) = setup(cfg);
-        (d.delegate.usable, d.delegate.scale, d.delegate.strict) = (6_000, 1, true);
+        (d.delegate.usable, d.delegate.scale, d.delegate.strict) = (7_000, 1, true);
+        d.delegate.tools = 1_000;
         let mut raw = vec![user("task")];
         assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
         // The result is capped to fill the room, and the adaptive nudge fires on top.

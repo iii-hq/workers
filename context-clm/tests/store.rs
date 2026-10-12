@@ -47,6 +47,7 @@ fn populated() -> SessionState {
         last_usable_model: "anthropic/claude-opus-5-5".into(),
         last_cm_tokens: 1_100,
         last_cm_raw: 900,
+        last_cm_tools: 150,
         last_overhead: 512,
         section_limit: 30_720,
         budget: 32_768,

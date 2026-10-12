@@ -48,14 +48,16 @@ pub struct SessionState {
     /// `usable` that context-manager last reported for `last_usable_model`
     /// (0 = none yet).
     pub last_usable: u64,
-    /// The model (`provider/id`) `last_usable`, `last_cm_tokens` and
-    /// `last_cm_raw` were learned from; under another model they are unknown.
+    /// The model (`provider/id`) `last_usable` and the `last_cm_*` counts
+    /// were learned from; under another model they are unknown.
     pub last_usable_model: String,
     /// context-manager's count of the last request CLM sent, less its request
     /// overhead (0 = none yet).
     pub last_cm_tokens: u64,
     /// CLM's raw ruler count of that same request.
     pub last_cm_raw: u64,
+    /// The tool schemas' share of `last_cm_tokens` (`breakdown.tools_tokens`).
+    pub last_cm_tools: u64,
     /// `request_overhead_tokens` of the step in `last_out`; a replay with another value is recomputed.
     pub last_overhead: u64,
     /// The limit the system section states, fixed on the session's first CLM
@@ -90,6 +92,7 @@ impl Default for SessionState {
             last_usable_model: String::new(),
             last_cm_tokens: 0,
             last_cm_raw: 0,
+            last_cm_tools: 0,
             last_overhead: 0,
             section_limit: 0,
             budget: 0,
