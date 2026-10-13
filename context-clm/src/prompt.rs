@@ -75,11 +75,20 @@ const CARRY_OVER: &str = "Write each summary so you could carry on from it alone
 /// prompt, task, ledger) plus a quarter of the room above it: a large, rare
 /// edit costs fewer steps than many small ones. A floor at or over the limit
 /// leaves no room to share, so the target falls back to a quarter of the limit.
-fn condense_target(limit: u64, floor: u64) -> String {
+fn condense_target(limit: u64, floor: u64, tokens: u64) -> String {
     let target = if floor < limit {
         floor + (limit - floor) / 4
     } else {
         limit / 4
+    };
+    // A nudge fired below that target (a large floor, a low ratio) still asks
+    // for a real cut: half of what can be edited now.
+    let target = if target < tokens {
+        target
+    } else if tokens > floor {
+        floor + (tokens - floor) / 2
+    } else {
+        return "keep what remains as compact as you can".to_string();
     };
     format!("bring the context down to about {target} tokens in one pass")
 }
@@ -100,7 +109,7 @@ pub fn tier_text(
 ) -> String {
     let pct = py_round(frac * 100.0);
     let at = format!("Context use: {tokens} tokens, about {pct}% of the {budget}-token budget.");
-    let target = condense_target(limit, floor);
+    let target = condense_target(limit, floor, tokens);
     if frac <= 0.25 {
         format!("[context note] {at} Nothing to do yet. Just avoid repeating searches and file reads you have already done.")
     } else if frac <= 0.5 {
@@ -114,7 +123,7 @@ pub fn tier_text(
 /// share of the limit, whatever threshold fired it.
 pub fn persistent_text(tokens: u64, limit: u64, floor: u64, hint: &str) -> String {
     let pct = py_round(tokens as f64 * 100.0 / limit.max(1) as f64);
-    let target = condense_target(limit, floor);
+    let target = condense_target(limit, floor, tokens);
     format!("[context warning: act now] Context is at {tokens}/{limit} tokens, {pct}% of the limit. Condense now: replace old or stale turns with compact summaries that keep your findings, and {target}. {WITH_NEXT_CALL} {OVER_THE_LIMIT} {hint}")
 }
 
@@ -140,7 +149,7 @@ pub struct LedgerArgs {
 
 /// The note that replaces rolled-back turns.
 pub fn ledger_text(a: &LedgerArgs) -> String {
-    let target = condense_target(a.limit, a.floor);
+    let target = condense_target(a.limit, a.floor, a.tokens_after);
     // "Only condense", unlike the nudges: right after a rollback the context sits at the limit, so a call in the same reply could overflow it again.
     let mut s = format!(
         "[context limit exceeded, rollback {}/{}] The context passed the {}-token limit, so your newest {} turn(s) were removed ({} in total during this run). Their content is gone. The context now stands at ~{}/{} tokens. Use this turn only to condense: replace old or stale turns with compact summaries that keep your findings, and {target}. {}",
@@ -323,6 +332,19 @@ mod tests {
         }
         let low = tier_text(0.25, 32768, 30720, 0, 9000, "HINT");
         assert!(!low.contains("in one pass") && !low.contains("next call"));
+    }
+
+    #[test]
+    fn a_target_never_asks_to_grow_the_context() {
+        // floor 7600 under a 20480 budget: a quarter of the room above the floor
+        // (10308) sits above the 0.5 tier's 10300 tokens, so half of the editable part is asked
+        let t = tier_text(0.5, 20480, 18432, 7600, 10300, "H");
+        assert!(t.contains("about 8950 tokens"), "{t}");
+        let p = persistent_text(7000, 18432, 7600, "H");
+        assert!(
+            p.contains("as compact as you can") && !p.contains("about"),
+            "{p}"
+        );
     }
 
     #[test]
