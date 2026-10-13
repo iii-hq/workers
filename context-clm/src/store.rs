@@ -45,6 +45,10 @@ pub struct SessionState {
     pub root: Option<String>,
     /// The run was ended by the controller.
     pub stopped: bool,
+    /// The step in `last_step` ingested only context maintenance (every call
+    /// of the reply it answered touched the mirror); its response and its
+    /// replays carry `applied.maintenance_step`.
+    pub maintenance: bool,
     /// `usable` that context-manager last reported for `last_usable_model`
     /// (0 = none yet).
     pub last_usable: u64,
@@ -88,6 +92,7 @@ impl Default for SessionState {
             last_out: None,
             root: None,
             stopped: false,
+            maintenance: false,
             last_usable: 0,
             last_usable_model: String::new(),
             last_cm_tokens: 0,

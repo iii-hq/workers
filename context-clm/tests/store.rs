@@ -43,6 +43,7 @@ fn populated() -> SessionState {
         }),
         root: Some("/work".into()),
         stopped: false,
+        maintenance: true,
         last_usable: 200_000,
         last_usable_model: "anthropic/claude-opus-5-5".into(),
         last_cm_tokens: 1_100,

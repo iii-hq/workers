@@ -30,7 +30,7 @@ You have a limit of {limit} tokens of context. Each command result ends with a r
 
 Your context after the system prompt and the task is mirrored in the file `{mirror}` (a path relative to your working directory). The file is written before every step, and whatever it holds when the next step begins becomes your context from then on. The system prompt and the task are not in the file and cannot be edited.
 
-The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied. An edit needs no step of its own: send it in the same reply as your next call (the next read, for example), as two calls, and both run in that step. This is the one multiline call that need not wait for its result first: the edit never changes what the other call returns. An edited turn that made calls comes back as text, with each call shown as `(called <function> with <arguments>)`: that is a record of what already ran. Always make new calls as real function calls, never by writing them as text.
+The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied. A step whose only calls edit the file does not count against the steps your task may take, so an edit can go out alone. It may also share a reply with your next call (the next read, for example), as two calls, and both run in that step. This is the one multiline call that need not wait for its result first: the edit never changes what the other call returns. An edited turn that made calls comes back as text, with each call shown as `(called <function> with <arguments>)`: that is a record of what already ran. Always make new calls as real function calls, never by writing them as text.
 
 Edit the file with a script through `shell::exec`. It is pre-verified for these edits: call it directly, with no function discovery and no `engine::functions::info`. It does not start a shell, so pass the script as {"command":"bash","args":["-c","<script>"]}; heredocs work that way. Do not retype the file's text, and do not print it: you are already reading it as your context. Example, replacing the text of turn 4 with a note:
 
@@ -44,7 +44,7 @@ Edit the file with a script through `shell::exec`. It is pre-verified for these 
     open(path, "w").write(text)
     EOF
 
-An edit makes every turn from the first one you changed to the end of the file get processed again, so a change early in the file costs more than a change late in it. Still, condense old or stale turns first: they are the ones you need least. Do it in one deep pass rather than several small ones, and only when a context note asks you to or the room left would not hold your next result: every pass reprocesses the turns after it, and costs a step when it goes out alone.
+An edit makes every turn from the first one you changed to the end of the file get processed again, so a change early in the file costs more than a change late in it. Still, condense old or stale turns first: they are the ones you need least. Do it in one deep pass rather than several small ones, and only when a context note asks you to or the room left would not hold your next result: every pass reprocesses the turns after it.
 
 Write compact summaries that keep your findings. A summary costs little next to the text it replaces. It should record what you found, what you tried or ruled out, and what you will do next. Never empty the whole file.
 "#;
@@ -93,8 +93,9 @@ fn condense_target(limit: u64, floor: u64, tokens: u64) -> String {
     format!("bring the context down to about {target} tokens in one pass")
 }
 
-/// An edit shares a step with the next call, as the CLM section says.
-const WITH_NEXT_CALL: &str = "Make the edit in the same reply as your next call (the next read, for example), so it takes no step of its own; if there is no next call yet, the edit alone is fine.";
+/// An edit may share a step with the next call, as the CLM section says.
+const WITH_NEXT_CALL: &str =
+    "The edit can go out alone, or share a reply with your next call (the next read, for example).";
 
 /// The one-shot nudge for a crossed tier (`frac` of the budget). `limit` is
 /// the enforced limit and `floor` the part of it the model cannot edit; the
@@ -292,14 +293,16 @@ mod tests {
         // A later clamp shows only in the readout: it is named as the live limit.
         assert!(s.contains("the newest readout"), "{s}");
         assert!(s.contains(r#"{"command":"bash","args":["-c","<script>"]}"#));
-        // An edit rides along with the next call instead of taking a step,
-        // even though the default prompt makes a multiline call wait.
+        // An edit-only step costs the task no step; an edit may still ride
+        // along with the next call, though the default prompt makes a
+        // multiline call wait.
         assert!(
-            s.contains("An edit needs no step of its own")
-                && s.contains("same reply as your next call")
+            s.contains("does not count against the steps your task may take")
+                && s.contains("share a reply with your next call")
                 && s.contains("need not wait for its result"),
             "{s}"
         );
+        assert!(!s.contains("costs a step"), "{s}");
         // shell::exec needs no contract lookup before the first edit.
         assert!(s.contains("pre-verified") && s.contains("no `engine::functions::info`"));
         // Condensing waits for a note or a real shortage of room.
@@ -319,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn condense_nudges_aim_at_a_quarter_and_ride_with_the_next_call() {
+    fn condense_nudges_aim_at_a_quarter_and_may_ride_with_the_next_call() {
         let texts = [
             tier_text(0.5, 32768, 30720, 0, 17000, "HINT"),
             tier_text(0.75, 32768, 30720, 0, 25000, "HINT"),
@@ -328,9 +331,9 @@ mod tests {
         for t in texts {
             // with no floor, one deep pass toward a quarter of the limit (30720 / 4)
             assert!(t.contains("about 7680 tokens in one pass"), "{t}");
-            // the edit shares a step with the next call, as the section says
-            assert!(t.contains("same reply as your next call"), "{t}");
-            assert!(t.contains("the edit alone is fine"), "{t}");
+            // the edit may share a step with the next call, as the section says
+            assert!(t.contains("can go out alone"), "{t}");
+            assert!(t.contains("share a reply with your next call"), "{t}");
             assert!(
                 !t.contains("Use this turn only") && !t.contains("no other work"),
                 "{t}"

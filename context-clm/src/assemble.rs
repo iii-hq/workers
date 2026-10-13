@@ -164,7 +164,7 @@ pub async fn assemble<D: Delegate>(
         None => Some(run_step(&config, &sid, &root, &mut st, &mut req, same_step)),
     };
     let model = req.model.clone();
-    let resp = finish(&deps.delegate, &mut req, st.stopped).await;
+    let resp = finish(&deps.delegate, &mut req, st.stopped, st.maintenance).await;
     let learned = match &resp {
         // A stop's request is never sent (preview_only, its count replaced).
         _ if st.stopped => false,
@@ -515,11 +515,18 @@ fn run_step(
                 .collect()
         })
         .unwrap_or_default();
-    let edit_call = calls.iter().find(|(_, args)| args.contains(".clm/"));
-    let cmd_text = edit_call
-        .or(calls.first())
-        .map(|(_, args)| args.clone())
-        .unwrap_or_default();
+    let edit_call = calls.iter().find(|(_, args)| touches_mirror(args));
+    // The reply being ingested was context maintenance when it made calls
+    // and every one touched the mirror, whether or not the edit applies. A
+    // recompute that ingested no new reply keeps the first run's answer.
+    // NOTE: a call the previous turn ended before ingesting counts for this
+    // turn's first step; the harness's per-turn cap bounds it.
+    if !recompute || !replies.is_empty() {
+        st.maintenance = replies
+            .last()
+            .is_some_and(|&i| fresh[i].is_assistant_call())
+            && calls.iter().all(|(_, args)| touches_mirror(args));
+    }
     let edit_exec = edit_call
         .and_then(|(id, _)| {
             fresh
@@ -580,7 +587,7 @@ fn run_step(
                     st.stats.edits_applied += 1;
                 }
             }
-            MirrorChange::Same if cmd_text.contains(".clm/") => {
+            MirrorChange::Same if edit_call.is_some() => {
                 notes.push(
                     match edit_exec.as_ref().and_then(|e| e.rc).filter(|rc| *rc != 0) {
                         Some(rc) => receipt_no_change_exit(rc, before),
@@ -840,11 +847,15 @@ fn run_step(
 /// `harness.context_budget_stop` (spec §4.4). A stop is over the limit by
 /// definition, so it goes as a `preview_only` assemble: otherwise
 /// context-manager reduces it ungated and throws `context/overflow`, which
-/// the harness would report as an overflow instead of the stop.
+/// the harness would report as an overflow instead of the stop. A step that
+/// did not stop and ingested only context maintenance says so
+/// (`applied.maintenance_step`): the harness does not count it toward
+/// `max_turns`.
 async fn finish<D: Delegate>(
     delegate: &D,
     req: &mut AssembleRequest,
     stopped: bool,
+    maintenance: bool,
 ) -> Result<AssembleResponse, Error> {
     req.options.allow_prune = Some(false);
     req.options
@@ -862,6 +873,8 @@ async fn finish<D: Delegate>(
     if stopped {
         resp.token_count = resp.usable.saturating_add(1);
         resp.applied["strategy_stop"] = json!(STRATEGY_STOP_REASON);
+    } else if maintenance {
+        resp.applied["maintenance_step"] = json!(true);
     }
     Ok(resp)
 }
@@ -877,6 +890,11 @@ async fn forward<D: Delegate>(
         .map_err(|e| Error::Handler(format!("{CONTEXT_ASSEMBLE_ID}: {e}")))?;
     serde_json::from_value(value)
         .map_err(|e| Error::Serde(format!("{CONTEXT_ASSEMBLE_ID} response: {e}")))
+}
+
+/// A call that touched the mirror: its arguments name `.clm/`.
+fn touches_mirror(args: &str) -> bool {
+    args.contains(".clm/")
 }
 
 /// Strip thinking from every message; returns how many changed.
@@ -1291,6 +1309,79 @@ mod tests {
             !sent.contains("Nothing in the file matched your script"),
             "{sent}"
         );
+    }
+
+    /// A reply whose one call edits the mirror (here a script that changes nothing).
+    fn edit_call(id: &str) -> Value {
+        call(id, &format!("python3 edit.py {}", mirror_rel(SID)))
+    }
+
+    fn maintenance(resp: &AssembleResponse) -> Option<&Value> {
+        resp.applied.get("maintenance_step")
+    }
+
+    #[tokio::test]
+    async fn only_an_edit_only_step_is_marked_as_maintenance_and_its_replays_too() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        let resp = assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        assert_eq!(maintenance(&resp), None, "nothing ingested");
+
+        // A step with a call that is not the mirror's.
+        raw.extend([call("c1", "cat notes.txt"), result("c1", "notes")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        assert_eq!(maintenance(&resp), None);
+
+        // An edit batched with a read is task work.
+        let mut both = call("c2", "cat notes.txt");
+        let edit = edit_call("c3")["content"][1].clone();
+        both["content"].as_array_mut().unwrap().push(edit);
+        raw.extend([both, result("c2", "notes"), result("c3", "")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 3)).await.unwrap();
+        assert_eq!(maintenance(&resp), None);
+
+        // A reply with no call.
+        raw.extend([reply("checking"), user("continue")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 4)).await.unwrap();
+        assert_eq!(maintenance(&resp), None);
+
+        // An edit alone, even one that changed nothing, is maintenance: on
+        // the step, on its replay and on a recompute against a smaller room.
+        raw.extend([edit_call("c4"), result("c4", "")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 5)).await.unwrap();
+        assert_eq!(maintenance(&resp), Some(&json!(true)), "{resp:?}");
+        let replay = assemble(&d, request(&raw, Some(&root), 5)).await.unwrap();
+        assert_eq!(maintenance(&replay), Some(&json!(true)));
+        let mut retry = request(&raw, Some(&root), 5);
+        retry.options.request_overhead_tokens = Some(2_000);
+        let recomputed = assemble(&d, retry).await.unwrap();
+        assert_eq!(maintenance(&recomputed), Some(&json!(true)));
+        assert_eq!(d.store.load(SID).unwrap().unwrap().last_overhead, 2_000);
+
+        // The next step reads again.
+        raw.extend([call("c5", "ls"), result("c5", "a.txt")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 6)).await.unwrap();
+        assert_eq!(maintenance(&resp), None);
+    }
+
+    #[tokio::test]
+    async fn a_stop_is_never_marked_as_maintenance() {
+        let cfg = ClmConfig {
+            budget_tokens: 3_000,
+            reserve_tokens: 0,
+            rollback_margin_tokens: 4_000,
+            ..ClmConfig::default()
+        };
+        let (_dir, root, d) = setup(cfg);
+        let mut raw = vec![user(&"t".repeat(16_000))];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([edit_call("c1"), result("c1", "")]);
+        for _ in 0..2 {
+            let stop = assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+            assert_eq!(stop.applied["strategy_stop"], STRATEGY_STOP_REASON);
+            assert_eq!(maintenance(&stop), None, "{stop:?}");
+        }
+        assert!(d.store.load(SID).unwrap().unwrap().maintenance);
     }
 
     #[tokio::test]
