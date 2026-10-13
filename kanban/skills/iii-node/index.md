@@ -709,8 +709,6 @@ containers:
 
   <worker-name>:
     worker: path://<worker-directory>
-    start_after:
-      - console
     scripts:
       run: pnpm dev
 ```
@@ -722,7 +720,7 @@ Path rules:
 - If it lives elsewhere, use the correct relative path; do not assume `./workers/` or any particular project layout.
 - Preserve all existing Compose entries and indentation.
 - Use a unique container key.
-- Keep `start_after: [console]` semantics for injectable UI so the Console provider exists before asset registration.
+- Add no `start_after` naming the console container. The engine holds the worker's `console:*` triggers (`console:script`, `console:style`) until the console registers those trigger types, and applies them again each time the console comes back. A `start_after` would make the worker a dependent, and Compose stops a container's dependents when it exits, so a console exit would take the worker offline.
 - Use `pnpm dev`, not the production `start` script, for this local development block.
 
 If the destination Compose file already has a declaration for the worker, update that declaration instead of adding a duplicate.
@@ -732,8 +730,8 @@ If the destination Compose file already has a declaration for the worker, update
 A running Compose daemon does not re-read `worker-compose.yaml` on edit, and `compose::up { container }` answers `UNKNOWN_CONTAINER` for a container it has not loaded. To start the worker without restarting the whole project:
 
 1. Write the block above.
-2. Call `compose::add { workers: ['./<actual-directory-name>'] }`. It recognises the existing declaration, pins nothing for a `path://` worker, and starts it — but it may rewrite the block and drop `start_after`.
-3. Diff the file and restore `start_after: [console]` and any other keys it removed.
+2. Call `compose::add { workers: ['./<actual-directory-name>'] }`. It recognises the existing declaration, pins nothing for a `path://` worker, and starts it — but it may rewrite the block.
+3. Diff the file and restore any keys it removed.
 4. Confirm with `compose::status`, the worker log under the daemon's `logs/<container>.log`, and `engine::workers::info { name: '<worker-name>' }`.
 
 The first `pnpm dev` run restarts the worker once or twice while the watchers write `dist/`; that is expected.
