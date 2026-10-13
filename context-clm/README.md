@@ -90,12 +90,13 @@ stops, the peak calibrated context (`peak_tc`) and stripped thinking blocks
 token. A session the worker has not seen answers `"found": false`.
 
 Editing the mirror is the strategy's upkeep, not task work. When every call
-in the reply a step ingests touched `.clm/` (an edit, applied or not), that
-step's `context-clm::assemble` response sets `applied.maintenance_step: true`,
-and so does a replay of it; a stop never does. The harness then leaves the
-edit step out of the turn's `max_turns`, for at most `max_turns / 2` steps a
-turn, and counts them as `maintenance_steps` in
-`harness::status {"verbose": true}`.
+in the reply a step ingests touched `.clm/` and printed nothing or failed (an
+edit, applied or not; a script that also prints task output is task work),
+that step's `context-clm::assemble` response sets
+`applied.maintenance_step: true`, and so does a replay of it; a stop never
+does. The harness then leaves the edit step out of the turn's `max_turns`,
+for at most `max_turns / 2` steps a turn and never for a turn's first step,
+and counts them as `maintenance_steps` in `harness::status {"verbose": true}`.
 
 Opt out by removing `context_strategy` from the session metadata; the next
 `harness::send` uses context-manager again:

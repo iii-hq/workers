@@ -516,25 +516,31 @@ fn run_step(
         })
         .unwrap_or_default();
     let edit_call = calls.iter().find(|(_, args)| touches_mirror(args));
+    let exec_of = |id: &str| {
+        fresh
+            .iter()
+            .rev()
+            .find(|m| m.role == "function_result" && m.function_call_id() == Some(id))
+            .map(|m| exec_body(&m.result_text(), cfg.observation_max_chars))
+    };
     // The reply being ingested was context maintenance when it made calls
-    // and every one touched the mirror, whether or not the edit applies. A
-    // recompute that ingested no new reply keeps the first run's answer.
-    // NOTE: a call the previous turn ended before ingesting counts for this
-    // turn's first step; the harness's per-turn cap bounds it.
+    // and every one touched the mirror and printed nothing, or failed:
+    // whether or not the edit applies, but never a script that also did task
+    // work (`...; cat src/lib.rs`). A recompute that ingested no new reply
+    // keeps the first run's answer. A reply the previous turn ended on
+    // before ingesting it can flag this turn's first step; the harness
+    // grants a turn's first step nothing.
     if !recompute || !replies.is_empty() {
         st.maintenance = replies
             .last()
             .is_some_and(|&i| fresh[i].is_assistant_call())
-            && calls.iter().all(|(_, args)| touches_mirror(args));
+            && calls.iter().all(|(id, args)| {
+                touches_mirror(args)
+                    && exec_of(id).is_some_and(|e| e.silent || e.rc.is_some_and(|rc| rc != 0))
+            });
     }
     let edit_exec = edit_call
-        .and_then(|(id, _)| {
-            fresh
-                .iter()
-                .rev()
-                .find(|m| m.role == "function_result" && m.function_call_id() == Some(id.as_str()))
-        })
-        .map(|m| exec_body(&m.result_text(), cfg.observation_max_chars))
+        .and_then(|(id, _)| exec_of(id))
         .or_else(|| exec.clone());
 
     // 3. Read back the model's edit of the mirror (from the previous root when it moved).
@@ -1362,6 +1368,20 @@ mod tests {
         raw.extend([call("c5", "ls"), result("c5", "a.txt")]);
         let resp = assemble(&d, request(&raw, Some(&root), 6)).await.unwrap();
         assert_eq!(maintenance(&resp), None);
+
+        // A mirror script that also reads is task work: it printed.
+        let script = format!("python3 edit.py {}; cat src/lib.rs", mirror_rel(SID));
+        raw.extend([call("c6", &script), result("c6", "fn main() {}")]);
+        let resp = assemble(&d, request(&raw, Some(&root), 7)).await.unwrap();
+        assert_eq!(maintenance(&resp), None);
+
+        // An edit that failed is still maintenance, whatever it printed.
+        let failed = json!({ "exit_code": 1, "stdout": "", "stderr": "SyntaxError" }).to_string();
+        let mut r7 = result("c7", "");
+        r7["content"][0]["text"] = json!(failed);
+        raw.extend([edit_call("c7"), r7]);
+        let resp = assemble(&d, request(&raw, Some(&root), 8)).await.unwrap();
+        assert_eq!(maintenance(&resp), Some(&json!(true)));
     }
 
     #[tokio::test]

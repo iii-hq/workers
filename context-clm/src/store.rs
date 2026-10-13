@@ -46,8 +46,8 @@ pub struct SessionState {
     /// The run was ended by the controller.
     pub stopped: bool,
     /// The step in `last_step` ingested only context maintenance (every call
-    /// of the reply it answered touched the mirror); its response and its
-    /// replays carry `applied.maintenance_step`.
+    /// of the reply it answered touched the mirror and printed nothing, or
+    /// failed); its response and its replays carry `applied.maintenance_step`.
     pub maintenance: bool,
     /// `usable` that context-manager last reported for `last_usable_model`
     /// (0 = none yet).

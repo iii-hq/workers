@@ -30,7 +30,7 @@ You have a limit of {limit} tokens of context. Each command result ends with a r
 
 Your context after the system prompt and the task is mirrored in the file `{mirror}` (a path relative to your working directory). The file is written before every step, and whatever it holds when the next step begins becomes your context from then on. The system prompt and the task are not in the file and cannot be edited.
 
-The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied. A step whose only calls edit the file does not count against the steps your task may take, so an edit can go out alone. It may also share a reply with your next call (the next read, for example), as two calls, and both run in that step. This is the one multiline call that need not wait for its result first: the edit never changes what the other call returns. An edited turn that made calls comes back as text, with each call shown as `(called <function> with <arguments>)`: that is a record of what already ran. Always make new calls as real function calls, never by writing them as text.
+The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied. A step whose only calls edit the file and print nothing does not count against the steps your task may take, so an edit can go out alone. It may also share a reply with your next call (the next read, for example), as two calls, and both run in that step. This is the one multiline call that need not wait for its result first: the edit never changes what the other call returns. An edited turn that made calls comes back as text, with each call shown as `(called <function> with <arguments>)`: that is a record of what already ran. Always make new calls as real function calls, never by writing them as text.
 
 Edit the file with a script through `shell::exec`. It is pre-verified for these edits: call it directly, with no function discovery and no `engine::functions::info`. It does not start a shell, so pass the script as {"command":"bash","args":["-c","<script>"]}; heredocs work that way. Do not retype the file's text, and do not print it: you are already reading it as your context. Example, replacing the text of turn 4 with a note:
 
@@ -297,7 +297,7 @@ mod tests {
         // along with the next call, though the default prompt makes a
         // multiline call wait.
         assert!(
-            s.contains("does not count against the steps your task may take")
+            s.contains("only calls edit the file and print nothing does not count against the steps your task may take")
                 && s.contains("share a reply with your next call")
                 && s.contains("need not wait for its result"),
             "{s}"
