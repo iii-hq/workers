@@ -125,6 +125,12 @@ pub struct Applied {
     /// (`harness.context_budget_stop`) instead of the overflow message.
     #[serde(default)]
     pub strategy_stop: Option<String>,
+    /// A context strategy marked the step it just ingested as its own
+    /// maintenance: every function call in it was context upkeep, so that
+    /// step does not count toward `max_turns` (at most `max_turns / 2` per
+    /// turn). Ignored without an effective strategy.
+    #[serde(default)]
+    pub maintenance_step: bool,
 }
 
 pub struct AssembleParams {

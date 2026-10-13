@@ -32,6 +32,11 @@ pub struct StatusReport {
     pub status: TurnStatus,
     pub step: u64,
     pub turn_count: u32,
+    /// Steps of `turn_count` a context strategy marked as its own
+    /// maintenance; they do not count toward `max_turns`, so `turn_count`
+    /// may exceed it. Verbose only; absent when none.
+    #[serde(default)]
+    pub maintenance_steps: Option<u32>,
     pub max_turns: Option<u32>,
     pub validation_retries: Option<u32>,
     pub max_validation_retries: Option<u32>,
@@ -102,6 +107,7 @@ impl Serialize for StatusReport {
         report.serialize_entry("turn_count", &self.turn_count)?;
 
         if verbose {
+            serialize_optional(&mut report, "maintenance_steps", &self.maintenance_steps)?;
             serialize_optional(&mut report, "max_turns", &self.max_turns)?;
             serialize_optional(&mut report, "validation_retries", &self.validation_retries)?;
             serialize_optional(
@@ -247,6 +253,10 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         status: record.status,
         step: record.step,
         turn_count: record.turn_count,
+        maintenance_steps: req
+            .verbose
+            .then_some(record.maintenance_steps)
+            .filter(|steps| *steps > 0),
         max_turns: req.verbose.then_some(record.options.max_turns),
         validation_retries: req.verbose.then_some(record.validation_retries),
         max_validation_retries: req.verbose.then_some(record.options.max_validation_retries),
@@ -516,5 +526,34 @@ mod tests {
         lean.context_strategy = serde_json::from_value(strategy).unwrap();
         let serialized = serde_json::to_value(lean).unwrap();
         assert!(!keys(&serialized).contains("context_strategy"));
+    }
+
+    #[test]
+    fn verbose_status_reports_maintenance_steps_and_lean_status_does_not() {
+        let fixture = json!({
+            "session_id": "s_parent",
+            "turn_id": "t_parent",
+            "status": "running",
+            "step": 14,
+            "turn_count": 14,
+            "maintenance_steps": 4,
+            "max_turns": 12,
+            "validation_retries": 0,
+            "max_validation_retries": 2,
+            "transient_resumes": 0,
+            "max_transient_resumes": 3,
+            "partial_result_available": false,
+            "depth": 0,
+            "pending_function_calls": [],
+            "children": [],
+            "expects_wake": false
+        });
+        let report: StatusReport = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(serde_json::to_value(report).unwrap(), fixture);
+
+        let mut lean = lean_report(None);
+        lean.maintenance_steps = Some(4);
+        let serialized = serde_json::to_value(lean).unwrap();
+        assert!(!keys(&serialized).contains("maintenance_steps"));
     }
 }
