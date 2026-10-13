@@ -809,20 +809,6 @@ mod tests {
             .is_empty());
     }
 
-    fn two_free_ports() -> (u16, u16) {
-        loop {
-            let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let ports = (
-                first.local_addr().unwrap().port(),
-                second.local_addr().unwrap().port(),
-            );
-            if ports.0 != ports.1 {
-                return ports;
-            }
-        }
-    }
-
     async fn wait_for_connection(port: u16, expected: bool) -> bool {
         for _ in 0..50 {
             let connected = tokio::net::TcpStream::connect(("127.0.0.1", port))
@@ -838,18 +824,21 @@ mod tests {
 
     #[tokio::test]
     async fn rebind_starts_new_port_before_stopping_old_listener() {
-        let (old_port, new_port) = two_free_ports();
         let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
-        let handle = server::start(old_port, state.clone()).await.unwrap();
+        // Let each listener retain its OS-assigned port from the first bind.
+        // Probing then releasing a free port races concurrent socket users.
+        let handle = server::start(0, state.clone()).await.unwrap();
+        let old_port = handle.local_addr.port();
         let port = new_port_cell(old_port);
 
         assert!(wait_for_connection(old_port, true).await);
-        rebind(&port, &state, &handle.control, new_port)
-            .await
-            .unwrap();
+        rebind(&port, &state, &handle.control, 0).await.unwrap();
 
-        assert_eq!(*port.read().await, new_port);
-        assert_eq!(handle.current_addr().await.unwrap().port(), new_port);
+        // The snapshot holds the requested setting; the handle has the
+        // actual ephemeral port selected while the old listener was bound.
+        assert_eq!(*port.read().await, 0);
+        let new_port = handle.current_addr().await.unwrap().port();
+        assert_ne!(new_port, old_port);
         assert!(wait_for_connection(new_port, true).await);
         assert!(wait_for_connection(old_port, false).await);
 
@@ -858,14 +847,15 @@ mod tests {
 
     #[tokio::test]
     async fn failed_rebind_keeps_old_port_and_listener() {
-        let (old_port, occupied_port) = two_free_ports();
         // Reserve the exact interface rebind uses. On macOS a wildcard
         // listener does not necessarily prevent a loopback bind to the same port.
-        let occupied = tokio::net::TcpListener::bind((server::bind_host(), occupied_port))
+        let occupied = tokio::net::TcpListener::bind((server::bind_host(), 0))
             .await
             .unwrap();
+        let occupied_port = occupied.local_addr().unwrap().port();
         let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
-        let handle = server::start(old_port, state.clone()).await.unwrap();
+        let handle = server::start(0, state.clone()).await.unwrap();
+        let old_port = handle.local_addr.port();
         let port = new_port_cell(old_port);
 
         assert!(rebind(&port, &state, &handle.control, occupied_port)
