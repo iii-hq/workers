@@ -1,6 +1,9 @@
 import { copyText, errorMessage } from '@iii-dev/console-ui/format'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
 import {
   ArrowDownToLine,
+  Check,
+  Clock3,
   Copy,
   FileText,
   MoreHorizontal,
@@ -26,6 +29,7 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { StatusBar, Toolbar } from '@/components/ui/Toolbar'
+import type { PageCommandsApi } from '@/types/injectable-ui'
 import { stopSupervisorWorker } from './api/workers'
 import { WorkerSurface } from './components/WorkerSurface'
 import type {
@@ -38,19 +42,23 @@ import type {
   Project,
   Status,
 } from './compose-api'
+import type { DiscardedSettingsDraft } from './discarded-draft'
 import type { Actions } from './index'
 import {
   alsoStarts,
   dependentsOf,
   draftFrom,
+  hasSettingsChanges,
   isRunning,
   parseLogLine,
+  rebaseSettingsDraft,
   type SettingsDraft,
   settingsPatch,
   shortPath,
   toneFor,
+  validateSettingsDraft,
 } from './model'
-import { SettingsTab } from './settings'
+import { type SaveNotice, SettingsTab } from './settings'
 import { SourceTab } from './source'
 import { MANAGEMENT_LABEL, type WorkerRow } from './types'
 
@@ -70,6 +78,28 @@ const WAIT_MS = 5000
 
 type Tab = 'log' | 'source' | 'settings' | 'functions'
 
+export type ContainerSettingsState = {
+  tab: Tab
+  entry: ContainerEntry | null
+  draft: SettingsDraft | null
+  saving?: boolean
+  notice?: SaveNotice | null
+  previousEntry?: ContainerEntry | null
+  discardedDraft?: DiscardedSettingsDraft | null
+  /** Masked confirmed write retained until the actual declaration can be read. */
+  submittedEntry?: ContainerEntry | null
+}
+
+type SettingsUpdate =
+  | Partial<ContainerSettingsState>
+  | ((current: ContainerSettingsState) => Partial<ContainerSettingsState>)
+
+const EMPTY_SETTINGS: ContainerSettingsState = {
+  tab: 'log',
+  entry: null,
+  draft: null,
+}
+
 export function ContainerView({
   api,
   actions,
@@ -80,7 +110,9 @@ export function ContainerView({
   latest,
   onSelect,
   onRemoved,
-  setDirty,
+  settings,
+  onSettingsChange,
+  commands,
   connected,
 }: {
   api: ComposeApi
@@ -92,20 +124,28 @@ export function ContainerView({
   latest: string | null
   onSelect: (name: string) => void
   onRemoved: () => void
-  setDirty?: (dirty: boolean | string) => void
+  settings: ContainerSettingsState | undefined
+  onSettingsChange: (next: SettingsUpdate) => void
+  commands?: PageCommandsApi
   /** The container is connected to the engine, so it has functions to show. */
   connected: boolean
 }) {
   const name = container.container
-  const [tab, setTab] = useState<Tab>('log')
-  // Settings keep their draft while another tab is open.
-  const [entry, setEntry] = useState<ContainerEntry | null>(null)
-  const [draft, setDraft] = useState<SettingsDraft | null>(null)
-  const changes = entry && draft ? settingsPatch(entry, draft).changes : 0
-  useEffect(() => {
-    setDirty?.(changes ? `${name} settings` : false)
-    return () => setDirty?.(false)
-  }, [changes, name, setDirty])
+  const currentSettings = settings ?? EMPTY_SETTINGS
+  const { tab, draft, submittedEntry } = currentSettings
+  const entry = submittedEntry ?? currentSettings.entry
+  const updateSettings = onSettingsChange
+  const setTab = (next: Tab) => updateSettings({ tab: next })
+  const { ref: contextWidthRef, narrow: contextNarrow } = useContainerNarrow({
+    below: 560,
+  })
+  const compactContext = tab === 'settings' && contextNarrow
+  const logTabRef = useRef<HTMLButtonElement>(null)
+  const dirty = !!(entry && draft && hasSettingsChanges(entry, draft))
+  const changes =
+    entry && draft && validateSettingsDraft(entry, draft).valid
+      ? settingsPatch(entry, draft).changes
+      : 0
 
   const tone = toneFor(container.state)
   const running = isRunning(container.state)
@@ -173,16 +213,58 @@ export function ContainerView({
         className="h-7 px-[11px] text-[12px]"
         onClick={() => onSelect(dep)}
       >
-        <StatusDot
-          tone={toneFor(state.get(dep) ?? 'stopped').dot}
-          aria-label={state.get(dep) ?? 'not running'}
-        />
+        <StatusDot tone={toneFor(state.get(dep) ?? 'stopped').dot} />
         <span className="wk-mono">{dep}</span>
+        <span className="sr-only">{state.get(dep) ?? 'not running'}</span>
       </Button>
     ))
 
+  const metadata = (
+    <div className="wk-meta wk-mono">
+      {declared?.source === 'path' ? (
+        <span title={declared.ref}>path {shortPath(declared.ref)}</span>
+      ) : null}
+      {declared?.source === 'package' ? (
+        <span>
+          package {declared.ref} · {declared.version ?? 'unpinned'}
+        </span>
+      ) : null}
+      {running && container.pid ? <span>pid {container.pid}</span> : null}
+    </div>
+  )
+  const relationships = (
+    <dl
+      className={
+        after.length || neededBy.length
+          ? 'wk-relations'
+          : 'wk-relations wk-relations-inline'
+      }
+    >
+      <Eyebrow as="dt">Starts after</Eyebrow>
+      <dd className="wk-pills">
+        {after.length ? (
+          dependencyPills(after)
+        ) : (
+          <span className="wk-faint">the engine only</span>
+        )}
+      </dd>
+      <Eyebrow as="dt">Needed by</Eyebrow>
+      <dd className="wk-pills">
+        {neededBy.length ? (
+          dependencyPills(neededBy)
+        ) : (
+          <span className="wk-faint">nothing</span>
+        )}
+      </dd>
+    </dl>
+  )
+
   return (
-    <div className="wk-view">
+    <div
+      ref={contextWidthRef}
+      className="wk-view"
+      data-compact-context={compactContext || undefined}
+    >
       <div className="wk-masthead">
         <div className="wk-identity">
           <div className="wk-title-row">
@@ -192,17 +274,7 @@ export function ContainerView({
               <Badge variant="accent">{latest} available</Badge>
             ) : null}
           </div>
-          <div className="wk-meta wk-mono">
-            {declared?.source === 'path' ? (
-              <span title={declared.ref}>path {shortPath(declared.ref)}</span>
-            ) : null}
-            {declared?.source === 'package' ? (
-              <span>
-                package {declared.ref} · {declared.version ?? 'unpinned'}
-              </span>
-            ) : null}
-            {running && container.pid ? <span>pid {container.pid}</span> : null}
-          </div>
+          {compactContext ? null : metadata}
         </div>
         <div className="wk-actions">
           <Button
@@ -275,30 +347,17 @@ export function ContainerView({
         />
       ) : null}
 
-      <dl
-        className={
-          after.length || neededBy.length
-            ? 'wk-relations'
-            : 'wk-relations wk-relations-inline'
-        }
-      >
-        <Eyebrow as="dt">Starts after</Eyebrow>
-        <dd className="wk-pills">
-          {after.length ? (
-            dependencyPills(after)
-          ) : (
-            <span className="wk-faint">the engine only</span>
-          )}
-        </dd>
-        <Eyebrow as="dt">Needed by</Eyebrow>
-        <dd className="wk-pills">
-          {neededBy.length ? (
-            dependencyPills(neededBy)
-          ) : (
-            <span className="wk-faint">nothing</span>
-          )}
-        </dd>
-      </dl>
+      {compactContext ? (
+        <details key={name} className="wk-worker-context">
+          <summary>Worker context</summary>
+          <div className="wk-worker-context-body">
+            {metadata}
+            {relationships}
+          </div>
+        </details>
+      ) : (
+        relationships
+      )}
 
       <Tabs
         value={tab}
@@ -306,14 +365,33 @@ export function ContainerView({
         className="wk-tabs"
       >
         <TabsList variant="line" aria-label={name}>
-          <TabsTrigger value="log" icon={false}>
+          <TabsTrigger ref={logTabRef} value="log" icon={false}>
             Log
           </TabsTrigger>
           <TabsTrigger value="source" icon={false}>
             Source
           </TabsTrigger>
-          <TabsTrigger value="settings" icon={false}>
-            Settings{changes ? ` · ${changes}` : ''}
+          <TabsTrigger
+            value="settings"
+            icon={false}
+            aria-label={
+              submittedEntry
+                ? `Settings${dirty ? ` · ${changes || 'unsaved'}` : ''} · awaiting verification`
+                : undefined
+            }
+            title={
+              submittedEntry
+                ? 'Settings saved; awaiting verification'
+                : undefined
+            }
+          >
+            Settings{dirty ? ` · ${changes || 'unsaved'}` : ''}
+            {submittedEntry ? (
+              <Clock3
+                aria-hidden
+                className="ml-1 inline-block size-4 align-text-bottom text-warn-strong"
+              />
+            ) : null}
           </TabsTrigger>
           {connected ? (
             <TabsTrigger value="functions" icon={false}>
@@ -350,17 +428,55 @@ export function ContainerView({
         <TabsContent value="settings" className="wk-tab">
           <SettingsTab
             api={api}
+            compact={compactContext}
+            revision={status}
             actions={actions}
             name={name}
             declared={declared}
             others={all.map((c) => c.name).filter((other) => other !== name)}
+            containers={all}
+            states={state}
+            neededBy={neededBy}
+            commands={commands}
             entry={entry}
             draft={draft}
-            onLoaded={(next) => {
-              setEntry(next)
-              setDraft(draftFrom(next))
+            saving={currentSettings.saving ?? false}
+            notice={currentSettings.notice ?? null}
+            previousEntry={currentSettings.previousEntry ?? null}
+            discardedDraft={currentSettings.discardedDraft ?? null}
+            awaitingReload={!!submittedEntry}
+            onSubmitted={(submittedEntry) =>
+              updateSettings({
+                submittedEntry,
+                draft: draftFrom(submittedEntry),
+                discardedDraft: null,
+              })
+            }
+            onPrevious={(previousEntry) => updateSettings({ previousEntry })}
+            onDiscarded={(discardedDraft) => updateSettings({ discardedDraft })}
+            onSaving={(saving) => updateSettings({ saving })}
+            onNotice={(notice) => updateSettings({ notice })}
+            onLoaded={(next, preserveDraft = true) =>
+              updateSettings((current) => {
+                const baseline = current.submittedEntry ?? current.entry
+                return {
+                  entry: next,
+                  submittedEntry: null,
+                  draft:
+                    preserveDraft &&
+                    baseline &&
+                    current.draft &&
+                    hasSettingsChanges(baseline, current.draft)
+                      ? rebaseSettingsDraft(baseline, current.draft, next)
+                      : draftFrom(next),
+                }
+              })
+            }
+            onDraft={(next) => updateSettings({ draft: next })}
+            onOpenLog={() => {
+              setTab('log')
+              logTabRef.current?.focus({ preventScroll: true })
             }}
-            onDraft={setDraft}
             onRemove={() => void remove()}
           />
         </TabsContent>
@@ -382,9 +498,36 @@ function LogTab({
   const [error, setError] = useState<string | null>(null)
   const [follow, setFollow] = useState(true)
   const [filter, setFilter] = useState('')
+  const [localTimeZone, setLocalTimeZone] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  const [copied, setCopied] = useState(false)
+  const [copyResult, setCopyResult] = useState<'success' | 'failed' | null>(
+    null,
+  )
+  const copyRequest = useRef(0)
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cursor = useRef<LogCursor | null>(null)
   const pane = useRef<HTMLPreElement>(null)
+
+  useEffect(() => {
+    try {
+      setLocalTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone || null)
+    } catch {
+      // The timestamps are still local when the browser cannot name its zone.
+      setLocalTimeZone(null)
+    }
+  }, [])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Worker/filter changes invalidate clipboard feedback and pending results.
+  useEffect(() => {
+    setCopied(false)
+    setCopyResult(null)
+    return () => {
+      copyRequest.current += 1
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+      copyTimer.current = null
+    }
+  }, [name, filter])
 
   // A (re)load drops the old cursor and lines, so following restarts only
   // once this tail and its cursor are in: no request from a stale cursor.
@@ -465,14 +608,25 @@ function LogTab({
               <span className="wk-follow-label">Follow</span>
             </Button>
             <IconButton
-              label="Copy log"
+              label={copied ? 'Log copied' : 'Copy log'}
               variant="ghost"
               disabled={!visible.length}
-              onClick={() =>
-                void copyText(visible.map((line) => line.message).join('\n'))
-              }
+              onClick={() => {
+                const request = ++copyRequest.current
+                void copyText(
+                  visible.map((line) => line.message).join('\n'),
+                ).then((ok) => {
+                  if (request !== copyRequest.current) return
+                  setCopied(ok)
+                  setCopyResult(ok ? 'success' : 'failed')
+                  if (copyTimer.current) clearTimeout(copyTimer.current)
+                  copyTimer.current = ok
+                    ? setTimeout(() => setCopied(false), 1800)
+                    : null
+                })
+              }}
             >
-              <Copy />
+              {copied ? <Check /> : <Copy />}
             </IconButton>
           </>
         }
@@ -485,6 +639,20 @@ function LogTab({
           onChange={setFilter}
         />
       </Toolbar>
+      {copyResult ? (
+        <StatusPanel
+          role={copyResult === 'success' ? 'status' : 'alert'}
+          variant={copyResult === 'success' ? 'success' : 'warn'}
+          headline={
+            copyResult === 'success' ? 'Log copied' : 'Log could not be copied'
+          }
+          detail={
+            copyResult === 'failed'
+              ? 'Select the log text and copy it with your keyboard.'
+              : undefined
+          }
+        />
+      ) : null}
       {error ? (
         <StatusPanel
           variant="alert"
@@ -507,6 +675,13 @@ function LogTab({
           icon={FileText}
           title="No output yet"
           description={`${name} has not written anything.`}
+        />
+      ) : lines && lines.length > 0 && visible.length === 0 ? (
+        <EmptyState
+          compact
+          icon={FileText}
+          title="No log lines match this filter"
+          description="Change the filter or clear it to see the log."
         />
       ) : (
         <pre
@@ -543,7 +718,10 @@ function LogTab({
           })}
         </pre>
       )}
-      <StatusBar end={follow ? 'following' : 'paused'}>
+      <StatusBar
+        className="h-auto min-h-7 flex-wrap py-1"
+        end={follow ? 'following' : 'paused'}
+      >
         {logPath ? (
           <span className="wk-mono" title={logPath}>
             {shortPath(logPath)}
@@ -554,6 +732,13 @@ function LogTab({
             ? `${visible.length} of ${lines?.length ?? 0} lines`
             : `${lines?.length ?? 0} lines`}
         </span>
+        {visible.some((line) =>
+          parseLogLine(line.message.replace(/\n$/, '')),
+        ) ? (
+          <span className="min-w-0 break-words">
+            Local time{localTimeZone ? ` · ${localTimeZone}` : ''}
+          </span>
+        ) : null}
       </StatusBar>
     </div>
   )

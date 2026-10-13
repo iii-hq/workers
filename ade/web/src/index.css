@@ -63,7 +63,7 @@
   --color-rule: transparent;
   --color-rule-2: transparent;
   --color-rule-strong: transparent;
-  --color-rule-focus: rgba(184, 66, 15, 0.6);
+  --color-rule-focus: #b8420f;
 
   /* The one structural stroke the system keeps: a VERY subtle edge on the
      main workspace panels (the tab columns), so the floating panels

@@ -319,6 +319,7 @@ describe('engine::workers::list', () => {
           id: 'w-1',
           name: 'todo-app',
           description: null,
+          namespace: 'project-a',
           version: '0.4.7',
           runtime: 'node',
           os: 'darwin',
@@ -336,6 +337,7 @@ describe('engine::workers::list', () => {
     expect(parsed?.workers).toHaveLength(1)
     expect(parsed?.workers[0].runtime).toBe('node')
     expect(parsed?.workers[0].tag).toBe('dev')
+    expect(parsed?.workers[0]).toHaveProperty('namespace', 'project-a')
   })
 
   it('parses an empty workers list', () => {
@@ -362,6 +364,7 @@ describe('engine::workers::info', () => {
         id: 'w-1',
         name: 'todo-app',
         description: 'demo',
+        namespace: 'project-a',
         version: '0.4.7',
         runtime: 'node',
         os: 'darwin',
@@ -379,7 +382,13 @@ describe('engine::workers::info', () => {
           runtime: 'node',
         },
       },
-      functions: [{ function_id: 'todo::list', worker_name: 'todo-app' }],
+      functions: [
+        {
+          function_id: 'todo::list',
+          worker_name: 'todo-app',
+          namespace: 'project-a',
+        },
+      ],
       trigger_types: [],
       registered_triggers: [],
     }
@@ -387,6 +396,8 @@ describe('engine::workers::info', () => {
     expect(parsed?.worker.internal).toBe(false)
     expect(parsed?.functions).toHaveLength(1)
     expect(parsed?.worker.latest_metrics?.cpu_percent).toBe(1.2)
+    expect(parsed?.worker).toHaveProperty('namespace', 'project-a')
+    expect(parsed?.functions[0]).toHaveProperty('namespace', 'project-a')
   })
 
   it('parses an internal worker without optional fields', () => {

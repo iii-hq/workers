@@ -20,12 +20,12 @@ const variantTone: Record<
   warn: {
     fill: 'bg-warn-muted',
     icon: 'text-warn',
-    headline: 'text-warn',
+    headline: 'text-warn-strong',
   },
   alert: {
     fill: 'bg-alert-muted',
     icon: 'text-alert',
-    headline: 'text-alert',
+    headline: 'text-alert-strong',
   },
 }
 
@@ -78,7 +78,12 @@ export function StatusPanel({
           {headline}
         </div>
         {detail ? (
-          <div className="font-sans text-[12px] text-ink-faint [overflow-wrap:anywhere]">
+          <div
+            className={cn(
+              'font-sans text-[12px] [overflow-wrap:anywhere]',
+              variant === 'success' ? 'text-ink' : 'text-ink-faint',
+            )}
+          >
             {detail}
           </div>
         ) : null}
