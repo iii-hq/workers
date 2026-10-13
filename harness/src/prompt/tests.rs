@@ -355,6 +355,7 @@ fn coder_routing() {
         assert!(out.contains(id), "missing {id}");
     }
     assert!(out.contains("the full inventory"));
+    assert!(out.contains("start with `coder::find-relevant`"));
     assert!(out.contains("never delete-then-recreate"));
 }
 

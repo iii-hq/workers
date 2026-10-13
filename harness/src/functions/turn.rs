@@ -63,22 +63,21 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
     if let Some(display_name) = subagent_display_name.as_deref() {
         baggage.push(("iii.tag.display_name", display_name));
     }
-    // The session's judge provider rides the turn's context: every judge call
-    // this turn causes (call reconciliation here, function search in the
-    // directory, browser::run) routes to it, and other sessions never see it.
-    if let Some(provider) = hints.judge_provider.as_deref() {
-        baggage.push((judge_contract::PROVIDER_BAGGAGE_KEY, provider));
-    }
     // The explicit step span matters: the baggage only materializes as span
     // attributes when a span STARTS inside this scope, and downstream workers
     // may run older SDKs whose processors drop the newer keys. This span is
     // ours, so the turn's trace always carries the tags — and the session::*
     // / router client calls parent under it instead of dangling.
-    iii_helpers::observability::run_with_baggage(&baggage, async {
+    //
+    // The session's judge provider rides the turn's context: every judge call
+    // this turn causes (call reconciliation here, function search in the
+    // directory, browser::run) routes to it, and a session without one drops
+    // whatever provider the step's enqueuer carried.
+    let step = iii_helpers::observability::run_with_baggage(&baggage, async {
         iii_helpers::observability::run_in_span("harness::turn step", None, || run(deps, payload))
             .await
-    })
-    .await
+    });
+    crate::judge::with_provider(hints.judge_provider, step).await
 }
 
 /// Bounded in-place retry budget for step errors that mean a dependency is

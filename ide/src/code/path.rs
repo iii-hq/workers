@@ -250,6 +250,23 @@ impl PathResolver {
             .map(PathBuf::as_path)
     }
 
+    /// The session grant containing `canon`, if any.
+    pub fn grant_root(&self, canon: &Path) -> Option<&Path> {
+        self.grant_roots_canon
+            .iter()
+            .find(|r| canon.starts_with(r))
+            .map(PathBuf::as_path)
+    }
+
+    /// The allowed root containing `canon` that is not a session grant.
+    pub fn configured_root(&self, canon: &Path) -> Option<&Path> {
+        self.roots_canon
+            .iter()
+            .filter(|r| !self.grant_roots_canon.contains(r))
+            .find(|r| canon.starts_with(r))
+            .map(PathBuf::as_path)
+    }
+
     /// Canonical form of a session `scope_root` (the per-call working directory
     /// the harness scopes a call to), using the SAME canonicalisation as
     /// [`resolve_in`]. `None` when `scope_root` cannot be canonicalised or sits
@@ -332,10 +349,17 @@ impl PathResolver {
     /// denylist exactly as it does to `non_accessible_globs`: a denylisted
     /// path must be indistinguishable from a missing one.
     fn deny_check(&self, path: &str, canon: &Path) -> Result<(), CoderError> {
-        if self.denylist_canon.iter().any(|d| canon.starts_with(d)) {
+        if self.is_denied(canon) {
             return Err(CoderError::not_found_or_denied(path));
         }
         Ok(())
+    }
+
+    /// True when the canonical `canon` sits under an `fs.denylist_paths`
+    /// entry. A walk under a canonical root that never follows links yields
+    /// canonical entries, so it can prune with this per entry.
+    pub fn is_denied(&self, canon: &Path) -> bool {
+        self.denylist_canon.iter().any(|d| canon.starts_with(d))
     }
 
     /// Path's location relative to its CONTAINING root as a forward-slash

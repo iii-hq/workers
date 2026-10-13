@@ -210,6 +210,7 @@ both surfaces are unjailed and `coder::*` keeps the engine workspace cwd +
 | `coder::search` | Literal/regex content + path search over a folder or one file, with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
+| `coder::find-relevant` | Judge-ranked discovery for behavioural questions (a port of [jevgrep](https://github.com/dzhng/jevgrep)): returns files best first with verbatim excerpts and line ranges. **Egress:** sends the query, root-relative paths and file text to the session's judge provider (`judge::evaluate`; hosted `judge-typesafe` by default), never protected, ignored, hidden or secret-looking files, and refuses a hidden or gitignored `path`; binary and secret-key files show by name only. A `'!coder::find-relevant'` deny rule in `iii-permissions.yaml`, above its allow entry, takes it from agents; the IDE's Search tab calls it directly. See [below](#judge-ranked-discovery-coderfind-relevant). |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
 | `coder::list-templates` | The worker templates `coder::scaffold-worker` creates from, with their language and the compose containers they need. Read from `code.templates`: a local `dir`, or a cached shallow clone of `url` at `ref` (`refresh: true` re-fetches it). |
 | `coder::scaffold-worker` | Create a worker from a template in a missing or empty folder whose last segment is the worker name (default `workers/<name>`), all or nothing, with the template's name token replaced in paths and text, and return `compose_add`, the `compose::add` payload to send whole, adding `start_after` to its entry and missing `requires` as more entries (`{ workers: [compose] }`; the bare `worker` string form drops the scripts). Writes go through the `coder::create-file` path and show in the turn summary. |
@@ -239,6 +240,116 @@ out explicitly below:
 | `C235` | `coder::scaffold-worker` with `start` (the default) found a container named after the worker already in the stack: adding it would repoint that container at the new folder. Checked before any write, so nothing was written; pick another name, or pass `start: false`. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
+
+### Judge-ranked discovery (`coder::find-relevant`)
+
+`coder::find-relevant { query, path?, exclude_globs?, timeout_ms? }` walks
+`path` (default `.`) folder by folder, asking the judge jevgrep's yes/no
+relevance questions and descending only into what it admits, then picks
+excerpts from the admitted files. The judge is optional: the worker does
+not depend on it, and a missing or failing judge is a typed result, not an
+error.
+
+| `status` | Meaning |
+|---|---|
+| `complete` | Every admitted branch was explored. With no files, either nothing under `path` was eligible for the judge (empty, or only hidden, ignored or `exclude_globs`-matched files: check `exclude_globs`) or nothing looked relevant (widen `path` or use `coder::search`); `hint` says which. |
+| `incomplete` | Partial coverage: the deadline hit, the judge token budget ran out, a request failed or was too large, or a walk limit was reached. The answer may be in files not listed: verify with `coder::search`. `reason` names the stop, else the leading issue kind; `issues` counts each kind (below). |
+| `unavailable` | No judge answered, or it failed before any file was admitted (not deployed, no key, reason `paused` after a recent failure). Use `coder::search`. With reason `listing_timeout`, the judge did not list its models in time (a local judge may still be loading its model): retry the ask in a minute. With reason `window_too_small`, its context window is under 8192 tokens: pick a session judge with a larger one. |
+
+A result that is incomplete, unavailable or complete with no files also
+carries `hint`, the next step in one sentence. `issues` kinds, in the order
+that picks `reason` when the ask did not stop:
+
+| Kind | Meaning | Next step |
+|---|---|---|
+| `deadline` | The ask's deadline passed. | Narrow `path` or raise `timeout_ms` (at most 280000). |
+| `token_budget` | The judge token budget ran out. | Narrow `path`. |
+| `judge_call_timeout` | The judge cut a call short. | Narrow `path` or retry later. |
+| `request_size` | A file or declaration too large for one judge request was skipped. | Read the listed files that have no excerpts directly. |
+| `resource_limit` | A walk, file-size or output limit cut coverage. | Narrow `path`. |
+| `source_inspection_limit` | A file too large to parse was skipped. | Read the listed files that have no excerpts directly. |
+| `invalid_response`, `invalid_request`, `provider` | The judge failed calls. | Retry later or use `coder::search`. |
+| `changed` | A file changed during the ask. | Retry the ask. |
+| `unreadable`, `local_call_context` | A file or folder could not be read, or the Python call context failed. | Verify with `coder::search`. |
+| `agents_md_incomplete` | The `agents_md` list may miss one. Alone it leaves the result `complete`. | Look for `AGENTS.md` with `coder::list-folder`. |
+
+A `path` that does not exist fails with `C211`, which names up to five
+eligible folders beside it, closest name first, when find-relevant would
+search its parent (none inside a hidden or gitignored folder). A relative
+`path` on an unjailed worker without a session names the folder it
+resolved against instead: pass an absolute path.
+
+- **Budget.** `timeout_ms` (default 240000, max 280000, below the harness's
+  300 s dispatch timeout) bounds the whole ask; each judge call may use
+  whatever is left of it, since a serial local judge queues calls behind
+  each other. A call the judge times out or fails (`invalid_response`)
+  before then is skipped and counted under its own key in `issues`
+  (`judge_call_timeout`, `invalid_response`); it pauses nothing. The model
+  listing that opens an ask waits up to 60 s (at most half of `timeout_ms`)
+  for a local judge to load its model. Excerpts share a source budget of
+  `code.max_output_bytes` (at most 128 KiB), and the whole result stays
+  under the harness's 256 KiB result cap as the harness counts it (the
+  JSON plus the JSON again as text, so escaping counts twice). The
+  file list takes up to half of that cap, leads up to half of the rest, and
+  excerpts the remainder, best files first; a file whose excerpts did not
+  fit sets `source_omitted`. Files or leads cut from the tail count a
+  `resource_limit` in `issues`. An excerpt with `partial`
+  holds only that byte span of its lines (inside a line over 24000 bytes).
+- **Latency and judge cost.** An ask makes one judge call per batch of
+  folders, files or declarations, so time and judge tokens grow with the
+  folder: a component folder takes seconds and well under 2M judge input
+  tokens, while a repository-root ask on a large monorepo takes minutes and
+  can pass 20M (about $1 at TypeSafe's $0.042 per million). Point `path` at
+  the subtree the question is about.
+- **Judge token budget.** `code.find_relevant_judge_token_budget` (default
+  3000000, 0 = unlimited, hot-reloaded) caps the judge input tokens one ask
+  may spend. Past it the ask starts no new judge call and returns
+  `incomplete` with reason `token_budget` and what it found so far. Calls
+  already scheduled (up to about twice `code.find_relevant_judge_slots`,
+  including ones queued for a slot) still go out, so the total can pass
+  the budget by that many calls.
+- **Shared slots.** At most `code.find_relevant_judge_slots` judge calls
+  (default 3, hot-reloaded) are in flight across the whole worker (every
+  ask, every session). `judge-typesafe` serves `concurrency` requests at a
+  time (default 4); keep the slots one or more below it so the harness and
+  `iii-directory` judge calls stay responsive, and raise both together to
+  speed up asks. That headroom only exists on a parallel provider: a serial
+  local judge (`judge-clef`) runs one pass at a time, so those short calls
+  wait behind an ask's passes at any slot count. A new slot count applies to
+  asks started after it. An outage pauses calls to that provider for 30 s.
+- **What leaves the host.** Paths relative to `path`, never the host
+  layout. The walk skips `non_accessible_globs`, `fs.denylist_paths`,
+  gitignored entries (inside a Git work tree, by the ignore files up to its
+  top, as git reads them), hidden entries (any dot-name, even one an ignore
+  file whitelists), dependency and build folders (`node_modules`, `vendor`,
+  `target`, `dist`, …) and secret-named files (`.env`/`.env.*`,
+  `id_rsa`-style keys, `credentials(.json)`, `secrets.{json,yaml,yml}`,
+  `.netrc`/`.npmrc`/`.pypirc`, `*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.ppk`,
+  `*.tfstate(.backup)`, `*.jks`/`*.keystore`, `*.kdbx`). The text of files
+  holding a private key (PEM, armored PGP, PuTTY or age) and of binary or
+  non-UTF-8 files is never sent, though their names can appear in a
+  folder's preview. `path` must sit in a project folder: the session
+  folder, else a Git work tree (inside the jail), else a granted folder,
+  else a configured root (not on an unjailed worker, whose roots only
+  anchor relative paths). It is refused (`C210`) when it is gitignored or
+  inside an ignored folder (the ignore files of every enclosing work tree
+  up to the session folder count, Git or not), or hidden or secret-named
+  or inside such a folder, counted from a linked worktree's top or the
+  session folder (either may sit under a dot-folder, like a worktree in
+  `.claude/worktrees`), else from the configured root or the project
+  folder's parent: a dot-folder repository such as `~/.config` is refused,
+  a repository inside one is not. A linked worktree counts only when its
+  `.git` file and the main repository's admin folder point at each other.
+  `exclude_globs` match paths relative to the session folder, else the
+  project folder, as in `coder::search`, not to `path`. `agents_md` lists
+  the `AGENTS.md` files from the session folder or granted folder (else the
+  project folder) down to `path` and above returned files. Tokens hard-coded in
+  ordinary source files, and the query itself, still go to the provider. A
+  `'!coder::find-relevant'` rule in `iii-permissions.yaml` above its allow
+  entry (first match wins) takes the function from agents only: the IDE's
+  Search tab (Ask) calls it directly, outside the harness's permission
+  gate, with its workspace as a `workspace` `fs_scope` (so a non-Git
+  workspace is a project folder too).
 
 ## Terminal sessions (`shell::pty::*`)
 

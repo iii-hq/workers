@@ -21,6 +21,8 @@ struct Store {
     sessions: BTreeMap<String, Value>,
     messages: BTreeMap<String, Vec<Value>>,
     calls: Vec<(String, Value)>,
+    /// The W3C `baggage` header each call carried, in call order.
+    baggage: Vec<(String, Value)>,
     fail: BTreeSet<String>,
     fail_delete: Option<String>,
     delete_reply: Option<Value>,
@@ -198,6 +200,9 @@ impl Stack {
                 let function = message["function_id"].as_str().unwrap();
                 let (result, code) = {
                     let mut store = state.lock().unwrap();
+                    store
+                        .baggage
+                        .push((function.into(), message["baggage"].clone()));
                     let code = store
                         .codes
                         .get(function)
@@ -1559,6 +1564,124 @@ async fn a_released_call_keeps_the_boundary_its_holder_reviewed() {
         .expect("the released call is dispatched");
     assert_eq!(payload["fs_scope"]["root"], "/w", "{payload}");
     assert_eq!(payload["fs_scope"]["boundary"], "workspace", "{payload}");
+}
+
+/// The `iii.judge.provider` baggage the call to `function_id` carried.
+fn stamped_provider(stack: &Stack, function_id: &str) -> Option<String> {
+    let store = stack.store.lock().unwrap();
+    let (_, baggage) = store
+        .baggage
+        .iter()
+        .find(|(f, _)| f == function_id)
+        .expect("the call is dispatched");
+    baggage
+        .as_str()
+        .unwrap_or_default()
+        .split(',')
+        .find_map(|entry| entry.trim().strip_prefix("iii.judge.provider="))
+        .map(str::to_string)
+}
+
+/// Calls made outside the turn step (an approved held call, a direct
+/// `harness::function::trigger`) keep the session's judge provider, and a
+/// caller's own provider never reaches them: without it a
+/// `coder::find-relevant` asks another judge than the session chose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn calls_outside_the_turn_step_use_the_session_judge_provider() {
+    for provider in [Some("clef"), None] {
+        let stack = Stack::new("completed").await;
+        {
+            let mut store = stack.store.lock().unwrap();
+            if let Some(provider) = provider {
+                let meta = store.sessions.get_mut("child1").unwrap();
+                meta["metadata"]["judge_provider"] = json!(provider);
+            }
+            let mut turn = store.state("harness_turn", "child1");
+            turn["status"] = json!("awaiting_functions");
+            turn["options"]["functions"] = json!({"allow": ["coder::*"]});
+            turn["calls"] = json!({"held-1": {
+                "state": "pending",
+                "function_id": "coder::find-relevant",
+                "held_by": "gone::gate",
+                "held_arguments": {"query": "where are retries decided?"}
+            }});
+            store.put("harness_turn", "child1", turn);
+        }
+        // the caller's own context names another provider
+        let ambient = [("iii.judge.provider", "ambient")];
+        let resolved = iii_helpers::observability::run_with_baggage(
+            &ambient,
+            // Boxed: both handlers' futures inline overflow the default 2 MiB
+            // test-thread stack.
+            Box::pin(harness::functions::function_resolve::handle(
+                &stack.deps,
+                serde_json::from_value(json!({
+                    "session_id": "child1",
+                    "turn_id": "t_child1",
+                    "function_call_id": "held-1",
+                    "action": "execute"
+                }))
+                .unwrap(),
+            )),
+        )
+        .await
+        .unwrap();
+        assert!(resolved.resolved, "{provider:?}");
+        assert_eq!(
+            stamped_provider(&stack, "coder::find-relevant").as_deref(),
+            provider
+        );
+
+        iii_helpers::observability::run_with_baggage(
+            &ambient,
+            Box::pin(harness::functions::function_trigger::handle(
+                &stack.deps,
+                serde_json::from_value(json!({
+                    "session_id": "child1",
+                    "call": {
+                        "id": "direct-1",
+                        "function_id": "coder::search",
+                        "arguments": {"query": "retries"}
+                    }
+                }))
+                .unwrap(),
+            )),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stamped_provider(&stack, "coder::search").as_deref(),
+            provider
+        );
+    }
+}
+
+/// The turn step routes its calls to the session's judge provider, and a
+/// step whose enqueuer carried a provider drops it for a session without
+/// one: otherwise in-step calls and released held calls ask different judges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_turn_step_uses_only_the_session_judge_provider() {
+    for provider in [Some("clef"), None] {
+        let stack = Stack::new("completed").await;
+        if let Some(provider) = provider {
+            let mut store = stack.store.lock().unwrap();
+            let meta = store.sessions.get_mut("child1").unwrap();
+            meta["metadata"]["judge_provider"] = json!(provider);
+        }
+        // Stops at the mock's context::assemble boundary.
+        let _ = iii_helpers::observability::run_with_baggage(
+            &[("iii.judge.provider", "ambient")],
+            Box::pin(harness::functions::turn::handle(
+                &stack.deps,
+                step("child1"),
+            )),
+        )
+        .await;
+        assert_eq!(
+            stamped_provider(&stack, "context::assemble").as_deref(),
+            provider
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

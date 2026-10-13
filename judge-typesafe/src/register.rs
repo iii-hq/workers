@@ -2,8 +2,8 @@
 use crate::{client::JevClient, configuration::SharedConfig};
 use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use judge_contract::{
-    CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelsRequest,
-    ModelsResponse, ProviderError, Stats,
+    CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelCard,
+    ModelsRequest, ModelsResponse, ProviderError, Stats,
 };
 use judge_provider::secrets::{bus_fetch, SecretCache};
 use serde_json::{json, Value};
@@ -58,6 +58,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
                     .with_caller_id(caller.as_deref())
                     .with_api_key(api_key.as_deref())
                     .with_limits(snapshot.execution_limits())
+                    .with_concurrency(snapshot.concurrency)
                     .evaluate(request, &snapshot.model)
                     .await,
             )
@@ -100,19 +101,19 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
                     })
                 }
             };
-            Ok::<ModelsResponse, Error>(
-                client
-                    .with_caller_id(caller.as_deref())
-                    .with_api_key(api_key.as_deref())
-                    .with_limits(snapshot.execution_limits())
-                    .list_models(request)
-                    .await,
-            )
+            let response = client
+                .with_caller_id(caller.as_deref())
+                .with_api_key(api_key.as_deref())
+                .with_limits(snapshot.execution_limits())
+                .with_concurrency(snapshot.concurrency)
+                .list_models(request)
+                .await;
+            Ok::<ModelsResponse, Error>(configured_first(response, &snapshot.model))
         }
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(ModelsRequest))
         .expect("JEV models request schema serializes");
-    iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("List the provider's available model names, descriptions and release dates. Shares evaluation credentials, transport limits and permits; performs no inference.").metadata(provider_metadata()));
+    iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("List the provider's available model names, descriptions and release dates, the configured default model first. Shares evaluation credentials, transport limits and permits; performs no inference.").metadata(provider_metadata()));
 
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let client = cancel_client.clone();
@@ -133,6 +134,27 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: JevClient) -> Arc
         .expect("JEV cancel request schema serializes");
     iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation or model listing owned by the calling worker. Returns whether a signal was accepted; does not roll back provider work. Requires the same worker replica as the original call.").metadata(provider_metadata()));
     secrets
+}
+
+/// The listing with the configured default model's card first (added when
+/// the catalog lacks it): evaluations that omit their model use it, so a
+/// caller keying answers on the listing sees a switched default.
+fn configured_first(response: ModelsResponse, model: &str) -> ModelsResponse {
+    let ModelsResponse::Ok { mut models, stats } = response else {
+        return response;
+    };
+    let card = match models.iter().position(|card| card.name == model) {
+        Some(index) => models.remove(index),
+        None => ModelCard {
+            name: model.to_owned(),
+            description: "Configured default model, not in the provider's catalog".into(),
+            release_date: String::new(),
+            context_window: None,
+            max_options: None,
+        },
+    };
+    models.insert(0, card);
+    ModelsResponse::Ok { models, stats }
 }
 
 /// `missing_key` diagnostics for a configured key that cannot be used (an unresolved
@@ -168,4 +190,42 @@ fn take_caller_id(payload: &mut Value) -> Option<String> {
 #[cfg(feature = "console-ui")]
 pub fn register_console_ui(iii: &Arc<IIIClient>) {
     crate::ui::register(iii);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(response: &ModelsResponse) -> Vec<&str> {
+        match response {
+            ModelsResponse::Ok { models, .. } => models.iter().map(|m| m.name.as_str()).collect(),
+            ModelsResponse::Error { .. } => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_configured_model_lists_first_so_a_switch_changes_the_listing() {
+        let card = |name: &str| ModelCard {
+            name: name.into(),
+            description: String::new(),
+            release_date: String::new(),
+            context_window: None,
+            max_options: None,
+        };
+        let listing = || ModelsResponse::Ok {
+            models: vec![card("a"), card("b")],
+            stats: Stats::default(),
+        };
+        assert_eq!(names(&configured_first(listing(), "a")), ["a", "b"]);
+        assert_eq!(names(&configured_first(listing(), "b")), ["b", "a"]);
+        assert_eq!(names(&configured_first(listing(), "c")), ["c", "a", "b"]);
+        let error = ModelsResponse::Error {
+            code: ErrorCode::MissingKey,
+            http_status: None,
+            provider_error: None,
+            retry_after_ms: None,
+            stats: Stats::default(),
+        };
+        assert!(names(&configured_first(error, "a")).is_empty());
+    }
 }

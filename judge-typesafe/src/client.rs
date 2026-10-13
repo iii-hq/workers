@@ -23,7 +23,10 @@ use tokio::{
 };
 
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
-const CONCURRENCY: usize = 4;
+/// Default HTTP permits shared by every caller of this worker.
+pub const DEFAULT_CONCURRENCY: usize = 4;
+/// Largest configurable permit count.
+pub const MAX_CONCURRENCY: usize = 64;
 
 /// Clone or use `with_api_key` for every handler; constructing another client
 /// creates another worker transport and concurrency pool. Credentials are never
@@ -35,6 +38,9 @@ pub struct JevClient {
     models_endpoint: Arc<str>,
     api_key: Option<Arc<str>>,
     permits: Arc<Semaphore>,
+    concurrency: usize,
+    /// The worker's current permit pool and its size, shared by every clone.
+    pool: Arc<std::sync::Mutex<(usize, Arc<Semaphore>)>>,
     limits: ExecutionLimits,
     retry: RetryPolicy,
     calls: Arc<CancellationRegistry>,
@@ -103,6 +109,7 @@ impl JevClient {
                 url.to_string()
             })
             .unwrap_or_default();
+        let permits = Arc::new(Semaphore::new(DEFAULT_CONCURRENCY));
         Self {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -112,7 +119,9 @@ impl JevClient {
             endpoint: Arc::from(endpoint),
             models_endpoint: Arc::from(models_endpoint),
             api_key: normalized_key(api_key.as_deref()),
-            permits: Arc::new(Semaphore::new(CONCURRENCY)),
+            permits: permits.clone(),
+            concurrency: DEFAULT_CONCURRENCY,
+            pool: Arc::new(std::sync::Mutex::new((DEFAULT_CONCURRENCY, permits))),
             limits: ExecutionLimits::default(),
             retry: DEFAULT_RETRY,
             calls: Arc::new(CancellationRegistry::default()),
@@ -133,6 +142,28 @@ impl JevClient {
     pub fn with_limits(&self, limits: ExecutionLimits) -> Self {
         Self {
             limits,
+            ..self.clone()
+        }
+    }
+
+    /// Bind the configured permit count. Clones asking for the worker's
+    /// current size share its pool; a new size replaces the pool for calls
+    /// that start afterwards.
+    // ponytail: calls already running finish on the old pool, so a resize
+    // briefly allows old + new in flight; resize one pool in place
+    // (add_permits/forget_permits) if that overlap ever matters.
+    pub fn with_concurrency(&self, concurrency: usize) -> Self {
+        let concurrency = concurrency.clamp(1, MAX_CONCURRENCY);
+        let mut pool = self
+            .pool
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pool.0 != concurrency {
+            *pool = (concurrency, Arc::new(Semaphore::new(concurrency)));
+        }
+        Self {
+            permits: pool.1.clone(),
+            concurrency,
             ..self.clone()
         }
     }
@@ -284,7 +315,7 @@ impl JevClient {
         // Retrying policies spawn everything: backoff releases the HTTP permit,
         // and the rest of the batch should use it instead of waiting in line.
         let window = if self.retry.max_retries == 0 {
-            CONCURRENCY
+            self.concurrency
         } else {
             request.evaluations.len()
         };

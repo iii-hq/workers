@@ -327,6 +327,68 @@ export function coderSearch(
   })
 }
 
+export interface RelevantExcerpt {
+  line_from: number
+  line_to: number
+  text: string
+}
+
+export interface RelevantLead {
+  name?: string | null
+  line_from: number
+  line_to: number
+  score: number
+}
+
+export interface RelevantFile {
+  path: string
+  score: number
+  priority?: number | null
+  roles: string[]
+  excerpts: RelevantExcerpt[]
+  leads: RelevantLead[]
+  source_omitted: boolean
+}
+
+export interface FindRelevantResponse {
+  status: 'complete' | 'incomplete' | 'unavailable'
+  reason?: string | null
+  /** The worker's next step for a partial, empty or unavailable result. */
+  hint?: string | null
+  /** Ranked best first by the worker. */
+  files: RelevantFile[]
+  stats?: { judge_calls?: number; cache_hits?: number }
+}
+
+/** Ask the judge which files under `path` answer a behavioural question.
+    `root`, the workspace, goes as a workspace `fs_scope`: it is the ask's
+    project folder (a non-Git one too), and `excludeGlobs` match from it
+    like coderSearch's, not from `path`. The bus wait outlives the worker's
+    own deadline so a partial answer lands instead of a transport
+    timeout. */
+export function coderFindRelevant(
+  host: Host,
+  {
+    query,
+    root,
+    path,
+    excludeGlobs = [],
+    timeoutMs,
+  }: { query: string; root: string; path: string; excludeGlobs?: string[]; timeoutMs: number },
+): Promise<FindRelevantResponse> {
+  return host.iii.trigger<FindRelevantResponse>(
+    'coder::find-relevant',
+    {
+      query,
+      path,
+      exclude_globs: excludeGlobs,
+      timeout_ms: timeoutMs,
+      fs_scope: { root, grants: [], boundary: 'workspace' },
+    },
+    { timeoutMs: timeoutMs + 5000 },
+  )
+}
+
 export interface DeleteResult {
   path: string
   success: boolean
