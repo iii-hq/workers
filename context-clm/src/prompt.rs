@@ -71,16 +71,30 @@ const OVER_THE_LIMIT: &str = "Going over the limit rolls back your newest turns;
 /// What a replacement summary has to contain.
 const CARRY_OVER: &str = "Write each summary so you could carry on from it alone. Cover, in this order: what you will do next; the values you found and whether you verified them; the commands and queries you have already run; the options you ruled out, and why.";
 
-/// The one-shot nudge for a crossed tier (`frac` of the budget).
-pub fn tier_text(frac: f64, budget: u64, tokens: u64, hint: &str) -> String {
+/// One deep pass toward about a quarter of the limit: a large, rare edit
+/// costs fewer steps than many small ones.
+fn condense_target(limit: u64) -> String {
+    format!(
+        "bring the context down to about {} tokens in one pass",
+        limit / 4
+    )
+}
+
+/// An edit shares a step with the next call, as the CLM section says.
+const WITH_NEXT_CALL: &str = "Make the edit in the same reply as your next call (the next read, for example), so it takes no step of its own; if there is no next call yet, the edit alone is fine.";
+
+/// The one-shot nudge for a crossed tier (`frac` of the budget). `limit` is
+/// the enforced limit the condense target is a share of.
+pub fn tier_text(frac: f64, budget: u64, limit: u64, tokens: u64, hint: &str) -> String {
     let pct = py_round(frac * 100.0);
     let at = format!("Context use: {tokens} tokens, about {pct}% of the {budget}-token budget.");
+    let target = condense_target(limit);
     if frac <= 0.25 {
         format!("[context note] {at} Nothing to do yet. Just avoid repeating searches and file reads you have already done.")
     } else if frac <= 0.5 {
-        format!("[context note] {at} Finish the piece of work you are on, then condense once: replace old or stale turns with compact summaries that keep your findings. {CARRY_OVER} {hint}")
+        format!("[context note] {at} Finish the piece of work you are on, then condense once: replace old or stale turns with compact summaries that keep your findings, and {target}. {CARRY_OVER} {WITH_NEXT_CALL} {hint}")
     } else {
-        format!("[context warning] {at} The limit is close. Condense finished work now, using compact summaries that keep your findings: a summary that drops almost everything makes you redo the work. {CARRY_OVER} {OVER_THE_LIMIT} {hint}")
+        format!("[context warning] {at} The limit is close. Condense finished work now, using compact summaries that keep your findings: a summary that drops almost everything makes you redo the work. Aim to {target}. {CARRY_OVER} {WITH_NEXT_CALL} {OVER_THE_LIMIT} {hint}")
     }
 }
 
@@ -88,7 +102,8 @@ pub fn tier_text(frac: f64, budget: u64, tokens: u64, hint: &str) -> String {
 /// share of the limit, whatever threshold fired it.
 pub fn persistent_text(tokens: u64, limit: u64, hint: &str) -> String {
     let pct = py_round(tokens as f64 * 100.0 / limit.max(1) as f64);
-    format!("[context warning: act now] Context is at {tokens}/{limit} tokens, {pct}% of the limit. Use this turn only to condense: replace old or stale turns with compact summaries that keep your findings, and start no other work first. {OVER_THE_LIMIT} {hint}")
+    let target = condense_target(limit);
+    format!("[context warning: act now] Context is at {tokens}/{limit} tokens, {pct}% of the limit. Condense now: replace old or stale turns with compact summaries that keep your findings, and {target}. {WITH_NEXT_CALL} {OVER_THE_LIMIT} {hint}")
 }
 
 /// The last turn granted before the run ends. `limit` is the enforced limit.
@@ -264,12 +279,34 @@ mod tests {
 
     #[test]
     fn tier_texts_carry_numbers_and_hint_from_the_middle_tier() {
-        let low = tier_text(0.25, 32768, 9000, "HINT");
+        let low = tier_text(0.25, 32768, 30720, 9000, "HINT");
         assert!(low.contains("9000 tokens, about 25% of the 32768-token budget"));
         assert!(!low.contains("HINT"));
-        assert!(tier_text(0.5, 32768, 17000, "HINT").ends_with("HINT"));
-        let high = tier_text(0.75, 100, 80, "HINT");
+        assert!(tier_text(0.5, 32768, 30720, 17000, "HINT").ends_with("HINT"));
+        let high = tier_text(0.75, 100, 90, 80, "HINT");
         assert!(high.contains("75%") && high.ends_with("HINT"));
+    }
+
+    #[test]
+    fn condense_nudges_aim_at_a_quarter_and_ride_with_the_next_call() {
+        let texts = [
+            tier_text(0.5, 32768, 30720, 17000, "HINT"),
+            tier_text(0.75, 32768, 30720, 25000, "HINT"),
+            persistent_text(28000, 30720, "HINT"),
+        ];
+        for t in texts {
+            // one deep pass toward a quarter of the limit (30720 / 4)
+            assert!(t.contains("about 7680 tokens in one pass"), "{t}");
+            // the edit shares a step with the next call, as the section says
+            assert!(t.contains("same reply as your next call"), "{t}");
+            assert!(t.contains("the edit alone is fine"), "{t}");
+            assert!(
+                !t.contains("Use this turn only") && !t.contains("no other work"),
+                "{t}"
+            );
+        }
+        let low = tier_text(0.25, 32768, 30720, 9000, "HINT");
+        assert!(!low.contains("in one pass") && !low.contains("next call"));
     }
 
     #[test]
@@ -304,7 +341,7 @@ mod tests {
     #[test]
     fn crossing_the_limit_is_described_as_a_rollback_first() {
         let texts = [
-            tier_text(0.75, 100, 80, "HINT"),
+            tier_text(0.75, 100, 90, 80, "HINT"),
             persistent_text(25000, 30720, "HINT"),
             receipt_still_over(300, 250, 200),
         ];
@@ -331,8 +368,8 @@ mod tests {
         let texts = [
             hint,
             ledger,
-            tier_text(0.5, 100, 60, ""),
-            tier_text(0.75, 100, 80, ""),
+            tier_text(0.5, 100, 90, 60, ""),
+            tier_text(0.75, 100, 90, 80, ""),
             persistent_text(80, 100, ""),
             clm_section(M, 100),
         ];

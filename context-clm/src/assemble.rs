@@ -327,7 +327,7 @@ fn model_key(m: &ModelRef) -> String {
 /// Ruler tokens of the longest nudge. A nudge is pushed after `tc` is
 /// measured, so a limit clamped to the model's room keeps this headroom.
 fn nudge_allowance(hint: &str) -> u64 {
-    let longest = tier_text(1.0, u64::MAX, u64::MAX, hint)
+    let longest = tier_text(1.0, u64::MAX, u64::MAX, u64::MAX, hint)
         .len()
         .max(persistent_text(u64::MAX, u64::MAX, hint).len());
     longest as u64 / 4 + 8
