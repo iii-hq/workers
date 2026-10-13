@@ -322,7 +322,7 @@ impl Scenario {
 
     pub(super) fn build(self) -> ScenarioFixture {
         let send = self.send.expect("scenario send is required");
-        let allowed_functions = send.allowed_functions.clone();
+        let system_prompt_template = system_prompt(&send.allowed_functions, &self.model.id);
         let compiled_send = send.compile(&self.id, &self.model);
         let generations = self
             .generations
@@ -359,7 +359,7 @@ impl Scenario {
                 },
                 generations,
             },
-            system_prompt_template: system_prompt(&allowed_functions),
+            system_prompt_template,
             verify: self.verify.expect("scenario verification is required"),
             probe_actions: self.probe_actions,
             harness_env: self.harness_env,
@@ -1579,7 +1579,7 @@ fn error_kind_code(kind: ErrorKind) -> &'static str {
     }
 }
 
-fn system_prompt(allowed_functions: &[String]) -> String {
+fn system_prompt(allowed_functions: &[String], model: &str) -> String {
     let base = DEFAULT_SYSTEM_PROMPT
         .strip_suffix('\n')
         .unwrap_or(DEFAULT_SYSTEM_PROMPT);
@@ -1598,8 +1598,13 @@ fn system_prompt(allowed_functions: &[String]) -> String {
     };
     // The response-language line sits between the session id and the policy,
     // exactly where the harness's runtime context puts it (the working
-    // directory, between them in production, is off in this stack).
-    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{RESPONSE_LANGUAGE_MARKER}{policy}")
+    // directory, between them in production, is off in this stack). The
+    // co-author line closes it: `co_author` defaults on (MOT-5364).
+    format!(
+        "{base}\n\nYour session id is {{{{session_id}}}}.\n{RESPONSE_LANGUAGE_MARKER}{policy}\n\
+         End every git commit message you write with a blank line, then the trailer \
+         `Co-authored-by: iii harness ({model}) <noreply@iii.dev>`."
+    )
 }
 
 #[cfg(test)]
