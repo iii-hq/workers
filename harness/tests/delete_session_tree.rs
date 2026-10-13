@@ -164,6 +164,11 @@ impl Store {
             "context::assemble" => {
                 Err("intentional boundary stop after observing LLM input".into())
             }
+            // A context strategy that ends the run: over budget, with a stop.
+            "context-clm::assemble" => Ok(json!({
+                "token_count": 200, "usable": 100, "effective_max_output_tokens": 10,
+                "applied": {"strategy_stop": "over budget"}
+            })),
             "state::claim-namespace" => Ok(json!({"claimed":true})),
             "engine::unregister_trigger" => Ok(json!({"removed":true})),
             _ => Err(format!("unexpected mock RPC {function}: {data}")),
@@ -1967,6 +1972,52 @@ async fn orphan_redrive_reads_only_changed_turns_and_the_sweep_refreshes_its_vie
         turn_gets(&stack.store.lock().unwrap()),
         ["rd_done", "rd_parked", "rd_done", "rd_done"]
     );
+}
+
+/// A strategy turn past max_turns assembles only to learn whether its last
+/// step was context maintenance. An assembly that gives nothing back, a stop
+/// or a failure, ends the turn at max_turns as before it assembled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_strategy_step_past_max_turns_ends_there_when_its_assembly_gives_nothing_back() {
+    for fail in [false, true] {
+        let stack = Stack::new("completed").await;
+        stack.session("clm", None, "running");
+        {
+            let mut store = stack.store.lock().unwrap();
+            let mut row = store.state("harness_turn", "clm");
+            row["step"] = json!(16);
+            row["turn_count"] = json!(16);
+            row["options"]["context_strategy"] =
+                json!({"name": "clm", "budget_tokens": null, "effective": true});
+            store.put("harness_turn", "clm", row);
+            if fail {
+                store.fail.insert("context-clm::assemble".into());
+            }
+        }
+        let payload = serde_json::from_value(
+            json!({"session_id":"clm","turn_id":"t_clm","step":16,"depth":0}),
+        )
+        .unwrap();
+        harness::turn_loop::run_step(&stack.deps, payload)
+            .await
+            .unwrap();
+        let row = turn(&stack, "clm");
+        assert_eq!(
+            (&row["status"], &row["stop_reason"]),
+            (&json!("completed"), &json!("max_turns")),
+            "fail={fail}: {row}"
+        );
+        assert!(
+            stack
+                .store
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(f, _)| f == "context-clm::assemble"),
+            "the guard waited for the assembly"
+        );
+    }
 }
 
 /// A finished turn's record keeps only what a finished turn is read for

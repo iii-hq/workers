@@ -531,7 +531,7 @@ async fn generate_step(
 
     // max_turns guard: cap runaway loops with a synthetic notice. When this
     // step's assembly may still give the last step back as context
-    // maintenance, the guard runs again after it instead.
+    // maintenance, the guard runs again right after it instead.
     if record.counted_turns() >= record.options.max_turns
         && !maintenance_grant_possible(&record, payload.step)
     {
@@ -727,7 +727,6 @@ async fn generate_step(
         generation_input_tokens,
         generation_max_output_tokens,
         assembly_pruned,
-        maintenance_step,
         snapshot,
     ) = loop {
         let assembled = match assemble_context(
@@ -747,6 +746,20 @@ async fn generate_step(
         .await
         {
             Ok(assembled) => assembled,
+            // A step the guard deferred generates only on a grant its
+            // assembly gives. One that cannot assemble still ends at
+            // max_turns, as it did before assembling.
+            Err(error) if record.counted_turns() >= record.options.max_turns => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    turn_id = %record.turn_id,
+                    %error,
+                    "context assembly failed on a step past max_turns; ending the turn there"
+                );
+                return end_at_max_turns(deps, &session, &mut record)
+                    .await
+                    .map(PreparedStep::Finished);
+            }
             Err(HarnessError::ContextOverflow(reason)) => {
                 let failure = overflow_failure(deps, &record).await;
                 return finalize_failed(deps, &session, &mut record, &reason, failure)
@@ -766,6 +779,17 @@ async fn generate_step(
             }
             Err(error) => return Err(error),
         };
+        // Granted once per step, before the hooks: a step the guard deferred
+        // that gets nothing back ends here and never runs them. Persisted
+        // with the pre-generate write below (or the finalize the guard runs):
+        // a step redelivered before that write assembles and grants again,
+        // once.
+        grant_maintenance_step(&mut record, payload.step, assembled.maintenance_step);
+        if record.counted_turns() >= record.options.max_turns {
+            return end_at_max_turns(deps, &session, &mut record)
+                .await
+                .map(PreparedStep::Finished);
+        }
 
         // pre_generate hooks: extend the system prompt / append bounded messages,
         // or veto. Annotations ride the assistant entry's origin (audit trail).
@@ -919,7 +943,6 @@ async fn generate_step(
                 final_request_tokens,
                 max_output_tokens,
                 assembled.pruned,
-                assembled.maintenance_step,
                 snapshot,
             );
         }
@@ -952,15 +975,6 @@ async fn generate_step(
         );
     };
 
-    // Granted from the final assembly only, and persisted with the
-    // pre-generate write below (or the finalize the guard runs): a step
-    // redelivered before that write assembles and grants again, once.
-    grant_maintenance_step(&mut record, payload.step, maintenance_step);
-    if record.counted_turns() >= record.options.max_turns {
-        return end_at_max_turns(deps, &session, &mut record)
-            .await
-            .map(PreparedStep::Finished);
-    }
     // Recorded only past the guard and the assembly failures above: a turn
     // that ends there keeps the last generated snapshot, and leaves its unsent
     // registry-change notice for the session's next step.
@@ -2490,11 +2504,14 @@ async fn end_at_max_turns(
 }
 
 /// Whether `step`'s assembly may still grant a maintenance step: only with an
-/// effective strategy, once per step, and at most `max_turns / 2` per turn,
-/// so a strategy can never make a turn run forever.
+/// effective strategy, once per step, only for a step this turn counted (a
+/// turn's first assembly can ingest only an earlier turn's reply), and at
+/// most `max_turns / 2` per turn, so a strategy can never make a turn run
+/// forever.
 fn maintenance_grant_possible(record: &TurnRecord, step: u64) -> bool {
     record.options.effective_context_strategy().is_some()
         && record.maintenance_step_at != Some(step)
+        && record.counted_turns() > 0
         && record.maintenance_steps < record.options.max_turns / 2
 }
 
@@ -6385,6 +6402,30 @@ mod tests {
         let mut single = turn_at(0, 1, Some(strategy("clm")));
         super::grant_maintenance_step(&mut single, 1, true);
         assert_eq!(single.maintenance_steps, 0, "max_turns 1 leaves no grant");
+    }
+
+    #[test]
+    fn a_turn_gets_back_only_a_step_it_counted() {
+        // A turn's first assembly can ingest only the reply an earlier turn
+        // ended on before assembling it (a stop, or max_turns at the cap).
+        let mut fresh = turn_at(0, 4, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut fresh, 0, true);
+        assert_eq!(
+            (fresh.maintenance_steps, fresh.maintenance_step_at),
+            (0, None)
+        );
+        // Every grant gives back one counted step: never more than turn_count.
+        let mut record = turn_at(1, 8, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut record, 1, true);
+        assert_eq!(record.maintenance_steps, 1);
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!(
+            record.maintenance_steps, 1,
+            "no counted step left to give back"
+        );
+        record.turn_count = 2;
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!((record.maintenance_steps, record.counted_turns()), (2, 0));
     }
 
     #[test]
