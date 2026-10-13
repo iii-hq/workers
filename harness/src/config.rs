@@ -76,6 +76,14 @@ pub struct WorkerConfig {
     #[serde(default = "default_prompt_cache_sections")]
     pub prompt_cache_sections: bool,
 
+    /// Tell every agent to end its git commit messages with a
+    /// `Co-authored-by: iii harness (<model>) <noreply@iii.dev>` trailer
+    /// naming the turn's model (MOT-5364). A session-context instruction, so
+    /// best-effort: it reaches every path the agent commits through, but
+    /// nothing rewrites a commit that omits it. `false` drops the line.
+    #[serde(default = "default_co_author")]
+    pub co_author: bool,
+
     /// Repair malformed function-call arguments against the target's request
     /// schema before dispatch (MOT-4847). `coerce` parses values the model
     /// sent as stringified JSON (`"true"`, `"[...]"`, `"{...}"`) where the
@@ -301,6 +309,9 @@ fn default_max_result_bytes() -> usize {
 fn default_prompt_cache_sections() -> bool {
     true
 }
+fn default_co_author() -> bool {
+    true
+}
 fn default_idem_ttl_secs() -> u64 {
     86_400
 }
@@ -376,6 +387,7 @@ impl Default for WorkerConfig {
             max_transient_resumes: default_max_transient_resumes(),
             max_result_bytes: default_max_result_bytes(),
             prompt_cache_sections: default_prompt_cache_sections(),
+            co_author: default_co_author(),
             call_reconciliation: CallReconciliation::default(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
@@ -441,6 +453,7 @@ mod tests {
         assert_eq!(cfg.max_transient_resumes, 3);
         assert_eq!(cfg.max_result_bytes, 262_144);
         assert!(cfg.prompt_cache_sections);
+        assert!(cfg.co_author);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
         assert_eq!(cfg.projects_file_path, "data/harness-projects.json");
     }
