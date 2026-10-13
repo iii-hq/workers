@@ -131,6 +131,12 @@ export async function refreshProviderModels(
   )
 }
 
+/** Explicit retry keeps transport failures observable; diagnostics come from the router. */
+export async function retryXaiModels(): Promise<void> {
+  const client = await getIiiClient()
+  await client.trigger('provider::xai::refresh_models', {})
+}
+
 /** iii:: prefix → engine-internal → delivery spans stay out of the Traces view. */
 const MODELS_CHANGED_FN = 'iii::console::models_changed'
 /** llm-router custom trigger type (worker-owned fan-out, not pubsub). */
@@ -236,7 +242,7 @@ export function preferredStartingModel(
 ): string | null {
   const ranked = [...providers].sort((a, b) => a.id.localeCompare(b.id))
   for (const p of ranked) {
-    if (!p.default_model || !p.available) continue
+    if (!p.default_model || !p.available || discoveryBlocksModels(p)) continue
     if (p.configured === false && p.credential_env_var !== undefined) continue
     const key = makeCatalogModelKey(p.id, p.default_model)
     if (catalogKeys.has(key)) return key
@@ -244,8 +250,78 @@ export function preferredStartingModel(
   return null
 }
 
+export type DiscoveryOutcome =
+  | 'success'
+  | 'empty'
+  | 'not_configured'
+  | 'billing'
+  | 'authentication'
+  | 'permission'
+  | 'rate_limit'
+  | 'unavailable'
+  | 'invalid_response'
+export interface DiscoveryStatus {
+  outcome: DiscoveryOutcome
+  http_status?: number
+  code?: string
+  stale: boolean
+  checked_at_ms: number
+}
+const DISCOVERY_OUTCOMES = new Set([
+  'success',
+  'empty',
+  'not_configured',
+  'billing',
+  'authentication',
+  'permission',
+  'rate_limit',
+  'unavailable',
+  'invalid_response',
+])
+const DISCOVERY_CODES = new Set([
+  'permission-denied',
+  'invalid-api-key',
+  'insufficient-credits',
+  'spending-limit-exceeded',
+  'rate-limit-exceeded',
+])
+function parseDiscovery(value: unknown): DiscoveryStatus | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const row = value as Record<string, unknown>
+  if (typeof row.outcome !== 'string' || !DISCOVERY_OUTCOMES.has(row.outcome))
+    return undefined
+  return {
+    outcome: row.outcome as DiscoveryOutcome,
+    http_status:
+      typeof row.http_status === 'number' &&
+      Number.isInteger(row.http_status) &&
+      row.http_status >= 100 &&
+      row.http_status <= 599
+        ? row.http_status
+        : undefined,
+    code:
+      typeof row.code === 'string' && DISCOVERY_CODES.has(row.code)
+        ? row.code
+        : undefined,
+    stale: row.stale === true,
+    checked_at_ms:
+      typeof row.checked_at_ms === 'number' ? row.checked_at_ms : 0,
+  }
+}
+export function discoveryBlocksModels(
+  provider: ProviderListEntry | undefined,
+): boolean {
+  return (
+    provider?.id === 'xai' &&
+    ['billing', 'authentication', 'permission', 'not_configured'].includes(
+      provider.discovery?.outcome ?? '',
+    )
+  )
+}
+
 /** A provider declared to the router, from `router::provider::list`. */
 export interface ProviderListEntry {
+  discovery?: DiscoveryStatus
   id: string
   display_name: string
   supports_model_listing: boolean
@@ -338,6 +414,7 @@ export function parseProviderList(rows: unknown): ProviderListEntry[] {
     if (!id) continue
     out.push({
       id,
+      discovery: parseDiscovery(o.discovery),
       display_name: typeof o.display_name === 'string' ? o.display_name : id,
       supports_model_listing: o.supports_model_listing === true,
       credential_env_var:

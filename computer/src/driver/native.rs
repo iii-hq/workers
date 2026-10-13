@@ -7,7 +7,7 @@
 //! where you are working), pinned by id thereafter for coordinate stability.
 //! The captured frame is downscaled to `max_dimension` and JPEG-encoded (a full
 //! Retina frame is tens of megabytes of PNG, which floods the model context and
-//! the frame stream). The model sees the downscaled image and its coordinate
+//! the live viewport). The model sees the downscaled image and its coordinate
 //! space; pointer actions map those coordinates through the display's LOGICAL
 //! point size and its global origin, which is exactly what `enigo`'s absolute
 //! coordinates use, so clicks land on the right display at the right point

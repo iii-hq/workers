@@ -2,7 +2,7 @@
 name: opencode
 description: >-
   Run headless OpenCode turns over the iii bus — file edits, shell, and search
-  against any host directory — with verbatim JSON event streaming, session
+  against any host directory — with verbatim JSON event feeds, session
   resume, and inline token usage and cost.
 ---
 
@@ -12,9 +12,11 @@ The opencode worker exposes the OpenCode API as iii functions. One
 `opencode::run` call executes one headless OpenCode turn — the same agent the
 user runs in their terminal, with the same tools — in a chosen working
 directory, and returns the final result, token usage, and cost. Every JSON
-event OpenCode emits (`step_start`, `text`, `tool_use`, `step_finish`) mirrors
-verbatim onto `opencode::events`; a translated AgentEvent view lands on
-`agent::events`, which the iii console and the acp worker render.
+event OpenCode emits (`step_start`, `text`, `tool_use`, `step_finish`) is
+delivered verbatim on the `opencode::raw-event` trigger type; a translated
+AgentEvent view is delivered on `opencode::agent-event`, which the acp worker
+renders. Bind either with `{ session_id }`; frames are ephemeral (not stored,
+not replayed).
 
 Requires the `opencode` CLI on the host and an API key for the LLM provider you
 use (e.g. `ANTHROPIC_API_KEY`, or `opencode auth`). When a turn needs a
@@ -28,8 +30,9 @@ bolting anything onto this one.
 - Continue a conversation across calls: pass the same `session_id` again and
   the worker resumes the underlying OpenCode session (`--session`).
 - Run long jobs without holding the call open: `opencode::start` returns
-  `{session_id, started}` immediately; follow `agent::events` (group_id =
-  session_id) for the rendered view or `opencode::events` for raw JSON;
+  `{session_id, started}` immediately; bind `opencode::agent-event` with
+  `{ session_id }` for the rendered view or `opencode::raw-event` for raw
+  JSON, or poll `opencode::status`;
   interrupt with `opencode::stop`.
 - Act on the whole backend: turns carry the iii runtime context by default, so
   the agent discovers and calls any registered function through the iii CLI

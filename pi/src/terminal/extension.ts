@@ -18,7 +18,7 @@ export function extensionSource(cli: string): string {
   return `// Written by the pi iii worker on every boot; edits are lost.
 //
 // Reports this session's turns and tool calls to the iii engine, where the
-// pi worker turns them into AgentEvent frames on agent::events — the same
+// pi worker turns them into AgentEvent frames on pi::agent-event — the same
 // shape every other agent worker on the bus emits.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -31,7 +31,7 @@ const SESSION_ID = \`pi-\${process.pid}-\${Date.now().toString(36)}\`;
 // that turn in this workspace and \`createAgentSession\` discovers
 // \`.pi/extensions/\` from its cwd. In that case the worker is already
 // reporting the turn itself, under the iii session id the caller was given —
-// so reporting again from here would put the same run on \`agent::events\`
+// so reporting again from here would put the same run on \`pi::agent-event\`
 // twice, under two different session ids. The worker marks its own process at
 // boot; finding that mark means "not mine to report".
 const IN_WORKER_PROCESS = Boolean((globalThis as { __iiiPiWorker?: boolean }).__iiiPiWorker);
@@ -60,7 +60,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // One agent run = one prompt answered, however many model turns that takes.
-  // That is the unit worth being a turn on the stream.
+  // That is the unit worth being a turn on the feed.
   pi.on("before_agent_start", (event: { prompt?: string }) => {
     post({ event: "agent_start", prompt: String(event?.prompt ?? "") });
   });

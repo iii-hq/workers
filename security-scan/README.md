@@ -71,7 +71,7 @@ When `security-scan` and Console are connected, open the `security-scan` page to
 
 Each Harness finding can start an approval-gated GitHub issue. Completed `suggest` findings that include a patch can also start an isolated draft fix PR. GitHub reconciliation alerts are a separate snapshot and cannot start exact-commit Harness actions.
 
-Run updates arrive through the `security-scan:runs` stream. The stream is a refresh doorbell rather than the source of truth: each frame makes the page refetch `security-scan::list` and `security-scan::read`. Nothing is polled. The page re-reads on three other events instead — the socket reconnecting, the tab becoming visible, and the refresh control — so a dropped frame delays convergence until the next event rather than stranding the view.
+Run updates arrive through the worker's own change trigger types (see [Change notifications](#change-notifications)). A notification is a refresh doorbell rather than the source of truth: each run or reconciliation change makes the page refetch `security-scan::list` (and with it the selected run through `security-scan::read`), and each action change re-reads that action through `security-scan::action-read`. The page binds first, then reads once. Nothing is polled. The page also re-reads when the socket reconnects and on the refresh control, and while live updates are unavailable it re-reads when the tab becomes visible again, so a missed notification delays convergence until the next event rather than stranding the view.
 
 A completed report records coverage separately for vulnerabilities, dependencies, secrets, and supply-chain review. An area can be assessed, not assessed with a reason, or unknown for reports created before coverage tracking. Zero findings are never presented as proof that the code is vulnerability-free.
 
@@ -85,6 +85,23 @@ III_SECURITY_SCAN_UI_WATCH=security-scan/ui/dist cargo run --manifest-path secur
 ```
 
 The page header's standard settings control opens this worker in the Console's global Settings modal: the analysis budgets (`max_turns` and the token and cost ceilings), the operator `analysis.model`, and the repository allowlist all live there.
+
+## Change notifications
+
+Runs, reconciliation snapshots, and finding actions are stored records owned by this worker (private `state` scopes written with compare-and-set). After a write commits, the worker fires one of these trigger types. Bind a function to them the same way you bind `cron` or `http` (trigger type id, target function, optional filter config):
+
+| Trigger type | Fires after | Payload |
+| --- | --- | --- |
+| `security-scan::run-changed` | A run was created or changed | `{ run_id, repository, status, attempt, updated_at, completed_at }` |
+| `security-scan::reconciliation-changed` | A run's GitHub reconciliation snapshot was saved | `{ run_id, repository }` |
+| `security-scan::action-changed` | A finding action was created or changed | `{ action_id, run_id, repository, status, updated_at }` |
+
+- The binding `config` accepts optional `repository` and `run_id` equality filters (1 to 256 bytes each). Unknown keys, blank values, and non-string values reject the binding at registration.
+- Payloads are small public projections. `updated_at` is the record's revision hint; ordering and contents come from re-reading the record, not from the notification.
+- Delivery is fire-and-forget to each matching binding in the binding's namespace, with its metadata. Each trigger type accepts at most 256 bindings, and at most 16 per target function.
+- Notifications are not replayed. A consumer binds first, then reads (`security-scan::list`, `security-scan::read`, `security-scan::reconciliation`, `security-scan::action-read`), treats a repeated or older notification as a reason to re-read at most, and reads again after it reconnects.
+
+These trigger types replace the earlier stream-based doorbell, which is deprecated; the worker no longer depends on the stream worker.
 
 ## Configuration
 

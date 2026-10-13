@@ -24,6 +24,7 @@ import {
   DEVICE_PROVIDERS,
   type DeviceProvider,
   JUDGE_HUB_WORKER,
+  JUDGE_OPTIONS,
   type JudgeOption,
   KEY_PROVIDERS,
   type KeyProvider,
@@ -448,6 +449,20 @@ function keyStep(
     consumers,
     ...(keyStore(key) === 'env' ? { envFile } : {}),
   }
+}
+
+/**
+ * The option Judge answers with now: the hub's `provider` when its worker is
+ * installed, else the first installed option. More than one judge worker can
+ * be running (a key shared with the OpenAI provider makes that common), so the
+ * first installed one is not necessarily the one in use.
+ */
+export function activeJudge(
+  installed: ReadonlySet<string>,
+  provider: string | null,
+): JudgeOption | undefined {
+  const running = JUDGE_OPTIONS.filter((option) => installed.has(option.worker))
+  return running.find((option) => option.id === provider) ?? running[0]
 }
 
 /**

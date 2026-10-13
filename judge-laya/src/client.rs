@@ -5,7 +5,6 @@
 //! with `choice_tournament` on, a choice wider than 16 options plays laya's
 //! `predict_tournament`.
 use crate::{
-    cancellation::{CallGuard, CancellationRegistry},
     download::Checkpoint,
     encode::{render_options, Encoder, QType, Question as Rendered, Sequence, State},
     engine::{self, Engine, Stop},
@@ -18,6 +17,7 @@ use judge_contract::{
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
     DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
+use judge_provider::cancellation::{CallGuard, CancellationRegistry};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap},

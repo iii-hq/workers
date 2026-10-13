@@ -44,7 +44,7 @@ import {
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { ringForCompletionEvent } from '@/lib/completion-bell'
-import { requestComposerFocus } from '@/lib/composer-insert'
+import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { findMentions } from '@/lib/mentions/token'
@@ -2634,6 +2634,9 @@ export function useConversations(
       // instead of piling up invisible drafts, and put the caret in it.
       const pending = draft ? undefined : unsentDraft(conversations, activeId)
       if (pending) {
+        // Handed back as a blank new chat: a send decided for it earlier
+        // (a setup wizard example that never got to go) is void.
+        claimDraftSend(pending.id)
         setActiveId(pending.id)
         requestComposerFocus()
         return pending.id

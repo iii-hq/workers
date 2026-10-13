@@ -201,6 +201,8 @@ fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'st
              worker authority, which would bypass the agent-level deny on them",
         );
     }
+    // `stream::*` is the deprecated iii-stream surface. Engines still host it,
+    // so keep refusing it here until the builtin is removed.
     if function_id.starts_with("stream::")
         || function_id.starts_with("hook-fanout::")
         || function_id.starts_with("iii::")

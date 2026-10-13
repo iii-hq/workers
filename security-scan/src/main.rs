@@ -8,7 +8,7 @@ use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use security_scan::{
-    configuration, functions, manifest, IiiRuntime, RunStatusV1, SecurityScanExecutor,
+    configuration, events, functions, manifest, IiiRuntime, RunStatusV1, SecurityScanExecutor,
     SecurityScanService,
 };
 
@@ -75,6 +75,9 @@ async fn main() -> Result<()> {
         executor: executor.clone(),
         action_executor: action_executor.clone(),
     });
+    // Worker-owned change trigger types (run, reconciliation, action); register
+    // them before the functions and UI that consumers pair with them.
+    events::register_trigger_types(&iii, &runtime.change_feed());
     functions::register_all(&iii, &deps);
     security_scan::ui::register(&iii);
 
@@ -132,6 +135,7 @@ async fn main() -> Result<()> {
     tokio::signal::ctrl_c().await?;
     recovery.abort();
     let _ = recovery.await;
+    events::unregister_trigger_types(&iii);
     iii.shutdown_async().await;
     Ok(())
 }

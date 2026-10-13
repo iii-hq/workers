@@ -45,7 +45,13 @@ mod tests {
         assert!(PAGE_JS.contains("selectConversation"));
         assert!(PAGE_JS.contains("composerModel"));
         assert!(PAGE_JS.contains("session::get"));
-        assert!(PAGE_JS.contains("security-scan:runs"));
+        // Live updates bind the worker-owned change trigger types, not the
+        // retired stream doorbell.
+        assert!(PAGE_JS.contains("security-scan::run-changed"));
+        assert!(PAGE_JS.contains("security-scan::reconciliation-changed"));
+        assert!(PAGE_JS.contains("security-scan::action-changed"));
+        assert!(!PAGE_JS.contains("security-scan:runs"));
+        assert!(!PAGE_JS.contains("stream_name"));
         assert!(!PAGE_JS.contains("state::get"));
         assert!(!PAGE_JS.contains("state::list"));
     }

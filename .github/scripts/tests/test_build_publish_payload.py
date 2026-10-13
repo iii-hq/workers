@@ -170,8 +170,8 @@ def test_skipped_interface_capture_allows_explicit_empty_surface(worker_name: st
 
 
 def test_engine_builtins_are_not_deployment_targets() -> None:
-    """A target install can enable an engine-hosted worker mid-boot (harness
-    turns on `iii-stream`), which lands it in the workers-baseline diff. Its
+    """A target install can enable an engine-hosted worker mid-boot (e.g. a
+    worker that still depends on the deprecated `iii-stream`), which lands it in the workers-baseline diff. Its
     interface is not part of the released worker's surface and must not reach
     the typed-schema gate."""
     from build_publish_payload import _resolve_target_worker_names

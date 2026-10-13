@@ -217,6 +217,16 @@
 
 ### Fixed
 
+- **A fresh project no longer fails on its first restart.** On the first boot
+  the worker looked for a stored value before offering its default, found the
+  default the stack injects for the entry, and offered nothing, so the engine
+  saved an empty value. The next start read that empty value back and the
+  worker exited with a schema error, leaving the IDE and anything depending on
+  it stopped. The default is now always offered; the engine applies it only
+  when nothing is saved, so a stored value is never replaced. A project
+  already stuck on the empty value saves the default on its first start after
+  upgrading and comes up on the start after that.
+
 - **A protected file says so instead of "no longer here".** A file on the
   worker's protected paths (`code.non_accessible_globs`: `.env`, `.env.*`,
   keys, `secrets/`) is listed but never read, by agents or by the IDE, and

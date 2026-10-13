@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "judge-openai"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "judge-typesafe"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "clap",

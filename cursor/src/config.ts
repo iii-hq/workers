@@ -33,8 +33,20 @@ export const ConfigSchema = z.object({
     .int()
     .positive()
     .default(16 * 1024 * 1024),
-  events_stream: z.string().min(1).default('agent::events'),
-  raw_events_stream: z.string().min(1).default('cursor::events'),
+  // Deprecated and ignored: the feeds are the fixed trigger types
+  // cursor::agent-event / cursor::raw-event. Kept optional so stored configs
+  // that still carry them pass the published schema (additionalProperties:
+  // false) instead of being rejected.
+  events_stream: z.string().optional().meta({
+    deprecated: true,
+    description:
+      'Deprecated, ignored. AgentEvent frames are delivered on the cursor::agent-event trigger type.',
+  }),
+  raw_events_stream: z.string().optional().meta({
+    deprecated: true,
+    description:
+      'Deprecated, ignored. Raw Cursor frames are delivered on the cursor::raw-event trigger type.',
+  }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

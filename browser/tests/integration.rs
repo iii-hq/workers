@@ -150,8 +150,9 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
         &config_path,
         format!(
             // No `modules:` key: the engine then injects its builtin workers
-            // (streams among them); an empty list would leave `stream::set`
-            // out and the live view silently dead.
+            // (the configuration store among them). The worker itself needs
+            // no stream worker: live views and crawl items use its own
+            // trigger types.
             "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n"
         ),
     )

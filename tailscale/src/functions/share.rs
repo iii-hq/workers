@@ -1,3 +1,4 @@
+use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use qrcode::render::svg;
 use qrcode::QrCode;
@@ -6,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::node::{dns_name, funnel_allowed, status_json};
-use super::{register_fn, run, run_json, spec, string_at, EmptyInput, FunctionSpec};
-use crate::config::{SharedConfig, WorkerConfig};
+use super::{register_fn, run, run_json, spec, string_at, u64_at, EmptyInput, FunctionSpec};
+use crate::config::{validate_console_url, SharedConfig, WorkerConfig};
 
 pub const SHARE_ID: &str = "tailscale::share";
 pub const STOP_ID: &str = "tailscale::share::stop";
@@ -17,7 +18,7 @@ pub const SERVE_REMOVE_ID: &str = "tailscale::serve::remove";
 pub const SERVE_RESET_ID: &str = "tailscale::serve::reset";
 
 const SHARE_DESC: &str = "Share the local iii Console. Serve is tailnet-only and the default; Funnel is public and requires allow_funnel in the configuration plus confirm_public in the request.";
-const STOP_DESC: &str = "Stop one Console share by mode, HTTPS port, and path. mode=funnel removes public access and keeps the tailnet-only route; mode=serve removes the route entirely. Other routes are never reset.";
+const STOP_DESC: &str = "Stop one Console share by mode, HTTPS port, and path. mode=funnel removes public access and keeps the tailnet-only route (restore_error says why when it could not); mode=serve removes the route entirely. Other routes are never reset.";
 const SERVE_LIST_DESC: &str =
     "List every Serve and Funnel route on this node with its URL, target, and visibility.";
 const SERVE_ADD_DESC: &str = "Publish any local service, port, or directory on this node over Tailscale Serve (tailnet only) or Funnel (public; needs allow_funnel and confirm_public).";
@@ -25,6 +26,8 @@ const SERVE_REMOVE_DESC: &str = "Remove one route by mode, HTTPS port, and path.
 const SERVE_RESET_DESC: &str = "Remove every Serve and Funnel route on this node (`serve reset` and `funnel reset`). Requires confirm=true.";
 
 const FUNNEL_PORTS: [u16; 3] = [443, 8443, 10000];
+const CONSOLE_STATUS_ID: &str = "console::status";
+const CONSOLE_STATUS_TIMEOUT_MS: u64 = 5_000;
 
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
@@ -38,8 +41,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
 }
 
 pub fn register(iii: &IIIClient, config: &SharedConfig) {
-    register_fn!(iii, config, SHARE_ID, SHARE_DESC, ShareInput, share);
-    register_fn!(iii, config, STOP_ID, STOP_DESC, StopInput, stop);
+    register_fn!(iii, config, SHARE_ID, SHARE_DESC, ShareInput, share, engine);
+    register_fn!(iii, config, STOP_ID, STOP_DESC, StopInput, stop, engine);
     register_fn!(
         iii,
         config,
@@ -206,6 +209,9 @@ pub struct StopOutput {
     pub path: String,
     /// Route that remains on that listener and path after the call, if any.
     pub remaining: Option<Route>,
+    /// mode=funnel only: why the tailnet-only route was not restored after public
+    /// access was removed. Call `tailscale::share` with mode=serve once it is fixed.
+    pub restore_error: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -215,16 +221,54 @@ pub struct ResetInput {
     pub confirm: bool,
 }
 
-async fn share(config: &WorkerConfig, input: ShareInput) -> Result<ShareOutput, String> {
+async fn share(
+    iii: &IIIClient,
+    config: &WorkerConfig,
+    input: ShareInput,
+) -> Result<ShareOutput, String> {
+    let target = console_url(iii, config).await?;
     publish(
         config,
         input.mode,
         input.https_port,
         &input.path,
-        &config.console_url,
+        &target,
         input.confirm_public,
     )
     .await
+}
+
+/// The Console origin to publish: the configured `console_url`, else this project's ADE.
+async fn console_url(iii: &IIIClient, config: &WorkerConfig) -> Result<String, String> {
+    if !config.console_url.is_empty() {
+        return validate_console_url(&config.console_url);
+    }
+    let status = iii
+        .trigger(TriggerRequest {
+            function_id: CONSOLE_STATUS_ID.to_string(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: Some(CONSOLE_STATUS_TIMEOUT_MS),
+        })
+        .await
+        .map_err(|error| error.to_string());
+    console_url_from_status(status)
+}
+
+/// Reads the ADE origin from a `console::status` reply: its `url`, else loopback on its
+/// `http_port`. Never guesses a port, so another project's ADE is never published.
+pub fn console_url_from_status(status: Result<Value, String>) -> Result<String, String> {
+    let status = status.map_err(|error| {
+        format!("this project's ADE is not reachable (console::status: {error}); start this project's ADE, or set console_url to this project's own ADE URL — never another project's")
+    })?;
+    let url = match (string_at(&status, "/url"), u64_at(&status, "/http_port")) {
+        (Some(url), _) => url,
+        (None, Some(port)) => format!("http://127.0.0.1:{port}"),
+        (None, None) => {
+            return Err("console::status reported neither url nor http_port; set console_url to this project's own ADE URL".to_string());
+        }
+    };
+    validate_console_url(&url).map_err(|error| format!("console::status reported {url}: {error}"))
 }
 
 async fn serve_add(config: &WorkerConfig, input: ServeAddInput) -> Result<ShareOutput, String> {
@@ -312,18 +356,23 @@ async fn publish(
     })
 }
 
-async fn stop(config: &WorkerConfig, input: StopInput) -> Result<StopOutput, String> {
-    stop_route(config, input, Some(config.console_url.clone())).await
+async fn stop(
+    iii: &IIIClient,
+    config: &WorkerConfig,
+    input: StopInput,
+) -> Result<StopOutput, String> {
+    stop_route(config, input, Some(iii)).await
 }
 
 async fn serve_remove(config: &WorkerConfig, input: StopInput) -> Result<StopOutput, String> {
     stop_route(config, input, None).await
 }
 
+/// `console` re-serves the Console when Funnel is stopped on a route Serve no longer lists.
 async fn stop_route(
     config: &WorkerConfig,
     input: StopInput,
-    fallback_target: Option<String>,
+    console: Option<&IIIClient>,
 ) -> Result<StopOutput, String> {
     let path = normalize_path(&input.path)?;
     validate_port(input.mode, input.https_port)?;
@@ -353,12 +402,15 @@ async fn stop_route(
             .await
         }
     };
+    let mut restore_error = None;
     if input.mode == ShareMode::Funnel {
         off("funnel").await?;
-        let target = existing
-            .as_ref()
-            .map(|route| route.target.clone())
-            .or(fallback_target);
+        let lookup = match (&existing, console) {
+            (None, Some(iii)) => Some(console_url(iii, config).await),
+            _ => None,
+        };
+        let target;
+        (target, restore_error) = restore_target(existing, lookup);
         if let Some(target) = target {
             run(
                 config,
@@ -390,7 +442,28 @@ async fn stop_route(
         https_port: input.https_port,
         path,
         remaining,
+        restore_error,
     })
+}
+
+/// The tailnet-only route to restore after Funnel is turned off: the route Serve
+/// listed, else this project's ADE. Funnel is already off at that point, so a
+/// failed ADE lookup is reported beside that applied change, not as a failure.
+fn restore_target(
+    existing: Option<Route>,
+    lookup: Option<Result<String, String>>,
+) -> (Option<String>, Option<String>) {
+    match (existing, lookup) {
+        (Some(route), _) => (Some(route.target), None),
+        (None, Some(Ok(url))) => (Some(url), None),
+        (None, Some(Err(error))) => (
+            None,
+            Some(format!(
+                "the tailnet-only route was not restored: {error}; call tailscale::share with mode=serve once this project's ADE is running"
+            )),
+        ),
+        (None, None) => (None, None),
+    }
 }
 
 async fn serve_list(config: &WorkerConfig, _: EmptyInput) -> Result<RoutesOutput, String> {
@@ -568,6 +641,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_skipped_tailnet_restore_is_reported_not_hidden() {
+        let route = Route {
+            mode: ShareMode::Funnel,
+            host: "node.ts.net".to_string(),
+            port: 443,
+            path: "/".to_string(),
+            target: "http://127.0.0.1:3213/".to_string(),
+            url: "https://node.ts.net/".to_string(),
+        };
+        // The listed route wins; the ADE is not asked.
+        assert_eq!(
+            restore_target(Some(route), None),
+            (Some("http://127.0.0.1:3213/".to_string()), None)
+        );
+        assert_eq!(
+            restore_target(None, Some(Ok("http://127.0.0.1:3214/".to_string()))),
+            (Some("http://127.0.0.1:3214/".to_string()), None)
+        );
+        let (target, error) = restore_target(None, Some(Err("ADE down".to_string())));
+        assert_eq!(target, None);
+        let error = error.expect("a skipped restore must be reported");
+        assert!(error.contains("not restored") && error.contains("ADE down"));
+        assert!(error.contains("mode=serve"));
+        assert_eq!(restore_target(None, None), (None, None));
+    }
+
+    #[test]
     fn funnel_requires_supported_port() {
         assert!(validate_port(ShareMode::Funnel, 443).is_ok());
         assert!(validate_port(ShareMode::Funnel, 8443).is_ok());
@@ -637,6 +737,30 @@ mod tests {
         assert_eq!(routes[1].path, "/files");
         assert_eq!(routes[1].target, "/srv");
         assert_eq!(routes[2].url, "https://node.ts.net:8443/remote/");
+    }
+
+    #[test]
+    fn console_url_comes_from_this_projects_ade() {
+        let status = serde_json::json!({"url": "http://[::1]:3114", "http_port": 3114});
+        assert_eq!(
+            console_url_from_status(Ok(status)).unwrap(),
+            "http://[::1]:3114/"
+        );
+        let released = serde_json::json!({"http_port": 3114, "engine_url": "ws://127.0.0.1:49134"});
+        assert_eq!(
+            console_url_from_status(Ok(released)).unwrap(),
+            "http://127.0.0.1:3114/"
+        );
+        let shorthand = serde_json::json!({"url": "http://0x7f.1:3114"});
+        assert_eq!(
+            console_url_from_status(Ok(shorthand)).unwrap(),
+            "http://127.0.0.1:3114/"
+        );
+        let missing = console_url_from_status(Err("function_not_found".to_string())).unwrap_err();
+        assert!(missing.contains("set console_url"), "{missing}");
+        assert!(!missing.contains("3113"), "{missing}");
+        let remote = serde_json::json!({"url": "http://192.168.1.5:3113", "http_port": 3113});
+        assert!(console_url_from_status(Ok(remote)).is_err());
     }
 
     #[test]

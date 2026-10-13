@@ -74,4 +74,5 @@ def test_shared_test_support_runs_the_workers_that_compile_it(
     assert discover.main(["--base", "main"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert {"judge", "judge-openai", "judge-typesafe"} <= set(payload["by_language"]["rust"])
+    assert "judge-provider" in payload["crates"]
     assert payload["source_changed"] == ["judge-typesafe"]

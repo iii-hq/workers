@@ -39,7 +39,7 @@ export function registerTerminal(iii: IIIClient, current: () => Prepared): void 
           activity_bridge: {
             type: 'string',
             description:
-              "The `iii` CLI on the terminal host that carries this session's activity to the bus. Empty means nothing will reach the events stream.",
+              "The `iii` CLI on the terminal host that carries this session's activity to the bus. Empty means nothing will reach the claude::agent-event feed.",
           },
           detail: {
             type: 'string',

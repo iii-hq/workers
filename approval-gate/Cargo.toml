@@ -2,7 +2,7 @@
 
 [package]
 name = "approval-gate"
-version = "1.0.22"
+version = "1.0.23"
 edition = "2021"
 publish = false
 

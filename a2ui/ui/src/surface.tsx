@@ -9,7 +9,7 @@ import {
 } from '@iii-dev/console-ui'
 import { sendAction } from './data'
 import { getPath, setPath } from './bindings'
-import { useLiveBindings } from './live'
+import { isDeprecatedBinding, useLiveBindings } from './live'
 import type { A2uiComponent, JsonValue, SurfaceRecord } from './types'
 
 interface SurfaceProps {
@@ -181,8 +181,19 @@ export function Surface({ host, surface, compact = false }: SurfaceProps) {
     }
   }
 
+  const deprecatedBindings = compact
+    ? []
+    : (surface.bindings ?? []).filter(isDeprecatedBinding).map((binding) => binding.id)
+
   return (
     <div className={`a2ui-surface${compact ? ' compact' : ''}`}>
+      {deprecatedBindings.length > 0 ? (
+        <StatusPanel
+          variant="warn"
+          headline="Deprecated live binding"
+          detail={`${deprecatedBindings.join(', ')} uses the stream trigger type. stream is deprecated (iii-stream) and will be removed in an upcoming release. Rebind to a worker-owned trigger type.`}
+        />
+      ) : null}
       {components.has('root') ? (
         renderComponent('root')
       ) : (

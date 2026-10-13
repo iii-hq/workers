@@ -365,6 +365,44 @@ describe('JevConfigForm catalog', () => {
     await act(async () => alert.querySelector('button')!.click())
     expect(iii.trigger).toHaveBeenCalledTimes(2)
   })
+
+  it('checks the worker again once its own entry is saved', async () => {
+    vi.useFakeTimers()
+    try {
+      const handlers = new Map<string, (event: { id?: unknown }) => void>()
+      const registerTrigger = vi.fn(() => vi.fn())
+      const iii = Object.assign(engine({ status: 'error', code: 'missing_key' }), {
+        browserId: 'b1',
+        registerTrigger,
+        on: (id: string, handler: (event: { id?: unknown }) => void) => {
+          handlers.set(id, handler)
+          return () => handlers.delete(id)
+        },
+      })
+      const { container } = await mount({}, iii)
+      expect(registerTrigger).toHaveBeenCalledWith(expect.objectContaining({ type: 'configuration', config: {} }))
+      const [notify] = handlers.values()
+      let answer = (_reply: unknown) => {}
+      iii.trigger.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+      await act(async () => {
+        notify({ id: 'other-entry' })
+        await vi.runAllTimersAsync()
+      })
+      expect(iii.trigger).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        notify({ id: 'judge-typesafe' })
+        await vi.runAllTimersAsync()
+      })
+      expect(iii.trigger).toHaveBeenCalledTimes(2)
+      // Still listing: the old missing_key answer must not read as accepted.
+      expect(container.querySelector('[data-chip="neutral"]')?.textContent).toBe('Checking the worker…')
+      expect(container.querySelector('[data-chip="success"]')).toBeNull()
+      await act(async () => answer(catalog))
+      expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Key accepted · 2 models')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('JEV configuration deep links', () => {

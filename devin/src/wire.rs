@@ -1,4 +1,4 @@
-//! Wire types emitted onto `agent::events` (an AgentEvent subset) and the
+//! Wire types emitted onto `devin::agent-event` (an AgentEvent subset) and the
 //! persisted session record. Mirrors the harness AgentEvent shape so the
 //! console and acp worker render devin::run turns like any other agent worker.
 //!
@@ -31,7 +31,7 @@ pub struct SessionRecord {
     pub updated_at_ms: u64,
 }
 
-/// One block of assistant content on the stream.
+/// One block of assistant content on the agent feed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {

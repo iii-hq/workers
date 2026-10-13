@@ -1,9 +1,9 @@
 //! grok worker library surface — re-exported so integration tests can drive
 //! the modules in process.
 
+pub mod agent_feed;
 pub mod config;
 pub mod configuration;
-pub mod events;
 pub mod functions;
 pub mod grok;
 pub mod iii_prompt;

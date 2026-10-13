@@ -182,7 +182,13 @@ a second call to parse what you fetched. Each takes a single `url` or a bulk
   `browser::sessions::stop`). Close sessions when done.
 - `browser::crawl` — breadth-first from `start_urls`, same-domain by
   default, capped by `max_pages` (20) and `max_depth` (2). The response holds
-  only a ≤10-item sample; read the rest from the stream it names.
+  only a ≤10-item sample; page through every item with
+  `browser::crawl::items { crawl_id: <crawl.id>, after?, limit? }` (retained
+  in memory for 1 h, last 32 crawls). For items live while it runs, bind
+  `browser::crawl-item` with `{ crawl_id }` first, then call
+  `browser::crawl { crawl_id }`; missed or dropped events (`seq` gaps,
+  `dropped_events`) are read back with `browser::crawl::items`.
+  `stream_name` is deprecated and ignored (a `warnings` entry says so).
 
 Safe mode refuses private, loopback and cloud-metadata addresses on every one
 of these connections (including redirects and crawl hops). To scrape a local
@@ -233,8 +239,7 @@ and a Tier-1 build missing an artifact reports a capability error instead of
 silently using the safe transport.
 
 Every id is `browser::<leaf>`. `browser::screenshot-url` screenshots a url,
-while `browser::screenshot` is the interactive-session function. Crawl's
-default stream is `browser::crawl`.
+while `browser::screenshot` is the interactive-session function.
 
 ## Workflow: inspect before acting
 
@@ -318,7 +323,9 @@ activity as it happens instead of polling the read functions. The types:
 `browser::picked` (a human picked an element in the console UI; the payload
 carries a ref that `browser::act` accepts directly), and
 `browser::handoff-requested` (a session is paused waiting for a human; the
-console surfaces it beside the live viewport).
+console surfaces it beside the live viewport). `browser::crawl-item` is the
+one non-session type: one event per crawled page of a `browser::crawl`,
+filtered by `crawl_id` instead of `session_id`.
 
 If you just ran `browser::navigate` yourself, its return value already tells
 you the outcome; bind triggers when a different worker needs to observe
@@ -337,8 +344,9 @@ iii.registerTrigger({
 })
 ```
 
-Every `browser::*` binding accepts the optional `session_id` equality filter;
-omit it to receive events for all sessions. `browser::console-event` fires
+Every session `browser::*` binding accepts the optional `session_id`
+equality filter; omit it to receive events for all sessions
+(`browser::crawl-item` takes `crawl_id` instead). `browser::console-event` fires
 per entry, so filter by session and treat `browser::console::read` as the
 durable record. For event payload shapes, call `get function info` on the
 trigger type.

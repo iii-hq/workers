@@ -45,7 +45,11 @@ export interface ModelCard {
   release_date: string
 }
 type ModelsReply = { status: 'ok'; models: ModelCard[] } | { status: 'error'; code: string }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'trigger'> & Partial<Pick<ExtensionIii, 'on' | 'registerTrigger' | 'browserId'>>
+
+/** Lets the worker reload a saved entry before the status asks it again. */
+const SAVE_SETTLE_MS = 300
+let liveSeq = 0
 
 /** The catalog as the running worker answers it with its saved credentials. */
 export async function listModels(iii: Engine): Promise<ModelCard[]> {
@@ -82,6 +86,7 @@ export function JevConfigForm({
   const [catalog, setCatalog] = useState<ModelCard[] | null>(null)
   const [catalogError, setCatalogError] = useState<string | null>(null)
   const refresh = useCallback(() => {
+    setCatalog(null)
     setCatalogError(null)
     listModels(iii)
       .then(setCatalog)
@@ -93,6 +98,37 @@ export function JevConfigForm({
   useEffect(() => {
     refresh()
   }, [refresh])
+
+  // A save (a new key reference included) reloads the worker, so the status
+  // asks again; without it the form would report the key it had at mount. The
+  // binding names no id: an id-scoped binding holds the entry.
+  const configurationId = props.id
+  useEffect(() => {
+    if (!iii.on || !iii.registerTrigger || !iii.browserId) return
+    const handler = `iii::judge-typesafe-ui::configuration-${++liveSeq}`
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const offHandler = iii.on<{ id?: unknown }>(handler, (event) => {
+      if (event?.id !== configurationId) return
+      clearTimeout(timer)
+      timer = setTimeout(refresh, SAVE_SETTLE_MS)
+    })
+    let offTrigger = () => {}
+    try {
+      offTrigger = iii.registerTrigger({ type: 'configuration', function_id: `${handler}::${iii.browserId}`, config: {} })
+    } catch {
+      // No configuration trigger type on this engine: Refresh still works.
+    }
+    return () => {
+      clearTimeout(timer)
+      for (const off of [offTrigger, offHandler]) {
+        try {
+          off()
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }, [iii, configurationId, refresh])
 
   const focusField = props.focusField?.[0]
   useEffect(() => {

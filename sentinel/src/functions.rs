@@ -748,9 +748,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
 
 /// Function ids an investigation session may call. There is no approval gate
 /// in this design, so this list is the whole permission model: it holds the
-/// reads an investigation needs and exactly one write, which is this worker's
-/// own record of the diagnosis.
-pub const INVESTIGATION_ALLOW: [&str; 11] = [
+/// reads an investigation needs, this worker's own record of the diagnosis,
+/// and GitHub and the web. Those two are reached on purpose — an issue, a PR
+/// or a page can explain a failure — and they are the one place the
+/// read-only rule does not hold: `github::*` can merge and create, and
+/// `web::fetch` can POST.
+pub const INVESTIGATION_ALLOW: [&str; 13] = [
     "coder::info",
     "coder::read-file",
     "coder::search",
@@ -762,17 +765,18 @@ pub const INVESTIGATION_ALLOW: [&str; 11] = [
     TRACE_GET_ID,
     LOGS_LIST_ID,
     DIAGNOSIS_RECORD_ID,
+    "github::*",
+    "web::*",
 ];
 
 /// Denied outright. Deny wins over allow in the harness policy, so a function
 /// added to this worker later is refused until somebody decides otherwise.
-pub const INVESTIGATION_DENY: [&str; 21] = [
+pub const INVESTIGATION_DENY: [&str; 20] = [
     "shell::*",
     "state::*",
     "queue::*",
     "worktree::*",
     "harness::*",
-    "github::*",
     "configuration::*",
     "storage::*",
     "database::*",

@@ -211,6 +211,34 @@ export function scopeOf(statuses) {
   return 'open'
 }
 
+/** The sides of triage the list can show; `all` sends no filter. */
+export const RELEVANCE = [
+  { value: 'relevant', label: 'Relevant' },
+  { value: 'noise', label: 'Noise' },
+  { value: 'all', label: 'All' },
+]
+
+/** A triage kind as the page says it. @type {Record<string, string>} */
+export const KIND_LABEL = {
+  defect: 'defect',
+  caller_error: 'caller error',
+  transient: 'transient',
+  environment: 'environment',
+  test_traffic: 'test traffic',
+}
+
+/**
+ * The triage fact: what the group was judged to be, and who said so.
+ * @param {{ kind: string, confidence: number, source: string, model?: string, at_ms: number }|undefined} triage
+ * @param {number} now
+ */
+export function triageFact(triage, now) {
+  if (!triage) return { lead: 'pending', rest: 'labelled a few minutes after first seen' }
+  const by =
+    triage.source === 'rule' ? 'by rule' : `${Math.round(triage.confidence * 100)}% · ${triage.model ?? 'judge'}`
+  return { lead: KIND_LABEL[triage.kind] ?? triage.kind, rest: `${by} · ${ago(triage.at_ms, now)}` }
+}
+
 export const WINDOWS = [
   { value: '24h', label: '24 h' },
   { value: '7d', label: '7 d' },

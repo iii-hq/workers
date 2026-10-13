@@ -9,12 +9,12 @@
  * console then renders this terminal's turns like any other agent's.
  *
  * The function itself is plumbing — one call per event — so it is
- * `trace_hidden`: the signal is the stream, not the delivery.
+ * `trace_hidden`: the signal is the feed, not the delivery.
  */
 
 import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
-import type { Emit } from '../events.js';
+import type { Emit } from '../agent-feed.js';
 import { toolFunctionId } from '../map.js';
 import { runTurnSpan } from '../trace.js';
 import type {
@@ -266,7 +266,7 @@ export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
   const tracker = new ActivityTracker(emit);
   iii.registerFunction('pi::terminal::activity', (input: PiEvent) => tracker.handle(input ?? {}), {
     description:
-      'A pi lifecycle event from a terminal session (session_start, agent_start, tool_start, tool_end, agent_end, session_end), posted by the workspace extension. Translated into AgentEvent frames on the events stream.',
+      'A pi lifecycle event from a terminal session (session_start, agent_start, tool_start, tool_end, agent_end, session_end), posted by the workspace extension. Translated into AgentEvent frames on the pi::agent-event feed.',
     request_format: {
       type: 'object',
       properties: {

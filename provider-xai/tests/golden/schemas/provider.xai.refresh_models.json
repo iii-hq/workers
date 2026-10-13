@@ -1,5 +1,5 @@
 {
-  "description": "Refresh the xAI catalog slice from GET /v1/models and reconcile it through the router; returns the model count written.",
+  "description": "Refresh the xAI catalog slice from GET /v1/models and reconcile it through the router; returns ok, retained model count and safe discovery outcome.",
   "function_id": "provider::xai::refresh_models",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -9,12 +9,32 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Output of `provider::<id>::refresh_models`.",
+    "definitions": {
+      "DiscoveryOutcome": {
+        "description": "Safe discovery categories. No upstream message, team id or URL is retained.",
+        "enum": [
+          "success",
+          "empty",
+          "not_configured",
+          "billing",
+          "authentication",
+          "permission",
+          "rate_limit",
+          "unavailable",
+          "invalid_response"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "Extended refresh acknowledgement. The legacy {ok,count} stays unchanged.",
     "properties": {
       "count": {
         "format": "uint",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "discovery": {
+        "$ref": "#/definitions/DiscoveryOutcome"
       },
       "ok": {
         "type": "boolean"
@@ -22,9 +42,10 @@
     },
     "required": [
       "count",
+      "discovery",
       "ok"
     ],
-    "title": "RefreshModelsResponse",
+    "title": "DiscoveryRefreshResponse",
     "type": "object"
   }
 }

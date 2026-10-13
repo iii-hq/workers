@@ -520,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn run_update_doorbell_contains_only_the_public_status_projection() {
+    fn run_changed_notification_contains_only_the_public_status_projection() {
         let run = RunRecordV1 {
             schema_version: "1".into(),
             run_id: "sec_live".into(),
@@ -551,22 +551,75 @@ mod tests {
             completed_at: None,
         };
 
+        // The run-changed notification is the public status projection the
+        // old doorbell carried, flat, with no private dependency identity.
+        let payload = serde_json::to_value(RunChangedEventV1::from(&run)).unwrap();
         assert_eq!(
-            run_update_payload(&run),
+            payload,
             json!({
-                "stream_name": "security-scan:runs",
-                "group_id": "all",
-                "type": "security-scan:updated",
-                "data": {
-                    "run_id": "sec_live",
-                    "repository": "iii-hq/iii",
-                    "status": "analyzing",
-                    "attempt": 2,
-                    "updated_at": 2,
-                    "completed_at": null,
-                },
+                "run_id": "sec_live",
+                "repository": "iii-hq/iii",
+                "status": "analyzing",
+                "attempt": 2,
+                "updated_at": 2,
+                "completed_at": null,
             })
         );
+        let encoded = payload.to_string();
+        for private in ["private_nonce", "/private/checkout", "wt_private", "session_private"] {
+            assert!(!encoded.contains(private), "{private} leaked into {encoded}");
+        }
+        assert!(encoded.len() < 256);
+    }
+
+    #[test]
+    fn action_changed_notification_is_a_small_public_projection() {
+        let action = SecurityActionRecordV1 {
+            schema_version: "1".into(),
+            action_id: "act_live".into(),
+            run_id: "sec_live".into(),
+            finding_index: 0,
+            action: SecurityActionKindV1::Issue,
+            repository: "iii".into(),
+            target_sha: "a".repeat(40),
+            github_full_name: "iii-hq/iii".into(),
+            operation_nonce: "private_nonce".into(),
+            status: SecurityActionStatusV1::Preparing,
+            attempt: 1,
+            step: 1,
+            step_failures: 0,
+            materialized: Some(MaterializedTargetV1 {
+                worktree_id: "wt_private".into(),
+                path: "/private/checkout".into(),
+                base_sha: "a".repeat(40),
+            }),
+            harness: Some(HarnessRunV1 {
+                session_id: "session_private".into(),
+                turn_id: "turn_private".into(),
+            }),
+            result: None,
+            error: None,
+            created_at: 1,
+            updated_at: 5,
+            completed_at: None,
+            cleanup_completed_at: None,
+        };
+        let payload = serde_json::to_value(ActionChangedEventV1::from(&action)).unwrap();
+        assert_eq!(
+            payload,
+            json!({
+                "action_id": "act_live",
+                "run_id": "sec_live",
+                "repository": "iii",
+                "status": "preparing",
+                "updated_at": 5,
+            })
+        );
+        let encoded = payload.to_string();
+        for private in ["private_nonce", "/private/checkout", "session_private", "iii-hq/iii"] {
+            assert!(!encoded.contains(private), "{private} leaked into {encoded}");
+        }
+        assert!(encoded.len() < 256);
     }
 
     #[test]
@@ -674,16 +727,12 @@ mod tests {
         newer.sources[0].collected_at = Some(101);
         assert!(!snapshot_is_newer(&snapshot, &newer));
 
-        let payload = reconciliation_update_payload("sec_live");
-        assert_eq!(
-            payload,
-            json!({
-                "stream_name": "security-scan:runs",
-                "group_id": "all",
-                "type": "security-scan:reconciliation-updated",
-                "data": { "run_id": "sec_live" },
-            })
-        );
+        let payload = serde_json::to_value(ReconciliationChangedEventV1 {
+            run_id: snapshot.run_id.clone(),
+            repository: snapshot.repository.clone(),
+        })
+        .unwrap();
+        assert_eq!(payload, json!({ "run_id": "sec_live", "repository": "iii" }));
         assert!(serde_json::to_string(&payload).unwrap().len() < 256);
     }
 

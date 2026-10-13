@@ -1,3 +1,4 @@
+pub mod agent_feed;
 pub mod handler;
 pub mod session;
 pub mod transport;

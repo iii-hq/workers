@@ -47,18 +47,20 @@ fn deny_wins_over_allow_so_nothing_allowed_may_also_be_denied() {
 }
 
 #[test]
-fn the_allow_list_carries_no_write_outside_this_worker() {
-    // Everything an investigation may call is a read, except the one write
-    // that is this worker's own record of the diagnosis.
+fn the_allow_list_is_reads_the_diagnosis_and_the_deliberate_external_reach() {
+    // Everything an investigation may call is a read, this worker's own
+    // record of the diagnosis, or GitHub and the web — allowed on purpose,
+    // writes included, so a new entry has to be one of these on purpose too.
     for id in INVESTIGATION_ALLOW {
         let is_read = id.starts_with("coder::")
             || id.starts_with("engine::functions::")
             || id == "sentinel::evidence::get"
             || id == "sentinel::trace::get"
             || id == "sentinel::logs::list";
+        let external = id == "github::*" || id == "web::*";
         assert!(
-            is_read || id == "sentinel::diagnosis::record",
-            "{id} is neither a read nor the one permitted write"
+            is_read || external || id == "sentinel::diagnosis::record",
+            "{id} is neither a read, the diagnosis, nor the external reach"
         );
     }
 }
@@ -103,7 +105,6 @@ fn nothing_can_run_code_or_touch_the_store() {
         "state::compare-and-set",
         "queue::define",
         "storage::write",
-        "github::api",
         "worktree::create",
         "configuration::set",
     ] {

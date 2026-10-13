@@ -563,7 +563,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         title: 'Connection',
         fields: [
           text('tailscale_binary', 'Tailscale executable'),
-          text('console_url', 'ADE URL', 'Must point to a loopback HTTP(S) ADE root.'),
+          text('console_url', 'ADE URL', "Leave empty to use this project's ADE (console::status). Otherwise a loopback HTTP(S) ADE root."),
           number('default_https_port', 'Default HTTPS port', undefined, { min: 1, max: 65535 }),
           number('command_timeout_ms', 'Command timeout (ms)', undefined, { min: 1 }),
         ],

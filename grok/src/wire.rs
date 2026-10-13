@@ -1,4 +1,4 @@
-//! Wire types emitted onto `agent::events` (translated AgentEvent subset) and
+//! Wire types emitted onto `grok::agent-event` (translated AgentEvent subset) and
 //! the persisted session record. Mirrors the harness AgentEvent shape so the
 //! console and acp worker render Grok turns like any other agent worker.
 //!
@@ -27,7 +27,7 @@ pub struct SessionRecord {
     pub updated_at_ms: u64,
 }
 
-/// One block of assistant content on the translated stream. `text` carries
+/// One block of assistant content on the translated feed. `text` carries
 /// `text` deltas; `thinking` carries `thought` deltas (reasoning models).
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

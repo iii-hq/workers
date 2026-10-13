@@ -243,6 +243,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         surface::PROVIDER_RESOLVE_ID,
         RegisterFunction::new_async(make_provider_resolve(
             config.clone(),
+            entry_lock.clone(),
             registry.clone(),
             secrets.clone(),
         ))
@@ -263,7 +264,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     iii.register_function(
         surface::MODELS_RECONCILE_ID,
         typed_async_with_bad_request(
-            make_models_reconcile(registry.clone(), catalog.clone(), events.clone()),
+            make_models_reconcile(
+                registry.clone(),
+                catalog.clone(),
+                events.clone(),
+                config.clone(),
+                secrets.clone(),
+                entry_lock.clone(),
+            ),
             invalid_request_from_serde,
         )
         .description(surface::MODELS_RECONCILE_DESC)

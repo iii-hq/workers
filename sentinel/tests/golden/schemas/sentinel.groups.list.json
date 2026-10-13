@@ -32,6 +32,25 @@
             "type": "string"
           }
         ]
+      },
+      "RelevanceV1": {
+        "description": "Which side of triage the list shows.",
+        "oneOf": [
+          {
+            "description": "What needs a person: defects, persistent caller errors and environment problems, regressions, and anything not triaged yet.",
+            "enum": [
+              "relevant"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Everything else.",
+            "enum": [
+              "noise"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
@@ -52,6 +71,18 @@
           "integer",
           "null"
         ]
+      },
+      "relevance": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RelevanceV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Absent lists both sides."
       },
       "search": {
         "default": null,
@@ -226,6 +257,10 @@
               "null"
             ]
           },
+          "relevant": {
+            "description": "Whether the default list shows it; see [`RelevanceV1::Relevant`].",
+            "type": "boolean"
+          },
           "resolve_until_version_change": {
             "type": "boolean"
           },
@@ -270,6 +305,17 @@
           },
           "title": {
             "type": "string"
+          },
+          "triage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/GroupTriageV1"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent until the group has been triaged."
           }
         },
         "required": [
@@ -280,12 +326,48 @@
           "last_seen_ms",
           "namespace",
           "occurrence_count",
+          "relevant",
           "service_name",
           "sessions_affected",
           "source",
           "sparkline",
           "status",
           "title"
+        ],
+        "type": "object"
+      },
+      "GroupTriageV1": {
+        "additionalProperties": false,
+        "description": "A hint for ordering and filtering the list. It never moves a group: resolving and ignoring stay human decisions.",
+        "properties": {
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "confidence": {
+            "description": "Between 0 and 1, as the judge reports it; 1 for a rule.",
+            "format": "double",
+            "type": "number"
+          },
+          "kind": {
+            "$ref": "#/definitions/TriageKindV1"
+          },
+          "model": {
+            "description": "The judge model that answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/definitions/TriageSourceV1"
+          }
+        },
+        "required": [
+          "at_ms",
+          "confidence",
+          "kind",
+          "source"
         ],
         "type": "object"
       },
@@ -343,6 +425,65 @@
             "type": "object"
           }
         ]
+      },
+      "TriageKindV1": {
+        "description": "What kind of failure a group is, as triage reads it.",
+        "oneOf": [
+          {
+            "description": "A bug the reporting worker's maintainer has to fix in code.",
+            "enum": [
+              "defect"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The worker rejected bad input and said so: working as designed.",
+            "enum": [
+              "caller_error"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A dependency starting, restarting or timing out; it went away.",
+            "enum": [
+              "transient"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Local setup: credentials, tokens, files, versions, a missing worker.",
+            "enum": [
+              "environment"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Tests, probes and deliberately fake identifiers.",
+            "enum": [
+              "test_traffic"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TriageSourceV1": {
+        "description": "Who decided a triage.",
+        "oneOf": [
+          {
+            "description": "A deterministic check: a missing function that is registered by the time the group is looked at.",
+            "enum": [
+              "rule"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`judge::evaluate`.",
+            "enum": [
+              "judge"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
@@ -352,6 +493,17 @@
         },
         "type": "array"
       },
+      "noise_total": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "relevant_total": {
+        "description": "Both sides under the same filters, whatever `relevance` asked for.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "total": {
         "format": "uint64",
         "minimum": 0.0,
@@ -360,6 +512,8 @@
     },
     "required": [
       "groups",
+      "noise_total",
+      "relevant_total",
       "total"
     ],
     "title": "GroupsListResponseV1",

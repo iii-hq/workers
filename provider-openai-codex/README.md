@@ -97,9 +97,12 @@ provider id `openai`.
   new models and removing retired ones. Failed or empty refreshes preserve the
   router's persisted last-known-good slice. Namespacing prevents
   `AmbiguousModel` collisions with `provider-openai`.
-  Context limits follow the backend's `context_window`, using
-  `max_context_window` only when it is absent. The latter is the ceiling for
-  configuration overrides in the [upstream Codex contract](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/protocol/src/openai_models.rs#L452-L455).
+  Context limits follow the catalog's `max_context_window`, using
+  `context_window` only when it is absent. In the [upstream Codex contract](https://github.com/openai/codex/blob/rust-v0.159.0/codex-rs/protocol/src/openai_models.rs#L452-L455)
+  `context_window` is the CLI's default working window (272K) and
+  `max_context_window` the ceiling for configuration overrides (872K). The
+  backend itself accepts input up to ~922K on current models, so the ceiling
+  is the larger limit that is still safe to advertise.
 - **Request:** Responses API — `input` items, `stream: true`, `store: false`,
   optional `tools` and `reasoning: { effort }`. Headers: `Authorization: Bearer`,
   `chatgpt-account-id`, Codex compatibility `version`,

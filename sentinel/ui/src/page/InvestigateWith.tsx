@@ -5,11 +5,11 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
-  Selector,
+  ModelPicker,
 } from '@iii-dev/console-ui'
 import type { Host } from '@iii-dev/console-ui'
 import { useState } from 'react'
-import { modelGroups, splitKey } from '../settings/catalog.js'
+import { splitKey, withStoredModel } from '../settings/catalog.js'
 import { useModelCatalog } from '../settings/useModelCatalog'
 
 interface Props {
@@ -54,16 +54,17 @@ export function InvestigateWith({ host, onCancel, onInvestigate, open }: Props) 
           For this investigation only. The configured default is unchanged — set one in the
           configuration and Investigate stops asking.
         </DialogDescription>
-        <Selector
-          aria-label="Model for this investigation"
-          value={selected || undefined}
-          groups={modelGroups(catalog, selected)}
+        <ModelPicker
+          value={selected || null}
+          options={withStoredModel(catalog, selected)}
+          thinkingLevel="default"
+          onThinkingLevelChange={() => {}}
+          showReasoningEffort={false}
+          showRefresh={false}
+          showProviderConfiguration={false}
           loading={loading}
           placeholder="pick a model"
-          searchPlaceholder="model or provider"
-          emptyMessage="The router is serving no models. Configure a provider first."
-          onCreate={(query) => setSelected(query.trim())}
-          createOptionLabel={(query) => `use ${query}`}
+          className="sentinel-ui-model-picker"
           onChange={setSelected}
         />
         <div className="sentinel-ui-dialog-actions">

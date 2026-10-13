@@ -570,8 +570,12 @@ fn crawl_request() -> Value {
         ("include_html", json!({"type": "boolean"})),
         ("impersonate", json!({"type": "string"})),
         (
+            "crawl_id",
+            json!({"type": "string", "description": "id for this crawl (default: random). Bind browser::crawl-item with this crawl_id before calling to receive items live; must not match a running crawl"}),
+        ),
+        (
             "stream_name",
-            json!({"type": "string", "description": "stream to emit items on (default browser::crawl)"}),
+            json!({"type": "string", "description": "deprecated, ignored (adds a warning): items are no longer written to a stream; use browser::crawl::items or the browser::crawl-item trigger"}),
         ),
     ]);
     json!({"type": "object", "properties": obj(props)})
@@ -590,12 +594,57 @@ fn crawl_response() -> Value {
                     "stopped": {"type": "string"},
                 },
             },
-            "items": {"type": "array", "items": {"type": "object"}, "description": "a small sample of streamed items"},
+            "items": {"type": "array", "items": {"type": "object"}, "description": "a sample (at most 10) of the crawl's items; read all of them with browser::crawl::items"},
             "stream": {
                 "type": "object",
                 "properties": {"name": {"type": "string"}, "group_id": {"type": "string"}},
-                "description": "read the full item stream via stream::on with this name + group_id",
+                "description": "deprecated echo kept for older callers: stream_name and the crawl id; nothing is written to a stream. Use crawl.id",
             },
+            "crawl": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "pass to browser::crawl::items, or as the browser::crawl-item crawl_id filter"},
+                    "items_function": {"type": "string", "description": "browser::crawl::items: paginated read of every retained item"},
+                    "trigger_type": {"type": "string", "description": "browser::crawl-item: live per-item events"},
+                    "retained": {"type": "integer", "description": "items readable with browser::crawl::items (less than stats.crawled when a retention cap was hit)"},
+                    "dropped_events": {"type": "integer", "description": "live events dropped because a slow consumer filled the bounded queue; read those items back"},
+                },
+            },
+            "warnings": {"type": "array", "items": {"type": "string"}, "description": "present when the request used deprecated input such as stream_name"},
+        },
+    })
+}
+
+fn crawl_items_request() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "crawl_id": {"type": "string", "description": "crawl.id from browser::crawl"},
+            "after": {"type": "integer", "description": "return items with seq greater than this (default 0); pass next_after to continue"},
+            "limit": {"type": "integer", "description": "items per page, 1-100 (default 20)"},
+        },
+        "required": ["crawl_id"],
+    })
+}
+
+fn crawl_items_response() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "crawl_id": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"seq": {"type": "integer"}, "item": {"type": "object"}},
+                },
+                "description": "retained items in crawl order; seq matches the browser::crawl-item events",
+            },
+            "next_after": {"type": "integer", "description": "present when more retained items follow"},
+            "retained": {"type": "integer"},
+            "running": {"type": "boolean", "description": "the crawl is still in progress"},
+            "truncated": {"type": "boolean", "description": "a retention cap was hit; items after the retained ones were not kept"},
+            "stats": {"type": "object", "description": "the crawl's final stats, once it finished"},
         },
     })
 }
@@ -718,9 +767,15 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::crawl",
-            description: "Crawl a site from start_urls (same-domain links), extract per page, stream items.",
+            description: "Crawl a site from start_urls (same-domain links), extract per page; all items via browser::crawl::items.",
             request: crawl_request(),
             response: crawl_response(),
+        },
+        FunctionSpec {
+            function_id: "browser::crawl::items",
+            description: "Page through every item a recent browser::crawl retained (by crawl.id, in seq order).",
+            request: crawl_items_request(),
+            response: crawl_items_response(),
         },
     ]
 }

@@ -77,7 +77,9 @@ pub struct StoriesConfig {
     /// resolve from the Compose project directory or the process directory.
     pub data_path: String,
     /// Console origin the browser worker navigates to for headless renders.
-    pub console_url: String,
+    /// Unset: the ADE's address from `console::status`, resolved per render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_url: Option<String>,
     /// Rebuild the working tree line when a story input changes.
     pub watch: bool,
     /// Built ref lines kept per workspace before the oldest are pruned.
@@ -90,7 +92,7 @@ impl Default for StoriesConfig {
     fn default() -> Self {
         Self {
             data_path: iii_worker_paths::default_path("data/stories"),
-            console_url: "http://127.0.0.1:3113".to_string(),
+            console_url: None,
             watch: true,
             keep_lines: 12,
             viewport: Viewport::default(),
@@ -146,7 +148,7 @@ pub fn schema() -> Value {
         "required": ["data_path", "workspaces"],
         "properties": {
             "data_path": { "type": "string", "minLength": 1, "description": "Folder holding lines, files, renders and the compiler. Relative paths resolve from the project root." },
-            "console_url": { "type": "string", "description": "Console origin the browser worker navigates to for headless renders." },
+            "console_url": { "type": "string", "description": "Console origin the browser worker navigates to for headless renders. Empty: the ADE's address from console::status." },
             "watch": { "type": "boolean", "description": "Rebuild the working tree line when a story input changes." },
             "keep_lines": { "type": "integer", "minimum": 1, "description": "Built ref lines kept per workspace before the oldest are pruned." },
             "viewport": {
@@ -304,11 +306,12 @@ pub fn normalize(raw: &Value) -> StoriesConfig {
         } else {
             data_path
         },
-        console_url: if console_url.is_empty() {
-            defaults.console_url
-        } else {
-            console_url.trim_end_matches('/').to_string()
-        },
+        // MOT-5356: releases before this one seeded "http://127.0.0.1:3113"
+        // as the stored value, and `ensure` never replaces it. Treat it as
+        // unset: on a single-project machine console::status resolves to the
+        // same 3113; it only stops renders driving another project's ADE.
+        console_url: Some(console_url.trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty() && u != "http://127.0.0.1:3113"),
         watch: field("watch").and_then(Value::as_bool).unwrap_or(true),
         keep_lines: field("keep_lines")
             .and_then(Value::as_u64)
@@ -344,7 +347,10 @@ mod tests {
             ]
         }));
         assert_eq!(repaired.data_path, "./data/x");
-        assert_eq!(repaired.console_url, "http://localhost:4000");
+        assert_eq!(
+            repaired.console_url.as_deref(),
+            Some("http://localhost:4000")
+        );
         assert_eq!(repaired.keep_lines, 1);
         assert_eq!(repaired.viewport.width, 200);
         assert_eq!(repaired.viewport.dpr, 3);
@@ -355,10 +361,24 @@ mod tests {
     }
 
     #[test]
+    fn old_default_console_url_reads_as_unset() {
+        for old in ["http://127.0.0.1:3113", "http://127.0.0.1:3113/"] {
+            assert_eq!(normalize(&json!({ "console_url": old })).console_url, None);
+        }
+        assert_eq!(
+            normalize(&json!({ "console_url": "http://localhost:3113" }))
+                .console_url
+                .as_deref(),
+            Some("http://localhost:3113")
+        );
+    }
+
+    #[test]
     fn defaults_never_serialize_null_for_optional_strings() {
         let json = StoriesConfig::default().to_json();
         let workspace = &json["workspaces"][0];
         assert!(workspace.get("base").is_none(), "{workspace}");
+        assert!(json.get("console_url").is_none(), "{json}");
         let project = serde_json::to_value(ProjectConfig {
             name: None,
             path: "app".into(),

@@ -1,7 +1,7 @@
 //! Integration with the `configuration` worker — register the devin config
 //! schema, fetch the live value, and hot-reload it on change. Every field is a
-//! runtime tuning knob (API credentials, base URL, stream names, executable
-//! path, iii-context toggle), so a change hot-swaps the whole snapshot.
+//! runtime tuning knob (API credentials, base URL, executable path,
+//! iii-context toggle), so a change hot-swaps the whole snapshot.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,7 +49,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
     let mut payload = json!({
         "id": config_id(),
         "name": "Devin",
-        "description": "Devin worker: the API bearer token and organization id, the Devin REST base URL and request timeout, the agent::events / devin::events stream names, the devin CLI path and extra args, and whether to inject the iii runtime context into a devin::run prompt.",
+        "description": "Devin worker: the API bearer token and organization id, the Devin REST base URL and request timeout, the devin CLI path and extra args, and whether to inject the iii runtime context into a devin::run prompt.",
         "schema": Config::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });

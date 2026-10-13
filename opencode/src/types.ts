@@ -1,6 +1,6 @@
 /**
- * Wire types for the AgentEvent subset this worker emits onto the
- * `agent::events` stream. Mirrors harness/src/types/* in iii-hq/workers so
+ * Wire types for the AgentEvent subset this worker emits on the
+ * `opencode::agent-event` trigger type. Mirrors harness/src/types/* in iii-hq/workers so
  * the console and acp worker render OpenCode turns like any other agent worker.
  */
 

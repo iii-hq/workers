@@ -1,4 +1,4 @@
-//! Wire types emitted onto `agent::events` (translated AgentEvent subset) and
+//! Wire types emitted onto `codex::agent-event` (translated AgentEvent subset) and
 //! the persisted session record. Mirrors the harness AgentEvent shape so the
 //! console and acp worker render Codex turns like any other agent worker.
 
@@ -33,7 +33,7 @@ pub struct SessionRecord {
     pub updated_at_ms: u64,
 }
 
-/// One block of assistant/tool content on the translated stream.
+/// One block of assistant/tool content on the translated feed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {

@@ -5,7 +5,12 @@ import {
   JUDGE_USES,
   type JudgeOption,
 } from '@/lib/onboarding/catalog'
-import { judgePlan, judgeWorkers, type KeyInput } from '@/lib/onboarding/plan'
+import {
+  activeJudge,
+  judgePlan,
+  judgeWorkers,
+  type KeyInput,
+} from '@/lib/onboarding/plan'
 import { cn } from '@/lib/utils'
 import {
   ActivityLog,
@@ -38,8 +43,9 @@ export function JudgeStep({
   onNext: (judge: JudgeOption | null) => void
 }) {
   const { snapshot, activity, running, run } = onboarding
-  const installedOption = JUDGE_OPTIONS.find((option) =>
-    snapshot.installed.has(option.worker),
+  const installedOption = activeJudge(
+    snapshot.installed,
+    snapshot.judgeProvider,
   )
   const [changing, setChanging] = useState(false)
   const log = activity.filter((entry) => entry.group === 'judge')

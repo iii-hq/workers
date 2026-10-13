@@ -128,8 +128,8 @@ def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) ->
 
 # Workers the engine itself hosts (enabled via the engine config, not
 # installed from the registry). A target install can flip one on mid-boot
-# (e.g. harness enables `iii-stream` for console streaming), which lands it in
-# the workers-baseline diff even though its interface is not part of the
+# (e.g. a worker that still lists the deprecated `iii-stream` builtin as a
+# dependency), which lands it in the workers-baseline diff even though its interface is not part of the
 # released worker's surface — and its schemas are not this repo's to fix.
 ENGINE_BUILTIN_WORKERS = frozenset(
     {

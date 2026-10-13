@@ -206,6 +206,7 @@ pub fn resolve_provider_config(
     };
 
     ProviderResolveOutput {
+        discovery_attempt: None,
         resolved: ProviderResolveResponse {
             configured: credential.is_some() || declaration.credential_optional == Some(true),
             source,
@@ -217,8 +218,20 @@ pub fn resolve_provider_config(
     }
 }
 
+/// Internal comparison only: never exposed or persisted, and never logged.
+pub fn discovery_fingerprint(config: &ConfigSnapshot, resolved: &ProviderResolveOutput) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(config.revision(), &resolved.resolved)).unwrap_or_default()
+        )
+    )
+}
+
 pub fn make_provider_resolve(
     config: ConfigCell,
+    entry_lock: EntryWriteLock,
     registry: Arc<RegistryStore>,
     secrets: Arc<SecretCache>,
 ) -> impl Fn(ProviderResolveRequest) -> BoxFuture<'static, Result<ProviderResolveOutput, Error>>
@@ -226,19 +239,29 @@ pub fn make_provider_resolve(
        + Sync
        + 'static {
     move |req: ProviderResolveRequest| {
-        let (config, registry, secrets) = (config.clone(), registry.clone(), secrets.clone());
+        let (config, registry, secrets, entry_lock) = (
+            config.clone(),
+            registry.clone(),
+            secrets.clone(),
+            entry_lock.clone(),
+        );
         Box::pin(async move {
+            let _guard = entry_lock.lock().await;
             let record = registry
                 .verify_token(&req.id, req.token.as_deref())
                 .await
                 .map_err(Error::from)?;
             let config = snapshot(&config);
             ensure_provider_secret(&config, &record.declaration.id, &secrets).await;
-            Ok(resolve_provider_config(
-                &config,
-                &record.declaration,
-                &secrets,
-            ))
+            let mut output = resolve_provider_config(&config, &record.declaration, &secrets);
+            if req.begin_discovery {
+                output.discovery_attempt = Some(
+                    registry
+                        .begin_discovery(&req.id, discovery_fingerprint(&config, &output))
+                        .await,
+                );
+            }
+            Ok(output)
         })
     }
 }

@@ -4,6 +4,35 @@ use crate::engine_introspection::{FunctionInfo, TriggerTypeInfo};
 use std::sync::Arc;
 use tower_lsp_server::ls_types::*;
 
+/// Trigger types served by the deprecated iii-stream builtin. Engines still
+/// register them, so they stay completable, but editors render them as
+/// deprecated so new code does not adopt them.
+const DEPRECATED_TRIGGER_TYPES: &[&str] = &["stream", "stream:join", "stream:leave"];
+
+/// Short deprecation note shown in completion details and hovers.
+pub const DEPRECATED_TRIGGER_NOTE: &str = "deprecated: iii-stream";
+
+pub fn is_deprecated_trigger_type(id: &str) -> bool {
+    DEPRECATED_TRIGGER_TYPES.contains(&id)
+}
+
+fn trigger_type_item(tt: &TriggerTypeInfo) -> CompletionItem {
+    let deprecated = is_deprecated_trigger_type(&tt.id);
+    let detail = if deprecated {
+        format!("{} ({DEPRECATED_TRIGGER_NOTE})", tt.description)
+    } else {
+        tt.description.clone()
+    };
+    CompletionItem {
+        label: tt.id.clone(),
+        kind: Some(CompletionItemKind::ENUM),
+        detail: Some(detail),
+        tags: deprecated.then(|| vec![CompletionItemTag::DEPRECATED]),
+        insert_text: Some(tt.id.clone()),
+        ..Default::default()
+    }
+}
+
 pub fn get_completions(
     context: &CompletionContext,
     current_text: &str,
@@ -41,13 +70,7 @@ pub fn get_completions(
             let mut items = Vec::new();
             for entry in engine.trigger_types.iter() {
                 let tt: &TriggerTypeInfo = entry.value();
-                items.push(CompletionItem {
-                    label: tt.id.clone(),
-                    kind: Some(CompletionItemKind::ENUM),
-                    detail: Some(tt.description.clone()),
-                    insert_text: Some(tt.id.clone()),
-                    ..Default::default()
-                });
+                items.push(trigger_type_item(tt));
             }
             items
         }
@@ -199,6 +222,37 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0], "http");
+    }
+
+    fn trigger_type(id: &str, description: &str) -> TriggerTypeInfo {
+        TriggerTypeInfo {
+            id: id.to_string(),
+            description: description.to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        }
+    }
+
+    #[test]
+    fn stream_trigger_types_are_tagged_deprecated() {
+        for id in ["stream", "stream:join", "stream:leave"] {
+            let item = trigger_type_item(&trigger_type(id, "Stream trigger"));
+            assert_eq!(item.tags, Some(vec![CompletionItemTag::DEPRECATED]), "{id}");
+            assert_eq!(
+                item.detail.as_deref(),
+                Some("Stream trigger (deprecated: iii-stream)"),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_trigger_types_are_not_tagged() {
+        for id in ["http", "state", "stream::custom", "my-worker::stream"] {
+            let item = trigger_type_item(&trigger_type(id, "Some trigger"));
+            assert_eq!(item.tags, None, "{id}");
+            assert_eq!(item.detail.as_deref(), Some("Some trigger"), "{id}");
+        }
     }
 
     #[test]

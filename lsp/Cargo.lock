@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "lsp"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "clap",
  "dashmap",

@@ -56,7 +56,7 @@ export interface WorkerLiveOptions<T> {
   iii: ExtensionIii
   /**
    * Trigger types whose events re-run `fetch`; an object form carries the
-   * binding `config` (a `stream` trigger's `stream_name`/`group_id`).
+   * binding `config` (a `state` trigger's `scope`/`key`).
    */
   triggers: readonly (string | { type: string; config?: Record<string, unknown> })[]
   fetch: () => Promise<T>

@@ -189,6 +189,21 @@ mod tests {
         }
     }
 
+    /// Live spans ride the engine `trace` tick plus a bounded re-read, not the
+    /// deprecated iii-stream devtools feed (MOT-3619): the page must work on
+    /// an engine without iii-stream and must not trip its deprecation warning.
+    #[test]
+    fn embedded_catalog_page_reads_spans_without_iii_stream() {
+        assert!(
+            CATALOG_PAGE_JS.contains("engine::traces::spans"),
+            "built catalog-page.js no longer re-reads spans on trace ticks"
+        );
+        assert!(
+            !CATALOG_PAGE_JS.contains("iii:devtools:"),
+            "built catalog-page.js still binds an iii-stream devtools feed"
+        );
+    }
+
     #[test]
     fn embedded_styles_are_scoped() {
         // esbuild prints the attribute selector unquoted ([data-iii-ui=console]).

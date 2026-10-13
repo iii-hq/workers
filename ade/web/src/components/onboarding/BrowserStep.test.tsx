@@ -56,6 +56,7 @@ function controller(
       detections: null,
       envFile: '.env',
       installed: new Set(['browser']),
+      judgeProvider: null,
       consoleConfig: null,
       browser: MISSING,
       browserError: null,

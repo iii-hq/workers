@@ -61,14 +61,14 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             .response_format(run_response_schema())
             .description(
                 "Run a Codex coding-agent turn and wait for its result. Accepts `prompt` or a \
-                 `messages` array plus a `codex_config` pass-through; streams Codex events to \
-                 codex::events, AgentEvent frames to agent::events, and returns \
+                 `messages` array plus a `codex_config` pass-through; delivers raw Codex events on \
+                 codex::raw-event and AgentEvent frames on codex::agent-event, and returns \
                  {session_id, result, usage}.",
             ),
         );
     }
 
-    // codex::start — fire-and-forget; progress on the streams.
+    // codex::start — fire-and-forget; progress on the event feeds.
     {
         let iii_h = iii.clone();
         let cell_h = cell.clone();
@@ -115,8 +115,9 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
                 "properties": { "session_id": { "type": "string" }, "started": { "type": "boolean" } },
             }))
             .description(
-                "Start a Codex turn and return immediately; watch codex::events / agent::events \
-                 (group_id = session_id) for progress and turn_end.",
+                "Start a Codex turn and return immediately; bind codex::agent-event (or \
+                 codex::raw-event) with { session_id } for progress and turn_end, or poll \
+                 codex::status.",
             ),
         );
     }

@@ -170,7 +170,7 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 - **Rich filtering** — status, time presets, min/max duration, arbitrary attribute key/value pairs, debounced free-text search, saved views
 - **Group by** — server-side aggregation with lazy per-group member expansion
 - **Span detail tabs** — info, attributes, events, errors, OTel logs, context (baggage), links
-- **Live streaming** — spans append over iii streams (`iii:devtools:*`) instead of polling; one seed read, then append
+- **Live updates** — the engine's coalesced `trace` trigger (trace ids only) drives a re-read of the touched traces; one seed read, then notify-then-query, no polling and no stream worker
 
 ### Worktrees
 
@@ -211,7 +211,7 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 
 | Function | Input | Output |
 |---|---|---|
-| `console::status` | `{}` | `{ http_port, engine_url, version }` |
+| `console::status` | `{}` | `{ url, http_port, engine_url, version }` |
 | `console::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, sizes, active }], active_tab_id }` |
 | `console::workspace::open` | `{ screen, session_id?, relative_to?, direction?, sizes?, activate? }` | `{ tab_id, column, placement, screens, sizes, activated }` |
 | `console::workspace::close` | `{ screen, session_id? }` | `{ tab_ids }` |

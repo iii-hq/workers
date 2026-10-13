@@ -120,9 +120,9 @@ and never changes delivery.
 | `state` | `scope?`, `key?` — omit `key` and it fires for every key in the scope |
 | `cron` | `expression` (6-field: sec min hour day month weekday) |
 | `durable:subscriber` | `topic`, `queue_config?` — the queue. `queue` is the provider *package*, not a type |
-| `subscribe` | `topic` — pubsub |
-| `stream` | `stream_name?`, `group_id?`, `item_id?` |
-| `stream:join` / `stream:leave` | `stream_name?` |
+| `subscribe` (deprecated: pubsub) | `topic` — pubsub |
+| `stream` (deprecated: iii-stream) | `stream_name?`, `group_id?`, `item_id?` |
+| `stream:join` / `stream:leave` (deprecated: iii-stream) | `stream_name?` |
 | `log` | `level?` |
 | `trace` | `service_name?`, `status?` |
 | `configuration` | `configuration_id?`, `event_types?` |

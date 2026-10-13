@@ -45,7 +45,7 @@ that outlive this terminal.
   the second runs it. Restarting either kills the session you are typing in,
   mid-command.
 - Your work is on the record: \`.pi/extensions/iii-activity.ts\` reports every
-  prompt you answer and every tool you run onto \`agent::events\`, which is how
+  prompt you answer and every tool you run onto \`pi::agent-event\`, which is how
   the console shows this terminal's turns. Leave that extension in place.
 
 ${context}

@@ -1048,6 +1048,8 @@ pub struct ScreenshotOutput {
     pub version: String,
     #[serde(rename = "box")]
     pub content_box: Value,
+    /// Address the render was captured from; a cached render keeps the one
+    /// it was first captured with, which can be stale.
     pub url: String,
 }
 

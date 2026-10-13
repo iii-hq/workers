@@ -2,7 +2,7 @@
 
 [package]
 name = "computer"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2021"
 publish = false
 
@@ -43,4 +43,4 @@ image = "0.25"
 
 [dev-dependencies]
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }

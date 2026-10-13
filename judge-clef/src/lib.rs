@@ -2,7 +2,6 @@
 //! in-process. llama.cpp's `clef` arch (crates/llama-native) runs the Qwen3.5
 //! backbone and the joint schema head in one graph: one forward per evaluation
 //! gives one score per option of every question.
-mod cancellation;
 pub mod client;
 pub mod config;
 pub mod configuration;

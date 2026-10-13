@@ -15,8 +15,8 @@ two distinct surfaces.
 The **CLI surface** drives the local [Devin CLI](https://cli.devin.ai/docs) (the
 SWE-1.6 coding agent that runs in your terminal on your files). `devin::run`
 executes one headless turn (`devin --permission-mode dangerous --print -- <prompt>`)
-and streams stdout onto `devin::events` with a terminal AgentEvent frame on
-`agent::events`. Because the agent runs locally with the iii runtime context
+and delivers stdout on the `devin::raw-event` trigger type with the terminal
+AgentEvent frames on `devin::agent-event`. Because the agent runs locally with the iii runtime context
 prepended, a plain-language prompt makes Devin discover and operate your engine
 on its own: it runs `iii trigger engine::functions::list`, calls any registered
 function, and reports back, reaching the engine at `localhost` with no exposure.
@@ -34,8 +34,9 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
 ## When to Use
 
 - Delegate a coding task to the local agent in a chosen directory: `devin::run`
-  with `prompt` and `cwd`; follow `devin::events` / `agent::events`; interrupt
-  with `devin::stop`.
+  with `prompt` and `cwd`; follow the session transcript (`session::messages`)
+  or bind `devin::agent-event` / `devin::raw-event` with `{ session_id }`;
+  interrupt with `devin::stop`.
 - Have Devin operate your iii workers: with `iii_context` on (default), ask a plain
   question ("what workers are connected and what does each do?") and Devin
   discovers and calls engine functions itself through the iii CLI.
@@ -79,7 +80,7 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
   status): nested under `parent_session_id` when given, otherwise an
   `automation` session. Read it back with `session::messages`.
 - `devin::start` — same payload, returns `{session_id, started}` immediately;
-  progress arrives in the session transcript and on the streams.
+  progress arrives in the session transcript and on the event feeds.
 - `devin::stop` — interrupt the live CLI run for a session.
 - `devin::status` — point-in-time view of a recorded run: live flag, status,
   linked Devin session id.

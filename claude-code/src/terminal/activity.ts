@@ -10,12 +10,12 @@
  * transport event and guessing.
  *
  * The function itself is plumbing — one call per hook — so it is
- * `trace_hidden`: the signal is the stream, not the delivery.
+ * `trace_hidden`: the signal is the feed, not the delivery.
  */
 
 import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
-import type { Emit } from '../events.js';
+import type { Emit } from '../agent-feed.js';
 import { runTurnSpan } from '../trace.js';
 import type {
   AgentMessage,
@@ -57,7 +57,7 @@ type SessionState = {
    */
   turnId: string;
   prompt: string;
-  /** What this session is called on the events stream and in a trace. */
+  /** What this session is called on the claude::agent-event feed and in a trace. */
   group: string;
 };
 
@@ -271,7 +271,7 @@ export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
     (input: HookEvent) => tracker.handle(input ?? {}),
     {
       description:
-        'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the events stream.',
+        'A Claude Code lifecycle event from a terminal session (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), posted by the workspace hooks. Translated into AgentEvent frames on the claude::agent-event feed.',
       request_format: {
         type: 'object',
         properties: {

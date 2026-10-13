@@ -709,8 +709,6 @@ containers:
 
   <worker-name>:
     worker: path://<worker-directory>
-    start_after:
-      - console
     scripts:
       run: pnpm dev
 ```
@@ -722,7 +720,7 @@ Path rules:
 - If it lives elsewhere, use the correct relative path; do not assume `./workers/` or any particular project layout.
 - Preserve all existing Compose entries and indentation.
 - Use a unique container key.
-- Keep `start_after: [console]` semantics for injectable UI so the Console provider exists before asset registration.
+- Add no `start_after` naming the console container. The engine holds the worker's `console:*` triggers (`console:script`, `console:style`) until the console registers those trigger types, and applies them again each time the console comes back. A `start_after` would make the worker a dependent, and Compose stops a container's dependents when it exits, so a console exit would take the worker offline.
 - Use `pnpm dev`, not the production `start` script, for this local development block.
 
 If the destination Compose file already has a declaration for the worker, update that declaration instead of adding a duplicate.
@@ -732,8 +730,8 @@ If the destination Compose file already has a declaration for the worker, update
 A running Compose daemon does not re-read `worker-compose.yaml` on edit, and `compose::up { container }` answers `UNKNOWN_CONTAINER` for a container it has not loaded. To start the worker without restarting the whole project:
 
 1. Write the block above.
-2. Call `compose::add { workers: ['./<actual-directory-name>'] }`. It recognises the existing declaration, pins nothing for a `path://` worker, and starts it — but it may rewrite the block and drop `start_after`.
-3. Diff the file and restore `start_after: [console]` and any other keys it removed.
+2. Call `compose::add { workers: ['./<actual-directory-name>'] }`. It recognises the existing declaration, pins nothing for a `path://` worker, and starts it — but it may rewrite the block.
+3. Diff the file and restore any keys it removed.
 4. Confirm with `compose::status`, the worker log under the daemon's `logs/<container>.log`, and `engine::workers::info { name: '<worker-name>' }`.
 
 The first `pnpm dev` run restarts the worker once or twice while the watchers write `dist/`; that is expected.
@@ -752,7 +750,7 @@ The first `pnpm dev` run restarts the worker once or twice while the watchers wr
 10. Add the coordinated `scripts/dev.mjs` loop.
 11. Add or update `iii.worker.yaml`.
 12. Manually add or update the `worker-compose.yaml` block.
-13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the console URL, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
+13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the `url` from `console::status` (an older console answers only `http_port`: use `http://127.0.0.1:<http_port>`; never `engine_url`), never an assumed 3113, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
 
 ## Validation checklist
 
@@ -770,7 +768,7 @@ Before declaring the worker complete:
 - `dist/ui/page.js` and `dist/ui/styles.css` are non-empty and React remains external.
 - The UI content function serves both registered paths and rejects unknown ones.
 - Asset paths, CSS scope, worker name, function prefix, and configuration id are internally consistent.
-- The Console manifest (`GET http://127.0.0.1:<console port>/ui`, or `console::ui-manifest`) contains both assets, reports no CSS warnings, and changes hashes after a UI edit.
+- The Console manifest (`GET <console url>/ui` with the `url` from `console::status`, or `console::ui-manifest`) contains both assets, reports no CSS warnings, and changes hashes after a UI edit.
 - A real harness call to the worker (e.g. the agent fetching one record) renders through the worker's chat renderer — the result arrives as a `{ content, details }` envelope and must be unwrapped (see the designer's `console-injectable-ui`); confirm a `[data-iii-ui="<worker-name>"]` wrapper exists inside the chat DOM.
 - Live updates reach an open page without a reload: mutate through a function from outside the UI and watch the page change.
 - A record opens as its own pane in the same workspace tab through `host.panels.open`, and the collection page adapts when the tab splits (narrow mode).

@@ -11,8 +11,8 @@ describe('loadConfig', () => {
     expect(cfg.defaults.permission_mode).toBe('acceptEdits');
     expect(cfg.defaults.max_turns).toBe(50);
     expect(cfg.approval_gate).toBe(false);
-    expect(cfg.events_stream).toBe('agent::events');
-    expect(cfg.raw_events_stream).toBe('claude::events');
+    expect(cfg).not.toHaveProperty('events_stream');
+    expect(cfg).not.toHaveProperty('raw_events_stream');
     expect(cfg.iii_context).toBe(true);
     expect(cfg.claude_executable).toBe('');
   });
@@ -33,6 +33,21 @@ describe('loadConfig', () => {
     expect(cfg.engine_url).toBe('ws://10.0.0.1:49134');
     expect(cfg.defaults.permission_mode).toBe('plan');
     expect(cfg.defaults.max_turns).toBe(50);
+    expect(cfg.approval_gate).toBe(true);
+  });
+
+  it('still loads a config that carries the removed stream-name keys', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-code-config-'));
+    const path = join(dir, 'config.yaml');
+    await writeFile(
+      path,
+      [
+        'events_stream: agent::events',
+        'raw_events_stream: claude::events',
+        'approval_gate: true',
+      ].join('\n'),
+    );
+    const cfg = await loadConfig(path);
     expect(cfg.approval_gate).toBe(true);
   });
 

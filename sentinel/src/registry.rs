@@ -104,9 +104,22 @@ impl<E: EngineRegistry> Registry<E> {
         function_id: Option<&str>,
         span_service: &str,
     ) -> Owner {
-        self.refresh_if_stale(function_id, span_service).await;
+        self.refresh_if_stale(function_id, Some(span_service)).await;
         let snapshot = self.snapshot.read().await;
         resolve_in(&snapshot, span_namespace, function_id, span_service)
+    }
+
+    /// Whether a function is registered right now: in `namespace` when it is
+    /// known, in any namespace otherwise.
+    pub async fn is_registered(&self, namespace: Option<&str>, function_id: &str) -> bool {
+        self.refresh_if_stale(Some(function_id), None).await;
+        let snapshot = self.snapshot.read().await;
+        match namespace.filter(|value| !value.is_empty() && *value != AMBIGUOUS_NAMESPACE) {
+            Some(namespace) => snapshot
+                .owners
+                .contains_key(&(namespace.to_string(), function_id.to_string())),
+            None => snapshot.namespaces.contains_key(function_id),
+        }
     }
 
     /// Force the next resolve to re-read the registry.
@@ -114,7 +127,7 @@ impl<E: EngineRegistry> Registry<E> {
         self.snapshot.write().await.fetched_at = None;
     }
 
-    async fn refresh_if_stale(&self, function_id: Option<&str>, span_service: &str) {
+    async fn refresh_if_stale(&self, function_id: Option<&str>, span_service: Option<&str>) {
         let needs = {
             let snapshot = self.snapshot.read().await;
             match snapshot.fetched_at {
@@ -125,7 +138,8 @@ impl<E: EngineRegistry> Registry<E> {
                 Some(fetched) if fetched.elapsed() >= MIN_REFRESH_INTERVAL => {
                     let unknown_function =
                         function_id.is_some_and(|id| !snapshot.namespaces.contains_key(id));
-                    let unknown_worker = !snapshot.worker_namespaces.contains_key(span_service);
+                    let unknown_worker = span_service
+                        .is_some_and(|service| !snapshot.worker_namespaces.contains_key(service));
                     unknown_function || unknown_worker
                 }
                 Some(_) => false,
@@ -507,5 +521,27 @@ mod tests {
         assert!(version_is_indistinct(Some("0.23.1-dev")));
         assert!(!version_is_indistinct(Some("0.23.1")));
         assert!(!version_is_indistinct(Some("git:4662b0d")));
+    }
+
+    #[tokio::test]
+    async fn a_function_is_registered_in_its_own_namespace_only() {
+        let registry = registry(FakeEngine::new(
+            vec![function("state::get", "default", "state")],
+            vec![worker("state", "default", None)],
+        ));
+        assert!(registry.is_registered(Some("default"), "state::get").await);
+        assert!(
+            !registry
+                .is_registered(Some("my-project"), "state::get")
+                .await
+        );
+        // Unknown or ambiguous namespace: anywhere counts.
+        assert!(registry.is_registered(None, "state::get").await);
+        assert!(
+            registry
+                .is_registered(Some(AMBIGUOUS_NAMESPACE), "state::get")
+                .await
+        );
+        assert!(!registry.is_registered(None, "state::set").await);
     }
 }
