@@ -188,6 +188,15 @@ test('ide declares commit-message controls: a model with its thinking level, and
   }
 })
 
+test('harness declares the co-author switch, on by default like the Rust default', async () => {
+  const manifest = await loadManifest()
+  const harness = manifest.workerConfigurationSpecs.get('harness')
+  const field = harness.sections.flatMap((section) => section.fields).find((f) => f.path.join('.') === 'co_author')
+  assert.equal(field?.kind, 'switch')
+  assert.equal(field.defaultValue, true)
+  assert.ok(harness.expectedFields.includes('co_author'))
+})
+
 test('a model field declares its thinking sibling as a second leaf, and only when it has one', async () => {
   const manifest = await loadManifest()
   const helpers = await loadSpecHelpers()

@@ -182,7 +182,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
   {
     id: 'harness',
     title: 'Harness',
-    description: 'Turn budgets, RPC limits, dispatch policy and session filesystem defaults.',
+    description: 'Turn budgets, RPC limits, dispatch policy, commit attribution and session filesystem defaults.',
     sections: [
       {
         title: 'Turn budgets',
@@ -216,6 +216,17 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
             [choice('off', 'Off'), choice('coerce', 'Coerce'), choice('judge', 'Judge')],
             'Repairs malformed call arguments before dispatch. Coerce parses stringified JSON the schema rejects (lossless); Judge also asks judge::evaluate about renamed keys, enum values and stray fields when it is deployed. Unset uses Judge.',
             { optional: true },
+          ),
+        ],
+      },
+      {
+        title: 'Git commits',
+        fields: [
+          toggle(
+            'co_author',
+            'Co-author trailer',
+            'Tells agents to end every git commit message with “Co-authored-by: iii harness (<model>)”.',
+            { defaultValue: true },
           ),
         ],
       },
@@ -265,6 +276,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'stream_coalesce_ms',
       'sweep_expression',
       'call_reconciliation',
+      'co_author',
       'default_functions.allow[]',
       'default_functions.deny[]',
       'default_functions.expose',
