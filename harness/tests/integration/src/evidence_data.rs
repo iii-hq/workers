@@ -96,10 +96,20 @@ impl RunEvidence {
             .collect()
     }
 
-    /// Durable `(user, assistant, function_result)` message counts.
+    /// Durable `(user, assistant, function_result)` message counts. A
+    /// skills-changed notice is not counted: the harness persists it as a
+    /// user message (`origin.skill_update`) whenever the directory's catalog
+    /// changes mid-session — its boot reconcile downloads worker skills when
+    /// the registry answers — so the stack's timing, not the scenario,
+    /// decides whether one exists (the scripted router ignores it too).
     pub fn message_counts(&self) -> (u64, u64, u64) {
         let mut counts = (0, 0, 0);
-        for message in self.messages() {
+        let messages = self
+            .transcript
+            .iter()
+            .filter(|item| !is_skill_update(item))
+            .filter_map(|item| item.get("message"));
+        for message in messages {
             match role(message) {
                 Some("user") => counts.0 += 1,
                 Some("assistant") => counts.1 += 1,
@@ -339,6 +349,13 @@ impl RunEvidence {
     }
 }
 
+/// A transcript entry the harness wrote to re-announce the skill catalog.
+fn is_skill_update(item: &Value) -> bool {
+    item.pointer("/origin/skill_update")
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
 /// Concatenated text blocks of one message's `content` array.
 pub fn message_text(message: &Value) -> String {
     message
@@ -430,6 +447,21 @@ mod tests {
             tree_statuses: Vec::new(),
             router_evidence: Value::Null,
         }
+    }
+
+    #[test]
+    fn message_counts_leave_out_skill_catalog_updates() {
+        let mut evidence = base_evidence();
+        evidence.transcript = vec![
+            json!({ "entry_id": "u1", "message": { "role": "user", "content": [] } }),
+            json!({ "entry_id": "a1", "message": { "role": "assistant", "content": [] } }),
+            json!({
+                "entry_id": "e_t_1_skills_0",
+                "message": { "role": "user", "content": [] },
+                "origin": { "skill_update": true }
+            }),
+        ];
+        assert_eq!(evidence.message_counts(), (1, 1, 0));
     }
 
     #[test]

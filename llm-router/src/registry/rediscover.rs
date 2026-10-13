@@ -118,10 +118,27 @@ pub async fn nudge_live_providers(iii: &IIIClient) -> usize {
     ids.len()
 }
 
-/// Coalescing handle for the re-discovery sweep. `engine::functions-available`
-/// fires for every function registration change, including unrelated console
-/// subscriptions. The sweep tracks provider membership and nudges only newly
-/// live providers after the burst goes quiet.
+/// Coalescing handle for the re-discovery sweep, requested on every
+/// `engine::functions-available` event.
+///
+/// What that event means depends on the engine. Current engines fire it from
+/// the registry itself: every register (including re-registering an existing
+/// id with a new schema, description or metadata) and every removal, folded
+/// into one event per ~100ms burst. Older engines poll every 5s and fire only
+/// when the set of function ids changes. Either way it is advisory and
+/// carries no provider-specific signal, and most events are unrelated to
+/// providers (console subscriptions, other workers, schema-only updates).
+///
+/// So the sweep ignores the payload, re-reads provider membership from the
+/// engine, and nudges only providers that were not live at the previous
+/// sweep. The quiet period below is kept on purpose even though current
+/// engines already fold a burst: their 100ms window only covers changes that
+/// land inside it, while a worker finishing async setup, several workers
+/// starting together, or console subscription churn spread changes over
+/// seconds. Folding those into one membership read keeps the cost at one
+/// `engine::functions::list` round-trip per settle. The single task also
+/// serialises sweeps, which the `known`-set diff depends on. Against older
+/// engines it is harmless: their 5s ticks are longer than the quiet period.
 #[derive(Clone)]
 pub struct SweepHandle {
     tx: tokio::sync::mpsc::Sender<()>,
@@ -135,7 +152,8 @@ impl SweepHandle {
     }
 }
 
-/// Quiet period before a pending sweep runs.
+/// Quiet period before a pending sweep runs. Small next to what it saves a
+/// returning provider (its own catalog timer, minutes).
 const SWEEP_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Spawn the sweep task and return its handle.

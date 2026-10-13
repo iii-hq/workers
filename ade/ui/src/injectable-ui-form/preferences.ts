@@ -46,6 +46,17 @@ export function withFollowTurns(value: JsonValue, enabled: boolean): JsonObject 
   return updateTraces(value, (traces) => ({ ...traces, followTurns: enabled }))
 }
 
+/** The setup wizard opens by itself unless `onboarding.auto_open` is `false`. */
+export function onboardingAutoOpen(value: JsonValue): boolean {
+  return asObject(asObject(value).onboarding).auto_open !== false
+}
+
+/** Set the switch, keeping the section's other keys (`worker_sources`). */
+export function withOnboardingAutoOpen(value: JsonValue, enabled: boolean): JsonObject {
+  const root = asObject(value)
+  return { ...root, onboarding: { ...asObject(root.onboarding), auto_open: enabled } }
+}
+
 export function withActiveTraceView(value: JsonValue, id: string | null): JsonObject {
   return updateTraces(value, (traces) => ({ ...traces, activeViewId: id }))
 }

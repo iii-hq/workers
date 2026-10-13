@@ -7,7 +7,7 @@
  * shortcut that opens it.
  */
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { CommandPalette } from '@/components/CommandPalette'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import { useConversationsCtx } from '@/lib/conversations-context'
@@ -17,6 +17,11 @@ import {
   type KeybindingActionId,
   keybinding,
 } from '@/lib/keybindings/registry'
+import {
+  checkChromiumMissing,
+  useChromiumMissing,
+} from '@/lib/onboarding/chromium'
+import { requestOnboardingWizard } from '@/lib/onboarding/open'
 import { usePageCommands } from '@/lib/page-commands'
 import { usePaletteSources } from '@/lib/palette/providers'
 import type { PaletteEntry } from '@/lib/palette/sources'
@@ -110,10 +115,18 @@ export function PaletteHost({
   initialQuery,
 }: PaletteHostProps) {
   const { screenOptions, extPageTitles } = useScreenOptions()
-  const { conversations, select, createNew, active } = useConversationsCtx()
+  const { conversations, select, createNew, active, backend } =
+    useConversationsCtx()
+  const live = backend.id === 'real'
   const pageCommands = usePageCommands()
   const extPages = useExtPages()
   const sources = usePaletteSources()
+  // One read each time the palette opens (reused for 30 s), so the
+  // "Install Chromium" row shows only while the browser worker lacks it.
+  const chromiumMissing = useChromiumMissing()
+  useEffect(() => {
+    if (open && live) void checkChromiumMissing()
+  }, [open, live])
 
   // Both land on the workers page, filtered to what was picked: a worker by
   // its name, a function by the worker that registers it, falling back to the
@@ -157,6 +170,7 @@ export function PaletteHost({
     })
 
     const chats: PaletteEntry[] = conversations
+      .filter((conversation) => !conversation.draft)
       .slice(0, 40)
       .map((conversation) => ({
         id: `chat:${conversation.id}`,
@@ -275,6 +289,41 @@ export function PaletteHost({
         run: onOpenSettings,
       },
       {
+        id: 'action:setup',
+        kind: 'action',
+        title: 'Set up the harness',
+        detail: 'Connect models, store keys safely, and set up Judge',
+        keywords: [
+          'onboarding',
+          'provider',
+          'model',
+          'key',
+          'judge',
+          'wizard',
+          'welcome',
+        ],
+        run: () => requestOnboardingWizard(),
+      },
+      ...(chromiumMissing
+        ? [
+            {
+              id: 'action:install-chromium',
+              kind: 'action',
+              title: 'Install Chromium for the browser worker',
+              detail: 'Agents need it to open and check the pages they build',
+              keywords: [
+                'browser',
+                'chromium',
+                'chrome',
+                'download',
+                'install',
+                'setup',
+              ],
+              run: () => requestOnboardingWizard('browser'),
+            } satisfies PaletteEntry,
+          ]
+        : []),
+      {
         id: 'action:shortcuts',
         kind: 'action',
         title: 'Keyboard shortcuts',
@@ -310,6 +359,7 @@ export function PaletteHost({
     onOpenShortcuts,
     theme,
     onThemeChange,
+    chromiumMissing,
   ])
 
   return (

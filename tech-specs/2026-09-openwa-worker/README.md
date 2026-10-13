@@ -1,8 +1,10 @@
 # Viabilidade: OpenWA como worker iii
 
-Este documento preserva a pesquisa anterior à implementação. A solução escolhida
-foi o [worker Rust nativo](../../whatsapp/README.md); consulte a
-[verificação](verification.md) para o resultado implementado e seus limites.
+This directory preserves the original OpenWA research and Rust prototype notes.
+The current [WhatsApp worker](../../whatsapp/README.md) uses Go and whatsmeow.
+The [verification](verification.md) records the historical Rust prototype and
+its boundaries; current build and validation instructions are in the
+[Go development guide](../../whatsapp/docs/development.md).
 
 Pesquisa em 2026-09-30, sem implementação. Upstream inspecionado:
 [`rmyndharis/OpenWA`, commit `261fd4e902649328eb2eefd8ee592237cfd94fa2`][commit],

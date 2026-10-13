@@ -60,6 +60,9 @@ pub struct ByRoleTokens {
 pub struct Applied {
     #[serde(default)]
     pub initial_token_count: u64,
+    /// Function results were pruned or reduced to fit the budget.
+    #[serde(default)]
+    pub pruned: bool,
     #[serde(default)]
     pub compacted: bool,
     #[serde(default)]
@@ -99,6 +102,9 @@ pub struct CountTokensParams {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CountTokensOutput {
     pub tokens: u64,
+    /// The message tokens by role (system prompt and tools in no bucket).
+    #[serde(default)]
+    pub by_role: Option<ByRoleTokens>,
 }
 
 #[derive(Clone)]

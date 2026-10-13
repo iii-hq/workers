@@ -85,6 +85,10 @@ const C215_ROOTS_PREFIX: &str = "Allowed roots: ";
 const SHELL_FS_HINT: &str =
     "Use a path inside an allowed root, or the shell worker's shell::fs::* for other host paths.";
 
+/// C215 hint for a workspace-scoped call ([`PathResolver::resolve_in`]):
+/// `shell::fs::*` enforces the same session boundary, so it is no way out.
+const SESSION_HINT: &str = "The path is outside this session's folder and grants.";
+
 /// `"<p1>, <p2>"` display form for path lists in error messages.
 fn display_paths(paths: &[PathBuf]) -> String {
     paths
@@ -454,7 +458,7 @@ impl PathResolver {
             return Err(CoderError::OutsideBase(format!(
                 "scope_root is outside every allowed root: {scope_root}. \
                  {C215_ROOTS_PREFIX}{roots}. The session working directory \
-                 must canonicalize inside one of the allowed roots; {SHELL_FS_HINT}",
+                 must canonicalize inside one of the allowed roots.",
                 roots = self.roots_list()
             )));
         }
@@ -490,7 +494,7 @@ impl PathResolver {
             // generic C215 wording is correct and most actionable here.
             return Err(CoderError::OutsideBase(format!(
                 "path is outside the session directory {base} and outside \
-                 every allowed root: {path}. {C215_ROOTS_PREFIX}{roots}. {SHELL_FS_HINT}{hint}",
+                 every allowed root: {path}. {C215_ROOTS_PREFIX}{roots}. {SESSION_HINT}{hint}",
                 roots = self.roots_list(),
                 hint = crate::filesystem_access::request_suffix("C215", path, &canon),
             )));
@@ -1287,6 +1291,31 @@ mod tests {
             "C215 must explain the scope_root is unserveable; got: {msg}"
         );
         assert!(msg.contains(C215_ROOTS_PREFIX));
+    }
+
+    /// A workspace-scoped C215 must not send the agent to `shell::fs::*`,
+    /// which enforces the same session boundary (MOT-5167).
+    #[test]
+    fn resolve_in_c215_points_at_the_session_not_shell_fs() {
+        let tmp = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("session")).unwrap();
+        let r = PathResolver::new(&cfg_with(tmp.path().to_path_buf(), vec![])).unwrap();
+        let base = tmp.path().join("session").display().to_string();
+        let escape = outside.path().join("x.txt").display().to_string();
+        let escaped = r.resolve_in(&base, &escape).unwrap_err().to_string();
+        assert!(
+            escaped.contains("session's folder and grants"),
+            "got: {escaped}"
+        );
+        let unservable = r
+            .resolve_in(&outside.path().display().to_string(), "f.txt")
+            .unwrap_err()
+            .to_string();
+        for msg in [escaped, unservable] {
+            assert!(msg.starts_with("C215"), "got: {msg}");
+            assert!(!msg.contains("shell::fs"), "got: {msg}");
+        }
     }
 
     /// The live registration layer can trust a harness-provided `scope_root` by

@@ -86,7 +86,7 @@
             "properties": {"name": {"type": "string"}, "version": {"type": "string"}}
           }
         },
-        "config": {"type": "object"},
+        "config": {"type": ["object", "null"]},
         "experimental": {"type": "boolean"},
         "readme": {"type": "string"},
         "skills": {

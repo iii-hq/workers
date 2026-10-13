@@ -58,3 +58,23 @@ describe('ConversationSidebar kind filter', () => {
     expect(html).toContain('Clear filters')
   })
 })
+
+describe('ConversationSidebar drafts', () => {
+  it('leaves an unsent new chat off the list until its first send', () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <ConversationSidebar
+          conversations={[
+            { ...conversation('draft', 'new chat'), draft: true },
+          ]}
+          activeId="draft"
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onRemove={vi.fn()}
+        />
+      </TooltipProvider>,
+    )
+    expect(html).not.toContain('open new chat')
+    expect(html).toContain('No conversations yet.')
+  })
+})

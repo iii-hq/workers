@@ -18,9 +18,12 @@ pub fn functions_to_wire(tools: &[AgentFunction]) -> Vec<Value> {
                 // burst) — long enough to trip the router's 120s post-content
                 // idle guard and kill a healthy stream. GA successor of the
                 // fine-grained-tool-streaming-2025-05-14 beta header (which
-                // some gateways now reject). Trade-off: on an early stop the
-                // input may be partial/invalid JSON, which degraded_arguments
-                // salvages and the harness refuses to execute.
+                // some gateways now reject). Trade-off: the server no longer
+                // buffers or validates the input, so it can arrive partial
+                // (an early stop) or as invalid JSON on any stop, including a
+                // normal tool_use one; degraded_arguments salvages it (marking
+                // a syntax error `_invalid`) and the harness refuses to execute
+                // it, telling the model what was wrong.
                 "eager_input_streaming": true,
             })
         })

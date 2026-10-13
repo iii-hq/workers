@@ -4,6 +4,59 @@
 
 ### Added
 
+- **No polling in the IDE page.** Two new trigger types replace every timer
+  and focus re-read: `shell::git-changed` (bind `{ path }`; one event per
+  ~200 ms batch naming what moved in the repository — `head`, `index`,
+  `refs`, `worktrees`, `repository` — including a `.git` appearing in a
+  folder that had none) and `shell::turns::changed` (bind
+  `{ session_id }`; fires when the session's change history is stored).
+  The branch chip no longer runs three gits on every click and focus
+  change: it reads again when the worker says the repository moved, reads
+  only `git status` when files change, and leaves a folder in no repository
+  alone until one appears. The Git window's log follows the same feed
+  instead of window focus, the Timeline reads the turn list on the
+  worker's word instead of every 1.5 s, the Source Control status follows
+  stages and commits made in a terminal, and "Add to stack" (and the chat
+  card of a `coder::scaffold-worker` that started its worker) follows the
+  `compose-operation` events of an operation bound before it starts
+  instead of polling `compose::operation` and `compose::status` every
+  second.
+- **Branch actions in the branch menu.** The IDE header's branch chip (the
+  chat's keeps its plain list, each row with its Merge and Delete) opens with
+  Update Project, Push…, New Branch… and Checkout Tag or Revision…, then
+  Recent, Local, Remote and Tags, each part set off by a separator.
+  Resting the pointer on a branch or a tag (or its ›, or →) opens its
+  actions in a menu beside the list, which stays open: Checkout (in place),
+  New Branch from, Checkout and Rebase onto the current branch, Compare
+  with the current branch, Show Diff with Working Tree, Rebase onto, Merge
+  into, New Worktree from, Update, Push…, Tracked Branch, Rename… and
+  Delete, which removes the branch's worktree when it has one (never the
+  one the IDE is in). Tracked Branch opens the remote branch's own actions
+  in a third menu beside, adding Pull Using Rebase/Merge and a Delete on its
+  remote after a confirmation. A tag offers Checkout, New Branch from,
+  Compare, Show Diff, Merge into, New Worktree from, Push to the remote and
+  Delete. Compare with opens an editor tab, "Compare: X and Y", with two
+  logs one over the other (the commits each has that the other lacks), each
+  with its own text, user, date and path filters and the picked commit's
+  files and message beside it. Show Diff with Working Tree opens a Changes
+  view in the sidebar: the files that differ, as a tree under the
+  repository with a count on every folder, a Swap branches that turns every
+  diff the other way, and each file's diff a click away. A checkout that would overwrite local changes lists
+  them and offers Smart Checkout (stashed across it and brought back) or
+  Force Checkout; a remote branch whose local branch has commits of its own
+  offers to drop them or rebase them onto it, and one with none is reset to
+  it and tracks it. In the IDE the rows lose their merge and delete
+  buttons, and the menu shows only the outcomes of what was asked from it. Clicking a branch
+  row still opens its worktree. A stopped rebase or merge says how to
+  continue or abort.
+- **Remove several worktrees at once.** In the Git window's Worktrees tab,
+  ⌘-click (Ctrl-click off a Mac) and Shift-click pick several worktrees, as
+  in a file manager, and the rail's Remove (or Delete) removes them all
+  after one confirmation that lists what each would lose; one that can't go
+  when its turn comes stays, with why, and the outcome is one line. Neither
+  the main worktree nor the one the IDE is in is removed. Remove is the
+  rail's, the menu's and the Delete key's alone: the rows no longer carry
+  it. Prune, on the rail, drops every worktree whose folder is gone at once.
 - **Commit panel in Source control.** The view becomes a commit panel
   with Commit, Stash and History tabs. Commit lists every uncommitted change
   (HEAD → working copy) in Changes and Unversioned files groups with a tick
@@ -116,6 +169,12 @@
 
 ### Changed
 
+- **Dot entries show in the explorer by default** (`.github`, `.gitignore`,
+  `.cargo`…), as in other IDEs; the eye in the header still hides them, and
+  git's own `.git` folder stays out. The choice is saved as `hideDotfiles`;
+  a saved `showHidden: false` from before was only the old default and no
+  longer hides them.
+
 - **Renamed: `shell` → `ide`.** The worker name, binary, Cargo package and
   registry entry carry the new name and dependents pin `ide`; the `shell::*`
   function ids, the `shell::changed` trigger, the `shell` configuration entry,
@@ -157,6 +216,33 @@
   every time — and the walk is name-sorted.
 
 ### Fixed
+
+- **A fresh project no longer fails on its first restart.** On the first boot
+  the worker looked for a stored value before offering its default, found the
+  default the stack injects for the entry, and offered nothing, so the engine
+  saved an empty value. The next start read that empty value back and the
+  worker exited with a schema error, leaving the IDE and anything depending on
+  it stopped. The default is now always offered; the engine applies it only
+  when nothing is saved, so a stored value is never replaced. A project
+  already stuck on the empty value saves the default on its first start after
+  upgrading and comes up on the start after that.
+
+- **A protected file says so instead of "no longer here".** A file on the
+  worker's protected paths (`code.non_accessible_globs`: `.env`, `.env.*`,
+  keys, `secrets/`) is listed but never read, by agents or by the IDE, and
+  its read fails exactly like a missing file's. The editor now tells them
+  apart by the globs `coder::info` reports: it shows "Protected file" with
+  where the list lives (Settings › IDE) and that the terminal can still read
+  it, and the tab is no longer struck through as if the file were gone.
+
+- **Commit, stash and rollback no longer fail with "could not write index".**
+  The page re-reads git on every file change, and its `git status` took
+  `index.lock` to refresh stat data, racing the panel's own commit, stash
+  and rollback. Every read now runs with `--no-optional-locks`, as the
+  worker's own git already did. A lock held by another process (an agent,
+  another editor, a terminal in the same repository) is waited out: the
+  command runs again after 150 ms, 300 ms, 600 ms and 1.5 s, and a stash
+  only when no new stash entry was stored.
 
 - **A turn waited ~50s on the snapshot of a VM disk image.** The turn
   history photographs the session root before each turn with `git add -A`,

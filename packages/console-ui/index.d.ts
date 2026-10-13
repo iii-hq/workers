@@ -443,17 +443,38 @@ export interface ComposerControlProps {
   metadata: Readonly<Record<string, unknown>>
   /** Merge keys into the metadata; an `undefined` value removes the key. */
   setMetadata(patch: Record<string, unknown>): void
+  /**
+   * The session's working directory; `null` when it has none. A control
+   * moves it with `host.chat.requestWorkingDirectoryChange`. Absent on
+   * consoles that predate it.
+   */
+  workingDir?: string | null
+  /**
+   * The composer's options are locked, as the folder beside them is: a turn
+   * is running or the harness is unavailable. Absent on consoles that
+   * predate it; `isStreaming` is the fallback.
+   */
+  locked?: boolean
 }
 
 /**
- * A compact per-session setting rendered in the composer's footer, beside
- * the model picker: a value that applies to the session from its next turn
- * on, the way the model does. Duplicate `id`: last registration wins.
+ * A compact per-session control rendered in the composer: beside the model
+ * picker (a value that applies to the session from its next turn on, the way
+ * the model does), or with `placement: 'project'` in the working-directory
+ * strip after the folder. Duplicate `id`: last registration wins.
  */
 export interface ComposerControlRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
   render: React.ComponentType<ComposerControlProps>
+  /**
+   * `footer` (the default) sits beside the model picker. `project` sits in
+   * the working-directory strip above the composer, right after the folder,
+   * for what belongs to that folder (its git branch); it shows only where
+   * the console shows that strip. Consoles that predate it render every
+   * control in the footer.
+   */
+  placement?: 'footer' | 'project'
 }
 
 /** Props for a worker-owned annotation detail rendered in the transcript. */
@@ -488,6 +509,53 @@ export interface OverlayRegistration {
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
+/** One labelled value of a mention preview card. */
+export interface MentionField {
+  label: string
+  value: string
+  /** `neutral` | `info` | `success` | `warning` | `danger`. */
+  tone?: string
+}
+
+/** What clicking a mention opens: a page, a chat session or an http(s) URL. */
+export type MentionOpen =
+  | { page: string; context?: JsonValue }
+  | { session: string }
+  | { url: string }
+
+/** What a worker's mention get function answers for one id. */
+export interface MentionView {
+  id: string
+  label: string
+  hint?: string
+  description?: string
+  icon?: string
+  color?: string
+  fields?: MentionField[]
+  open?: MentionOpen
+  summary?: string
+  /** The worker's domain object — what its own preview renders from. */
+  data?: unknown
+  updated_at?: string
+}
+
+export interface MentionRendererProps {
+  /** The provider's token name, e.g. `kanban`. */
+  provider: string
+  view: MentionView
+  /** Open the mention's target, as clicking its pill does. */
+  open(): void
+}
+
+/**
+ * A worker's own drawing of its mentions: the preview card a pill shows on
+ * hover (about 22rem wide). The generic card covers the rest.
+ */
+export interface MentionRendererRegistration {
+  provider: string
+  Preview: React.ComponentType<MentionRendererProps>
+}
+
 export interface Host {
   iii: ExtensionIii
   /** The curated component record — same components as the named exports below. */
@@ -497,6 +565,15 @@ export interface Host {
   uiClasses: UiClasses
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  /**
+   * Import a `console:module` asset on demand, e.g.
+   * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
+   * console serves modules but never imports them at mount, so code only
+   * one view needs stays out of every tab's first load. Resolves to the
+   * module namespace; rejects when nothing is served at `/ui/<path>`.
+   * Absent on older consoles; feature-detect.
+   */
+  importModule?<T = unknown>(path: string): Promise<T>
   pages: { register(page: PageRegistration): () => void }
   /**
    * The console's remembered working directories, most recent first — the
@@ -566,6 +643,15 @@ export interface Host {
   /** Optional on consoles that predate provider-specific configuration UI. */
   providerConfigForms?: {
     register(providerId: string, component: React.ComponentType<ProviderConfigFormProps>): () => void
+  }
+  /**
+   * Chat mentions (`@<provider>(id="…")`). The provider itself is declared by
+   * the worker's backend (`metadata.mention` on its get function, see
+   * `crates/mention-contract`); this slot only draws its preview. Optional:
+   * absent on consoles that predate worker mentions.
+   */
+  mentions?: {
+    registerRenderer(renderer: MentionRendererRegistration): () => void
   }
   /**
    * Optional: absent on consoles that predate session chips. Feature-detect
@@ -664,6 +750,7 @@ export interface UiClasses {
   readonly treeItemTrailing: 'iii-ui-tree-item__trailing'
   readonly treeItemMeta: 'iii-ui-tree-item__meta'
   readonly treeItemAction: 'iii-ui-tree-item__action'
+  readonly treeItemActions: 'iii-ui-tree-item__actions'
   readonly card: 'iii-ui-card'
   readonly cardHeader: 'iii-ui-card__header'
   readonly cardBody: 'iii-ui-card__body'
@@ -721,6 +808,8 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  /** A page of a picker that slides between pages: `data-active`, `--picker-page-offset`. */
+  readonly motionPickerPage: 'iii-ui-motion-picker-page'
   readonly eyebrow: 'iii-ui-eyebrow'
   readonly toolbar: 'iii-ui-toolbar'
   readonly toolbarEnd: 'iii-ui-toolbar__end'
@@ -1001,6 +1090,9 @@ export interface DropdownMenuContentProps extends React.HTMLAttributes<HTMLDivEl
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
+  /** As the menu opens and moves focus into itself; `preventDefault()`
+      keeps that focus from its first item, to focus another control. */
+  onOpenAutoFocus?(event: Event): void
 }
 export declare const DropdownMenuContent: React.ComponentType<DropdownMenuContentProps>
 export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -1499,6 +1591,9 @@ export interface TabsTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonE
 export declare const TabsTrigger: React.ComponentType<TabsTriggerProps>
 export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
   value: string
+  /** Keep the panel mounted while another tab shows (its state, scroll and
+      selection survive); `[data-state="inactive"]` then marks it for hiding. */
+  forceMount?: true
 }
 export declare const TabsContent: React.ComponentType<TabsContentProps>
 
@@ -1703,6 +1798,40 @@ export interface ModelPickerProps {
 /** The Console's responsive searchable model catalog picker. */
 export declare const ModelPicker: React.ComponentType<ModelPickerProps>
 
+export interface SecretKeyFieldProps {
+  /** Secret name — also the environment variable the key is looked up under. */
+  name: string
+  /** The field's configuration value: `secret://NAME`, `env://NAME`, `${VAR}`, a literal, or empty. */
+  value: string | undefined
+  /** Write the field: a `secret://` or `env://` reference, or `undefined` to clear it. */
+  onChange: (next: string | undefined) => unknown
+  /** Workers allowed to read the key. */
+  consumers: readonly string[]
+  label?: string
+  /** What the consumer reports about the credential (llm-router's provider status). */
+  status?: { connected?: boolean; source?: string; error?: string; checking?: boolean; detail?: string }
+  keysUrl?: string
+  /**
+   * The consumer also resolves `env://NAME` through the secrets worker (as
+   * llm-router does): offer keeping the key as an environment variable in the
+   * project's `.env`. Consoles before it ignore the prop and offer the
+   * encrypted store only.
+   */
+  environment?: boolean
+  disabled?: boolean
+  className?: string
+}
+/**
+ * One credential, kept by the `secrets` worker: encrypted, with only
+ * `secret://NAME` in configuration, or — with `environment` — as a variable
+ * in the project's `.env`, with `env://NAME`. Reuses a key found on the
+ * machine, keeps a stored one or takes a pasted one; moves a plain-text or
+ * `${VAR}` value into the secrets worker; starts the secrets worker when it
+ * is not running. Read it from `host.components.SecretKeyField` and fall back
+ * to a plain input when absent: Consoles before it do not have it.
+ */
+export declare const SecretKeyField: React.ComponentType<SecretKeyFieldProps>
+
 export interface WorkerConfigurationDialogProps {
   /** Which worker to open in global Settings; `null` does nothing. */
   configurationId: string | null
@@ -1714,6 +1843,25 @@ export interface WorkerConfigurationDialogProps {
  * `configurationId` in `host.pages.register` instead.
  */
 export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>
+
+export interface WorkerConfigurationPanelProps {
+  /** The configuration entry to edit (a worker's `<worker>::configuration-id`); `null` renders nothing. */
+  configurationId: string | null
+  /** Unsaved edits appeared or went away: guard leaving the panel. */
+  onDirtyChange?: (dirty: boolean) => void
+  /** A save landed; receives the stored value. */
+  onSaved?: (value: JsonValue) => void
+  className?: string
+}
+/**
+ * One worker's settings inline, where the choice is made (a picker page):
+ * the Settings editor — the worker's registered form, validation and the
+ * save bar — without the Settings chrome; the surface gives the title and
+ * the way back. It fills a flex column and scrolls inside. Read it from
+ * `host.components.WorkerConfigurationPanel` and fall back to
+ * `WorkerConfigurationDialog` when absent: Consoles before it lack it.
+ */
+export declare const WorkerConfigurationPanel: React.ComponentType<WorkerConfigurationPanelProps>
 
 export interface DirectoryPickerProps {
   /** The chosen directory (absolute, as the shell worker echoed it). */

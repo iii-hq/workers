@@ -1032,7 +1032,11 @@ a.iii-ui-tree-item {
 }
 
 .iii-ui-segmented__item {
+  display: inline-flex;
   min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
   padding: 0.25rem 0.75rem;
   border: 0;
   border-radius: var(--radius-xs);
@@ -1130,13 +1134,13 @@ a.iii-ui-tree-item {
 /* A checked box keeps its accent fill under the pointer: this selector
    outranks the checked rule below, so it has to step aside itself. */
 .iii-ui-checkbox:hover
-  .iii-ui-checkbox__control:not(
-    :has(
-      .iii-ui-checkbox__input:disabled,
-      .iii-ui-checkbox__input:checked,
-      .iii-ui-checkbox__input:indeterminate
-    )
-  ) {
+.iii-ui-checkbox__control:not(
+  :has(
+    .iii-ui-checkbox__input:disabled,
+    .iii-ui-checkbox__input:checked,
+    .iii-ui-checkbox__input:indeterminate
+  )
+) {
   background: var(--color-surface-hover);
 }
 
@@ -1459,8 +1463,18 @@ a.iii-ui-tree-item {
   }
 }
 
-/* viewport: phone chrome — 48px touch hit area */
+.iii-ui-selector-search {
+  height: 2.5rem;
+  font-size: 0.8125rem;
+}
+
+/* viewport: phone chrome — 48px touch hit area and 16px search text */
 @media (max-width: 640px) {
+  .iii-ui-selector-search {
+    height: 3rem;
+    font-size: 1rem;
+  }
+
   .iii-ui-switch__input,
   .iii-ui-checkbox__input {
     inset: auto;

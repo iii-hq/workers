@@ -74,6 +74,8 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  /** A page of a picker that slides between pages: `data-active`, `--picker-page-offset`. */
+  readonly motionPickerPage: 'iii-ui-motion-picker-page'
   readonly eyebrow: 'iii-ui-eyebrow'
   readonly toolbar: 'iii-ui-toolbar'
   readonly toolbarEnd: 'iii-ui-toolbar__end'

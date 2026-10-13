@@ -31,12 +31,15 @@ pub fn is_legacy_generation(model_id: &str) -> bool {
         || base.starts_with("o4")
 }
 
-/// Hand-maintained metadata for the families we know (USD per MTok; verify
-/// against openai.com/pricing before release). A missing row only degrades
-/// display polish and cost enrichment, never routing.
+/// Hand-maintained metadata from the official OpenAI model specifications.
+/// Unknown families use conservative limits; pricing is USD per MTok.
 fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, Option<Pricing>)> {
     match base {
+        // GPT-6 family: tiered pricing above 272K input, so no flat rates.
         "gpt-6-astra" => Some(("GPT-6 Astra", 1_050_000, 128_000, true, None)),
+        "gpt-6.1-sol" => Some(("GPT-6.1 Sol", 1_050_000, 128_000, true, None)),
+        "gpt-6-sol" => Some(("GPT-6 Sol", 1_050_000, 128_000, true, None)),
+        "gpt-6-luna" => Some(("GPT-6 Luna", 1_050_000, 128_000, true, None)),
         "gpt-5.2" => Some(("GPT-5.2", 400_000, 128_000, true, Some(price(1.75, 14.0)))),
         "gpt-5.1" => Some(("GPT-5.1", 400_000, 128_000, false, Some(price(1.25, 10.0)))),
         "gpt-5-mini" => Some((
@@ -61,8 +64,8 @@ fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, Option<Prici
     }
 }
 
-/// One live id → catalog Model: known-family metadata when the base id
-/// matches, conservative defaults otherwise. Tools and automatic caching are
+/// One live id → catalog Model: known-family metadata or documented token
+/// limits, conservative defaults otherwise. Tools and automatic caching are
 /// uniform across the chat families we admit; vision/thinking/xhigh stay
 /// unknown for unrecognized families (reasoning.rs id-patterns decide per
 /// request).
@@ -78,6 +81,7 @@ pub fn enrich(id: &str) -> Model {
             input_limit: None,
             supports_thinking: Some(true),
             supports_xhigh: Some(xhigh),
+            supports_thinking_off: Some(crate::reasoning::can_disable(id)),
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: Some(true),
@@ -87,24 +91,32 @@ pub fn enrich(id: &str) -> Model {
             pricing,
             speech: None,
         },
-        None => Model {
-            id: id.into(),
-            provider: PROVIDER_ID.into(),
-            display_name: None,
-            context_window: 128_000,
-            max_output_tokens: 16_384,
-            input_limit: None,
-            supports_thinking: None,
-            supports_xhigh: None,
-            reasoning_efforts: None,
-            supports_tools: Some(true),
-            supports_vision: None,
-            supports_cache: Some(true),
-            supports_structured_output: None,
-            thinking_budgets: None,
-            pricing: None,
-            speech: None,
-        },
+        None => {
+            let (context_window, max_output_tokens) = match base {
+                "gpt-5.5" | "gpt-5.5-pro" | "gpt-5.4" | "gpt-5.4-pro" => (1_050_000, 128_000),
+                "gpt-5.3-codex" | "gpt-5.4-mini" | "gpt-5.4-nano" => (400_000, 128_000),
+                _ => (128_000, 16_384),
+            };
+            Model {
+                id: id.into(),
+                provider: PROVIDER_ID.into(),
+                display_name: None,
+                context_window,
+                max_output_tokens,
+                input_limit: None,
+                supports_thinking: None,
+                supports_xhigh: None,
+                supports_thinking_off: None,
+                reasoning_efforts: None,
+                supports_tools: Some(true),
+                supports_vision: None,
+                supports_cache: Some(true),
+                supports_structured_output: None,
+                thinking_budgets: None,
+                pricing: None,
+                speech: None,
+            }
+        }
     }
 }
 
@@ -206,8 +218,29 @@ mod tests {
     }
 
     #[test]
+    fn enrich_marks_the_gpt_6_sol_and_luna_families_as_reasoning() {
+        // These ids reach `enrich` from live discovery; leaving `supports_thinking`
+        // unknown hides every effort choice in the console, Off included.
+        for (id, display, off) in [
+            ("gpt-6.1-sol", "GPT-6.1 Sol", false),
+            ("gpt-6-sol", "GPT-6 Sol", true),
+            ("gpt-6-luna", "GPT-6 Luna", true),
+            ("gpt-6-sol-2026-09-15", "GPT-6 Sol", true),
+        ] {
+            let m = enrich(id);
+            assert_eq!(m.display_name.as_deref(), Some(display), "{id}");
+            assert_eq!(m.context_window, 1_050_000, "{id}");
+            assert_eq!(m.max_output_tokens, 128_000, "{id}");
+            assert_eq!(m.supports_thinking, Some(true), "{id}");
+            assert_eq!(m.supports_xhigh, Some(true), "{id}");
+            assert_eq!(m.supports_thinking_off, Some(off), "{id}");
+            assert!(m.pricing.is_none(), "{id}: tiered pricing is not flat");
+        }
+    }
+
+    #[test]
     fn enrich_defaults_conservatively_for_unknown_families() {
-        let m = enrich("gpt-5.4-pro");
+        let m = enrich("gpt-unlisted");
         assert_eq!(m.display_name, None);
         assert_eq!(m.context_window, 128_000);
         assert_eq!(m.max_output_tokens, 16_384);

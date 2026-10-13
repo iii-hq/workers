@@ -83,9 +83,8 @@ export function codeFontFamily(): string {
 
 /**
  * (Re)define + apply the token-derived theme for the CURRENT `data-theme`.
- * Token rules mirror `syntaxTheme` (lib/syntax.tsx): monochrome ink with the
- * single accent hit reserved for literals — keys strongest, strings faint,
- * punctuation ghost.
+ * Monochrome ink with the single accent hit reserved for literals — keys
+ * strongest, strings, comments, and structural punctuation in faint ink.
  */
 function syncTheme(): void {
   const root = document.documentElement
@@ -103,6 +102,10 @@ function syncTheme(): void {
   const inkFaint = token('--color-ink-faint', dark ? '#a6a6a6' : '#6b6865')
   const inkGhost = token('--color-ink-ghost', dark ? '#6f6f6f' : '#a3a09c')
   const accent = token('--color-accent', dark ? '#28a8f7' : '#b8420f')
+  const alertStrong = token(
+    '--color-alert-strong',
+    dark ? '#ff4d63' : '#c60021',
+  )
   const panel = token('--color-panel', dark ? '#111111' : '#fafafa')
   const surface = token(
     '--color-surface',
@@ -122,7 +125,7 @@ function syncTheme(): void {
     inherit: false,
     rules: [
       { token: '', foreground: t(ink) },
-      { token: 'comment', foreground: t(inkGhost), fontStyle: 'italic' },
+      { token: 'comment', foreground: t(inkFaint), fontStyle: 'italic' },
       { token: 'string', foreground: t(inkFaint) },
       // JSON object keys carry the strongest ink, like Prism's `property`.
       { token: 'string.key.json', foreground: t(ink) },
@@ -130,9 +133,9 @@ function syncTheme(): void {
       { token: 'number', foreground: t(accent), fontStyle: 'italic' },
       { token: 'keyword', foreground: t(accent), fontStyle: 'italic' },
       { token: 'constant', foreground: t(accent), fontStyle: 'italic' },
-      { token: 'delimiter', foreground: t(inkGhost) },
-      { token: 'operator', foreground: t(inkGhost) },
-      { token: 'operators', foreground: t(inkGhost) },
+      { token: 'delimiter', foreground: t(inkFaint) },
+      { token: 'operator', foreground: t(inkFaint) },
+      { token: 'operators', foreground: t(inkFaint) },
       { token: 'tag', foreground: t(ink) },
       { token: 'attribute.name', foreground: t(inkFaint) },
       { token: 'type', foreground: t(ink) },
@@ -148,8 +151,15 @@ function syncTheme(): void {
       'editor.selectionBackground': surfaceSelected,
       'editor.inactiveSelectionBackground': surface,
       'editor.lineHighlightBackground': '#00000000',
-      'editorLineNumber.foreground': inkGhost,
-      'editorLineNumber.activeForeground': inkFaint,
+      'editorLineNumber.foreground': inkFaint,
+      'editorLineNumber.activeForeground': ink,
+      'editorBracketHighlight.foreground1': inkFaint,
+      'editorBracketHighlight.foreground2': inkFaint,
+      'editorBracketHighlight.foreground3': inkFaint,
+      'editorBracketHighlight.foreground4': inkFaint,
+      'editorBracketHighlight.foreground5': inkFaint,
+      'editorBracketHighlight.foreground6': inkFaint,
+      'editorBracketHighlight.unexpectedBracket.foreground': alertStrong,
       'editorBracketMatch.background': `${accent}26`,
       'editorBracketMatch.border': `${accent}00`,
       'editorWidget.background': panel,

@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-state"
-version = "0.22.17"
+version = "0.22.18"
 edition = "2024"
 description = "State worker for iii — key-value state with reactive change triggers (state trigger type, state::* functions)"
 license = "Apache-2.0"
@@ -28,7 +28,7 @@ iii-helpers = "0.23"
 iii-console-ui = { path = "../crates/console-ui" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 serde_yaml = "0.9"
 anyhow = "1"

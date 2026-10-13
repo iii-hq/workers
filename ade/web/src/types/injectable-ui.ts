@@ -510,17 +510,38 @@ export interface ComposerControlProps {
   metadata: Readonly<Record<string, unknown>>
   /** Merge keys into the metadata; an `undefined` value removes the key. */
   setMetadata(patch: Record<string, unknown>): void
+  /**
+   * The session's working directory; `null` when it has none. A control
+   * moves it with `host.chat.requestWorkingDirectoryChange`. Absent on
+   * consoles that predate it.
+   */
+  workingDir?: string | null
+  /**
+   * The composer's options are locked, as the folder beside them is: a turn
+   * is running or the harness is unavailable. Absent on consoles that
+   * predate it; `isStreaming` is the fallback.
+   */
+  locked?: boolean
 }
 
 /**
- * A compact per-session setting rendered in the composer's footer, beside
- * the model picker: a value that applies to the session from its next turn
- * on, the way the model does. Duplicate `id`: last registration wins.
+ * A compact per-session control rendered in the composer: beside the model
+ * picker (a value that applies to the session from its next turn on, the way
+ * the model does), or with `placement: 'project'` in the working-directory
+ * strip after the folder. Duplicate `id`: last registration wins.
  */
 export interface ComposerControlRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
   render: React.ComponentType<ComposerControlProps>
+  /**
+   * `footer` (the default) sits beside the model picker. `project` sits in
+   * the working-directory strip above the composer, right after the folder,
+   * for what belongs to that folder (its git branch); it shows only where
+   * the console shows that strip. Consoles that predate it render every
+   * control in the footer.
+   */
+  placement?: 'footer' | 'project'
 }
 
 /**
@@ -538,6 +559,60 @@ export interface OverlayRegistration {
   render: React.ComponentType
 }
 
+/** One labelled value of a mention preview card. */
+export interface MentionField {
+  label: string
+  value: string
+  /** `neutral` | `info` | `success` | `warning` | `danger`. */
+  tone?: string
+}
+
+/** What clicking a mention opens: a page, a chat session or an http(s) URL. */
+export type MentionOpen =
+  | { page: string; context?: JsonValue }
+  | { session: string }
+  | { url: string }
+
+/**
+ * What a worker's mention get function answers for one id — see
+ * `crates/mention-contract` (`MentionView`).
+ */
+export interface MentionView {
+  id: string
+  label: string
+  hint?: string
+  description?: string
+  icon?: string
+  color?: string
+  fields?: MentionField[]
+  open?: MentionOpen
+  /** One line for an agent. */
+  summary?: string
+  /** The worker's domain object (what its own preview renders from). */
+  data?: unknown
+  updated_at?: string
+}
+
+export interface MentionRendererProps {
+  /** The provider's token name, e.g. `kanban`. */
+  provider: string
+  view: MentionView
+  /** Open the mention's target, as clicking its pill does. */
+  open(): void
+}
+
+/**
+ * A worker's own drawing of its mentions. The console's generic card
+ * (icon, label, description, fields) is used whenever this is absent or
+ * throws.
+ */
+export interface MentionRendererRegistration {
+  /** Token name the renderer draws: `@<provider>(id="…")`. */
+  provider: string
+  /** Replaces the preview card the pill shows on hover (about 22rem wide). */
+  Preview: React.ComponentType<MentionRendererProps>
+}
+
 /**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
@@ -549,6 +624,15 @@ export interface Host {
   uiClasses: ConsoleApi['uiClasses']
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  /**
+   * Import a `console:module` asset on demand, e.g.
+   * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
+   * console serves modules but never imports them at mount, so code only
+   * one view needs stays out of every tab's first load. Resolves to the
+   * module namespace; rejects when nothing is served at `/ui/<path>`.
+   * Absent on older consoles; feature-detect.
+   */
+  importModule?<T = unknown>(path: string): Promise<T>
   workspace?: { recentDirectories(): string[] }
   /** Best-effort visible-screen lease for finite foreground work (e.g. dictation).
    * Release on completion/error/cancel; also auto-released on script dispose. */
@@ -599,6 +683,14 @@ export interface Host {
       providerId: string,
       component: React.ComponentType<ProviderConfigFormProps>,
     ): () => void
+  }
+  /**
+   * Chat mentions (`@<provider>(id="…")`). Providers are declared by the
+   * worker's backend (function metadata); this slot only lets a worker draw
+   * its own preview. Absent on older consoles; feature-detect.
+   */
+  mentions?: {
+    registerRenderer(renderer: MentionRendererRegistration): () => void
   }
   chat: {
     /** Open a new, editable human chat draft without sending or creating a session. */
@@ -660,7 +752,7 @@ export type SetupFn = (
   host: Host,
 ) => void | (() => void) | Promise<void | (() => void)>
 
-export type UiAssetKind = 'script' | 'style'
+export type UiAssetKind = 'script' | 'style' | 'module'
 
 export interface UiAssetRef {
   path: string

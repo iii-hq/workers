@@ -3,14 +3,15 @@
    them are ticked for the next commit, the current branch, and the verbs
    that act on them. Tracked changes start ticked and unversioned files
    start unticked; a tick survives reloads for as long as the path stays
-   changed. Loaded only while the view is shown, re-read on every git refresh. */
+   changed. Loaded only while the view is shown, from the page's own git
+   status. */
 
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { changeSummary, entryPaths } from './commit-tree'
-import { type GitComparisonEntry, gitComparison } from './git'
-import { gitCommitChanges, gitDiscard, gitPush, gitStashPush } from './git-actions'
+import { type GitComparisonEntry, type GitState, gitUncommittedFrom } from './git'
+import { gitCommitChanges, gitDiscard, gitIgnore, gitLocalPatch, gitPush, gitStage, gitStashPush } from './git-actions'
 
 export type SourceControlPhase = 'idle' | 'loading' | 'ready' | 'not-a-repo' | 'error'
 
@@ -47,35 +48,62 @@ export interface SourceControlState {
   commit: (options: CommitOptions) => Promise<boolean>
   /** Set these entries aside in a new stash; the rest of the working tree stays. */
   stash: (entries: readonly GitComparisonEntry[], message: string) => Promise<boolean>
+  /** `git add` these unversioned entries. */
+  add: (entries: readonly GitComparisonEntry[]) => Promise<boolean>
+  /** List root-relative paths (a folder ending in `/`) in the root's .gitignore. */
+  ignore: (paths: readonly string[]) => Promise<boolean>
+  /** Runs `action` with the panel's busy state; what it resolves to (or
+      `label failed: …`) is the status line, and the page reads its status
+      again afterwards. Resolves true on success. */
+  run: (label: string, action: () => Promise<string>) => Promise<boolean>
+  /** These entries' changes as one patch, handed to `use`; what it resolves
+      to is the status line. Nothing in the working tree moves. */
+  patch: (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => Promise<void>
 }
 
-interface ExecResponse {
-  exit_code: number | null
-  stdout: string
-}
+const files = (count: number) => `${count} ${count === 1 ? 'file' : 'files'}`
 
-async function currentBranch(host: Host, root: string): Promise<string | null> {
-  try {
-    const out = await host.iii.trigger<ExecResponse>('shell::exec', {
-      command: 'git',
-      args: ['rev-parse', '--abbrev-ref', 'HEAD'],
-      cwd: root,
-      timeout_ms: 10_000,
+/** The fields a derive can change; the content sources follow from them. */
+function sameEntries(a: readonly GitComparisonEntry[], b: readonly GitComparisonEntry[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((entry, index) => {
+      const other = b[index]
+      return (
+        entry.path === other.path &&
+        entry.status === other.status &&
+        entry.from === other.from &&
+        entry.renameFrom === other.renameFrom &&
+        entry.staged === other.staged &&
+        entry.x === other.x &&
+        entry.y === other.y &&
+        entry.before.kind === other.before.kind &&
+        entry.after.kind === other.after.kind
+      )
     })
-    if (out.exit_code !== 0) return null
-    const name = out.stdout.trim()
-    return name === '' ? null : name
-  } catch {
-    return null
-  }
+  )
 }
 
+/** `paths` without the ones no longer changed; the same set when none left. */
+function onlyLive(paths: ReadonlySet<string>, live: ReadonlySet<string>): ReadonlySet<string> {
+  for (const path of paths) if (!live.has(path)) return new Set([...paths].filter((kept) => live.has(kept)))
+  return paths
+}
+
+/** `page` is the page's own git status from `gitChanges` and the call that
+    reads it again, which bumps `refreshEpoch` while the view is active
+    unless asked to be quiet. The panel derives its view from that status
+    instead of reading git itself, again on a new status object and on
+    every `refreshEpoch`: its own reads (HEAD's diff) may have failed, or
+    moved with file bytes the status does not carry. `onChanged` is
+    expected to read the page's status again. */
 export function useSourceControl(
   host: Host,
   root: string | null,
   refreshEpoch: number,
   active: boolean,
   onChanged: () => void,
+  page: { git: GitState | null; refresh: (options?: { quiet: boolean }) => Promise<unknown> },
 ): SourceControlState {
   const [phase, setPhase] = useState<SourceControlPhase>('idle')
   const [branch, setBranch] = useState<string | null>(null)
@@ -88,34 +116,42 @@ export function useSourceControl(
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<SourceControlState['note']>(null)
   const seqRef = useRef(0)
-  const [reloadEpoch, setReloadEpoch] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
+  const { git: pageGit, refresh: refreshPage } = page
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the epochs are reload triggers
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the epoch is a reload trigger
   useEffect(() => {
-    if (!active || root === null) return
+    // Every run supersedes the read in flight, even one that reads nothing:
+    // the page clears its status on a root switch, and a derive of the last
+    // root's status must not land on the new root.
     const seq = ++seqRef.current
+    if (!active || root === null || pageGit === null) return
     setPhase((current) => (current === 'ready' ? current : 'loading'))
-    void Promise.all([gitComparison(host, root, 'uncommitted'), currentBranch(host, root)])
-      .then(([state, branchName]) => {
+    void gitUncommittedFrom(host, root, pageGit)
+      .then((state) => {
         if (seqRef.current !== seq) return
         setRefreshing(false)
-        setBranch(branchName)
         if (state.kind === 'not-a-repo') {
+          setBranch(null)
           setPhase('not-a-repo')
           setAll([])
           return
         }
+        // A failed read keeps the branch: the commit box starts a fresh
+        // message when the branch changes.
         if (state.kind === 'error') {
           setPhase('error')
           setError(state.message)
           return
         }
-        setAll(state.changes)
+        if (pageGit.kind === 'ready') setBranch(pageGit.status.branch)
+        // An unchanged derive keeps every identity, so a refresh that moved
+        // nothing renders nothing: thousands of rows would redraw otherwise.
+        setAll((current) => (sameEntries(current, state.changes) ? current : state.changes))
         // Forget ticks for paths that are no longer changed.
         const live = new Set(state.changes.map((change) => change.path))
-        setExcluded((current) => new Set([...current].filter((path) => live.has(path))))
-        setAdopted((current) => new Set([...current].filter((path) => live.has(path))))
+        setExcluded((current) => onlyLive(current, live))
+        setAdopted((current) => onlyLive(current, live))
         setError(null)
         setPhase('ready')
       })
@@ -125,7 +161,17 @@ export function useSourceControl(
         setPhase('error')
         setError(errorMessage(err))
       })
-  }, [host, root, refreshEpoch, reloadEpoch, active])
+  }, [host, root, pageGit, refreshEpoch, active])
+
+  // Opening the view reads the page's status again: git's own writes (an
+  // add or a commit made in a terminal) touch only .git, which the
+  // workspace watch does not report. Quietly: the view's tabs just loaded
+  // on mounting, and a changed status reaches this one as a new object.
+  // A status still null is a root's first read, already in flight.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only opening the view reads again
+  useEffect(() => {
+    if (active && pageGit !== null) void refreshPage({ quiet: true })
+  }, [active])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new root starts from a blank view
   useEffect(() => {
@@ -163,8 +209,10 @@ export function useSourceControl(
 
   const reload = useCallback(() => {
     setRefreshing(true)
-    setReloadEpoch((value) => value + 1)
-  }, [])
+    // The refresh bumps the epoch, so the view derives again even when the
+    // page's status comes back unchanged.
+    void refreshPage()
+  }, [refreshPage])
 
   const perform = useCallback(
     async (label: string, action: () => Promise<string>): Promise<boolean> => {
@@ -179,8 +227,9 @@ export function useSourceControl(
         return false
       } finally {
         setBusy(false)
+        // onChanged reads the page's status again, and the view derives
+        // from what it reads.
         onChanged()
-        setReloadEpoch((value) => value + 1)
       }
     },
     [root, onChanged],
@@ -241,6 +290,41 @@ export function useSourceControl(
     [host, root, perform],
   )
 
+  const add = useCallback(
+    (entries: readonly GitComparisonEntry[]) =>
+      perform('add', async () => {
+        await gitStage(host, root ?? '', entryPaths(entries))
+        return `added ${files(entries.length)} to git`
+      }),
+    [host, root, perform],
+  )
+
+  const ignore = useCallback(
+    (paths: readonly string[]) =>
+      perform('ignore', async () => {
+        const added = await gitIgnore(host, root ?? '', paths)
+        return added === 0
+          ? '.gitignore already lists them'
+          : `added ${added} ${added === 1 ? 'line' : 'lines'} to .gitignore`
+      }),
+    [host, root, perform],
+  )
+
+  const patch = useCallback(
+    async (entries: readonly GitComparisonEntry[], use: (patch: string) => Promise<string>) => {
+      if (root === null) return
+      setNote(null)
+      try {
+        const tracked = entries.filter((entry) => entry.status !== 'untracked')
+        const untracked = entries.filter((entry) => entry.status === 'untracked').map((entry) => entry.path)
+        setNote({ text: await use(await gitLocalPatch(host, root, entryPaths(tracked), untracked)), failed: false })
+      } catch (err: unknown) {
+        setNote({ text: `patch failed: ${errorMessage(err)}`, failed: true })
+      }
+    },
+    [host, root],
+  )
+
   return useMemo(
     () => ({
       phase,
@@ -258,6 +342,10 @@ export function useSourceControl(
       rollback,
       commit,
       stash,
+      add,
+      ignore,
+      run: perform,
+      patch,
     }),
     [
       phase,
@@ -275,6 +363,10 @@ export function useSourceControl(
       rollback,
       commit,
       stash,
+      add,
+      ignore,
+      perform,
+      patch,
     ],
   )
 }

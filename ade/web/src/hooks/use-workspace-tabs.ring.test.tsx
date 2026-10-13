@@ -141,23 +141,24 @@ describe('workspace layout ring', () => {
     ])
   })
 
-  it('polls until the first ring proves the binding live, then only on rings', async () => {
+  it('never polls: it re-reads only on rings', async () => {
     vi.useFakeTimers()
     await mount()
     await settle()
     expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(1)
 
-    await settle(5_000)
-    expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(2)
+    // No server copy yet and no ring: nothing re-reads on a timer.
+    await settle(15_000)
+    expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(1)
 
     // The console rings every binding once when it lands: a catch-up read.
     server = home(['chat', 'traces'])
     await ring()
     await settle()
-    expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(3)
+    expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(2)
     expect(api.tabs[0].screens).toEqual(['chat', 'traces'])
 
     await settle(15_000)
-    expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(3)
+    expect(fetchWorkspaceLayout).toHaveBeenCalledTimes(2)
   })
 })

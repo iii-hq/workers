@@ -33,6 +33,8 @@ export interface Filters {
   window: string
   service: string
   search: string
+  /** `relevant`, `noise` or `all`. Absent in a pane saved before triage. */
+  relevance?: string
 }
 
 const INITIAL_FILTERS: Filters = {
@@ -40,6 +42,7 @@ const INITIAL_FILTERS: Filters = {
   window: '24h',
   service: '',
   search: '',
+  relevance: 'relevant',
 }
 
 export function SentinelPage({
@@ -93,6 +96,7 @@ export function SentinelPage({
   // A page of groups, and more on request; a new filter starts from one page.
   const [limit, setLimit] = useState(PAGE_SIZE)
   const statuses = filters.statuses.join(',')
+  const relevance = filters.relevance ?? 'relevant'
 
   const groups = useWorkerLive({
     iii: host.iii,
@@ -106,12 +110,16 @@ export function SentinelPage({
             service_name: filters.service || undefined,
             since_ms: sinceMs(filters.window, Date.now()) ?? undefined,
             search: search || undefined,
+            relevance: relevance === 'all' ? undefined : (relevance as 'relevant' | 'noise'),
             limit,
           })
           // What this answer is an answer to: until the next one lands, the
           // counts under the list describe these filters, not the new ones.
-          .then((response) => ({ ...response, answered: { statuses: filters.statuses, window: filters.window } })),
-      [api, filters.statuses, filters.service, filters.window, search, limit],
+          .then((response) => ({
+            ...response,
+            answered: { statuses: filters.statuses, window: filters.window, relevance },
+          })),
+      [api, filters.statuses, filters.service, filters.window, search, relevance, limit],
     ),
   })
 
@@ -122,8 +130,8 @@ export function SentinelPage({
   refresh.current = groups.refresh
   useEffect(() => {
     refresh.current()
-  }, [statuses, filters.service, filters.window, search, limit])
-  useEffect(() => setLimit(PAGE_SIZE), [statuses, filters.service, filters.window, search])
+  }, [statuses, filters.service, filters.window, search, relevance, limit])
+  useEffect(() => setLimit(PAGE_SIZE), [statuses, filters.service, filters.window, search, relevance])
 
   // Every worker the list has shown, so narrowing to one does not make the
   // others vanish from the menu that would widen it again.
@@ -320,6 +328,8 @@ export function SentinelPage({
               onOpen={openGroup}
               onMore={() => setLimit((previous) => previous + PAGE_SIZE)}
               total={groups.data?.total ?? 0}
+              relevantTotal={groups.data?.relevant_total ?? 0}
+              noiseTotal={groups.data?.noise_total ?? 0}
               workers={workers}
             />
           )}

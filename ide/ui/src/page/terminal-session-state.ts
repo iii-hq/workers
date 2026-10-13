@@ -14,7 +14,6 @@ export interface TerminalSessionState {
   error: string | null
   notice: string | null
   sessionId: string | null
-  lastSequence: number
 }
 
 export const REPLAY_TRUNCATION_NOTICE =
@@ -44,10 +43,6 @@ export type TerminalSessionAction =
   | {
       type: 'connecting'
       cwd: string
-    }
-  | {
-      type: 'frame-applied'
-      sequence: number
     }
   | {
       type: 'failed'
@@ -87,6 +82,12 @@ export interface TerminalConnectionCoordinator {
   invalidate(): void
   isCurrent(generation: number): boolean
   complete(generation: number): void
+  /**
+   * Set while the pane's shell is being closed. The coordinator outlives the
+   * pane's component, so a pane remounted or reconnecting mid-close sees it
+   * too, and never opens a new shell for a pane on its way out.
+   */
+  closing: boolean
 }
 
 export function createTerminalConnectionCoordinator(
@@ -108,6 +109,7 @@ export function createTerminalConnectionCoordinator(
     complete(candidate) {
       if (generation === candidate) requestId = createRequestId()
     },
+    closing: false,
   }
 }
 
@@ -136,7 +138,6 @@ export function createTerminalSessionState(root: string): TerminalSessionState {
     error: null,
     notice: null,
     sessionId: null,
-    lastSequence: 0,
   }
 }
 
@@ -179,11 +180,6 @@ export function reduceTerminalSessionState(
       }
     case 'connecting':
       return createTerminalSessionState(action.cwd)
-    case 'frame-applied':
-      return {
-        ...state,
-        lastSequence: Math.max(state.lastSequence, action.sequence),
-      }
     case 'failed':
       return {
         ...state,

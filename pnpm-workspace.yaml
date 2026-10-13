@@ -11,7 +11,9 @@ packages:
   - judge-decider/ui
   - judge-semif/ui
   - judge-laya/ui
+  - judge-clef/ui
   - judge-typesafe/ui
+  - judge-openai/ui
   - packages/*
   - ade/web
   - ade/ui
@@ -44,7 +46,6 @@ packages:
   - tailscale/ui
   - voice/ui
   - vscode/ui
-  - compose-ui/ui
   - kanban/ui
   - onboarding/ui
   - stories/ui

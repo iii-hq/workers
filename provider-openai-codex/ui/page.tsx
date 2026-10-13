@@ -85,6 +85,17 @@ function LoginInstructions({
   )
 }
 
+/** A ChatGPT account id is a UUID: the start is enough to tell two apart. */
+function shortAccount(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  local: 'local Codex login',
+  vault: 'saved login',
+  managed: 'signed in here',
+}
+
 function CodexProviderForm({ host }: ProviderConfigFormProps & { host: Host }) {
   const state = useCodexAuth(host.iii)
   const authenticated = state.auth?.status === 'authenticated'
@@ -99,36 +110,30 @@ function CodexProviderForm({ host }: ProviderConfigFormProps & { host: Host }) {
     : state.checking
       ? 'Checking account…'
       : 'Account status unavailable'
+  const account = [
+    state.auth?.account_id ? shortAccount(state.auth.account_id) : null,
+    state.auth?.source ? (SOURCE_LABEL[state.auth.source] ?? state.auth.source) : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
   return (
     <div className="codex-provider-form">
       <section className="codex-provider-card">
-        <div className="codex-provider-status" role="status">
-          <span className="codex-provider-dot" data-active={authenticated} aria-hidden="true" />
-          <span>{status}</span>
+        <div className="codex-provider-head">
+          <div className="codex-provider-status" role="status">
+            <span className="codex-provider-dot" data-active={authenticated} aria-hidden="true" />
+            <span>{status}</span>
+          </div>
+          {account ? (
+            <span className="codex-provider-account" title={state.auth?.account_id ?? undefined}>
+              {account}
+            </span>
+          ) : null}
         </div>
-        <h3>Connect your ChatGPT account</h3>
-        <p>
-          This provider uses your ChatGPT subscription. Do not enter an API key here; API keys belong to the OpenAI
-          provider.
-        </p>
-        <p>One account per namespace. Managed sign-ins refresh automatically.</p>
-        {state.auth?.source && (
-          <p className="codex-provider-account">
-            {state.auth.account_id ? (
-              <>
-                Account: <strong>{state.auth.account_id}</strong>.{' '}
-              </>
-            ) : null}
-            {state.auth.source === 'local'
-              ? 'Using the local Codex login.'
-              : state.auth.source === 'vault'
-                ? 'Using the saved vault login.'
-                : 'Managed by this provider.'}
-          </p>
-        )}
+        <p>Uses your ChatGPT plan — no API key.</p>
         {state.login && (
           <>
-            {authenticated && <p>Your current account stays signed in until the new sign-in succeeds.</p>}
+            {authenticated && <p>Your current account stays signed in until you approve the new one.</p>}
             <LoginInstructions
               key={state.login.login_id}
               login={state.login}
@@ -141,7 +146,6 @@ function CodexProviderForm({ host }: ProviderConfigFormProps & { host: Host }) {
         {state.actionError && <p role="alert">{state.actionError}</p>}
         {state.pollError && <p role="status">{state.pollError}</p>}
         {state.notice && <p role="status">{state.notice}</p>}
-        <p>Enable device code login in ChatGPT security settings or ask your workspace administrator.</p>
         <div className="codex-provider-action">
           {!state.login && state.auth && (
             <Button type="button" variant="primary" size="sm" disabled={disabled} onClick={() => void state.start()}>
@@ -192,16 +196,12 @@ function CodexProviderForm({ host }: ProviderConfigFormProps & { host: Host }) {
           )}
         </div>
         {state.catalogMessage && <p role="status">{state.catalogMessage}</p>}
-        <div className="codex-provider-help">
-          <p>
-            Already use Codex locally? Run <code>codex login</code> on the machine running this provider. Your local or
-            vault login works until you connect a managed account or explicitly log out.
+        {!authenticated && !state.login && (
+          <p className="codex-provider-help">
+            Or run <code>codex login</code> on the machine running this provider.
           </p>
-          <p>
-            Mirrors Codex CLI <code>{COMPAT_VERSION}</code>. If newer CLI models are missing here, this provider may
-            need a version update.
-          </p>
-        </div>
+        )}
+        <p className="codex-provider-meta">Codex CLI {COMPAT_VERSION}</p>
       </section>
     </div>
   )

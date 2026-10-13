@@ -203,7 +203,8 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
     // A read that observes a terminal or missing record re-derives the
     // session's coarse status in the background (see `session_status`).
     let Some(record) =
-        crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+        crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+            .await?
     else {
         crate::session_status::spawn_reconcile(deps, &req.session_id);
         return Ok(None);

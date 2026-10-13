@@ -27,4 +27,3 @@ dependencies:
   storage: "latest"
   configuration: "latest"
   iii-observability: "latest"
-  iii-stream: "latest"

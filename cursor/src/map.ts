@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Emit } from './events.js';
+import type { Emit } from './agent-feed.js';
 import type {
   AgentInfo,
   AgentMessage,

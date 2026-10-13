@@ -120,7 +120,7 @@ instead, which is a different machine entirely.
 ## Console
 
 The worker ships its own console page (page `computer`): a session rail, a live
-viewport fed by the screencast stream, and click / type / scroll forwarding
+viewport fed by the live screencast, and click / type / scroll forwarding
 straight into the desktop. It is injected into any running console at
 registration time — nothing to install, nothing to rebuild. Every `computer::*`
 call in chat and traces renders through the same asset.
@@ -172,9 +172,23 @@ polling. Both bindings accept an optional `{ "session_id": "..." }` filter.
 
 ## Live screen
 
-`computer::screencast::start` / `stop` and `computer::frame` drive the live
-viewport: the worker captures at `screencast_fps` and pushes the newest frame
-onto the `computer:frames` stream (one item per session), so the console and any
-number of watchers follow the desktop without polling. These three are internal
-console plumbing rather than agent surface, and stay out of agent function
-lists.
+`computer::screencast::start` / `stop`, `computer::frame` and the
+`computer::frame-changed` trigger type drive the live viewport. The worker
+captures at `screencast_fps` and keeps only the newest frame per session in
+memory (no history). After each frame it fires `computer::frame-changed` with a
+small, image-free notification; the viewer reads the frame with
+`computer::frame` (notify, then fetch), so the console and any number of
+watchers follow the desktop without polling, and a slow watcher skips frames
+instead of queueing them.
+
+| Trigger type | Fires when | Payload to subscribers |
+|---|---|---|
+| `computer::frame-changed` | A new frame was stored (`change: "updated"`), or the frame was dropped because the screencast or session stopped (`change: "cleared"`) | `{ session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }` |
+
+The binding config `{ "session_id": "..." }` is **required** (a viewer follows
+one desktop). Order frames by `(epoch, frame_seq)`; `epoch` changes when the
+worker restarts or restores the session. Bind first, then read
+`computer::frame` once for the current frame; read it again after each
+notification (pass `since_frame` to skip an unchanged image) and after a
+reconnect. These are internal console plumbing rather than agent surface, and
+stay out of agent function lists.

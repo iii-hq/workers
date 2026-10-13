@@ -54,6 +54,11 @@ interface ConnectTerminalSessionOptions {
   requestId: string
   cols: number
   rows: number
+  /**
+   * The last frame the pane's terminal already shows: the attach replays only
+   * what came after it. 0 (the default) replays everything the backend kept.
+   */
+  afterSequence?: number
 }
 
 export interface ReclaimableTerminalLease extends LocalTerminalLease {
@@ -105,6 +110,7 @@ export async function connectTerminalSession({
   requestId,
   cols,
   rows,
+  afterSequence = 0,
 }: ConnectTerminalSessionOptions): Promise<TerminalConnection> {
   let liveListener: OutputListener | null = null
   const pending: PtyOutputEvent[] = []
@@ -138,7 +144,6 @@ export async function connectTerminalSession({
   let replay: TerminalFrame[]
   let truncated: boolean
   let nextSequence: number
-  const afterSequence = 0
   let unsubscribe: () => void
 
   if (lease) {
@@ -254,6 +259,8 @@ export async function reclaimTerminalLease(
   const unsubscribe = router.subscribe(lease.sessionId, () => undefined)
   router.drain(lease.sessionId)
   try {
+    // The attach is only for the access key the close needs: past every
+    // sequence, the backend replays nothing (and reports nothing truncated).
     const attached = await host.iii.trigger<PtyAttachResponse>(
       'shell::pty::attach',
       {
@@ -262,7 +269,7 @@ export async function reclaimTerminalLease(
         output_function_id: router.outputFunctionId,
         cols: 80,
         rows: 24,
-        after_sequence: lease.lastSequence,
+        after_sequence: Number.MAX_SAFE_INTEGER,
       },
     )
     let warning: string | null = null

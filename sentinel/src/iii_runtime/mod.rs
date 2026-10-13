@@ -9,6 +9,7 @@
 
 pub mod harness;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,11 +18,13 @@ use iii_helpers::observability::{current_trace_id, run_with_baggage};
 use iii_sdk::protocol::{TriggerAction, TriggerRequest};
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
+use tokio::sync::OnceCell;
 
 use crate::ingest::{ring::PhantomRing, CheckoutVersions, IngestJob, Telemetry, TraceSummary};
 use crate::registry::{EngineRegistry, FunctionEntry, WorkerEntry};
 use crate::service::TraceAvailability;
-use crate::store::{Db, NamedRow, Statement, StepResult};
+use crate::store::{self, Db, NamedRow, Statement, StepResult};
+use crate::triage::{self, Judge};
 use crate::{SentinelError, WorkerConfig};
 
 /// The tag that keeps this worker's own calls out of the trace views.
@@ -47,6 +50,16 @@ impl Runtime {
     /// Call a function with this worker's own traffic marked hidden, and the
     /// resulting trace remembered so its tick is dropped rather than ingested.
     async fn call(&self, function_id: &str, payload: Value) -> Result<Value, SentinelError> {
+        self.call_within(function_id, payload, CALL_TIMEOUT_MS)
+            .await
+    }
+
+    async fn call_within(
+        &self,
+        function_id: &str,
+        payload: Value,
+        timeout_ms: u64,
+    ) -> Result<Value, SentinelError> {
         let iii = self.iii.clone();
         let ring = self.ring.clone();
         let function = function_id.to_string();
@@ -58,7 +71,7 @@ impl Runtime {
                 function_id: function.clone(),
                 payload,
                 action: None,
-                timeout_ms: Some(CALL_TIMEOUT_MS),
+                timeout_ms: Some(timeout_ms),
             })
             .await
             .map_err(|error| SentinelError::dependency(format!("{function}: {error}")))
@@ -67,10 +80,34 @@ impl Runtime {
     }
 }
 
+/// `judge::evaluate`, through the hub: the provider is the hub's choice unless
+/// `triage.provider` names one.
+pub struct IiiJudge {
+    runtime: Runtime,
+}
+
+impl IiiJudge {
+    pub fn new(runtime: Runtime) -> Self {
+        Self { runtime }
+    }
+}
+
+#[async_trait]
+impl Judge for IiiJudge {
+    async fn evaluate(&self, request: Value) -> Result<Value, SentinelError> {
+        self.runtime
+            .call_within(triage::JUDGE_FUNCTION_ID, request, triage::JUDGE_WAIT_MS)
+            .await
+    }
+}
+
 /// `database::*`.
 pub struct IiiDb {
     runtime: Runtime,
     database: String,
+    /// Whether the connection is Postgres, asked once: the name cannot point
+    /// elsewhere without a restart.
+    postgres: OnceCell<bool>,
 }
 
 impl IiiDb {
@@ -78,13 +115,52 @@ impl IiiDb {
         Self {
             runtime,
             database: database.into(),
+            postgres: OnceCell::new(),
         }
+    }
+
+    /// The statement as this connection's driver reads it.
+    async fn dialect<'a>(&self, sql: &'a str) -> Result<Cow<'a, str>, SentinelError> {
+        let postgres = self
+            .postgres
+            .get_or_try_init(|| async {
+                let reply = self
+                    .runtime
+                    .call("database::listDatabases", json!({}))
+                    .await?;
+                let driver = reply["databases"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|entry| entry["name"] == self.database.as_str())
+                    .and_then(|entry| entry["driver"].as_str());
+                // An error is not kept: the connection may be added later.
+                match driver {
+                    Some("sqlite") => Ok(false),
+                    Some("postgres") => Ok(true),
+                    Some(other) => Err(SentinelError::dependency(format!(
+                        "database {} is {other}; sentinel runs on sqlite or postgres",
+                        self.database
+                    ))),
+                    None => Err(SentinelError::dependency(format!(
+                        "database {} is not configured in the database worker",
+                        self.database
+                    ))),
+                }
+            })
+            .await?;
+        Ok(if *postgres {
+            Cow::Owned(store::numbered_placeholders(sql))
+        } else {
+            Cow::Borrowed(sql)
+        })
     }
 }
 
 #[async_trait]
 impl Db for IiiDb {
     async fn query(&self, sql: &str, params: Vec<Value>) -> Result<Vec<NamedRow>, SentinelError> {
+        let sql = self.dialect(sql).await?;
         let response = self
             .runtime
             .call(
@@ -104,6 +180,7 @@ impl Db for IiiDb {
     }
 
     async fn execute(&self, sql: &str, params: Vec<Value>) -> Result<u64, SentinelError> {
+        let sql = self.dialect(sql).await?;
         let response = self
             .runtime
             .call(
@@ -121,13 +198,12 @@ impl Db for IiiDb {
         &self,
         statements: &[Statement],
     ) -> Result<Vec<StepResult>, SentinelError> {
-        let payload = json!({
-            "db": self.database,
-            "statements": statements
-                .iter()
-                .map(|statement| json!({ "sql": statement.sql, "params": statement.params }))
-                .collect::<Vec<_>>(),
-        });
+        let mut steps = Vec::with_capacity(statements.len());
+        for statement in statements {
+            let sql = self.dialect(&statement.sql).await?;
+            steps.push(json!({ "sql": sql, "params": statement.params }));
+        }
+        let payload = json!({ "db": self.database, "statements": steps });
         let response = self.runtime.call("database::transaction", payload).await?;
         // A rolled-back transaction answers with `committed: false` rather
         // than an error, and names the step that failed.
@@ -498,7 +574,6 @@ impl IngestQueue {
                 "concurrency": concurrency,
                 "max_retries": 3,
                 "backoff_ms": 1_000,
-                "poll_interval_ms": 100,
                 "redeliver_on_engine_restart": true,
             },
         });

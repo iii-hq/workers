@@ -1,7 +1,6 @@
 //! decider provider for the judge hub: decider-4b (a Qwen3.5-4B-Base fine-tune
 //! for typed decisions) run in-process through llama.cpp, reading the
 //! next-token logits of the option labels (no decoding).
-mod cancellation;
 pub mod client;
 pub mod config;
 pub mod configuration;

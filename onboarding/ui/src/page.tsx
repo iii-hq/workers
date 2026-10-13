@@ -37,9 +37,14 @@ import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from '.
  * deliberating over instructions that are already explicit, which is time the
  * operator spends watching a spinner. The console owns the setting — the page
  * asks, and a console too old to be asked simply is not.
+ *
+ * `lowest`, not a named level: models start their effort ladders in
+ * different places (Codex has no `minimal`), so the harness picks the
+ * model's lowest effort and the console shows what it chose. A console that
+ * predates `lowest` refuses the request and the tour runs at the usual level.
  */
 const FIRST_STEP_ID = 'message'
-const TOUR_THINKING_LEVEL = 'minimal'
+const TOUR_THINKING_LEVEL = 'lowest'
 
 /**
  * How long `Opening…` may stand before the button gives up and offers
@@ -88,6 +93,8 @@ type StepRecords = Record<string, StepRecord | undefined>
 interface ProgressResponse {
   tours: Record<string, { steps?: StepRecords } | undefined>
   next_tour_id: string | null
+  /** When this subject signed up for updates; absent on an older worker. */
+  subscribed_at?: number | null
 }
 
 type StepState = 'complete' | 'active' | 'pending'
@@ -96,6 +103,7 @@ const DOT_TONE: Record<StepState, 'ok' | 'accent' | 'ink'> = { complete: 'ok', a
 
 /** Guide initial setup and react to the console's workspace layout changes. */
 export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
+  const removeButton = <RemoveOnboarding host={host} onClose={onRequestClose} />
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
@@ -114,6 +122,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   // of looking like the click was missed.
   const [opening, setOpening] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [subscribed, setSubscribed] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -133,6 +142,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         const stored = progress.tours[id]?.steps ?? {}
         setTour(loaded)
         setRecords(stored)
+        setSubscribed(Boolean(progress.subscribed_at))
         setOpen(firstIncomplete(loaded, stored)?.id ?? loaded.steps[0]?.id ?? null)
       } catch (cause) {
         if (live) setError(errorMessage(cause))
@@ -380,14 +390,14 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
 
   if (error) {
     return (
-      <Frame onClose={onRequestClose}>
+      <Frame onClose={onRequestClose} footer={removeButton}>
         <StatusPanel variant="alert" headline={error} role="alert" />
       </Frame>
     )
   }
   if (!tour) {
     return (
-      <Frame onClose={onRequestClose}>
+      <Frame onClose={onRequestClose} footer={removeButton}>
         <Skeleton className="ob-skeleton" />
         <Skeleton className="ob-skeleton" />
         <Skeleton className="ob-skeleton" />
@@ -399,7 +409,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   const done = tour.steps.filter((step) => records[step.id]?.status === 'complete').length
 
   return (
-    <Frame title={tour.title} description={tour.description} onClose={onRequestClose}>
+    <Frame title={tour.title} description={tour.description} onClose={onRequestClose} footer={removeButton}>
       <div className="ob-progress">
         <div
           className="ob-bar"
@@ -454,7 +464,20 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                   {step.condition?.prompt && state !== 'complete' ? (
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
-                  {step.id === 'stay-in-touch' ? <StayInTouch host={host} /> : null}
+                  {step.id === 'stay-in-touch' ? (
+                    // Signed up: the step says so. Otherwise (first visit, or
+                    // reopened after a Skip) the form with both buttons; on a
+                    // done step Skip just folds the step away.
+                    <StayInTouch
+                      host={host}
+                      subscribed={subscribed}
+                      onSubscribed={() => {
+                        setSubscribed(true)
+                        if (state !== 'complete') complete(step.id)
+                      }}
+                      onSkip={() => (state === 'complete' ? setOpen(null) : complete(step.id))}
+                    />
+                  ) : null}
                   {step.on_closed && closed === step.on_closed.screen ? (
                     <p className="ob-note" role="status">
                       {step.on_closed.body}
@@ -468,7 +491,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                       <pre className="ob-pre">{step.ask.text}</pre>
                     </div>
                   ) : null}
-                  {state !== 'complete' && !step.condition && !step.ask ? (
+                  {state !== 'complete' && !step.condition && !step.ask && step.id !== 'stay-in-touch' ? (
                     step.screen && opened !== step.id ? (
                       <Button className="ob-start" disabled={opening === step.id} onClick={() => openScreen(step)}>
                         {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
@@ -505,6 +528,38 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         })}
       </ol>
     </Frame>
+  )
+}
+
+/**
+ * Leave the tour for good from any step: remove the onboarding worker from
+ * the compose project (its page and functions go with it), then close this
+ * pane. The same move the Clean up step asks the agent for, without the
+ * agent. A failed removal keeps the pane open and says why.
+ */
+function RemoveOnboarding({ host, onClose }: { host: Host; onClose?: () => void }) {
+  const [removing, setRemoving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const remove = useCallback(async () => {
+    setRemoving(true)
+    setError(null)
+    try {
+      await host.iii.trigger('compose::remove', { workers: ['onboarding'] })
+    } catch (err) {
+      setError(`Could not remove the onboarding worker: ${errorMessage(err)}`)
+      setRemoving(false)
+      return
+    }
+    if (onClose) onClose()
+    else await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' }).catch(() => undefined)
+  }, [host, onClose])
+  return (
+    <>
+      {error ? <StatusPanel variant="alert" headline={error} role="alert" /> : null}
+      <Button variant="ghost" size="sm" onClick={remove} disabled={removing}>
+        {removing ? 'Removing…' : 'Close and Remove Onboarding'}
+      </Button>
+    </>
   )
 }
 
@@ -588,7 +643,22 @@ const SOCIALS: { label: string; href: string; path: string }[] = [
  * The signup box, then the same places as links. The worker does the POST —
  * the page only carries the address the operator typed.
  */
-function StayInTouch({ host }: { host: Host }) {
+/**
+ * The signup step's own way onward: `Sign me up` subscribes and closes the
+ * step, `Skip` closes it without an email. It replaces the generic `Got it`.
+ * Once the worker has a signup on record the step only says so.
+ */
+function StayInTouch({
+  host,
+  subscribed,
+  onSubscribed,
+  onSkip,
+}: {
+  host: Host
+  subscribed: boolean
+  onSubscribed: () => void
+  onSkip: () => void
+}) {
   const [email, setEmail] = useState('')
   const [status, setStatus] = useState<'idle' | 'sending' | 'done' | 'failed'>('idle')
   const [message, setMessage] = useState('')
@@ -602,20 +672,20 @@ function StayInTouch({ host }: { host: Host }) {
         .trigger('onboarding::subscribe', { email: email.trim(), source: 'onboarding_flow' })
         .then(() => {
           setStatus('done')
-          setMessage('You are on the list.')
+          onSubscribed()
         })
         .catch((error: unknown) => {
           setStatus('failed')
           setMessage(error instanceof Error ? error.message : 'the signup did not go through')
         })
     },
-    [email, host, status],
+    [email, host, status, onSubscribed],
   )
 
   return (
     <div className="ob-stack">
-      {status === 'done' ? (
-        <StatusPanel variant="success" headline={message} role="status" />
+      {subscribed || status === 'done' ? (
+        <StatusPanel variant="success" headline="You are on the list." role="status" />
       ) : (
         <form className="ob-form" onSubmit={submit}>
           <Input
@@ -628,7 +698,10 @@ function StayInTouch({ host }: { host: Host }) {
             className="ob-grow"
           />
           <Button type="submit" disabled={status === 'sending'}>
-            {status === 'sending' ? 'Sending…' : 'Keep me posted'}
+            {status === 'sending' ? 'Sending…' : 'Sign me up'}
+          </Button>
+          <Button type="button" variant="ghost" onClick={onSkip} disabled={status === 'sending'}>
+            Skip
           </Button>
         </form>
       )}
@@ -645,11 +718,6 @@ function StayInTouch({ host }: { host: Host }) {
           </Button>
         ))}
       </div>
-      <Button asChild variant="ghost" size="sm" className="ob-start">
-        <a href="https://iii.dev/docs" target="_blank" rel="noreferrer">
-          Read the docs
-        </a>
-      </Button>
     </div>
   )
 }
@@ -675,6 +743,7 @@ function Frame({
   title = 'onboarding',
   description,
   onClose,
+  footer,
   children,
 }: {
   title?: string
@@ -682,6 +751,8 @@ function Frame({
   /** The console's own pane close, from `PageRenderProps.onRequestClose`.
       Absent when the page is not rendered in a closable pane. */
   onClose?: () => void
+  /** Pinned under the scroller, so it stays in view on every step. */
+  footer?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
@@ -700,6 +771,7 @@ function Frame({
               stranded on one edge. */}
           <div className="ob-column">{children}</div>
         </div>
+        {footer ? <div className="ob-footer">{footer}</div> : null}
       </PageMain>
     </PageShell>
   )

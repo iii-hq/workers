@@ -5,7 +5,7 @@ deploy: bundle
 manifest: package.json
 license: Apache-2.0
 tags: [coding-agent, pi, cli, headless, terminal, console-ui, agent]
-description: pi coding agent as an iii worker — pi::run drives headless turns and pi::terminal::* runs the same agent in a shell::pty session on its own console page. Both mirror raw events onto pi::events and stream AgentEvent frames onto agent::events.
+description: pi coding agent as an iii worker — pi::run drives headless turns and pi::terminal::* runs the same agent in a shell::pty session on its own console page. Both publish raw events on the pi::raw-event trigger type and AgentEvent frames on pi::agent-event.
 
 runtime:
   kind: javascript
@@ -15,7 +15,6 @@ scripts:
 
 dependencies:
   state: "latest"
-  iii-stream: "latest"
   configuration: "latest"
   # The terminal half: shell::pty runs the CLI, shell::exec installs it and
   # equips the workspace, coder::read-file reads the files back.

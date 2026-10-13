@@ -13,6 +13,7 @@ import {
   closeTerminalConnection,
   connectTerminalSession,
   createTerminalConnectionCoordinator,
+  createTerminalInputWriter,
   createTerminalSessionState,
   detachTerminalSessionForUnmount,
   disposeTerminalConnection,
@@ -22,6 +23,7 @@ import {
   reduceTerminalLease,
   reduceTerminalSessionState,
   shouldDetachStaleConnection,
+  terminalPaneMeasurable,
   useTerminalSession,
 } from '../terminal-session'
 import {
@@ -46,6 +48,17 @@ describe('terminal session state', () => {
       cols: 500,
       rows: 500,
     })
+  })
+
+  it('sizes a terminal only from a pane that is on screen', () => {
+    const pane = (width: number, height: number) =>
+      ({ getBoundingClientRect: () => ({ width, height }) }) as Element
+    // A pane in a hidden panel or tab: a font size change or a heartbeat
+    // must leave its PTY alone.
+    expect(terminalPaneMeasurable(pane(0, 0))).toBe(false)
+    // Mid-layout.
+    expect(terminalPaneMeasurable(pane(600, 10))).toBe(false)
+    expect(terminalPaneMeasurable(pane(600, 300))).toBe(true)
   })
 
   it('does not detach a connection owned by a newer retry generation', () => {
@@ -84,7 +97,6 @@ describe('terminal session state', () => {
       error: null,
       notice: null,
       sessionId: 'session-1',
-      lastSequence: 0,
     })
   })
 
@@ -222,6 +234,8 @@ describe('reclaimTerminalLease', () => {
       'shell::pty::attach',
       'shell::pty::close',
     ])
+    // Only the access key is wanted: nothing is replayed to be thrown away.
+    expect(calls[0]?.payload.after_sequence).toBe(Number.MAX_SAFE_INTEGER)
     expect(calls[1]?.payload.access_key).toBe('rotated-access')
     expect(updates).toEqual(['rotated-reconnect'])
     expect(removed).toBe(true)
@@ -386,6 +400,82 @@ describe('connectTerminalSession', () => {
     connection.unsubscribe()
   })
 
+  it('resumes after the sequence the terminal already shows', async () => {
+    let attachPayload: Record<string, unknown> | null = null
+    let emit:
+      | ((event: {
+          session_id: string
+          sequence: number
+          data: string | null
+          eof: boolean
+          exit_code: number | null
+          signal: string | null
+          error: string | null
+        }) => void)
+      | null = null
+    const router = {
+      outputFunctionId: 'iii::shell-ui::pty-output::console-test',
+      subscribe: (_sessionId: string, listener: typeof emit) => {
+        emit = listener
+        return () => undefined
+      },
+      drain: () => [],
+      dispose: () => undefined,
+    }
+    const live = (sequence: number, data: string) => ({
+      session_id: 'session-1',
+      sequence,
+      data,
+      eof: false,
+      exit_code: null,
+      signal: null,
+      error: null,
+    })
+    const host = {
+      iii: {
+        trigger: async (_id: string, payload: Record<string, unknown>) => {
+          attachPayload = payload
+          // A late copy of a frame already on screen, and one past the replay.
+          emit?.(live(2, 'dHdv'))
+          emit?.(live(5, 'Zml2ZQ=='))
+          return {
+            access_key: 'access-2',
+            reconnect_token: 'reconnect-2',
+            frames: [
+              { sequence: 3, data: 'dGhyZWU=' },
+              { sequence: 4, data: 'Zm91cg==' },
+            ],
+            truncated: false,
+            next_sequence: 5,
+            cwd: '/repo',
+            status: 'attached',
+          }
+        },
+      },
+    } as never
+
+    const connection = await connectTerminalSession({
+      host,
+      router,
+      root: '/repo',
+      requestId: 'request-1',
+      lease: {
+        paneId: 'pane-1',
+        sessionId: 'session-1',
+        reconnectToken: 'reconnect-1',
+        lastSequence: 0,
+      },
+      cols: 80,
+      rows: 24,
+      afterSequence: 2,
+    })
+
+    expect(attachPayload).toMatchObject({ after_sequence: 2 })
+    const frames = connection.activate(() => undefined).frames
+    expect(frames.map((frame) => frame.sequence)).toEqual([3, 4, 5])
+    connection.unsubscribe()
+  })
+
   it('bounds output queued during attach and requests replay after eviction', async () => {
     let emit:
       | ((event: {
@@ -453,6 +543,54 @@ describe('connectTerminalSession', () => {
 
     expect(activated.requiresReplay).toBe(true)
     expect(activated.frames).toEqual([])
+  })
+})
+
+describe('createTerminalInputWriter', () => {
+  const text = (value: string) => new TextEncoder().encode(value)
+
+  it('sends what was typed during a write as one write once it lands', async () => {
+    const sent: string[] = []
+    const landings: Array<() => void> = []
+    const write = createTerminalInputWriter((data) => {
+      sent.push(new TextDecoder().decode(data))
+      return new Promise<void>((resolve) => landings.push(resolve))
+    })
+
+    write(text('l'))
+    write(text('s'))
+    write(text(' -la'))
+    write(text('\r'))
+    expect(sent).toEqual(['l'])
+
+    landings.shift()?.()
+    await vi.waitFor(() => expect(sent).toEqual(['l', 's -la\r']))
+    landings.shift()?.()
+  })
+
+  it('splits input larger than one write allows, in order', async () => {
+    const sent: string[] = []
+    const write = createTerminalInputWriter(async (data) => {
+      sent.push(new TextDecoder().decode(data))
+    }, 4)
+
+    write(text('abc'))
+    write(text('defghij'))
+
+    await vi.waitFor(() => expect(sent).toEqual(['abc', 'defg', 'hij']))
+  })
+
+  it('keeps writing after a failed write', async () => {
+    const sent: string[] = []
+    const write = createTerminalInputWriter(async (data) => {
+      sent.push(new TextDecoder().decode(data))
+      if (sent.length === 1) throw new Error('terminal input failed')
+    })
+
+    write(text('a'))
+    write(text('b'))
+
+    await vi.waitFor(() => expect(sent).toEqual(['a', 'b']))
   })
 })
 

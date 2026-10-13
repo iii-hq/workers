@@ -3,17 +3,10 @@
   "function_id": "router::on_functions_changed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Advisory function-registry change event delivered to `router::on_functions_changed`. The handler ignores event values and re-fetches the authoritative registry before nudging live providers.",
+    "description": "Advisory `engine::functions-available` event delivered to `router::on_functions_changed`. The engine sends `{ event: \"functions_changed\", functions: [...] }` with the full current function list; it does not say which worker or function changed. The handler ignores event values (the `functions` list is not deserialized) and re-fetches the authoritative registry before nudging live providers.",
     "properties": {
       "event": {
-        "description": "Engine event tag (advisory).",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "worker_id": {
-        "description": "Worker whose registered functions changed (advisory).",
+        "description": "Engine event tag, `\"functions_changed\"` (advisory).",
         "type": [
           "string",
           "null"

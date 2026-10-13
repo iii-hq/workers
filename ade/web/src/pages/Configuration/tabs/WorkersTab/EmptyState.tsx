@@ -5,6 +5,7 @@ import { wt } from './typography'
 interface EmptyStateProps {
   title: string
   description: string
+  className?: string
 }
 
 /**
@@ -13,9 +14,18 @@ interface EmptyStateProps {
  * Not reusing `components/ui/EmptyState` because that one wraps a heavier
  * `<Cell>` and is designed for inline placement in the traces panel.
  */
-export function EditorEmptyState({ title, description }: EmptyStateProps) {
+export function EditorEmptyState({
+  title,
+  description,
+  className,
+}: EmptyStateProps) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 py-12 text-center bg-panel">
+    <div
+      className={cn(
+        'flex-1 flex flex-col items-center justify-center gap-2 px-6 py-12 text-center bg-panel',
+        className,
+      )}
+    >
       <SlidersHorizontal className="size-7 text-ink-ghost mb-2" aria-hidden />
       <p className={cn(wt.bodyLg, 'font-semibold text-ink')}>{title}</p>
       <p className={cn(wt.bodySm, 'text-ink-faint max-w-md leading-relaxed')}>

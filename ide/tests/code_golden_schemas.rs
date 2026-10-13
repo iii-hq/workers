@@ -1,4 +1,4 @@
-//! GOLDEN FAMILY A — wire-schema snapshots for all 9 `coder::*` functions
+//! GOLDEN FAMILY A — wire-schema snapshots for every `coder::*` function
 //! served by the shell worker.
 //!
 //! `shell::code::functions::catalog()` is the single source of truth for
@@ -35,10 +35,10 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the 9 registered functions, in
+/// The catalog must cover exactly the registered functions, in
 /// registration order (kept in lockstep with `register_all`).
 #[test]
-fn catalog_lists_all_nine_functions_in_registration_order() {
+fn catalog_lists_every_function_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
         ids,
@@ -52,6 +52,8 @@ fn catalog_lists_all_nine_functions_in_registration_order() {
             "coder::list-folder",
             "coder::tree",
             "coder::move",
+            "coder::list-templates",
+            "coder::scaffold-worker",
         ]
     );
 }
@@ -195,6 +197,15 @@ fn search_example_round_trips() {
 }
 
 #[test]
+fn search_regex_example_round_trips() {
+    let input: ide::code::functions::search::SearchInput = example_as("coder::search", 1);
+    assert_eq!(input.query, "registerTrigger|registerFunction");
+    assert!(input.regex, "second example demonstrates regex: true");
+    assert_eq!(input.path, "src");
+    assert!(!input.search_paths);
+}
+
+#[test]
 fn update_file_example_round_trips_with_three_op_kinds() {
     use ide::code::functions::update_file::{UpdateFileInput, UpdateOp};
     let input: UpdateFileInput = example_as("coder::update-file", 0);
@@ -277,6 +288,23 @@ fn move_example_round_trips_with_in_root_absolute_destination() {
          got: {}",
         input.files[1].to
     );
+}
+
+#[test]
+fn list_templates_example_round_trips() {
+    let input: ide::code::functions::list_templates::ListTemplatesInput =
+        example_as("coder::list-templates", 0);
+    assert!(input.refresh);
+}
+
+#[test]
+fn scaffold_worker_example_round_trips() {
+    let input: ide::code::functions::scaffold_worker::ScaffoldWorkerInput =
+        example_as("coder::scaffold-worker", 0);
+    assert_eq!(input.template, "worker-node-ade");
+    assert_eq!(input.name, "orders");
+    assert_eq!(input.directory.as_deref(), Some("workers/orders"));
+    assert!(input.fs_scope.is_none());
 }
 
 /// No stale goldens: every file under tests/golden/schemas/ must

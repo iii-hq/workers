@@ -7,7 +7,7 @@
 use serde_json::{json, Value};
 
 use super::{ScenarioDriver, VerifyFn};
-use crate::expand::ALLOWED_FUNCTIONS_MARKER;
+use crate::expand::{ALLOWED_FUNCTIONS_MARKER, RESPONSE_LANGUAGE_MARKER};
 use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
     AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorKind, ErrorShape,
@@ -198,6 +198,14 @@ impl Scenario {
         self
     }
 
+    /// Stop the turn while the controlled function (`hold_response`) is still
+    /// running; the runner releases it only after the turn is cancelled.
+    pub(super) fn stop_held_call(mut self) -> Self {
+        self.intervention = Some(ScenarioIntervention::StopHeldCall);
+        self.expected_turn_statuses = vec!["cancelled".to_string()];
+        self
+    }
+
     /// Hold the first generation while the runner queues four messages, edits
     /// one in place, removes another by its client-visible entry id, and then
     /// releases the turn to drain the remaining three in their original order.
@@ -273,8 +281,10 @@ impl Scenario {
     }
 
     /// Extra environment for the harness process under test — integration
-    /// knobs (e.g. a shrunken expiry-sweep interval) that tune the subject
-    /// for one scenario without touching the others.
+    /// knobs that tune the subject for one scenario without touching the
+    /// others. No scenario needs one right now (the expiry scenario's sweep
+    /// knob went with the sweep); kept for the next that does.
+    #[allow(dead_code)]
     pub(super) fn harness_env(mut self, key: &str, value: &str) -> Self {
         self.harness_env.push((key.to_string(), value.to_string()));
         self
@@ -502,6 +512,14 @@ impl ControlledFunction {
             "content": [{ "type": "text", "text": text }],
             "is_error": true
         });
+        self
+    }
+
+    /// Answer every invocation with this exact value instead of a
+    /// function-result envelope — e.g. a hook decision `{ "decision": "hold" }`
+    /// when the function is bound as a harness hook.
+    pub(super) fn returns_json(mut self, response: Value) -> Self {
+        self.target.response = response;
         self
     }
 
@@ -1578,7 +1596,10 @@ fn system_prompt(allowed_functions: &[String]) -> String {
             ALLOWED_FUNCTIONS_MARKER
         )
     };
-    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}")
+    // The response-language line sits between the session id and the policy,
+    // exactly where the harness's runtime context puts it (the working
+    // directory, between them in production, is off in this stack).
+    format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{RESPONSE_LANGUAGE_MARKER}{policy}")
 }
 
 #[cfg(test)]

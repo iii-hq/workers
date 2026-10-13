@@ -1,7 +1,7 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
-//! media-normalize -> cap results (always) -> age-prune (always) ->
-//! (if over) compact -> (if still over) emergency-reduce function
+//! media-normalize -> cap results (always) -> (if over) age-prune ->
+//! (if still over) compact -> (if still over) emergency-reduce function
 //! results -> assemble the final list or return a structured overflow.
 //!
 //! Structural guarantees: `role: "custom"` messages never reach the
@@ -362,11 +362,15 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         token_count = total(&sizes, prompt_tokens);
     }
 
-    // Step 1: prune aged function outputs — always, not only over budget
-    // (context-manager.md § context::assemble). min_free_tokens batches
-    // the history rewrites so provider prefix caches are not invalidated
-    // for peanuts.
-    if options.allow_prune.unwrap_or(true) {
+    // Step 1: prune aged function outputs — only over budget
+    // (context-manager.md § context::assemble). A prune rewrites results an
+    // earlier request already sent, and provider prompt caches (DeepSeek,
+    // Anthropic, OpenAI) reuse only the unchanged prefix: every pruned batch
+    // made the provider re-read everything after it uncached. On the Linkly
+    // tutorial that was 92% of the uncached input and 63% of the cost, with
+    // the window never past a third full. Over budget it still runs first,
+    // the cheapest relief before compaction.
+    if options.allow_prune.unwrap_or(true) && token_count > usable_budget {
         let params = PruneParams {
             protect_recent_tokens: config.protect_recent_tokens,
             decay_user_turns: config.decay_user_turns,

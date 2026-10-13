@@ -1,5 +1,12 @@
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { ReactNode } from 'react'
+import {
+  MentionGlyph,
+  mentionColor,
+  mentionIcon,
+} from '@/components/chat/mentions/appearance'
+import { Kbd } from '@/components/ui/Kbd'
+import type { MentionItem, MentionProvider } from '@/lib/mentions/types'
 import { cn } from '@/lib/utils'
 import { PathGlyph } from './FileMentionNode'
 
@@ -55,6 +62,86 @@ export function FunctionGlyph() {
 /** File or folder outline, the same one the inserted pill shows. */
 export function FileGlyph({ path }: { path: string }) {
   return <PathGlyph path={path} />
+}
+
+/** A worker's mention source: picking it scopes the menu to `@<name>:`. */
+export function ProviderRow({ provider }: { provider: MentionProvider }) {
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className="flex w-4 shrink-0 items-center justify-center"
+      >
+        <MentionGlyph
+          icon={mentionIcon(provider.icon)}
+          color={mentionColor(provider.color)}
+          className="size-4"
+        />
+      </span>
+      <span className="min-w-0 shrink truncate font-mono text-[12px] font-semibold text-ink">
+        @{provider.name}
+      </span>
+      <span className="min-w-0 flex-1 truncate font-sans text-[11px] text-ink-faint">
+        {provider.label}
+      </span>
+      <Kbd className="shrink-0">tab</Kbd>
+    </>
+  )
+}
+
+/** One provider item: its icon, handle, name and a line of state. */
+export function EntityRow({
+  provider,
+  item,
+}: {
+  provider: MentionProvider
+  item: MentionItem
+}) {
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className="flex w-4 shrink-0 items-center justify-center"
+      >
+        <MentionGlyph
+          icon={mentionIcon(item.icon, provider.icon)}
+          color={mentionColor(item.color, provider.color)}
+          className="size-4"
+        />
+      </span>
+      {item.hint ? (
+        <span className="shrink-0 font-mono text-[11px] text-ink-faint">
+          {item.hint}
+        </span>
+      ) : null}
+      <span className="min-w-0 max-w-[60%] shrink truncate font-sans text-[12px] font-medium text-ink">
+        {item.label}
+      </span>
+      {item.description ? (
+        <span className="min-w-0 flex-1 truncate font-sans text-[11px] text-ink-faint">
+          {item.description}
+        </span>
+      ) : null}
+    </>
+  )
+}
+
+/** Drill into a provider, carrying the text typed so far. */
+export function ProviderMoreRow({ provider }: { provider: MentionProvider }) {
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className="flex w-4 shrink-0 items-center justify-center text-ink-faint"
+      >
+        <ChevronRight className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-sans text-[11px] font-medium text-ink-faint">
+        more {provider.label.toLowerCase()}
+      </span>
+      <Kbd className="shrink-0">tab</Kbd>
+    </>
+  )
 }
 
 /** The row that reveals the next page of a long list. */

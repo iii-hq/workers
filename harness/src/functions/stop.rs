@@ -25,7 +25,7 @@ pub struct StopResponse {
 pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
     let cfg = deps.cfg().await;
     if let Some(want) = &req.turn_id {
-        if crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+        if crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
             .await?
             .is_none_or(|r| &r.turn_id != want)
         {
@@ -41,7 +41,8 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     // Signal all descendants before waiting for a single busy session lock.
     for node in &tree.sessions {
         if let Some(record) =
-            crate::state::get_turn(&deps.iii, &node.session_id, cfg.session_timeout_ms).await?
+            crate::state::get_turn_unhydrated(&deps.iii, &node.session_id, cfg.session_timeout_ms)
+                .await?
         {
             if !record.status.is_terminal() {
                 deps.cancels.fire(&record.turn_id);
@@ -103,7 +104,8 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     // background so the click repairs what it found instead of silently
     // doing nothing.
     let Some(record) =
-        crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+        crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+            .await?
     else {
         crate::session_status::spawn_reconcile(deps, &req.session_id);
         return Ok(StopOutcome::default());
@@ -160,7 +162,8 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcom
     // than reverting the step's other updates.
     let _guard = deps.locks.guard(&req.session_id).await;
     let Some(mut record) =
-        crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+        crate::state::get_turn_unhydrated(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+            .await?
     else {
         return Ok(StopOutcome::default());
     };

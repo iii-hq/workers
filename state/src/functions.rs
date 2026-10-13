@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 
 use crate::adapters::{CompareAndSetOutcome, StateAdapter};
 use crate::config::StateConfig;
-use crate::events::{Invoker, fan_out};
+use crate::events::{Invoker, fan_out_lazy};
 use crate::structs::{
     StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput, StateGetInput,
     StateListGroupsInput, StateListGroupsResult, StateListKeysResult, StateSetInput,
@@ -276,12 +276,35 @@ impl StateCtx {
         self.config.read().await.clone()
     }
 
-    async fn emit(&self, event: StateEventData) {
-        if self.private.is_reserved(&event.scope) {
+    async fn emit_change(
+        &self,
+        kind: StateEventType,
+        scope: &str,
+        key: &str,
+        old_value: Option<&Value>,
+        new_value: &Value,
+    ) {
+        if self.private.is_reserved(scope) {
             return;
         }
         let enabled = self.snapshot().await.triggers_enabled.unwrap_or(true);
-        fan_out(self.invoker.clone(), &self.triggers, enabled, event).await;
+        fan_out_lazy(
+            self.invoker.clone(),
+            &self.triggers,
+            enabled,
+            scope,
+            key,
+            || {
+                event(
+                    kind,
+                    scope.to_owned(),
+                    key.to_owned(),
+                    old_value.cloned(),
+                    new_value.clone(),
+                )
+            },
+        )
+        .await;
     }
 }
 
@@ -336,19 +359,17 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 async move {
                     reject_reserved_scope(&ctx.private, &input.scope)?;
                     if let Some(limit) = ctx.snapshot().await.max_value_bytes {
-                        let size = serde_json::to_vec(&input.value)
-                            .map(|b| b.len())
-                            .unwrap_or(0);
-                        if size > limit {
+                        let size = crate::json_budget::size_within(&input.value, limit)
+                            .map_err(|error| Error::Handler(format!("VALUE_SERIALIZATION_ERROR: {error}")))?;
+                        if size.is_none() {
                             return Err(Error::Handler(format!(
-                                "VALUE_TOO_LARGE: value of {size} bytes exceeds the configured \
-                                 max_value_bytes limit of {limit}"
+                                "VALUE_TOO_LARGE: value exceeds the configured max_value_bytes limit of {limit}"
                             )));
                         }
                     }
                     let result = ctx
                         .adapter
-                        .set(&input.scope, &input.key, input.value.clone())
+                        .set(&input.scope, &input.key, input.value)
                         .await
                         .map_err(|e| {
                             Error::Handler(format!("SET_ERROR: Failed to set value: {e}"))
@@ -358,13 +379,8 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     } else {
                         StateEventType::Updated
                     };
-                    ctx.emit(event(
-                        et,
-                        input.scope,
-                        input.key,
-                        result.old_value.clone(),
-                        result.new_value.clone(),
-                    ))
+                    ctx.emit_change(et, &input.scope, &input.key,
+                        result.old_value.as_ref(), &result.new_value)
                     .await;
                     Ok(result)
                 }
@@ -405,8 +421,14 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                             } else {
                                 StateEventType::Updated
                             };
-                            ctx.emit(event(et, input.scope, input.key, old_value, input.value))
-                                .await;
+                            ctx.emit_change(
+                                et,
+                                &input.scope,
+                                &input.key,
+                                old_value.as_ref(),
+                                &input.value,
+                            )
+                            .await;
                             Ok(CompareAndSetResult {
                                 swapped: true,
                                 current: None,
@@ -510,13 +532,13 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         .map_err(|e| {
                             Error::Handler(format!("DELETE_ERROR: Failed to delete value: {e}"))
                         })?;
-                    ctx.emit(event(
+                    ctx.emit_change(
                         StateEventType::Deleted,
-                        input.scope,
-                        input.key,
-                        old.clone(),
-                        Value::Null,
-                    ))
+                        &input.scope,
+                        &input.key,
+                        old.as_deref(),
+                        &Value::Null,
+                    )
                     .await;
                     Ok(old)
                 }
@@ -550,13 +572,13 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     } else {
                         StateEventType::Updated
                     };
-                    ctx.emit(event(
+                    ctx.emit_change(
                         et,
-                        input.scope,
-                        input.key,
-                        result.old_value.clone(),
-                        result.new_value.clone(),
-                    ))
+                        &input.scope,
+                        &input.key,
+                        result.old_value.as_ref(),
+                        &result.new_value,
+                    )
                     .await;
                     Ok(result)
                 }
@@ -567,7 +589,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
         );
     }
 
-    // state::list — always Some(array) (builtin serializes the Vec).
+    // state::list — serialize immutable snapshot references once at the SDK boundary.
     {
         let ctx = ctx.clone();
         iii.register_function(
@@ -579,7 +601,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     let values = ctx.adapter.list(&input.scope).await.map_err(|e| {
                         Error::Handler(format!("LIST_ERROR: Failed to list values: {e}"))
                     })?;
-                    Ok(serde_json::to_value(values).ok())
+                    Ok(Some(values))
                 }
             })
             .description("List every value stored in a state scope")
@@ -847,7 +869,8 @@ pub async fn restore_persisted_claims(
         anyhow::anyhow!("could not read persisted private-namespace claims: {error}")
     })?;
     for value in stored {
-        let Ok(namespace) = serde_json::from_value::<PrivateNamespace>(value.clone()) else {
+        let Ok(namespace) = <PrivateNamespace as serde::Deserialize>::deserialize(value.as_ref())
+        else {
             tracing::error!(?value, "skipping unreadable private-namespace claim");
             continue;
         };
@@ -932,7 +955,7 @@ fn register_private_namespace_functions(
                         .list(&input.scope)
                         .await
                         .map_err(|e| Error::Handler(format!("LIST_ERROR: {e}")))?;
-                    Ok(serde_json::to_value(values).ok())
+                    Ok(Some(values))
                 }
             })
             .description(format!(
@@ -1019,7 +1042,11 @@ mod private_namespace_tests {
                 new_value: value,
             })
         }
-        async fn get(&self, _: &str, _: &str) -> anyhow::Result<Option<Value>> {
+        async fn get(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<Option<crate::structs::StateValue>> {
             unreachable!()
         }
         async fn delete(&self, _: &str, _: &str) -> anyhow::Result<()> {
@@ -1051,7 +1078,7 @@ mod private_namespace_tests {
         ) -> anyhow::Result<crate::barrier::Decision> {
             unreachable!()
         }
-        async fn list(&self, _: &str) -> anyhow::Result<Vec<Value>> {
+        async fn list(&self, _: &str) -> anyhow::Result<Vec<crate::structs::StateValue>> {
             unreachable!()
         }
         async fn list_keys(&self, _: &str) -> anyhow::Result<Vec<String>> {

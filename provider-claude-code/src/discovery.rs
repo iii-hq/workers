@@ -85,6 +85,11 @@ fn model_from_live(row: &Value) -> Option<Model> {
             adaptive.or(thinking)
         },
         supports_xhigh: cap_supported(row, &["effort", "xhigh"]),
+        supports_thinking_off: if thinking == Some(false) {
+            None
+        } else {
+            crate::thinking::supports_off(id)
+        },
         reasoning_efforts: None,
         supports_tools: Some(true), // uniform across the Messages API
         supports_vision: cap_supported(row, &["image_input"]),
@@ -157,6 +162,10 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
         .as_ref()
         .and_then(extract_access_token)
     else {
+        eprintln!(
+            "[provider-claude-code] no Claude Code login found (vault, \
+             ~/.claude/.credentials.json, macOS Keychain); listing no models"
+        );
         router_client::reconcile(iii, vec![], token.as_deref()).await?;
         return Ok(0);
     };

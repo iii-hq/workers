@@ -231,6 +231,41 @@ describe('model-switch context overflow', () => {
     },
   )
 
+  it('carries the provider-declared hint only on a context failure', () => {
+    const overflow = {
+      content:
+        'context/overflow: assembled context requires 5391 tokens but usable budget is 2048',
+      technicalDetails: {
+        code: 'harness.context_overflow',
+        class: 'llm.context_overflow',
+        provider: 'llamacpp',
+      },
+    }
+    const hint = 'Raise --ctx-size on the server.'
+    const withHint = classifyTurnFailure(overflow, { providerHint: hint })
+    expect(withHint.providerNote).toBe(hint)
+    // The generic steps stay as they are; the hint is an add-on.
+    expect(withHint.actions[0]).toContain('/compact')
+    expect(withHint.actions.join(' ')).not.toContain(hint)
+    expect(classifyTurnFailure(overflow).providerNote).toBeUndefined()
+    expect(
+      classifyTurnFailure(overflow, { providerHint: '   ' }).providerNote,
+    ).toBeUndefined()
+
+    const auth = classifyTurnFailure(
+      {
+        content: 'The provider authentication needs attention.',
+        technicalDetails: {
+          code: 'router/provider_auth_expired',
+          class: 'llm.auth_expired',
+          provider: 'llamacpp',
+        },
+      },
+      { providerHint: hint },
+    )
+    expect(auth.providerNote).toBeUndefined()
+  })
+
   it('does not reinterpret an unrelated internal failure that mentions context', () => {
     expect(
       categorizeTurnFailure({

@@ -81,6 +81,7 @@ export const uiClasses = Object.freeze({
   motionControl: 'iii-ui-motion-control',
   motionPanel: 'iii-ui-motion-panel',
   motionOverlay: 'iii-ui-motion-overlay',
+  motionPickerPage: 'iii-ui-motion-picker-page',
   eyebrow: 'iii-ui-eyebrow',
   toolbar: 'iii-ui-toolbar',
   toolbarEnd: 'iii-ui-toolbar__end',

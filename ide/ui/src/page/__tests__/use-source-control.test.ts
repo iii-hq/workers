@@ -1,0 +1,226 @@
+import type { Host } from '@iii-dev/console-ui'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { type GitState, gitChanges } from '../git'
+import { gitIgnore, gitLocalPatch } from '../git-actions'
+import { useSourceControl } from '../use-source-control'
+import { mount } from './bare-hooks'
+
+vi.mock('react', async (original) => ({
+  ...(await original<typeof import('react')>()),
+  ...(await import('./bare-hooks')).hooks,
+}))
+// .gitignore editing and patch building have their own tests (git-actions).
+vi.mock('../git-actions', async (original) => ({
+  ...(await original<typeof import('../git-actions')>()),
+  gitIgnore: vi.fn(async () => 1),
+  gitLocalPatch: vi.fn(async () => 'the patch'),
+}))
+
+// A repository whose status and HEAD diff the test sets (a null diff times
+// out); every git run is recorded by its first two arguments.
+function repository(status: string, diff: string | null) {
+  const repo = { status, diff, runs: [] as string[], args: [] as string[][] }
+  const trigger = async (_fn: string, payload: { args: string[] }) => {
+    // Every read runs with --no-optional-locks first (git.ts READ_ONLY).
+    const [verb, flag] = payload.args[0] === '--no-optional-locks' ? payload.args.slice(1) : payload.args
+    repo.runs.push(`${verb} ${flag}`)
+    repo.args.push(payload.args)
+    const stdout =
+      verb === 'status'
+        ? repo.status
+        : verb === 'diff'
+          ? (repo.diff ?? '')
+          : flag === '--is-inside-work-tree'
+            ? 'true\n'
+            : `${'a'.repeat(40)}\n`
+    const timedOut = verb === 'diff' && repo.diff === null
+    return { exit_code: 0, stdout, stderr: '', timed_out: timedOut, stdout_truncated: false, stderr_truncated: false }
+  }
+  return { repo, host: { iii: { trigger } } as unknown as Host }
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+// Calls are counted per test, whatever order the tests run in.
+afterEach(() => vi.clearAllMocks())
+
+describe('the commit panel', () => {
+  it("derives from the page's status, again on every page refresh", async () => {
+    const { repo, host } = repository('## main...origin/main [different]\0 M a.ts\0', 'M\0a.ts\0')
+    const first = await gitChanges(host, '/repo')
+    repo.runs = []
+    const refresh = vi.fn(async () => null)
+    const panel = mount(
+      ({ git, epoch }: { git: GitState | null; epoch: number }) =>
+        useSourceControl(host, '/repo', epoch, true, () => {}, { git, refresh }),
+      { git: first, epoch: 0 },
+    )
+    await settle()
+    // The panel itself only runs what the status cannot tell.
+    expect(repo.runs).toEqual(['rev-parse --verify', 'diff --no-ext-diff'])
+    expect(panel.result).toMatchObject({ phase: 'ready', branch: 'main' })
+    expect(panel.result.changes.map((entry) => entry.path)).toEqual(['a.ts'])
+
+    // A page refresh that kept its object derives again: the panel's own
+    // read may have failed, and is retried rather than left on its error.
+    repo.diff = null
+    panel.rerender({ git: first, epoch: 1 })
+    await settle()
+    expect(panel.result).toMatchObject({ phase: 'error', error: 'git diff uncommitted timed out' })
+    repo.diff = 'M\0a.ts\0'
+    panel.rerender({ git: first, epoch: 2 })
+    await settle()
+    expect(panel.result).toMatchObject({ phase: 'ready', error: null })
+
+    // A changed status derives too.
+    repo.status = '## main\0 M a.ts\0?? b.ts\0'
+    const second = await gitChanges(host, '/repo', first)
+    repo.runs = []
+    panel.rerender({ git: second, epoch: 2 })
+    await settle()
+    expect(repo.runs).toEqual(['rev-parse --verify', 'diff --no-ext-diff'])
+    expect(panel.result.unversioned.map((entry) => entry.path)).toEqual(['b.ts'])
+
+    // A status that fails to read shows the error and keeps the branch, so
+    // the commit box keeps its message.
+    panel.rerender({ git: { kind: 'error', message: 'git status timed out' }, epoch: 3 })
+    await settle()
+    expect(panel.result).toMatchObject({ phase: 'error', error: 'git status timed out', branch: 'main' })
+
+    // Refresh asks the page to read its status again, not quietly: the
+    // epoch it bumps derives even when the status came back the same.
+    panel.rerender({ git: second, epoch: 4 })
+    await settle()
+    repo.runs = []
+    panel.result.reload()
+    expect(refresh).toHaveBeenLastCalledWith()
+    expect(panel.result.refreshing).toBe(true)
+    panel.rerender({ git: second, epoch: 5 })
+    await settle()
+    expect(repo.runs).toEqual(['rev-parse --verify', 'diff --no-ext-diff'])
+    expect(panel.result).toMatchObject({ phase: 'ready', refreshing: false })
+    panel.unmount()
+  })
+
+  it("asks the page to read again on opening, quietly, unless the page's first read is in flight", async () => {
+    const { host } = repository('## main\0 M a.ts\0', 'M\0a.ts\0')
+    const status = await gitChanges(host, '/repo')
+    const refresh = vi.fn(async () => null)
+    const panel = mount(
+      ({ git, active }: { git: GitState | null; active: boolean }) =>
+        useSourceControl(host, '/repo', 0, active, () => {}, { git, refresh }),
+      { git: null, active: true },
+    )
+    await settle()
+    // No status yet: the root's first read is already on its way.
+    panel.rerender({ git: status, active: true })
+    await settle()
+    expect(refresh).not.toHaveBeenCalled()
+    expect(panel.result.phase).toBe('ready')
+
+    // Quiet, so the epoch stays put: the Stash and History tabs just loaded
+    // on mounting with the view, and would read again on a bump.
+    panel.rerender({ git: status, active: false })
+    panel.rerender({ git: status, active: true })
+    await settle()
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(refresh).toHaveBeenCalledWith({ quiet: true })
+    panel.unmount()
+  })
+
+  it('keeps every identity when a refresh moved nothing, and forgets ticks of paths gone', async () => {
+    const { repo, host } = repository('## main\0 M a.ts\0?? b.ts\0', 'M\0a.ts\0')
+    const first = await gitChanges(host, '/repo')
+    // The page hands in stable callbacks.
+    const onChanged = () => {}
+    const refresh = async () => null
+    const panel = mount(
+      ({ git, epoch }: { git: GitState | null; epoch: number }) =>
+        useSourceControl(host, '/repo', epoch, true, onChanged, { git, refresh }),
+      { git: first, epoch: 0 },
+    )
+    await settle()
+    panel.result.setIncluded(panel.result.unversioned, true)
+    const ticked = panel.result
+    expect(ticked.included.map((entry) => entry.path)).toEqual(['a.ts', 'b.ts'])
+
+    // Thousands of rows hang off this object: an unchanged derive must not
+    // hand them a new one.
+    panel.rerender({ git: first, epoch: 1 })
+    await settle()
+    expect(panel.result).toBe(ticked)
+
+    repo.status = '## main\0 M a.ts\0'
+    panel.rerender({ git: await gitChanges(host, '/repo', first), epoch: 2 })
+    await settle()
+    expect(panel.result.unversioned).toEqual([])
+    expect(panel.result.included.map((entry) => entry.path)).toEqual(['a.ts'])
+    panel.unmount()
+  })
+
+  // The panel on a repository with a rename and an unversioned file, read.
+  async function ready() {
+    const { repo, host } = repository('## main\0R  b.ts\0a.ts\0?? n.md\0', 'R100\0a.ts\0b.ts\0')
+    const git = await gitChanges(host, '/repo')
+    const onChanged = vi.fn()
+    const panel = mount(
+      () => useSourceControl(host, '/repo', 0, true, onChanged, { git, refresh: async () => null }),
+      {},
+    )
+    await settle()
+    repo.args = []
+    return { repo, host, panel, onChanged }
+  }
+
+  it('adds unversioned files to git with git add -A', async () => {
+    const { repo, panel, onChanged } = await ready()
+    expect(await panel.result.add(panel.result.unversioned)).toBe(true)
+    expect(repo.args).toEqual([['add', '-A', '--', 'n.md']])
+    expect(panel.result.note).toEqual({ text: 'added 1 file to git', failed: false })
+    expect(onChanged).toHaveBeenCalledTimes(1)
+    panel.unmount()
+  })
+
+  it('lists paths in .gitignore, and says so when it already had them', async () => {
+    const { host, panel } = await ready()
+    await panel.result.ignore(['n.md'])
+    expect(gitIgnore).toHaveBeenLastCalledWith(host, '/repo', ['n.md'])
+    expect(panel.result.note).toEqual({ text: 'added 1 line to .gitignore', failed: false })
+    vi.mocked(gitIgnore).mockResolvedValueOnce(0)
+    await panel.result.ignore(['n.md'])
+    expect(panel.result.note).toEqual({ text: '.gitignore already lists them', failed: false })
+    panel.unmount()
+  })
+
+  it("builds a patch of a rename's both sides and the unversioned files whole", async () => {
+    const { host, panel } = await ready()
+    expect(panel.result.changes).toMatchObject([{ path: 'b.ts', renameFrom: 'a.ts' }])
+    const use = vi.fn(async (patch: string) => `copied ${patch}`)
+    await panel.result.patch([...panel.result.changes, ...panel.result.unversioned], use)
+    expect(gitLocalPatch).toHaveBeenLastCalledWith(host, '/repo', ['a.ts', 'b.ts'], ['n.md'])
+    expect(use).toHaveBeenCalledWith('the patch')
+    expect(panel.result.note).toEqual({ text: 'copied the patch', failed: false })
+
+    await panel.result.patch(panel.result.unversioned, async () => {
+      throw new Error('the clipboard refused it')
+    })
+    expect(panel.result.note).toEqual({ text: 'patch failed: the clipboard refused it', failed: true })
+    panel.unmount()
+  })
+
+  it('runs an action busy, shows what it says, and has the page read again', async () => {
+    const { panel, onChanged } = await ready()
+    let finish = (_text: string) => {}
+    const done = panel.result.run('delete', () => new Promise<string>((resolve) => (finish = resolve)))
+    expect(panel.result).toMatchObject({ busy: true, note: null })
+    finish('deleted n.md')
+    expect(await done).toBe(true)
+    expect(panel.result).toMatchObject({ busy: false, note: { text: 'deleted n.md', failed: false } })
+    expect(onChanged).toHaveBeenCalledTimes(1)
+
+    expect(await panel.result.run('delete', async () => Promise.reject(new Error('gone')))).toBe(false)
+    expect(panel.result.note).toEqual({ text: 'delete failed: gone', failed: true })
+    expect(onChanged).toHaveBeenCalledTimes(2)
+    panel.unmount()
+  })
+})

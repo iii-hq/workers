@@ -1,0 +1,10 @@
+name: Broken worker
+description: Its worker.compose names no container.
+requires:
+  - python
+files:
+  - workers/broken/main.py
+worker:
+  dir: workers/broken
+  name: broken
+  compose: nope

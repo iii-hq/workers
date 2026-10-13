@@ -28,7 +28,6 @@ import {
   emptyConversation,
   type HydrationRun,
   type HydrationUpsert,
-  isUntouchedDraft,
   markBackgroundedStale,
   markDurableStarted,
   markUnwatchedStale,
@@ -46,6 +45,8 @@ import {
   shouldAcceptReconnectDirectoryRow,
   shouldQueueCompletionBell,
   shouldReplayQueuedCompletion,
+  startingModel,
+  unsentDraft,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -93,7 +94,6 @@ describe('prefilled chat draft', () => {
       draft: true,
       messages: [],
     })
-    expect(isUntouchedDraft(next)).toBe(false)
   })
 })
 
@@ -122,6 +122,29 @@ describe('applyCatalogModelFallback', () => {
 
     expect(next.map((c) => c.model)).toEqual([fallback, fallback])
     expect(next.map((c) => c.updatedAt)).toEqual([2_000, 3_000])
+  })
+
+  it('moves an untouched draft off the interim catalog pick once the provider default is known', () => {
+    const interim = 'provider::aaa-first-key'
+    const preferred = 'provider::sonnet'
+    const valid = new Set([interim, preferred])
+    const sessions = [
+      conversation({ id: 'fresh-draft', model: interim, draft: true }),
+      conversation({
+        id: 'typed-draft',
+        model: interim,
+        draft: true,
+        messages: [{ id: 'm1', role: 'user', content: 'hi' } as never],
+      }),
+      conversation({ id: 'session', model: interim, draft: false }),
+    ]
+
+    const next = applyCatalogModelFallback(sessions, valid, preferred, interim)
+
+    expect(next.map((c) => c.model)).toEqual([preferred, interim, interim])
+    expect(applyCatalogModelFallback(sessions, valid, preferred, null)).toBe(
+      sessions,
+    )
   })
 
   it('never invents a model for a discovered session (sub-agents)', () => {
@@ -2076,39 +2099,33 @@ describe('resolveActiveConversationId', () => {
   })
 })
 
-describe('isUntouchedDraft', () => {
-  it('recognises the chat nobody has written in yet', () => {
-    expect(isUntouchedDraft(conversation({ draft: true, messages: [] }))).toBe(
-      true,
-    )
+describe('unsentDraft', () => {
+  const sent = conversation({
+    id: 'sent',
+    draft: true,
+    messages: [
+      { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
+    ] as Conversation['messages'],
+  })
+  const real = conversation({ id: 'real', draft: false, messages: [] })
+  const older = conversation({ id: 'older', draft: true, messages: [] })
+  const typed = conversation({
+    id: 'typed',
+    draft: true,
+    messages: [],
+    draftText: 'half a thought',
   })
 
-  it('refuses a draft that already carries work', () => {
-    expect(
-      isUntouchedDraft(
-        conversation({
-          draft: true,
-          messages: [],
-          draftText: 'half a thought',
-        }),
-      ),
-    ).toBe(false)
-    expect(
-      isUntouchedDraft(
-        conversation({
-          draft: true,
-          messages: [
-            { id: 'm1', role: 'user', content: 'sent', createdAt: 1 },
-          ] as Conversation['messages'],
-        }),
-      ),
-    ).toBe(false)
+  it('reuses a hidden draft, typed text and all, over making another', () => {
+    expect(unsentDraft([real, typed, older], 'real')?.id).toBe('typed')
   })
 
-  it('refuses a real session, which is never interchangeable', () => {
-    expect(isUntouchedDraft(conversation({ draft: false, messages: [] }))).toBe(
-      false,
-    )
+  it('prefers the draft in front of you', () => {
+    expect(unsentDraft([typed, older], 'older')?.id).toBe('older')
+  })
+
+  it('never hands back a real session or a draft mid-send', () => {
+    expect(unsentDraft([sent, real], 'real')).toBeUndefined()
   })
 })
 
@@ -2312,5 +2329,26 @@ it('keeps imported provenance separate while allowing normal session edits', () 
     external_source: 'claude-code',
     source_cwd: '/source',
     fs_scope: { root: '/ade' },
+  })
+})
+
+describe('startingModel', () => {
+  const sonnet = 'claude-code::claude-code/claude-sonnet-5-5'
+  const opus = 'claude-code::claude-code/claude-opus-5-5'
+  const gone = 'openai::gpt-old'
+  const valid = new Set([sonnet, opus])
+
+  it("keeps the person's last pick while the catalog offers it", () => {
+    expect(startingModel(opus, valid, sonnet, sonnet)).toBe(opus)
+  })
+
+  it('trusts the last pick before the catalog is known', () => {
+    expect(startingModel(gone, null, sonnet, null)).toBe(gone)
+  })
+
+  it("skips a missing pick for the provider default, then the router's first model", () => {
+    expect(startingModel(gone, valid, opus, sonnet)).toBe(opus)
+    expect(startingModel(gone, valid, null, sonnet)).toBe(sonnet)
+    expect(startingModel(null, valid, null, sonnet)).toBe(sonnet)
   })
 })

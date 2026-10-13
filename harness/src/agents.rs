@@ -217,13 +217,15 @@ async fn attach_preloaded_skills(
 /// DECLARED id, or `None` when the directory answered with something else —
 /// its miss recovery serves a worker or engine overview under a different
 /// id, and an overview is not the skill the profile asked to preload. The
-/// served id may be the declared one canonicalized (`iii://` prefix and
-/// `.md` suffix dropped); the block keeps the profile's spelling, which is
-/// what the skills index shows too.
+/// served id may be the declared one canonicalized: the `iii://` prefix and
+/// `.md` suffix dropped, and a folder's `index` served under the folder's id
+/// (`harness/iii-node/index` → `harness/iii-node`), as the skills index lists
+/// it. The block keeps the profile's spelling.
 fn skill_in_get_response(id: &str, response: &Value) -> Option<PreloadedSkill> {
     let served = response.get("id").and_then(Value::as_str)?;
     let canonical = id.trim_start_matches("iii://").trim_end_matches(".md");
-    if served != id && served != canonical {
+    let folder = canonical.strip_suffix("/index");
+    if served != id && served != canonical && Some(served) != folder {
         tracing::warn!(
             skill_id = %id,
             served = %served,
@@ -938,6 +940,21 @@ mod tests {
         let blank = serde_json::json!({ "id": "harness/empty", "body": "  \n" });
         assert!(skill_in_get_response("harness/empty", &blank).is_none());
         assert!(skill_in_get_response("harness/alpha", &serde_json::json!({})).is_none());
+    }
+
+    /// The directory serves a folder's `index.md` under the folder's id, so a
+    /// profile declaring `<folder>/index` gets `<folder>` back. That is the
+    /// declared skill, not a miss recovery (MOT-5344).
+    #[test]
+    fn skill_get_response_accepts_the_folder_id_for_an_index_skill() {
+        let served = serde_json::json!({ "id": "harness/iii-node", "body": "# iii-node" });
+        let skill = skill_in_get_response("harness/iii-node/index", &served).unwrap();
+        assert_eq!(skill.id, "harness/iii-node/index");
+        assert!(skill_in_get_response("iii://harness/iii-node/index.md", &served).is_some());
+        // Only that one alias: another folder, or the parent, is still a miss.
+        assert!(skill_in_get_response("harness/other/index", &served).is_none());
+        let parent = serde_json::json!({ "id": "harness", "body": "# harness" });
+        assert!(skill_in_get_response("harness/iii-node/index", &parent).is_none());
     }
 
     #[test]

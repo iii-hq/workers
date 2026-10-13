@@ -17,3 +17,5 @@ pub mod structs;
 pub mod trigger;
 pub mod ui;
 pub mod update_ops;
+
+mod json_budget;

@@ -1,24 +1,33 @@
 import type { Host } from '@iii-dev/console-ui'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import {
-  extractStreamFrame,
-  FRAMES_STREAM,
+  FRAME_CHANGED_TRIGGER,
   readFrame,
   startScreencast,
   stopScreencast,
   takeScreenshot,
 } from '../lib/computer'
-import { useComputerStream } from '../lib/events'
+import { createFrameFollower, parseFrameChange } from '../lib/frameFollower'
 
 /**
- * Live desktop for the selected session, fed by the worker's screencast
- * stream: `screencast::start` on mount, then the worker pushes each frame
- * onto the `computer:frames` stream (group = session id) and this hook
- * appends what arrives — the same engine-pushes / client-appends pattern the
- * Traces view uses. No polling. One `computer::frame` seed read paints the
- * current frame immediately (the stream only delivers frames produced after
- * the subscription); a `computer::screenshot` is the last-resort first paint.
- * `screencast::stop` runs on unmount and session switch (idempotent).
+ * Live desktop for the selected session, notify-then-fetch: the worker keeps
+ * only the newest frame per session and fires `computer::frame-changed`
+ * (`{ session_id }` filter, small image-free payload) after each one; this
+ * hook reads the frame with `computer::frame`. No polling.
+ *
+ * Order on open: bind first, `screencast::start`, then one `computer::frame`
+ * read (the initial paint; notifications only cover frames produced after
+ * the binding). A `computer::screenshot` is the last-resort first paint when
+ * the screencast cannot start. Each notification marks the view dirty; the
+ * follower runs at most one read at a time and skips intermediate frames, so
+ * a slow tab never queues frames (see lib/frameFollower). After a
+ * reconnect it reads again (notifications missed while away are gone, the
+ * stored frame is not). `screencast::stop` runs on unmount and session
+ * switch (idempotent).
+ *
+ * The handler id carries the `iii::` prefix so per-frame invocations stay
+ * span-suppressed and out of the trace feed; the per-mount instance id keeps
+ * two hook instances from colliding.
  */
 
 export interface LiveFrame {
@@ -42,20 +51,66 @@ export function useLiveFrames(
 ): LiveViewState {
   const [frame, setFrame] = useState<LiveFrame | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // Newest applied frame seq, so an out-of-order stream push is ignored.
-  const lastSeqRef = useRef(0)
+  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
 
   // The stale image never bleeds into a newly selected session: this resets
   // on session change only.
   useEffect(() => {
     setFrame(null)
     setError(null)
-    lastSeqRef.current = 0
   }, [sessionId])
 
   useEffect(() => {
     if (!enabled || !sessionId) return
     let cancelled = false
+
+    const follower = createFrameFollower({
+      sessionId,
+      read: (since) => readFrame(host.iii, sessionId, since),
+      apply: (f) => {
+        if (cancelled) return
+        setFrame({
+          dataUrl: `data:${f.mime};base64,${f.data}`,
+          width: f.width,
+          height: f.height,
+        })
+        setError(null)
+      },
+    })
+
+    // 1. Bind first, so no frame stored after the initial read is missed.
+    const offs: Array<() => void> = []
+    const localFnId = `iii::computer-ui::frames::${instanceId}`
+    try {
+      offs.push(
+        host.iii.on(localFnId, (payload: unknown) => {
+          const note = parseFrameChange(payload)
+          if (note) follower.notify(note)
+        }),
+      )
+      offs.push(
+        host.iii.registerTrigger({
+          type: FRAME_CHANGED_TRIGGER,
+          function_id: `${localFnId}::${host.iii.browserId}`,
+          config: { session_id: sessionId },
+        }),
+      )
+    } catch (err) {
+      // Trigger type unavailable (worker restarting): the initial read is the
+      // only paint. Say so; a silent catch looks like a frozen desktop.
+      console.warn('[computer-ui] frame-changed binding failed', err)
+    }
+
+    // Recovery: notifications fired while disconnected are gone, the stored
+    // frame is not, so read it again once the connection is back.
+    let wasConnected = true
+    offs.push(
+      host.iii.addConnectionStateListener((state) => {
+        const connected = state === 'connected'
+        if (connected && !wasConnected) void follower.resync()
+        wasConnected = connected
+      }),
+    )
 
     // Retain the start so teardown can wait for it to settle before stopping;
     // otherwise a late start could reactivate the screencast after cleanup.
@@ -81,23 +136,20 @@ export function useLiveFrames(
         return
       }
       if (cancelled) return
-      // Immediate first paint: the stream only delivers frames produced after
-      // the subscription, so read the current one once.
-      const seed = await readFrame(host.iii, sessionId).catch(() => null)
-      if (cancelled || !seed?.frame) return
-      if (seed.frame_seq > lastSeqRef.current) {
-        lastSeqRef.current = seed.frame_seq
-        setFrame({
-          dataUrl: `data:${seed.mime};base64,${seed.frame}`,
-          width: seed.width,
-          height: seed.height,
-        })
-        setError(null)
-      }
+      // 2. Initial read: the frame stored right now.
+      await follower.resync()
     })()
 
     return () => {
       cancelled = true
+      follower.stop()
+      for (const off of offs) {
+        try {
+          off()
+        } catch {
+          // already gone
+        }
+      }
       // Stop only after the start has settled, so the stop can never be
       // overtaken by an in-flight start reactivating the screencast.
       void started
@@ -105,26 +157,7 @@ export function useLiveFrames(
         .then(() => stopScreencast(host.iii, sessionId))
         .catch(() => {})
     }
-  }, [host, enabled, sessionId])
-
-  useComputerStream({
-    host,
-    enabled: enabled && !!sessionId,
-    streamName: FRAMES_STREAM,
-    groupId: sessionId,
-    fnId: 'iii::computer-ui::frames',
-    onFrame: (payload) => {
-      const f = extractStreamFrame(payload)
-      if (!f || f.frame_seq <= lastSeqRef.current) return
-      lastSeqRef.current = f.frame_seq
-      setFrame({
-        dataUrl: `data:${f.mime};base64,${f.data}`,
-        width: f.width,
-        height: f.height,
-      })
-      setError(null)
-    },
-  })
+  }, [host, enabled, sessionId, instanceId])
 
   return { frame, loading: frame === null && error === null, error }
 }

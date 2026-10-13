@@ -174,7 +174,7 @@ async fn groups_over_budget<D: Db>(
         .query(
             "SELECT group_id, COUNT(*) AS kept FROM sentinel_occurrences \
              WHERE evidence IS NOT NULL AND group_id IS NOT NULL \
-             GROUP BY group_id HAVING kept > ?",
+             GROUP BY group_id HAVING COUNT(*) > ?",
             // The first occurrence and one per version sit on top of the
             // recent ones, so this is a floor rather than the exact budget.
             vec![json!(config.retention.evidence_per_group as i64 + 1)],

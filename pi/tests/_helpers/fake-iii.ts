@@ -5,37 +5,78 @@ export type TriggerCall = {
   function_id: string;
   namespace?: string;
   payload: Record<string, unknown>;
+  action?: { type: string };
+  metadata?: unknown;
+};
+
+type TriggerHandler = {
+  registerTrigger(b: {
+    id: string;
+    function_id: string;
+    config: unknown;
+    metadata?: Record<string, unknown>;
+    namespace?: string;
+  }): Promise<void>;
+  unregisterTrigger(b: { id: string; function_id: string; config: unknown }): Promise<void>;
+};
+
+export type BindOptions = {
+  id?: string;
+  function_id?: string;
+  namespace?: string;
+  /** Binding metadata (the engine-level `metadata` of the registration). */
+  metadata?: Record<string, unknown>;
+  /** Raw config; defaults to `{ session_id }`. */
+  config?: unknown;
 };
 
 export type FakeIii = {
   iii: ISdk;
   calls: TriggerCall[];
   state: Map<string, unknown>;
-  streamFrames: (stream: string) => Array<Record<string, unknown>>;
   registered: Map<string, (payload: unknown) => Promise<unknown>>;
+  /** Trigger types the worker registered, keyed by id, with their handler. */
+  triggerTypes: Map<string, TriggerHandler>;
+  /** Bind a consumer to an owned trigger type the way the engine would. */
+  bindFeed: (typeId: string, session_id: string, opts?: BindOptions) => Promise<string>;
+  unbindFeed: (typeId: string, id: string) => Promise<void>;
+  /** The function id `bindFeed` uses when none is given. */
+  feedFunction: (typeId: string) => string;
+  /** Delivery payloads one feed sent to its default bound function, in order. */
+  feedFrames: (typeId: string) => Array<Record<string, unknown>>;
 };
 
 /**
  * In-memory stand-in for the engine bus: `state::get/set/list` backed by a
- * Map keyed `${scope}/${key}`, `stream::set` recorded as plain calls, and
- * `registerFunction` captured so tests can invoke handlers at the same
- * unknown boundary the engine uses.
+ * Map keyed `${scope}/${key}`, every trigger recorded as a plain call (with
+ * its action and metadata), `registerFunction` captured so tests can invoke
+ * handlers at the same unknown boundary the engine uses, and
+ * `registerTriggerType` captured so tests can bind consumers to the worker's
+ * owned event feeds.
  */
 export function fakeIii(): FakeIii {
   const calls: TriggerCall[] = [];
   const state = new Map<string, unknown>();
   const registered = new Map<string, (payload: unknown) => Promise<unknown>>();
+  const triggerTypes = new Map<string, TriggerHandler>();
+  let nextBinding = 0;
 
   const iii = {
     trigger: async (req: {
       function_id: string;
       namespace?: string;
       payload: Record<string, unknown>;
+      action?: { type: string };
+      metadata?: unknown;
     }) => {
       // Clone like the wire would: the live bus serializes payloads, so
       // later caller-side mutation must not rewrite recorded calls.
       const payload = structuredClone(req.payload);
-      calls.push({ function_id: req.function_id, namespace: req.namespace, payload });
+      const call: TriggerCall = { function_id: req.function_id, payload };
+      if (req.namespace !== undefined) call.namespace = req.namespace;
+      if (req.action !== undefined) call.action = req.action;
+      if (req.metadata !== undefined) call.metadata = structuredClone(req.metadata);
+      calls.push(call);
       const { scope, key, value } = payload as { scope?: string; key?: string; value?: unknown };
       if (req.function_id === 'configuration::ensure') {
         const entryKey = `configuration/${String(payload.id)}`;
@@ -72,16 +113,47 @@ export function fakeIii(): FakeIii {
     registerFunction: vi.fn((fnId: string, handler: (payload: unknown) => Promise<unknown>) => {
       registered.set(fnId, handler);
     }),
+    registerTriggerType: vi.fn((type: { id: string }, handler: TriggerHandler) => {
+      triggerTypes.set(type.id, handler);
+      return { id: type.id };
+    }),
   } as unknown as ISdk;
 
-  const streamFrames = (stream: string) =>
-    calls
-      .filter(
-        (c) =>
-          c.function_id === 'stream::set' &&
-          (c.payload as { stream_name?: string }).stream_name === stream,
-      )
-      .map((c) => c.payload);
+  const feedFunction = (typeId: string) => `test::on::${typeId}`;
 
-  return { iii, calls, state, streamFrames, registered };
+  const handlerOf = (typeId: string) => {
+    const handler = triggerTypes.get(typeId);
+    if (!handler) throw new Error(`trigger type ${typeId} is not registered`);
+    return handler;
+  };
+
+  const bindFeed = async (typeId: string, session_id: string, opts: BindOptions = {}) => {
+    const id = opts.id ?? `binding-${++nextBinding}`;
+    await handlerOf(typeId).registerTrigger({
+      id,
+      function_id: opts.function_id ?? feedFunction(typeId),
+      config: 'config' in opts ? opts.config : { session_id },
+      ...(opts.metadata === undefined ? {} : { metadata: opts.metadata }),
+      ...(opts.namespace === undefined ? {} : { namespace: opts.namespace }),
+    });
+    return id;
+  };
+
+  const unbindFeed = async (typeId: string, id: string) =>
+    handlerOf(typeId).unregisterTrigger({ id, function_id: '', config: undefined });
+
+  const feedFrames = (typeId: string) =>
+    calls.filter((c) => c.function_id === feedFunction(typeId)).map((c) => c.payload);
+
+  return {
+    iii,
+    calls,
+    state,
+    registered,
+    triggerTypes,
+    bindFeed,
+    unbindFeed,
+    feedFunction,
+    feedFrames,
+  };
 }

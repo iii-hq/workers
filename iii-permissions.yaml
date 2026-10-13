@@ -20,6 +20,7 @@ rules:
   - '!state::set'
   - '!state::update'
   - '!state::delete'
+  # Deprecated iii-stream write; keep denied while engines still host it.
   - '!stream::set'
   - '!iii::durable::publish'
   - '!email::on-config-change'
@@ -40,6 +41,8 @@ rules:
   - '!router::abort'
   - '!router::route'
   - '!router::on_config_changed'
+  # Internal: re-reads a rotated or revoked secret:// key and nudges its providers.
+  - '!router::on_secret_changed'
   # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
   # bypass the router's accounting, budgets, and retry policy. The router
   # invokes these worker-to-worker; agents never call them.
@@ -53,6 +56,24 @@ rules:
   # mutation power under a new name); deny it too so an agent cannot bypass the
   # register deny above.
   - '!configuration::ensure'
+  # secrets: credential values live in the secrets worker, referenced from
+  # configuration as secret://NAME. Agents never resolve a value, store,
+  # import or delete one, or change which workers may resolve it; the console
+  # makes those calls on the person's behalf. list/get/status/detect return
+  # metadata only (masked hints, fingerprints) and stay at the default.
+  - '!secrets::resolve'
+  - '!secrets::set'
+  - '!secrets::delete'
+  - '!secrets::access'
+  - '!secrets::import'
+  - '!secrets::on-config-change'
+  # queue's engine event handler (functions/workers available): wakes waits
+  # for a target function and the engine-restart check; engine dispatch only.
+  - '!queue::on-engine-change'
+  # judge-typesafe's and judge-openai's own secrets::changed handlers (drop a
+  # rotated key).
+  - '!judge-typesafe::on-secret-change'
+  - '!judge-openai::on-secret-change'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
@@ -140,8 +161,11 @@ rules:
   - '!judge-decider::on-judge-config-change'
   - '!judge-laya::on-config-change'
   - '!judge-laya::on-judge-config-change'
+  - '!judge-clef::on-config-change'
+  - '!judge-clef::on-judge-config-change'
   - '!directory::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
+  - '!judge-openai::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
@@ -152,8 +176,8 @@ rules:
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
-  # options.orchestrator). The internal config/cron hooks must never be
-  # agent-callable.
+  # options.orchestrator). The internal config/cron/session-deleted hooks
+  # must never be agent-callable.
   - '!harness::send'
   - '!harness::run'
   - '!harness::turn'
@@ -162,6 +186,12 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  - '!harness::on-session-deleted'
+  # Engine event handlers (worker connect/disconnect, compose operations) that
+  # drive binding expiry, orphaned-turn recovery and discovery instead of
+  # timers: invoked only by the engine's trigger dispatch.
+  - '!harness::on-engine-change'
+  - '!harness::on-compose-operation'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below.
@@ -222,6 +252,20 @@ rules:
   - '!browser::screencast::stop'
   - '!browser::frame'
   - '!browser::on-config-change'
+  # http::status only reports where the public HTTP server listens (host,
+  # port, local base URL) and its last reload error: read-only, so agents
+  # build page URLs from it instead of assuming port 3111.
+  - http::status
+  # console::status only reports where this project's ADE listens (port,
+  # local base URL), the engine URL it proxies and its version: read-only, so
+  # agents build ADE URLs from it instead of assuming port 3113.
+  - console::status
+  # browser::chromium::status only reports which Chromium the worker would
+  # launch (path, version, where it searched) and the latest install job:
+  # read-only, never starts a browser. browser::chromium::install downloads
+  # and unpacks ~200 MB of executable code into the user's cache, so it
+  # stays at the needs_approval default (the ADE calls it as the user).
+  - browser::chromium::status
   # computer: same split as browser. screencast::*/frame exist only to feed the
   # console viewport; the desktop surface the agent actually uses (sessions,
   # screenshot, observe, act, displays) stays at the needs_approval default,
@@ -435,12 +479,16 @@ rules:
   - tailscale::accounts::list
   - tailscale::metrics
   # Read-only code surface (coder::*, now served by the shell worker).
-  # Mutating ops (create/update/move/delete-file) stay approval-gated.
+  # Mutating ops (create/update/move/delete-file) stay approval-gated, and so
+  # does coder::scaffold-worker: it writes a whole worker package, so it has
+  # no rule here and falls through to needs_approval.
   - coder::info
   - coder::read-file
   - coder::search
   - coder::list-folder
   - coder::tree
+  # Lists scaffoldable templates; a refresh only updates the IDE's own cache.
+  - coder::list-templates
   # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe

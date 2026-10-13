@@ -96,6 +96,11 @@ pub fn build_command(
     // cannot have been reused.
     #[cfg(unix)]
     cmd.process_group(0);
+    // A scoped exec under `fs.exec_confinement: landlock` may write only under
+    // its roots. Fails closed: no confinement, no command.
+    if let Some(roots) = &overrides.write_roots {
+        crate::exec::confine::apply(&mut cmd, roots)?;
+    }
     Ok(cmd)
 }
 
@@ -256,7 +261,20 @@ impl ExecBackend for HostExecBackend {
         // callers that branch on the code.
         run_to_completion(argv, &self.cfg, timeout_ms, overrides)
             .await
-            .map_err(|e| ExecError::new("S216", format!("host exec: {e}")))
+            .map_err(host_exec_error)
+    }
+}
+
+/// Lift a host exec failure to its S-code: the confinement refusal carries its
+/// own (see `confine::unavailable`), everything else is the generic S216.
+fn host_exec_error(e: String) -> ExecError {
+    let code = crate::exec::confine::UNAVAILABLE_CODE;
+    match e
+        .strip_prefix(code)
+        .and_then(|rest| rest.strip_prefix(": "))
+    {
+        Some(message) => ExecError::new(code, message),
+        None => ExecError::new("S216", format!("host exec: {e}")),
     }
 }
 
@@ -619,6 +637,136 @@ mod tests {
         .expect_err("escape must reject");
         assert_eq!(err.code, "S215");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The fail-closed refusal keeps its own code on `shell::exec` instead of
+    /// collapsing into the generic S216.
+    #[test]
+    fn confinement_refusal_keeps_its_code() {
+        let err = host_exec_error(crate::exec::confine::unavailable("ENOSYS"));
+        assert_eq!(err.code, "S222");
+        assert!(
+            err.message
+                .starts_with("exec confinement unavailable: ENOSYS"),
+            "{}",
+            err.message
+        );
+        let err = host_exec_error("spawn \"x\": boom".into());
+        assert_eq!(err.code, "S216");
+        assert_eq!(err.message, "host exec: spawn \"x\": boom");
+    }
+
+    /// The Landlock tests skip only where the kernel lacks it (CI kernels).
+    #[cfg(target_os = "linux")]
+    fn landlock_available() -> bool {
+        match crate::exec::confine::landlock::abi() {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("skipping: Landlock unavailable ({e})");
+                false
+            }
+        }
+    }
+
+    /// A directory under none of the default writable roots (`/tmp`, `~/.cache`,
+    /// ...), so a confined write there must fail.
+    #[cfg(target_os = "linux")]
+    fn outside_dir() -> tempfile::TempDir {
+        tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
+    }
+
+    /// The incident: a scoped exec under `landlock` writes inside its root and
+    /// `/tmp`, and a write anywhere else fails with nothing created.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_confined_exec_cannot_write_outside_its_roots() {
+        if !landlock_available() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let outside = outside_dir();
+        let in_tmp =
+            std::path::Path::new("/tmp").join(format!("confined-{}", uuid::Uuid::new_v4()));
+        let mut cfg = test_cfg();
+        cfg.fs.exec_confinement = crate::config::ExecConfinement::Landlock;
+        let overrides = crate::exec::policy::build_overrides(
+            None,
+            None,
+            Some(root.path().to_str().unwrap()),
+            None,
+            crate::fs::FsBoundary::Workspace,
+            &cfg,
+        )
+        .unwrap();
+        let argv: Vec<String> = [
+            "sh",
+            "-c",
+            r#"touch in && touch "$1" && touch "$2/out""#,
+            "sh",
+            in_tmp.to_str().unwrap(),
+            outside.path().to_str().unwrap(),
+        ]
+        .map(String::from)
+        .into();
+        let out = run_to_completion(&argv, &cfg, 5000, &overrides)
+            .await
+            .unwrap();
+        let tmp_written = in_tmp.exists();
+        std::fs::remove_file(&in_tmp).ok();
+
+        assert!(root.path().join("in").exists(), "root is writable: {out:?}");
+        assert!(tmp_written, "/tmp is writable: {out:?}");
+        assert!(!outside.path().join("out").exists(), "outside write landed");
+        assert_ne!(out.exit_code, Some(0));
+        assert!(out.stderr.contains("Permission denied"), "{}", out.stderr);
+    }
+
+    /// `shell::exec_bg` spawns through the same `build_command`, so a
+    /// background job is confined the same way.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn exec_bg_is_confined_too() {
+        if !landlock_available() {
+            return;
+        }
+        let _gauge_gate = crate::jobs::GAUGE_TEST_GUARD.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        let outside = outside_dir();
+        let root_canon = root.path().canonicalize().unwrap();
+        let overrides = ExecOverrides {
+            cwd: Some(root_canon.clone()),
+            write_roots: Some(vec![root_canon]),
+            ..Default::default()
+        };
+        let argv: Vec<String> = [
+            "sh",
+            "-c",
+            r#"touch in; touch "$1/out""#,
+            "sh",
+            outside.path().to_str().unwrap(),
+        ]
+        .map(String::from)
+        .into();
+        let resp =
+            crate::functions::exec_bg::spawn_host_job(None, Arc::new(test_cfg()), argv, overrides)
+                .await
+                .unwrap();
+        let started = std::time::Instant::now();
+        loop {
+            let handle = crate::jobs::get(&resp.job_id).await.expect("job exists");
+            if handle.lock().await.record.finished_at_ms.is_some() {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "job never finished"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        crate::jobs::JOBS.map.lock().await.remove(&resp.job_id);
+
+        assert!(root.path().join("in").exists(), "root is writable");
+        assert!(!outside.path().join("out").exists(), "outside write landed");
     }
 
     /// Omitting both cwd and env preserves prior behaviour: the empty override

@@ -11,7 +11,8 @@ transcripts, tracing) belongs to the engine and the harness, not here.
   computer::act  ──────▶  functions/ ─▶ session ─▶ Driver ─┬─▶ native (this machine)
   computer::screenshot                    │                ├─▶ sandbox (microVM)
                                           │                └─▶ remote (guest executor)
-  console viewport ◀── computer:frames ◀──┘ screencast pump
+  console viewport ◀── frame-changed ◀────┘ screencast pump (newest frame only)
+        └────── computer::frame ──────▶ reads the stored frame
   sibling workers  ◀── session-started / session-stopped
 ```
 
@@ -27,6 +28,7 @@ transcripts, tracing) belongs to the engine and the harness, not here.
 | `driver/remote.rs` | A desktop reached through its guest executor over a WebSocket |
 | `session.rs` | Session registry, driver selection, durable records in `state`, the screencast pump |
 | `events.rs` | `computer::session-started` / `session-stopped` trigger types and their subscriber fan-out |
+| `frames.rs` | `computer::frame-changed` trigger type: bounded bindings and per-binding coalescing delivery |
 | `functions/` | The `computer::*` wire surface, one module per function plus the golden-tested catalog |
 | `ui.rs` + `ui/` | The injected console page and chat renderer (see the injectable-console-UI SOP) |
 
@@ -37,7 +39,7 @@ transcripts, tracing) belongs to the engine and the harness, not here.
 | driver | One implementation of `Driver` — how this session reaches its desktop |
 | session | A live desktop plus its id, screen size, and screencast state |
 | screen | Desktop pixel dimensions; the coordinate space `act` and screenshots share |
-| frame | One screencast capture, pushed onto `computer:frames` under the session id |
+| frame | One screencast capture; each session keeps only its newest one, read with `computer::frame` |
 
 ## Doc map
 

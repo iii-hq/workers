@@ -7,7 +7,7 @@ use crate::reasoning::{is_reasoning_model, native_thinking, resolve, ReasoningPa
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
-use crate::wire::messages::carries_images;
+use crate::wire::messages::{carries_images, prefix_change_note};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
@@ -124,6 +124,15 @@ async fn run_stream_call(
     // rather than 400-ing the turn on an API that takes text only.
     if carries_images(&input.messages) {
         warnings.push(format!("images dropped: {model} takes text input only"));
+    }
+    // DeepSeek's cache reuses the longest unchanged request prefix: name the
+    // already-sent row this request rewrote, so the cache loss has a cause.
+    if let Some(session_id) = input.session_id.as_deref() {
+        let system_prompt = input.system_prompt.as_deref().unwrap_or_default();
+        if let Some(note) = prefix_change_note(session_id, &input.messages, system_prompt) {
+            tracing::warn!(session_id, %note, "wire request rewrote an already-sent row");
+            warnings.push(note);
+        }
     }
 
     let reasoning = is_reasoning_model(

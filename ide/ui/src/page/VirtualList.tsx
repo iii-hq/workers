@@ -2,7 +2,7 @@
    viewport (plus a margin) mount. Search results and change lists reach
    thousands of rows; this keeps them at a few dozen DOM nodes. */
 
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export interface VirtualListProps<T> {
   rows: readonly T[]
@@ -20,9 +20,17 @@ export interface VirtualListProps<T> {
   tabIndex?: number
   onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void
   listRef?: React.Ref<HTMLDivElement>
+  /** The option a listbox's focus sits on while the scroller keeps it. */
+  'aria-activedescendant'?: string
+  /** The rows mounted now, overscan included: a paged list loads more
+      as `last` nears the end. */
+  onRangeChange?: (first: number, last: number) => void
+  /** A row kept mounted outside the window: the one aria-activedescendant
+      names, so assistive tech can still read it. */
+  keepIndex?: number | null
 }
 
-export function VirtualList<T>({
+function VirtualListView<T>({
   rows,
   rowHeight,
   overscan = 8,
@@ -35,20 +43,37 @@ export function VirtualList<T>({
   tabIndex,
   onKeyDown,
   listRef,
+  'aria-activedescendant': activeDescendant,
+  onRangeChange,
+  keepIndex = null,
 }: VirtualListProps<T>) {
   const viewportRef = useRef<HTMLDivElement>(null)
-  const [scrollTop, setScrollTop] = useState(0)
-  const [height, setHeight] = useState(0)
+  // The first row in view, not the pixel offset: a scroll within a row
+  // renders nothing. Likewise the rows the viewport fits, not its height: a
+  // dock dragged taller renders only when another row fits.
+  const [topRow, setTopRow] = useState(0)
+  const [viewRows, setViewRows] = useState(0)
+  const rowHeightRef = useRef(rowHeight)
+  rowHeightRef.current = rowHeight
 
   useLayoutEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const measure = () => setHeight(el.clientHeight)
+    const measure = () => setViewRows(Math.ceil(el.clientHeight / rowHeightRef.current))
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
+
+  // A new row height (a narrow pane's two-line rows) moves the first row,
+  // and changes how many fit.
+  useLayoutEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    setTopRow(Math.floor(el.scrollTop / rowHeight))
+    setViewRows(Math.ceil(el.clientHeight / rowHeight))
+  }, [rowHeight])
 
   useEffect(() => {
     const el = viewportRef.current
@@ -60,20 +85,35 @@ export function VirtualList<T>({
   }, [scrollToIndex, rowHeight])
 
   const total = rows.length * rowHeight
-  const first = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
-  const last = Math.min(rows.length, Math.ceil((scrollTop + height) / rowHeight) + overscan)
+  const first = Math.max(0, topRow - overscan)
+  const last = Math.min(rows.length, topRow + viewRows + 1 + overscan)
+  const rangeRef = useRef(onRangeChange)
+  rangeRef.current = onRangeChange
+  useEffect(() => {
+    rangeRef.current?.(first, last)
+  }, [first, last])
+  const row = (index: number) => (
+    <div
+      key={rowKey(rows[index], index)}
+      className="shui-vrow"
+      style={{ transform: `translateY(${index * rowHeight}px)`, height: rowHeight }}
+    >
+      {renderRow(rows[index], index)}
+    </div>
+  )
   const visible: ReactNode[] = []
-  for (let index = first; index < last; index++) {
-    visible.push(
-      <div
-        key={rowKey(rows[index], index)}
-        className="shui-vrow"
-        style={{ transform: `translateY(${index * rowHeight}px)`, height: rowHeight }}
-      >
-        {renderRow(rows[index], index)}
-      </div>,
-    )
-  }
+  const kept = keepIndex !== null && keepIndex >= 0 && keepIndex < rows.length ? keepIndex : null
+  // A kept row outside the window comes with its neighbours, so Tab and
+  // Shift+Tab from it land on the next row rather than leave the list.
+  const near =
+    kept === null
+      ? []
+      : [kept - 1, kept, kept + 1].filter(
+          (index) => index >= 0 && index < rows.length && (index < first || index >= last),
+        )
+  for (const index of near) if (index < first) visible.push(row(index))
+  for (let index = first; index < last; index++) visible.push(row(index))
+  for (const index of near) if (index >= last) visible.push(row(index))
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the scroller carries the caller's role and keyboard handling
@@ -85,9 +125,10 @@ export function VirtualList<T>({
         else if (listRef) (listRef as React.MutableRefObject<HTMLDivElement | null>).current = node
       }}
       className={className ? `shui-vlist ${className}` : 'shui-vlist'}
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      onScroll={(event) => setTopRow(Math.floor(event.currentTarget.scrollTop / rowHeight))}
       role={role}
       aria-label={ariaLabel}
+      aria-activedescendant={activeDescendant}
       tabIndex={tabIndex}
       onKeyDown={onKeyDown}
     >
@@ -97,3 +138,7 @@ export function VirtualList<T>({
     </div>
   )
 }
+
+/** Memoized: a caller whose props keep their identity (`renderRow`, `rowKey`)
+    skips re-rendering every mounted row when it re-renders itself. */
+export const VirtualList = memo(VirtualListView) as typeof VirtualListView

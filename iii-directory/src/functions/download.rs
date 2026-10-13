@@ -85,6 +85,10 @@ struct DownloadOutput {
     skills_written: Vec<String>,
     system_prompts_written: Vec<String>,
     agents_written: Vec<String>,
+    /// Agent profiles the bundle ships but an installed kit owns: left as
+    /// the kit wrote them (kit profiles take precedence).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agents_skipped: Vec<sources::SkippedAgent>,
     source: Value,
 }
 
@@ -306,17 +310,29 @@ pub(crate) async fn run_download(
             branch,
         } => sources::git::download(repo, skill, branch, &folder, cfg.download_timeout_ms).await,
         ClassifiedInput::Registry { worker, spec } => {
-            sources::registry::download(
+            let kit_agents = kit_owned_agents();
+            let result = sources::registry::download(
                 cfg.registry_base(),
                 worker,
                 spec,
                 &folder,
                 &agents_folder,
                 cfg.download_timeout_ms,
+                &kit_agents,
             )
-            .await
+            .await?;
+            // A complete registry download is what the marker records, so
+            // an explicit download keeps profile origins as current as the
+            // auto-download does.
+            write_completion_marker(&folder, worker, spec, &result)?;
+            Ok(result)
         }
     }
+}
+
+/// Agent ids an installed kit owns (`kits.lock`), mapped to the kit.
+fn kit_owned_agents() -> std::collections::BTreeMap<String, String> {
+    crate::kits::lock::KitsLock::read_lenient(&crate::kits::paths::kits_lock()).owned_agents()
 }
 
 fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> DownloadOutput {
@@ -349,6 +365,7 @@ fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> Downloa
         skills_written: result.skills_written,
         system_prompts_written: result.system_prompts_written,
         agents_written: result.agents_written,
+        agents_skipped: result.agents_skipped,
         source,
     }
 }
@@ -392,33 +409,62 @@ async fn fan_out(
 /// Marker filename written inside a namespace after a complete download.
 const COMPLETION_MARKER: &str = ".iii-skill-complete";
 
-/// Marker payload shape: `{ worker, source, tag_or_version, schema }`.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct CompletionMarker {
-    worker: String,
-    source: String,
-    tag_or_version: String,
-    schema: u32,
+/// Marker payload: `{ worker, source, tag_or_version, schema, version?,
+/// agents? }`. Schema 2 adds the resolved `version` and the agent profiles
+/// the download wrote (`id → sha256`), which is how `agents/<id>.md` is
+/// attributed to a worker (see `crate::kits::origin`). Schema-1 markers
+/// still parse; they attribute no agents.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkerMarker {
+    pub worker: String,
+    pub source: String,
+    pub tag_or_version: String,
+    pub schema: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub agents: std::collections::BTreeMap<String, String>,
 }
+
+/// Marker schema written by this build.
+const MARKER_SCHEMA: u32 = 2;
 
 /// Write the completion marker under `<skills_folder>/<worker>/`.
 fn write_completion_marker(
     skills_folder: &std::path::Path,
     worker: &str,
     spec: &VersionSpec,
+    result: &DownloadResult,
 ) -> Result<(), String> {
-    let marker = CompletionMarker {
+    let marker = WorkerMarker {
         worker: worker.to_string(),
         source: "registry".to_string(),
         tag_or_version: match spec {
             VersionSpec::Version(v) => v.clone(),
             VersionSpec::Tag(t) => t.clone(),
         },
-        schema: 1,
+        schema: MARKER_SCHEMA,
+        version: result.version.clone(),
+        agents: result.agent_shas.clone(),
     };
     let json = serde_json::to_string_pretty(&marker).map_err(|e| format!("encode marker: {e}"))?;
     let dest = skills_folder.join(worker).join(COMPLETION_MARKER);
     sources::write_file_atomic(&dest, json.as_bytes())
+}
+
+/// Every worker completion marker directly under `skills_folder`
+/// (`<worker>/.iii-skill-complete`). Unreadable markers are skipped.
+pub fn read_worker_markers(skills_folder: &std::path::Path) -> Vec<WorkerMarker> {
+    let Ok(entries) = std::fs::read_dir(skills_folder) else {
+        return Vec::new();
+    };
+    let mut out: Vec<WorkerMarker> = entries
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path().join(COMPLETION_MARKER)).ok())
+        .filter_map(|raw| serde_json::from_str::<WorkerMarker>(&raw).ok())
+        .collect();
+    out.sort_by(|a, b| a.worker.cmp(&b.worker));
+    out
 }
 
 /// Check if a completion marker exists for `worker` under `skills_folder`.
@@ -464,6 +510,7 @@ pub async fn download_worker_skills(
     std::fs::create_dir_all(&folder)
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
+    let kit_agents = kit_owned_agents();
     match registry::download_typed(
         cfg.registry_base(),
         worker,
@@ -471,6 +518,7 @@ pub async fn download_worker_skills(
         &folder,
         &agents_folder,
         cfg.download_timeout_ms,
+        &kit_agents,
     )
     .await?
     {
@@ -480,9 +528,10 @@ pub async fn download_worker_skills(
                 skills = result.skills_written.len(),
                 system_prompts = result.system_prompts_written.len(),
                 agents = result.agents_written.len(),
+                agents_skipped = ?result.agents_skipped,
                 "auto-downloaded worker skills"
             );
-            write_completion_marker(&folder, worker, spec)?;
+            write_completion_marker(&folder, worker, spec, &result)?;
             Ok(true)
         }
         registry::RegistryDownloadOutcome::NotFound => {
@@ -863,7 +912,7 @@ mod tests {
         // Create the worker namespace directory so the marker can be written.
         std::fs::create_dir_all(folder.join("resend")).unwrap();
         let spec = VersionSpec::Tag("latest".into());
-        write_completion_marker(folder, "resend", &spec).unwrap();
+        write_completion_marker(folder, "resend", &spec, &DownloadResult::new("resend")).unwrap();
         assert!(
             has_completion_marker(folder, "resend"),
             "marker should be present after write"
@@ -871,11 +920,43 @@ mod tests {
         // Verify the JSON content is well-formed and carries expected fields.
         let marker_path = folder.join("resend").join(COMPLETION_MARKER);
         let raw = std::fs::read_to_string(marker_path).unwrap();
-        let marker: CompletionMarker = serde_json::from_str(&raw).unwrap();
+        let marker: WorkerMarker = serde_json::from_str(&raw).unwrap();
         assert_eq!(marker.worker, "resend");
         assert_eq!(marker.tag_or_version, "latest");
         assert_eq!(marker.source, "registry");
-        assert_eq!(marker.schema, 1);
+        assert_eq!(marker.schema, 2);
+    }
+
+    #[test]
+    fn marker_records_written_agents_and_reads_schema_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("kanban")).unwrap();
+        let mut result = DownloadResult::new("kanban");
+        result.version = Some("1.6.1".into());
+        result.agent_shas.insert("reviewer".into(), "abc".into());
+        write_completion_marker(
+            tmp.path(),
+            "kanban",
+            &VersionSpec::Tag("latest".into()),
+            &result,
+        )
+        .unwrap();
+        // A schema-1 marker from an older build still parses.
+        std::fs::create_dir_all(tmp.path().join("old")).unwrap();
+        std::fs::write(
+            tmp.path().join("old").join(COMPLETION_MARKER),
+            r#"{"worker":"old","source":"registry","tag_or_version":"latest","schema":1}"#,
+        )
+        .unwrap();
+        let markers = read_worker_markers(tmp.path());
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0].worker, "kanban");
+        assert_eq!(markers[0].version.as_deref(), Some("1.6.1"));
+        assert_eq!(
+            markers[0].agents.get("reviewer").map(String::as_str),
+            Some("abc")
+        );
+        assert!(markers[1].agents.is_empty());
     }
 
     #[test]
@@ -892,11 +973,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("myworker")).unwrap();
         let spec = VersionSpec::Version("2.3.4".into());
-        write_completion_marker(tmp.path(), "myworker", &spec).unwrap();
+        write_completion_marker(
+            tmp.path(),
+            "myworker",
+            &spec,
+            &DownloadResult::new("myworker"),
+        )
+        .unwrap();
         assert!(has_completion_marker(tmp.path(), "myworker"));
         let raw =
             std::fs::read_to_string(tmp.path().join("myworker").join(COMPLETION_MARKER)).unwrap();
-        let marker: CompletionMarker = serde_json::from_str(&raw).unwrap();
+        let marker: WorkerMarker = serde_json::from_str(&raw).unwrap();
         assert_eq!(marker.tag_or_version, "2.3.4");
     }
 
@@ -1030,8 +1117,13 @@ mod tests {
         std::fs::create_dir_all(global_root.join("resend")).unwrap();
         std::fs::create_dir_all(&local_root).unwrap();
         // Write a completion marker.
-        write_completion_marker(&global_root, "resend", &VersionSpec::Tag("latest".into()))
-            .unwrap();
+        write_completion_marker(
+            &global_root,
+            "resend",
+            &VersionSpec::Tag("latest".into()),
+            &DownloadResult::new("resend"),
+        )
+        .unwrap();
         let result = reconcile_decision("resend", None, &local_root, &global_root);
         assert!(result.is_none(), "existing marker should skip download");
     }

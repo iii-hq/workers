@@ -23,7 +23,7 @@ import {
   TableViewport,
 } from '@iii-dev/console-ui'
 import type { CSSProperties } from 'react'
-import { Note } from './widgets'
+import { CopyIconButton, Note } from './widgets'
 
 const MAX_DEPTH = 3
 
@@ -115,26 +115,17 @@ export function schemaFieldNames(schema: unknown): string[] {
 export function SchemaTable({
   schema,
   empty,
+  label,
 }: {
   schema: unknown
   empty: string
+  /** Section name (`Input`, `Output`): heads the table with the schema's
+      title, a field count and a copy action. Without it the schema's own
+      title and description head the table. */
+  label?: string
 }) {
-  if (schema === undefined || schema === null) return <Note>{empty}</Note>
-
   const rows: Row[] = []
   collect(schema, 0, '', rows)
-
-  if (rows.length === 0) {
-    // A schema with no properties is still information: a scalar response, a
-    // free-form object. Show it rather than claiming there is nothing.
-    return (
-      <JsonHighlight
-        code={JSON.stringify(schema, null, 2)}
-        className="console-catalog-json"
-        wrap
-      />
-    )
-  }
 
   const title =
     isRecord(schema) && typeof schema.title === 'string' ? schema.title : null
@@ -142,10 +133,58 @@ export function SchemaTable({
     isRecord(schema) && typeof schema.description === 'string'
       ? schema.description
       : null
+  const top = rows.filter((r) => r.depth === 0)
+  const required = top.filter((r) => r.required).length
+
+  const section = label ? (
+    <div className="console-catalog-schema-section">
+      <h3 className="label">{label}</h3>
+      {title ? <span className="type-name">{title}</span> : null}
+      <span className="summary">
+        {rows.length > 0
+          ? `${top.length} field${top.length === 1 ? '' : 's'}${required ? ` · ${required} required` : ''}`
+          : null}
+      </span>
+      {schema !== undefined && schema !== null ? (
+        <CopyIconButton
+          value={JSON.stringify(schema, null, 2)}
+          label={`Copy ${label.toLowerCase()} schema`}
+        />
+      ) : null}
+    </div>
+  ) : null
+
+  if (schema === undefined || schema === null) {
+    return (
+      <div className="console-catalog-schema">
+        {section}
+        <Note>{empty}</Note>
+      </div>
+    )
+  }
+
+  if (rows.length === 0) {
+    // A schema with no properties is still information: a scalar response, a
+    // free-form object. Show it rather than claiming there is nothing.
+    return (
+      <div className="console-catalog-schema">
+        {section}
+        <JsonHighlight
+          code={JSON.stringify(schema, null, 2)}
+          className="console-catalog-json"
+          wrap
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="console-catalog-schema">
-      {title || description ? (
+      {section}
+      {label && description ? (
+        <p className="console-catalog-schema-desc">{description}</p>
+      ) : null}
+      {!label && (title || description) ? (
         <div className="console-catalog-schema-head">
           {title ? <h3 className="title">{title}</h3> : null}
           {description ? <p className="desc">{description}</p> : null}
@@ -158,7 +197,7 @@ export function SchemaTable({
               <TableRow>
                 <TableHead className="field-column">Field</TableHead>
                 <TableHead className="type-column">Type</TableHead>
-                <TableHead>Notes</TableHead>
+                <TableHead>Description</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -177,12 +216,12 @@ export function SchemaTable({
                         {row.name}
                       </span>
                       {row.required ? (
-                        <Chip className="required">Required</Chip>
+                        <Chip className="required">required</Chip>
                       ) : null}
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Chip className="type">{row.type}</Chip>
+                    <span className="type">{row.type}</span>
                   </TableCell>
                   <TableCell>
                     <div className="notes">

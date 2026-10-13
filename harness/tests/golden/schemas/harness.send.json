@@ -73,6 +73,13 @@
           }
         ]
       },
+      "ReasoningPreset": {
+        "description": "An effort the harness resolves from the model's catalog row.",
+        "enum": [
+          "lowest"
+        ],
+        "type": "string"
+      },
       "SendOptions": {
         "description": "Per-send options frozen onto the turn record (harness.md § `harness::send`).",
         "properties": {
@@ -158,6 +165,17 @@
               "object",
               "null"
             ]
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ReasoningPreset"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ask the harness to pick the effort from the model's catalog row instead of naming one: `lowest` is the model's lowest reasoning effort (never `off`), or the provider default when the model offers no effort choices. Exclusive with `thinking_level` and `provider_options`; the choice is returned as `reasoning` on the send response."
           },
           "skills": {
             "description": "Exact skill ids advertised to the model; omitted or empty means all on a new session (existing: omitted inherits, empty resets).",
@@ -247,14 +265,25 @@
         ]
       },
       "ThinkingLevel": {
-        "enum": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No reasoning at all; honoured only where the model advertises `supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns).",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          }
+        ]
       }
     },
     "properties": {
@@ -319,6 +348,51 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ResolvedReasoning": {
+        "description": "What a `reasoning` preset resolved to for this send. `reasoning_effort` is the provider-native effort (the catalog's own string); both fields are absent when the model offers no effort choices and the provider decides.",
+        "properties": {
+          "reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thinking_level": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ThinkingLevel": {
+        "oneOf": [
+          {
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "No reasoning at all; honoured only where the model advertises `supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns).",
+            "enum": [
+              "off"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
     "properties": {
       "accepted": {
         "type": "boolean"
@@ -343,6 +417,17 @@
           "boolean",
           "null"
         ]
+      },
+      "reasoning": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResolvedReasoning"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What `options.reasoning` resolved to; absent when the send named none."
       },
       "session_id": {
         "type": "string"

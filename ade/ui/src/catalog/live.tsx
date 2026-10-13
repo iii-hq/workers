@@ -2,9 +2,10 @@
  * The page-level live layer: what is running RIGHT NOW, visible without
  * selecting anything.
  *
- * `useLiveActivity` folds the all-spans stream into two things a page can
- * render from directly: a rolling feed of the most recent calls (the
- * now-strip) and a per-function "last call" map (row pulses and the live
+ * `useLiveActivity` folds the live span feed (engine `trace` ticks, then a
+ * bounded `engine::traces::spans` re-read; see `./span-feed`) into two
+ * things a page can render from directly: a rolling feed of the most
+ * recent calls (the now-strip) and a per-function "last call" map (row pulses and the live
  * meta line). One subscription per page, shared by every row.
  *
  * The strip is the page's one bold element. Everything it shows is a real

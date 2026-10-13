@@ -47,6 +47,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
+import { useTraceFocusRequest } from '@/lib/trace-focus'
 import { requestChatMessageFocus } from '@/lib/trace-links'
 import { startTraceActivityFeed } from '@/lib/traces-activity'
 import { cn } from '@/lib/utils'
@@ -688,12 +689,26 @@ export function TracesV2({
   // active conversation (once per trace — closing it mid-turn is respected).
   // Following lands the held rows first, so the opened trace's detail
   // renders under its own row instead of pinned above a stale list.
+  // When the operator asked for a trace by name (a `@trace` mention), turns
+  // that started before that moment are not "new work" to jump to: right
+  // after mount the feed is still landing, and the chat's latest turn would
+  // otherwise read as unseen and replace the trace that was asked for.
+  const focusedAtRef = useRef<number | null>(null)
+  const allSpansRef = useRef(allSpans)
+  allSpansRef.current = allSpans
   const openFollowedTrace = useCallback(
     (traceId: string | null) => {
+      const focusedAt = focusedAtRef.current
+      if (traceId && focusedAt !== null && activeSessionId) {
+        const start = turnTracesFor(allSpansRef.current, activeSessionId).get(
+          traceId,
+        )
+        if (start !== undefined && start < focusedAt) return
+      }
       flushPendingTraces()
       selectTrace(traceId)
     },
-    [flushPendingTraces, selectTrace],
+    [flushPendingTraces, selectTrace, activeSessionId],
   )
   useFollowLiveTurn({
     enabled: followTurns && !isPaused,
@@ -747,6 +762,15 @@ export function TracesV2({
   // pane. Once only, and never over a deep link or a trace the operator
   // already chose — after that the surface is theirs.
   const sessionSeedRef = useRef(false)
+  // "Show this trace" from elsewhere in the tab (a `@trace` mention): it
+  // wins over the session seed and over following turns that had already
+  // started, now and on every later request.
+  useTraceFocusRequest((traceId) => {
+    focusedAtRef.current = Date.now()
+    sessionSeedRef.current = true
+    initialAppliedRef.current = true
+    if (traceId !== selectedTraceIdRef.current) selectTrace(traceId)
+  })
   useEffect(() => {
     if (sessionSeedRef.current || initialTraceId || !activeSessionId) return
     const turns = turnTracesFor(allSpans, activeSessionId)

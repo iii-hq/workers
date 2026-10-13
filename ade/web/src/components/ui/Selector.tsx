@@ -187,6 +187,7 @@ export function Selector<T extends string>({
           option.label.toLocaleLowerCase() === trimmedQuery.toLocaleLowerCase(),
       ),
   )
+  const optionCount = visibleOptions.length + (canCreate ? 1 : 0)
   const describedBy = [ariaDescribedBy, validationMessage && validationId]
     .filter(Boolean)
     .join(' ')
@@ -346,7 +347,7 @@ export function Selector<T extends string>({
             <span
               className={cn(
                 'min-w-0 flex-1 truncate text-left',
-                !selected && 'text-ink-ghost',
+                !selected && 'text-ink-faint',
               )}
             >
               {selected?.label ?? placeholder}
@@ -396,7 +397,7 @@ export function Selector<T extends string>({
                       : `${listboxId}-option-${activeIndex}`
                   }
                   aria-describedby={statusId}
-                  className="h-10 w-full rounded-sm border border-transparent bg-surface py-2 pr-3 pl-10 text-[13px] text-ink outline-none placeholder:text-ink-ghost focus:border-rule-focus"
+                  className="iii-ui-selector-search w-full rounded-sm border border-transparent bg-surface py-2 pr-3 pl-10 text-ink outline-none placeholder:text-ink focus:border-rule-focus"
                 />
               </div>
 
@@ -543,7 +544,7 @@ export function Selector<T extends string>({
                   <SelectorStatus id={statusId}>{emptyMessage}</SelectorStatus>
                 ) : (
                   <span id={statusId} className="sr-only" role="status">
-                    {visibleOptions.length + (canCreate ? 1 : 0)} options
+                    {optionCount} option{optionCount === 1 ? '' : 's'}
                   </span>
                 )}
               </div>

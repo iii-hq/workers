@@ -14,7 +14,7 @@
 //! delivering entirely, and a startup reconciler existed only to GC the
 //! wreckage.
 
-pub(crate) mod compose;
+pub mod compose;
 pub mod expiry;
 pub mod gc;
 mod store;
@@ -69,16 +69,16 @@ impl TriggerHandles {
 }
 
 /// An armed wake: a one-shot self-delivery binding that has not fired and is
-/// not past its lifecycle. An EXPIRED one does not count — the expiry sweep
-/// retires it and tells the owner, and a session must not stay non-terminal
-/// waiting on a wake that can never fire.
+/// not past its lifecycle. An EXPIRED one does not count — its deadline
+/// timer retires it and tells the owner, and a session must not stay
+/// non-terminal waiting on a wake that can never fire.
 pub fn is_armed_wake(binding: &Binding, _now_ms: i64) -> bool {
     // Deliberately NOT gated on `is_exhausted`: a past-deadline unfired wake
-    // still OWES its owner the expiry notice (bindings::expiry). The sweep
+    // still OWES its owner the expiry notice (bindings::expiry). Retirement
     // deletes the record before notifying, so the flag flips exactly when
     // the notice is on its way — checking the clock here instead opened a
-    // sweep-interval window where the session looked quietly terminal while
-    // the notice was still coming (live-caught by the
+    // window (then a sweep interval) where the session looked quietly
+    // terminal while the notice was still coming (live-caught by the
     // `subagent_validation_failure` e2e: the suite finalized in that window
     // and the notice was lost with the teardown).
     binding.lifecycle.once
@@ -268,15 +268,20 @@ impl Binding {
 
     /// Whether the lifecycle is spent after `fires` deliveries.
     pub fn is_exhausted(&self, now_ms: i64) -> bool {
-        if self.lifecycle.once && self.fires >= 1 {
-            return true;
-        }
-        if let Some(max) = self.lifecycle.max_fires {
-            if self.fires >= max {
-                return true;
-            }
-        }
-        matches!(self.lifecycle.expires_at, Some(at) if now_ms >= at)
+        self.is_spent() || matches!(self.lifecycle.expires_at, Some(at) if now_ms >= at)
+    }
+
+    /// Whether DELIVERED fires used up the fire budget (`once` consumed, or
+    /// `max_fires` reached). The delivery that claimed the last slot owns
+    /// retiring the binding and its one `trigger_fired` record; any other
+    /// attempt that finds it spent is a duplicate (the same event arriving
+    /// by a second path), never a user-visible outcome of its own.
+    pub fn is_spent(&self) -> bool {
+        (self.lifecycle.once && self.fires >= 1)
+            || self
+                .lifecycle
+                .max_fires
+                .is_some_and(|max| self.fires >= max)
     }
 
     /// Whether THIS delivery is the last one the lifecycle allows, so the
@@ -376,12 +381,12 @@ mod tests {
         assert!(!plain.is_exhausted(i64::MAX));
     }
 
-    /// The parked-forever hole: before the expiry sweep, an expired never-fired
+    /// The parked-forever hole: before wake expiry, an expired never-fired
     /// wake still counted as "expects wake", so lifecycle on a wake protected
     /// nothing — the session stayed non-terminal next to a deadline that had
     /// already passed.
     #[test]
-    fn an_expired_wake_stays_armed_until_the_sweep_retires_it() {
+    fn an_expired_wake_stays_armed_until_its_retirement_deletes_it() {
         let mut b = binding();
         b.lifecycle.once = true;
         assert!(is_armed_wake(&b, 0), "a live once-wake parks its session");
@@ -389,9 +394,9 @@ mod tests {
         assert!(is_armed_wake(&b, 99));
         // Past the deadline the wake cannot FIRE — but the owner is still
         // owed the expiry notice, so the session must keep reporting an
-        // armed wake until the sweep deletes the record (and delivers the
-        // notice). Flipping on the clock opened a sweep-interval window
-        // where a parked session looked quietly terminal.
+        // armed wake until retirement deletes the record (and delivers the
+        // notice). Flipping on the clock opened a window where a parked
+        // session looked quietly terminal.
         assert!(
             is_armed_wake(&b, 100),
             "the expiry notice is still owed; the session is still parked"

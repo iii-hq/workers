@@ -155,12 +155,51 @@ pub fn reorder_displaced_results(messages: &[AgentMessage]) -> Vec<&AgentMessage
 /// 2. Otherwise carry the malformed text as `{"_raw": <text ≤2KB>}` so the
 ///    evidence of what the model actually sent survives for rendering and
 ///    for the harness's teachable no-target error.
+///
+/// Either way, text that stops being JSON (a stray `]`, a missing comma) —
+/// as opposed to text that was merely cut off — also carries `"_invalid":
+/// {error, offset, context}`: the parser's message, its byte offset and the
+/// text around it, so the model is told what was wrong and where instead of
+/// being told its call was cut short.
 pub fn degraded_arguments(args_json: &str) -> serde_json::Value {
-    if let Some(mut map) = salvage_leading_object_fields(args_json) {
-        map.insert("_partial".to_string(), serde_json::Value::Bool(true));
-        return serde_json::Value::Object(map);
+    let invalid = invalid_json(args_json);
+    let mut value = match salvage_leading_object_fields(args_json) {
+        Some(mut map) => {
+            map.insert("_partial".to_string(), serde_json::Value::Bool(true));
+            serde_json::Value::Object(map)
+        }
+        None => serde_json::json!({ "_raw": utf8_head(args_json, 2048) }),
+    };
+    if let (Some(invalid), Some(map)) = (invalid, value.as_object_mut()) {
+        map.insert("_invalid".to_string(), invalid);
     }
-    serde_json::json!({ "_raw": utf8_head(args_json, 2048) })
+    value
+}
+
+/// Where `args` stops being JSON, if it does: `None` when the text is valid
+/// as far as it goes (a stream cut mid-value).
+fn invalid_json(args: &str) -> Option<serde_json::Value> {
+    let mut stream = crate::json_stream::JsonStream::new();
+    let error = stream.write(args).err()?;
+    Some(serde_json::json!({
+        "error": error.message,
+        "offset": error.offset,
+        "context": text_around(args, error.offset, 80, 40),
+    }))
+}
+
+/// Up to `before` bytes before `offset` and `after` bytes from it, on char
+/// boundaries.
+fn text_around(s: &str, offset: usize, before: usize, after: usize) -> &str {
+    let mut start = offset.min(s.len()).saturating_sub(before);
+    while !s.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = offset.saturating_add(after).min(s.len());
+    while !s.is_char_boundary(end) {
+        end += 1;
+    }
+    &s[start..end]
 }
 
 /// The observable fields of a partial JSON object string, if any. This public
@@ -231,8 +270,40 @@ mod tests {
         // survives as evidence, always inside an object.
         assert_eq!(
             degraded_arguments("{'key': 'v'}"),
-            serde_json::json!({ "_raw": "{'key': 'v'}" })
+            serde_json::json!({
+                "_raw": "{'key': 'v'}",
+                "_invalid": {
+                    "error": "expected an object key",
+                    "offset": 1,
+                    "context": "{'key': 'v'}"
+                }
+            })
         );
+    }
+
+    #[test]
+    fn degraded_arguments_marks_text_that_is_not_json_with_where_it_breaks() {
+        // A stray `}]` before a sibling key: everything up to `path` parsed,
+        // the extra `]` does not.
+        let args = r#"{"files":[{"ops":[{"op":"replace"}]}],"path":"web/App.tsx"}]}"#;
+        let value = degraded_arguments(args);
+        assert_eq!(value["_partial"], true);
+        assert_eq!(value["path"], "web/App.tsx");
+        let invalid = &value["_invalid"];
+        assert_eq!(invalid["offset"], args.len() - 2);
+        assert!(invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("after the root value"));
+        assert!(invalid["context"]
+            .as_str()
+            .unwrap()
+            .ends_with("App.tsx\"}]}"));
+
+        // Text that was only cut off is incomplete, not invalid.
+        assert!(degraded_arguments(r#"{"function":"state::se"#)
+            .get("_invalid")
+            .is_none());
     }
 
     #[test]

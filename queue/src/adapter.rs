@@ -79,7 +79,10 @@ pub struct FunctionQueueConfig {
     pub message_group_field: Option<String>,
     /// Base delay in milliseconds for the exponential retry backoff.
     pub backoff_ms: u64,
-    /// Delay between polls for adapters backed by a local store.
+    /// Deprecated and ignored. Consumers are event-driven: an enqueue wakes
+    /// an idle consumer immediately and a delayed retry fires at its due
+    /// time, so there is no poll interval. Still accepted (any value) so
+    /// existing definitions keep deserializing under `deny_unknown_fields`.
     pub poll_interval_ms: u64,
     /// Re-deliver an invocation inside the same queue attempt when the engine
     /// restarts while it is in flight. This is only safe for consumers whose
@@ -132,11 +135,6 @@ impl FunctionQueueConfig {
         if self.timeout_ms == 0 {
             return Err(format!(
                 "queue '{queue_name}' timeout_ms must be greater than zero"
-            ));
-        }
-        if self.poll_interval_ms == 0 {
-            return Err(format!(
-                "queue '{queue_name}' poll_interval_ms must be greater than zero"
             ));
         }
         if !matches!(self.r#type.as_str(), "standard" | "fifo") {

@@ -3,12 +3,13 @@ import {
   Chip,
   DirectoryPicker,
   Input,
-  Selector,
+  ModelPicker,
   SettingsDeck,
   SettingsField,
   SettingsList,
   SettingsRow,
   SettingsSection,
+  Select,
   StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
@@ -16,7 +17,7 @@ import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import { Folder, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { client } from '../api'
-import { catalogKey, modelGroups, splitKey } from './catalog.js'
+import { catalogKey, splitKey, withStoredModel } from './catalog.js'
 import {
   addRepository,
   normalize,
@@ -69,6 +70,37 @@ function useWorkerFacts(host: Host) {
   return { seen, onDisk }
 }
 
+const JUDGE_PROVIDER = /^judge-([a-z0-9-]{1,64})::evaluate$/
+
+/**
+ * The `judge-<provider>` workers registered now. Their functions are
+ * internal, so only a listing that includes those shows them. Nothing asks a
+ * provider for its models: a local one would start loading its weights just
+ * because the form opened.
+ */
+function useJudgeProviders(host: Host) {
+  const [providers, setProviders] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    host.iii
+      .trigger<{ functions?: { function_id: string }[] }>(
+        'engine::functions::list',
+        { include_internal: true },
+        { timeoutMs: 10_000 },
+      )
+      .then((reply) => {
+        if (!live) return
+        const names = (reply?.functions ?? []).flatMap((fn) => JUDGE_PROVIDER.exec(fn.function_id)?.[1] ?? [])
+        setProviders([...new Set(names)].sort())
+      })
+      .catch(() => live && setProviders([]))
+    return () => {
+      live = false
+    }
+  }, [host])
+  return providers
+}
+
 /**
  * The worker's own settings form.
  *
@@ -91,6 +123,13 @@ export function SentinelConfigForm({
     onChange(setPath(config, path, next) as ConfigFormProps['value'])
 
   const investigation = config.investigation as { model?: string; provider?: string }
+  const triage = config.triage as { enabled?: boolean; delay_ms?: number; model?: string; provider?: string }
+  const judges = useJudgeProviders(host)
+  // A stored provider that is not running now still shows as chosen.
+  const judgeOptions = [...new Set([...judges, ...(triage.provider ? [triage.provider] : [])])].map((provider) => ({
+    value: provider,
+    label: provider,
+  }))
   const selectedModel = catalogKey(investigation.model, investigation.provider)
   // The two fields move together: a picked row knows its provider, and a
   // cleared field must not leave a provider pointing at nothing.
@@ -183,30 +222,39 @@ export function SentinelConfigForm({
             label="Model"
             description="Picked from what the router can actually serve. Empty means every investigation must name its own, which is the safe default: a model set here spends tokens the moment somebody clicks Investigate."
             renderControl={(props) => (
-              <Selector
-                {...props}
+              // The chat's own picker. It takes no id or label of its own, so
+              // the row's label names the group and deep links focus it.
+              <div
+                role="group"
                 aria-label="Investigation model"
-                value={selectedModel || undefined}
-                groups={modelGroups(catalog, selectedModel)}
-                loading={loading}
-                placeholder="every investigation names its own"
-                searchPlaceholder="model or provider"
-                emptyMessage="The router is serving no models. Configure a provider first."
-                allowEmpty
-                emptyLabel="every investigation names its own"
-                onClear={() => setModel('', '')}
-                // A raw id stays possible: a model the catalog has not caught
-                // up with is still a model the router may serve.
-                onCreate={(query) => {
-                  const { model, provider } = splitKey(query.trim())
-                  if (model) setModel(model, provider)
-                }}
-                createOptionLabel={(query) => `use ${query}`}
-                onChange={(next) => {
-                  const { model, provider } = splitKey(next)
-                  setModel(model, provider)
-                }}
-              />
+                aria-describedby={props['aria-describedby']}
+                data-field={props['data-field']}
+                tabIndex={-1}
+                className="sentinel-ui-model"
+              >
+                <ModelPicker
+                  value={selectedModel || null}
+                  options={withStoredModel(catalog, selectedModel)}
+                  // The investigation config stores a model, not an effort.
+                  thinkingLevel="default"
+                  onThinkingLevelChange={() => {}}
+                  showReasoningEffort={false}
+                  showRefresh={false}
+                  showProviderConfiguration={false}
+                  loading={loading}
+                  placeholder="every investigation names its own"
+                  className="sentinel-ui-model-picker"
+                  onChange={(next) => {
+                    const { model, provider } = splitKey(next)
+                    setModel(model, provider)
+                  }}
+                />
+                {selectedModel ? (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setModel('', '')}>
+                    No default
+                  </Button>
+                ) : null}
+              </div>
             )}
           />
         </SettingsList>
@@ -409,6 +457,72 @@ export function SentinelConfigForm({
                 onChange={(event) => update('enabled', event.target.checked)}
               />
             }
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Triage"
+        description="Labels each group once, a few minutes after it is first seen, so the list can open on what needs attention: a deterministic rule first, then a judge. Without a judge installed only the rule labels. A label never resolves or ignores anything."
+      >
+        <SettingsList>
+          <SettingsRow
+            label="Triage groups"
+            description="Off stops labelling new groups. Groups already labelled keep their label; new ones show as relevant."
+            control={
+              <Switch
+                aria-label="Triage groups"
+                checked={Boolean(triage.enabled)}
+                onChange={(event) => update('triage.enabled', event.target.checked)}
+              />
+            }
+          />
+          <SettingsField
+            field="triage.delay_ms"
+            label="Wait before triage (minutes)"
+            description="Long enough for a restart to register what it was missing: a call that failed only during it is labelled transient, not sent to the judge."
+            renderControl={(props) => (
+              <Input
+                {...props}
+                type="number"
+                min={0}
+                disabled={!triage.enabled}
+                value={String((triage.delay_ms ?? 300_000) / 60_000)}
+                onChange={(next) => update('triage.delay_ms', Math.round(Number(next) * 60_000))}
+              />
+            )}
+          />
+          <SettingsField
+            field="triage.provider"
+            label="Judge"
+            description="Which judge labels the groups. The default is the one chosen under Settings → Workers → judge."
+            renderControl={(props) => (
+              <Select
+                {...props}
+                disabled={!triage.enabled}
+                value={triage.provider}
+                options={judgeOptions}
+                placeholder="judge's default"
+                allowEmpty
+                emptyLabel="judge's default"
+                onClear={() => update('triage.provider', undefined)}
+                onChange={(next) => update('triage.provider', next)}
+              />
+            )}
+          />
+          <SettingsField
+            field="triage.model"
+            label="Judge model"
+            description="As that judge names it. Empty keeps the judge's own default. Groups already labelled keep their label."
+            renderControl={(props) => (
+              <Input
+                {...props}
+                disabled={!triage.enabled}
+                value={triage.model ?? ''}
+                placeholder="judge's default"
+                onChange={(next) => update('triage.model', next.trim())}
+              />
+            )}
           />
         </SettingsList>
       </SettingsSection>

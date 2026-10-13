@@ -6,6 +6,11 @@
 //! dies halfway leaves the previous version in place rather than a half-built
 //! schema.
 //!
+//! The DDL is the subset SQLite and Postgres read alike. Times are epoch
+//! milliseconds, so `BIGINT`: a Postgres `INTEGER` is 32 bits, and SQLite
+//! gives both names the same integer affinity. Flags are `INTEGER` 0/1 and
+//! are bound as `i64::from(flag)`: Postgres refuses a boolean for them.
+//!
 //! Two shapes here are load-bearing and easy to get wrong:
 //!
 //! - `sentinel_occurrences.group_id` is **nullable, but only while
@@ -51,7 +56,7 @@ fn v2() -> Vec<&'static str> {
   -- A role, not a person: the console does not carry an identity, and a
   -- worker uuid in this column would read as one without being one.
   actor       TEXT NOT NULL,
-  at_ms       INTEGER NOT NULL
+  at_ms       BIGINT NOT NULL
 )"#,
         "CREATE INDEX IF NOT EXISTS sentinel_transitions_group ON sentinel_transitions (group_id, at_ms DESC)",
     ]
@@ -76,18 +81,18 @@ fn v1() -> Vec<&'static str> {
   previous_status   TEXT,
   ignore_rule       TEXT,
   ignore_baseline   TEXT,
-  first_seen_ms     INTEGER NOT NULL,
-  last_seen_ms      INTEGER NOT NULL,
-  occurrence_count  INTEGER NOT NULL DEFAULT 0,
+  first_seen_ms     BIGINT NOT NULL,
+  last_seen_ms      BIGINT NOT NULL,
+  occurrence_count  BIGINT NOT NULL DEFAULT 0,
   first_version     TEXT,
   last_version      TEXT,
-  resolved_at_ms    INTEGER,
+  resolved_at_ms    BIGINT,
   resolved_version  TEXT,
   resolve_until_version_change INTEGER NOT NULL DEFAULT 0,
-  regressed_at_ms   INTEGER,
+  regressed_at_ms   BIGINT,
   diagnosis_id      TEXT,
   archived          INTEGER NOT NULL DEFAULT 0,
-  updated_ms        INTEGER NOT NULL
+  updated_ms        BIGINT NOT NULL
 )"#,
         "CREATE INDEX IF NOT EXISTS sentinel_groups_list ON sentinel_groups (archived, status, last_seen_ms DESC)",
         "CREATE INDEX IF NOT EXISTS sentinel_groups_service ON sentinel_groups (service_name, last_seen_ms DESC)",
@@ -97,7 +102,7 @@ fn v1() -> Vec<&'static str> {
   group_id        TEXT REFERENCES sentinel_groups(id),
   dedupe_key      TEXT NOT NULL UNIQUE,
   source          TEXT NOT NULL,
-  at_ms           INTEGER NOT NULL,
+  at_ms           BIGINT NOT NULL,
   trace_id        TEXT,
   span_id         TEXT,
   session_id      TEXT,
@@ -105,14 +110,14 @@ fn v1() -> Vec<&'static str> {
   worker_version  TEXT,
   message         TEXT NOT NULL,
   evidence        TEXT,
-  evidence_bytes  INTEGER NOT NULL DEFAULT 0,
+  evidence_bytes  BIGINT NOT NULL DEFAULT 0,
   settled         INTEGER NOT NULL DEFAULT 0,
   pending_join    INTEGER NOT NULL DEFAULT 0,
-  join_deadline_ms INTEGER,
+  join_deadline_ms BIGINT,
   session_unknown INTEGER NOT NULL DEFAULT 0,
   namespace_ambiguous INTEGER NOT NULL DEFAULT 0,
-  novelty         REAL,
-  membership_doubt REAL,
+  novelty         DOUBLE PRECISION,
+  membership_doubt DOUBLE PRECISION,
   CHECK ((pending_join = 1 AND group_id IS NULL) OR (pending_join = 0 AND group_id IS NOT NULL))
 )"#,
         "CREATE INDEX IF NOT EXISTS sentinel_occurrences_group ON sentinel_occurrences (group_id, at_ms DESC)",
@@ -124,15 +129,15 @@ fn v1() -> Vec<&'static str> {
         r#"CREATE TABLE IF NOT EXISTS sentinel_group_sessions (
   group_id     TEXT NOT NULL REFERENCES sentinel_groups(id),
   session_id   TEXT NOT NULL,
-  first_ms     INTEGER NOT NULL,
-  last_ms      INTEGER NOT NULL,
+  first_ms     BIGINT NOT NULL,
+  last_ms      BIGINT NOT NULL,
   PRIMARY KEY (group_id, session_id)
 )"#,
         // ── hourly buckets, for the sparkline ────────────────────────────
         r#"CREATE TABLE IF NOT EXISTS sentinel_buckets (
   group_id  TEXT NOT NULL,
-  hour_ms   INTEGER NOT NULL,
-  count     INTEGER NOT NULL,
+  hour_ms   BIGINT NOT NULL,
+  count     BIGINT NOT NULL,
   PRIMARY KEY (group_id, hour_ms)
 )"#,
         // ── investigations ───────────────────────────────────────────────
@@ -151,12 +156,12 @@ fn v1() -> Vec<&'static str> {
   investigated_version TEXT,
   status           TEXT NOT NULL,
   error            TEXT,
-  turns            INTEGER,
-  duration_ms      INTEGER,
-  cost_usd         REAL,
+  turns            BIGINT,
+  duration_ms      BIGINT,
+  cost_usd         DOUBLE PRECISION,
   requested_by     TEXT,
-  created_ms       INTEGER NOT NULL,
-  finished_ms      INTEGER
+  created_ms       BIGINT NOT NULL,
+  finished_ms      BIGINT
 )"#,
         // One running first pass per group — the durable guard behind
         // `investigate` returning the existing session instead of a second.
@@ -174,7 +179,7 @@ fn v1() -> Vec<&'static str> {
   raw_result       TEXT,
   valid            INTEGER NOT NULL DEFAULT 1,
   verification     TEXT,
-  created_ms       INTEGER NOT NULL
+  created_ms       BIGINT NOT NULL
 )"#,
         "CREATE INDEX IF NOT EXISTS sentinel_diagnoses_group ON sentinel_diagnoses (group_id, created_ms DESC)",
         // ── the optional decision tier's tables, empty until it is on ────
@@ -184,11 +189,11 @@ fn v1() -> Vec<&'static str> {
   subject_kind  TEXT NOT NULL,
   subject_id    TEXT NOT NULL,
   value         TEXT,
-  confidence    REAL NOT NULL,
+  confidence    DOUBLE PRECISION NOT NULL,
   fell_back     INTEGER NOT NULL DEFAULT 0,
   model         TEXT,
-  latency_ms    INTEGER,
-  created_ms    INTEGER NOT NULL
+  latency_ms    BIGINT,
+  created_ms    BIGINT NOT NULL
 )"#,
         "CREATE INDEX IF NOT EXISTS sentinel_decisions_subject ON sentinel_decisions (point, subject_kind, subject_id)",
         // A merge edge never changes a fingerprint: identity stays the hash.
@@ -196,10 +201,10 @@ fn v1() -> Vec<&'static str> {
   group_id       TEXT NOT NULL REFERENCES sentinel_groups(id),
   other_group_id TEXT NOT NULL REFERENCES sentinel_groups(id),
   kind           TEXT NOT NULL,
-  confidence     REAL NOT NULL,
+  confidence     DOUBLE PRECISION NOT NULL,
   status         TEXT NOT NULL,
   decided_by     TEXT,
-  created_ms     INTEGER NOT NULL,
+  created_ms     BIGINT NOT NULL,
   PRIMARY KEY (group_id, other_group_id, kind)
 )"#,
     ]

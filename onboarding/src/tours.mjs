@@ -119,6 +119,14 @@ export const TOURS = [
         body: "iii is composable like Node or Python, except when you add to iii you're adding a working service and not a library. Let's ask the agent to add a database worker.",
       }),
       {
+        id: "stay-in-touch",
+        title: "Stay in touch",
+        body: "iii moves quickly. Put your email in for the roadmap and the product updates — what is being built, and what shipped. The links below go to the same places, if you would rather read along there.",
+        // No anchor: this step is about the page itself, and there is nothing
+        // in the console to point at. The page renders the signup box and the
+        // links for this step id.
+      },
+      {
         id: "observability",
         title: "Observability",
         body: "Open Traces to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
@@ -164,14 +172,6 @@ export const TOURS = [
         title: "Reactivity",
         body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you check each one off yourself. The agent adds the items and the Triggers; you tick the boxes. Watch the Triggers react as you do.",
       }),
-      {
-        id: "stay-in-touch",
-        title: "Stay in touch",
-        body: "iii moves quickly. Put your email in for the roadmap and the product updates — what is being built, and what shipped. The links below go to the same places, if you would rather read along there.",
-        // No anchor: this step is about the page itself, and there is nothing
-        // in the console to point at. The page renders the signup box and the
-        // links for this step id.
-      },
       {
         id: "clean-up",
         ask: {

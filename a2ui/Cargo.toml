@@ -2,7 +2,7 @@
 
 [package]
 name = "a2ui"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2021"
 description = "A2UI v0.9.1 generative UI worker for iii Harness sessions and the injectable Console"
 license = "Apache-2.0"
@@ -30,3 +30,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+async-trait = "0.1"

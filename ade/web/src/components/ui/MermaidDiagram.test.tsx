@@ -148,8 +148,13 @@ describe('Mermaid in chat Markdown', () => {
     )
     expect(renderDiagram).not.toHaveBeenCalled()
     expect(container.querySelector('[data-mermaid-diagram]')).toBeNull()
-    expect(container.querySelector('code.language-javascript')).not.toBeNull()
-    expect(container.textContent).toContain('"ok"')
+    expect(container.querySelector('p code')?.textContent).toBe('mermaid')
+    expect(
+      container.querySelector('pre.language-javascript code')?.textContent,
+    ).toBe('const value = 1')
+    expect(container.querySelector('pre.language-json code')?.textContent).toBe(
+      '{"ok":true}',
+    )
   })
 
   it('offers fit and actual-size views without re-rendering the SVG', async () => {

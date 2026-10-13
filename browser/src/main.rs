@@ -1,17 +1,18 @@
 //! `browser` binary entry: connect, register configuration + fetch the
 //! authoritative value, register the `browser::*` trigger types and functions
-//! plus the native `browser::*` parse surface, restore the saved tabs, start
-//! the sleep/expiry sweep, then sleep until Ctrl+C.
+//! plus the native `browser::*` parse surface, restore the saved tabs, then
+//! sleep until Ctrl+C. Tabs sleep and expire on their own deadline timers
+//! (see `session::Sessions`), and scrapling sessions reap themselves when
+//! idle (see `scrapling::sessions`): no periodic sweep.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 
-use browser::config::WorkerConfig;
+use browser::config::{BrowserEngine, WorkerConfig};
 use browser::events::{self, IiiDeliverer};
 use browser::session::Sessions;
 use browser::{configuration, functions, manifest, scrapling};
@@ -135,6 +136,19 @@ async fn main() -> Result<()> {
         scrapling_adaptive_storage_path = %scrapling_startup.adaptive_storage_path,
         "loaded browser configuration"
     );
+    // Say it now, not on the first tab: without a Chromium every session
+    // fails until one is installed (browser::chromium::install, or the ADE's
+    // setup wizard).
+    if cfg.engine == BrowserEngine::Chromium {
+        match browser::chromium::resolve_executable(&cfg) {
+            Some(found) => tracing::info!(
+                path = %found.path.display(),
+                source = found.source.as_str(),
+                "chromium found"
+            ),
+            None => tracing::warn!("{}", browser::chromium::missing_error(&cfg)),
+        }
+    }
     let shared = cfg.into_shared();
 
     // Trigger types before functions, so handlers capture live subscriber sets.
@@ -158,34 +172,25 @@ async fn main() -> Result<()> {
     let guidance = scrapling::GuidanceState::default();
     scrapling::apply_guidance(&iii, &guidance, shared.load().scrapling.inject_guidance);
 
-    configuration::register_config_trigger(&iii, shared.clone(), guidance)
-        .context("registering configuration change trigger")?;
+    // A reload may change `inactive_after_ms`: the tabs' idle timers re-arm.
+    let rearm = sessions.clone();
+    configuration::register_config_trigger(
+        &iii,
+        shared.clone(),
+        guidance,
+        Arc::new(move || rearm.config_changed()),
+    )
+    .context("registering configuration change trigger")?;
 
     // Injectable console UI — after the browser::* functions so the console
     // can attribute the assets.
     browser::ui::register(&iii);
-
-    // The sweep puts unused tabs to sleep, closes expired ones, and reaps
-    // idle scrapling sessions.
-    let sweep_sessions = sessions.clone();
-    let sweep_ctx = scrapling_ctx.clone();
-    let sweep = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(60));
-        loop {
-            tick.tick().await;
-            sweep_sessions.sweep_idle().await;
-            for id in sweep_ctx.http.sweep_idle() {
-                tracing::info!(session = %id, "scrapling session reaped (idle)");
-            }
-        }
-    });
 
     tracing::info!(
         "browser ready: browser::* sessions + console capture + pick, browser::* parsing"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("browser shutting down");
-    sweep.abort();
     scrapling_ctx.http.close_all().await;
     sessions.stop_all().await;
     iii.shutdown_async().await;

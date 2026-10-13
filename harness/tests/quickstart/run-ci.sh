@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # Validate the published quickstart in an isolated home and project:
 # install iii, boot an empty engine, bring up harness + console through
 # `iii compose`, and complete the first Console conversation, switch from
-# Anthropic Sonnet 5 to OpenAI Luna, start a second Luna conversation, and
+# Anthropic Sonnet 5.5 to OpenAI Luna, start a second Luna conversation, and
 # exercise one real Harness capability.
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -224,7 +224,7 @@ write_result() {
       model: $model,
       marker: $marker,
       providers: ["anthropic", "openai"],
-      models: ["claude-sonnet-5", "gpt-5.6-luna"],
+      models: ["claude-sonnet-5-5", "gpt-5.6-luna"],
       browser: $browser,
       terminal: $terminal,
       first_capability: {
@@ -784,8 +784,8 @@ log "Step 5/9: Verify registered functions"
 wait_for_functions
 wait_for_providers
 
-log "Step 6/9: Verify Sonnet 5 and Luna availability"
-wait_for_model anthropic claude-sonnet-5 "$artifact_dir/model-anthropic.json"
+log "Step 6/9: Verify Sonnet 5.5 and Luna availability"
+wait_for_model anthropic claude-sonnet-5-5 "$artifact_dir/model-anthropic.json"
 wait_for_model openai gpt-5.6-luna "$artifact_dir/model-openai.json"
 
 log "Step 7/9: Verify the Console HTTP surface"

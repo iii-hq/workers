@@ -8,9 +8,10 @@
 //! - **Durable sessions.** Every session is mirrored into `state` (scope
 //!   `computer_sessions`). On boot, [`Sessions::restore`] reconnects them
 //!   best-effort, so a worker restart does not lose live desktops.
-//! - **A live screen stream.** The screencast pump pushes frames onto the
-//!   `computer:frames` stream (`stream::set`, one item per session), so the
-//!   console and any number of watchers follow the desktop without polling.
+//! - **A live screen.** The screencast pump keeps exactly one frame per
+//!   session (the newest) in memory and fires the worker-owned
+//!   `computer::frame-changed` trigger type after each one (see
+//!   [`crate::frames`]); viewers read the frame with `computer::frame`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -27,14 +28,11 @@ use tokio::task::JoinHandle;
 use crate::config::SharedConfig;
 use crate::driver::{Driver, RemoteClient, Screen};
 use crate::events::{Emitter, EventKind, SessionStartedEvent, SessionStoppedEvent};
+use crate::frames::{FrameChange, FrameChangeKind, FrameNotifier};
 
-/// Last-value stream carrying the newest screencast frame per session.
-pub const FRAMES_STREAM: &str = "computer:frames";
-/// Constant item id: the stream keeps only the newest frame per session group.
-const FRAME_ITEM_ID: &str = "frame";
 /// State scope for persisted session records.
 const STATE_SCOPE: &str = "computer_sessions";
-/// Bus RPC timeout for the state/stream side-writes.
+/// Bus RPC timeout for the state side-writes.
 const SIDE_WRITE_TIMEOUT_MS: u64 = 5_000;
 
 pub fn now_ms() -> i64 {
@@ -84,6 +82,8 @@ pub struct LatestFrame {
     pub width: u32,
     pub height: u32,
     pub frame_seq: u64,
+    /// Encoded image size (before base64).
+    pub bytes: u64,
     pub timestamp: i64,
 }
 
@@ -104,14 +104,18 @@ pub struct Session {
     pub os: String,
     pub screen: Screen,
     pub created_ms: i64,
+    /// When this worker process created (or restored) this session object;
+    /// `frame_seq` restarts with it.
+    pub epoch: i64,
     last_used_ms: AtomicI64,
     driver: Arc<dyn Driver>,
     screencast_active: AtomicBool,
     frame_seq: AtomicU64,
+    /// The ONLY frame storage: the newest frame, replaced on every capture.
     latest_frame: StdMutex<Option<Arc<LatestFrame>>>,
     screencast_task: Mutex<Option<JoinHandle<()>>>,
     config: SharedConfig,
-    iii: Arc<IIIClient>,
+    frames: Arc<FrameNotifier>,
 }
 
 impl Session {
@@ -124,7 +128,7 @@ impl Session {
         created_ms: i64,
         driver: Arc<dyn Driver>,
         config: SharedConfig,
-        iii: Arc<IIIClient>,
+        frames: Arc<FrameNotifier>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
@@ -132,6 +136,7 @@ impl Session {
             os,
             screen,
             created_ms,
+            epoch: now_ms(),
             last_used_ms: AtomicI64::new(now_ms()),
             driver,
             screencast_active: AtomicBool::new(false),
@@ -139,7 +144,7 @@ impl Session {
             latest_frame: StdMutex::new(None),
             screencast_task: Mutex::new(None),
             config,
-            iii,
+            frames,
         })
     }
 
@@ -179,7 +184,7 @@ impl Session {
 
     /// Start (or confirm) the screencast pump. Idempotent: a second call while
     /// active is a no-op. The pump polls the driver screenshot at the
-    /// configured fps and pushes each frame onto `computer:frames`.
+    /// configured fps and stores each frame in the session's single slot.
     pub async fn start_screencast(self: &Arc<Self>) {
         if self.screencast_active.swap(true, Ordering::SeqCst) {
             return;
@@ -191,20 +196,19 @@ impl Session {
         }
     }
 
-    /// Stop the screencast pump and clear the stream group so a later
-    /// subscriber does not see a stale frame. Idempotent.
+    /// Stop the screencast pump and clear the stored frame so a later viewer
+    /// does not see a stale image. Idempotent.
     pub async fn stop_screencast(&self) {
         self.screencast_active.store(false, Ordering::SeqCst);
         if let Some(handle) = self.screencast_task.lock().await.take() {
             handle.abort();
-            // Wait for the abort to land: a pump mid-push would otherwise
-            // write a frame back after the delete below.
+            // Wait for the abort to land: a pump mid-capture would otherwise
+            // store a frame back after the clear below.
             let _ = handle.await;
         }
-        self.delete_frame_stream().await;
         // Release the last frame's buffer immediately; a stopped screencast
         // must not keep a multi-MB image resident.
-        *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.clear_frame();
     }
 
     async fn screencast_pump(self: Arc<Self>) {
@@ -220,62 +224,74 @@ impl Session {
             match self.driver.screenshot().await {
                 Ok(shot) => {
                     let seq = self.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
-                    let frame = Arc::new(LatestFrame {
+                    let bytes = shot.byte_len() as u64;
+                    self.store_frame(Arc::new(LatestFrame {
                         data_b64: shot.to_base64(),
                         mime: shot.mime,
                         width: self.screen.width,
                         height: self.screen.height,
                         frame_seq: seq,
+                        bytes,
                         timestamp: now_ms(),
-                    });
-                    // Push first (borrows), then store the Arc (moves): the
-                    // base64 is copied once into the RPC payload and never
-                    // deep-cloned into the slot.
-                    self.push_frame_stream(&frame).await;
-                    *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = Some(frame);
+                    }));
                 }
                 Err(e) => {
                     tracing::warn!(session = %self.id, error = %e, "screencast capture failed; stopping pump");
                     self.screencast_active.store(false, Ordering::Relaxed);
-                    // Clear what the pump published: a watcher must not keep
-                    // showing a frame from before the driver broke.
-                    self.delete_frame_stream().await;
-                    *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                    // A viewer must not keep showing a frame from before the
+                    // driver broke.
+                    self.clear_frame();
                     break;
                 }
             }
         }
     }
 
-    async fn push_frame_stream(&self, frame: &LatestFrame) {
-        let payload = json!({
-            "stream_name": FRAMES_STREAM,
-            "group_id": self.id,
-            "item_id": FRAME_ITEM_ID,
-            "data": {
-                "data": frame.data_b64,
-                "mime": frame.mime,
-                "width": frame.width,
-                "height": frame.height,
-                "frame_seq": frame.frame_seq,
-                "timestamp": frame.timestamp,
-            }
-        });
-        if let Err(e) = side_write(&self.iii, "stream::set", payload).await {
-            tracing::debug!(session = %self.id, error = %e, "frame stream write failed");
+    /// Commit a new frame to the session's single slot (the previous frame is
+    /// released here), THEN tell `computer::frame-changed` bindings. A viewer
+    /// that reads after the notification always finds this frame or a newer
+    /// one.
+    fn store_frame(&self, frame: Arc<LatestFrame>) {
+        let change = FrameChange {
+            session_id: self.id.clone(),
+            epoch: self.epoch,
+            frame_seq: frame.frame_seq,
+            change: FrameChangeKind::Updated,
+            width: frame.width,
+            height: frame.height,
+            mime: Some(frame.mime.clone()),
+            bytes: Some(frame.bytes),
+            timestamp: frame.timestamp,
+        };
+        *self.latest_frame.lock().unwrap_or_else(|p| p.into_inner()) = Some(frame);
+        self.frames.notify(&change);
+    }
+
+    /// Drop the stored frame (frees its buffer) and, when there was one, tell
+    /// bindings it is gone.
+    fn clear_frame(&self) {
+        let dropped = self
+            .latest_frame
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(frame) = dropped {
+            self.frames.notify(&FrameChange {
+                session_id: self.id.clone(),
+                epoch: self.epoch,
+                frame_seq: frame.frame_seq,
+                change: FrameChangeKind::Cleared,
+                width: frame.width,
+                height: frame.height,
+                mime: None,
+                bytes: None,
+                timestamp: now_ms(),
+            });
         }
     }
 
-    async fn delete_frame_stream(&self) {
-        let payload =
-            json!({ "stream_name": FRAMES_STREAM, "group_id": self.id, "item_id": FRAME_ITEM_ID });
-        if let Err(e) = side_write(&self.iii, "stream::delete", payload).await {
-            tracing::debug!(session = %self.id, error = %e, "frame stream delete failed");
-        }
-    }
-
-    /// Tear down: stop the screencast pump (clearing its stream and buffer),
-    /// then close the driver. Idempotent.
+    /// Tear down: stop the screencast pump (clearing the stored frame), then
+    /// close the driver. Idempotent.
     async fn shutdown(&self) {
         self.stop_screencast().await;
         if let Err(e) = self.driver.close().await {
@@ -302,17 +318,24 @@ pub struct Sessions {
     counter: AtomicU64,
     config: SharedConfig,
     emitter: Arc<Emitter>,
+    frames: Arc<FrameNotifier>,
     iii: Arc<IIIClient>,
 }
 
 impl Sessions {
-    pub fn new(config: SharedConfig, emitter: Arc<Emitter>, iii: Arc<IIIClient>) -> Arc<Self> {
+    pub fn new(
+        config: SharedConfig,
+        emitter: Arc<Emitter>,
+        frames: Arc<FrameNotifier>,
+        iii: Arc<IIIClient>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             map: Mutex::new(HashMap::new()),
             connecting: Arc::new(AtomicU64::new(0)),
             counter: AtomicU64::new(0),
             config,
             emitter,
+            frames,
             iii,
         })
     }
@@ -407,7 +430,7 @@ impl Sessions {
             now_ms(),
             driver,
             self.config.clone(),
-            self.iii.clone(),
+            self.frames.clone(),
         );
         // The slot this session claimed becomes the map entry; releasing the
         // guard after the insert keeps the two counts from ever both missing it.
@@ -589,7 +612,7 @@ impl Sessions {
             rec.created_ms,
             driver,
             self.config.clone(),
-            self.iii.clone(),
+            self.frames.clone(),
         ))
     }
 
@@ -660,9 +683,8 @@ impl Sessions {
     }
 }
 
-/// Best-effort side-write onto the bus (state/stream mutation). Returns the
-/// error string for the caller to log at the level that fits: durability
-/// writes (persist/forget) at warn, high-volume stream writes at debug.
+/// Best-effort side-write onto the bus (state mutation). Returns the error
+/// string for the caller to log (durability writes are logged at warn).
 async fn side_write(iii: &IIIClient, function_id: &str, payload: Value) -> Result<(), String> {
     iii.trigger(TriggerRequest {
         function_id: function_id.to_string(),
@@ -673,4 +695,306 @@ async fn side_write(iii: &IIIClient, function_id: &str, payload: Value) -> Resul
     .await
     .map(|_| ())
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::Shot;
+    use crate::frames::{FrameSink, FrameTarget};
+    use crate::functions::frame::read_latest;
+    use async_trait::async_trait;
+    use iii_sdk::trigger::TriggerConfig;
+    use std::sync::Weak;
+
+    /// A desktop whose every screenshot is a distinct ~64 KB JPEG-looking
+    /// buffer; `fail` makes captures error (a broken driver).
+    struct FakeDesktop {
+        shots: AtomicU64,
+        fail: AtomicBool,
+    }
+
+    #[async_trait]
+    impl Driver for FakeDesktop {
+        async fn screen_size(&self) -> Result<Screen, String> {
+            Ok(Screen {
+                width: 1280,
+                height: 800,
+            })
+        }
+        async fn screenshot(&self) -> Result<Shot, String> {
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("display went away".to_string());
+            }
+            let n = self.shots.fetch_add(1, Ordering::SeqCst);
+            let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+            bytes.extend(std::iter::repeat_n((n % 251) as u8, 64 * 1024));
+            Ok(Shot::new(bytes))
+        }
+        async fn left_click(&self, _: i64, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        async fn right_click(&self, _: i64, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        async fn double_click(&self, _: i64, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        async fn move_cursor(&self, _: i64, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        async fn scroll(&self, _: i64, _: i64, _: i64, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        async fn drag(&self, _: (i64, i64), _: (i64, i64), _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn type_text(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn keypress(&self, _: &[String]) -> Result<(), String> {
+            Ok(())
+        }
+        async fn accessibility_tree(&self) -> Result<Value, String> {
+            Ok(Value::Null)
+        }
+        async fn close(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Records every notification it receives, per target function.
+    #[derive(Default)]
+    struct Viewers(StdMutex<Vec<(String, Value)>>);
+
+    #[async_trait]
+    impl FrameSink for Viewers {
+        async fn deliver(&self, target: &FrameTarget, payload: Value) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((target.function_id.clone(), payload));
+            Ok(())
+        }
+    }
+
+    impl Viewers {
+        fn for_fn(&self, function_id: &str) -> Vec<Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(f, _)| f == function_id)
+                .map(|(_, p)| p.clone())
+                .collect()
+        }
+    }
+
+    fn session(id: &str, notifier: &Arc<FrameNotifier>) -> (Arc<Session>, Arc<FakeDesktop>) {
+        let desktop = Arc::new(FakeDesktop {
+            shots: AtomicU64::new(0),
+            fail: AtomicBool::new(false),
+        });
+        let cfg = crate::config::WorkerConfig {
+            screencast_fps: 200, // 5 ms frames keep the test fast
+            ..Default::default()
+        };
+        let s = Session::new(
+            id.to_string(),
+            "fake".to_string(),
+            "linux".to_string(),
+            Screen {
+                width: 1280,
+                height: 800,
+            },
+            now_ms(),
+            desktop.clone(),
+            cfg.into_shared(),
+            notifier.clone(),
+        );
+        (s, desktop)
+    }
+
+    fn bind(notifier: &FrameNotifier, id: &str, session_id: &str) {
+        notifier
+            .add(TriggerConfig {
+                id: id.to_string(),
+                function_id: format!("viewer::{id}"),
+                config: json!({ "session_id": session_id }),
+                metadata: None,
+                namespace: None,
+            })
+            .unwrap();
+    }
+
+    async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+        for _ in 0..400 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    fn frame_at(seq: u64) -> Arc<LatestFrame> {
+        Arc::new(LatestFrame {
+            data_b64: "x".repeat(100_000),
+            mime: "image/jpeg".to_string(),
+            width: 1280,
+            height: 800,
+            frame_seq: seq,
+            bytes: 75_000,
+            timestamp: seq as i64,
+        })
+    }
+
+    #[tokio::test]
+    async fn only_the_latest_frame_is_kept() {
+        let notifier = FrameNotifier::new(Arc::new(Viewers::default()));
+        let (s, _) = session("c1", &notifier);
+        let mut previous: Option<Weak<LatestFrame>> = None;
+        for seq in 1..=200 {
+            let frame = frame_at(seq);
+            let weak = Arc::downgrade(&frame);
+            s.store_frame(frame);
+            // Storing frame N released frame N-1: one resident frame per
+            // session, no history.
+            if let Some(prev) = previous.take() {
+                assert!(prev.upgrade().is_none(), "frame {} still resident", seq - 1);
+            }
+            previous = Some(weak);
+        }
+        let out = read_latest(&s, None);
+        assert_eq!(out.frame_seq, 200);
+        assert_eq!(out.frame.as_deref().map(str::len), Some(100_000));
+        assert_eq!(out.epoch, s.epoch);
+        // A read with the current cursor carries no image.
+        assert!(read_latest(&s, Some(200)).frame.is_none());
+    }
+
+    #[tokio::test]
+    async fn viewer_reads_the_initial_frame_then_follows_updates_for_its_session_only() {
+        let viewers = Arc::new(Viewers::default());
+        let notifier = FrameNotifier::new(viewers.clone());
+        let (c1, _) = session("c1", &notifier);
+        let (c2, _) = session("c2", &notifier);
+
+        // A frame exists before anyone watches: only the initial read shows it.
+        c1.start_screencast().await;
+        wait_until("first c1 frame", || c1.latest_frame().is_some()).await;
+        bind(&notifier, "v1", "c1");
+        bind(&notifier, "v2", "c2");
+        let initial = read_latest(&c1, None);
+        assert!(initial.frame.is_some() && initial.frame_seq >= 1 && initial.active);
+
+        // Then updates arrive as notifications, each followed by a read.
+        c2.start_screencast().await;
+        let after = initial.frame_seq;
+        wait_until("c1 notifications", || {
+            viewers
+                .for_fn("viewer::v1")
+                .iter()
+                .any(|p| p["frame_seq"].as_u64().unwrap() > after + 2)
+        })
+        .await;
+        let n = viewers.for_fn("viewer::v1").last().cloned().unwrap();
+        assert_eq!(n["session_id"], "c1");
+        assert_eq!(n["change"], "updated");
+        assert_eq!(n["epoch"], c1.epoch);
+        assert_eq!(n["bytes"], 64 * 1024 + 4);
+        let fresh = read_latest(&c1, Some(after));
+        assert!(fresh.frame.is_some());
+        assert!(fresh.frame_seq >= n["frame_seq"].as_u64().unwrap());
+
+        // Filter by session: v1 never hears c2, v2 never hears c1.
+        wait_until("c2 notifications", || {
+            !viewers.for_fn("viewer::v2").is_empty()
+        })
+        .await;
+        assert!(viewers
+            .for_fn("viewer::v1")
+            .iter()
+            .all(|p| p["session_id"] == "c1"));
+        assert!(viewers
+            .for_fn("viewer::v2")
+            .iter()
+            .all(|p| p["session_id"] == "c2"));
+        // Within one viewer, revisions only move forward.
+        let seqs: Vec<u64> = viewers
+            .for_fn("viewer::v1")
+            .iter()
+            .map(|p| p["frame_seq"].as_u64().unwrap())
+            .collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
+
+        c1.shutdown().await;
+        c2.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn session_end_clears_the_frame_and_notifies_cleared() {
+        let viewers = Arc::new(Viewers::default());
+        let notifier = FrameNotifier::new(viewers.clone());
+        let (s, desktop) = session("c1", &notifier);
+        bind(&notifier, "v", "c1");
+        s.start_screencast().await;
+        wait_until("a frame", || s.latest_frame().is_some()).await;
+        let resident = Arc::downgrade(&s.latest_frame().unwrap());
+
+        s.shutdown().await; // what sessions::stop / idle stop / worker shutdown run
+        assert!(!s.screencast_active());
+        assert!(s.latest_frame().is_none());
+        let out = read_latest(&s, None);
+        assert!(out.frame.is_none() && !out.active && out.frame_seq == 0);
+        wait_until("cleared notification", || {
+            viewers
+                .for_fn("viewer::v")
+                .last()
+                .is_some_and(|p| p["change"] == "cleared")
+        })
+        .await;
+        // The frame buffer is gone once in-flight notifications drained.
+        wait_until("frame released", || resident.upgrade().is_none()).await;
+
+        // The pump is really dead: no capture and no notification after stop.
+        let shots = desktop.shots.load(Ordering::SeqCst);
+        let seen = viewers.for_fn("viewer::v").len();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(desktop.shots.load(Ordering::SeqCst), shots);
+        assert_eq!(viewers.for_fn("viewer::v").len(), seen);
+        assert!(s.latest_frame().is_none());
+    }
+
+    #[tokio::test]
+    async fn capture_failure_clears_the_frame() {
+        let viewers = Arc::new(Viewers::default());
+        let notifier = FrameNotifier::new(viewers.clone());
+        let (s, desktop) = session("c1", &notifier);
+        bind(&notifier, "v", "c1");
+        s.start_screencast().await;
+        wait_until("a frame", || s.latest_frame().is_some()).await;
+        desktop.fail.store(true, Ordering::SeqCst);
+        wait_until("pump stopped", || !s.screencast_active()).await;
+        assert!(s.latest_frame().is_none());
+        wait_until("cleared notification", || {
+            viewers
+                .for_fn("viewer::v")
+                .last()
+                .is_some_and(|p| p["change"] == "cleared")
+        })
+        .await;
+        s.stop_screencast().await;
+    }
+
+    #[tokio::test]
+    async fn stopping_without_a_frame_sends_nothing() {
+        let viewers = Arc::new(Viewers::default());
+        let notifier = FrameNotifier::new(viewers.clone());
+        let (s, _) = session("c1", &notifier);
+        bind(&notifier, "v", "c1");
+        s.stop_screencast().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(viewers.for_fn("viewer::v").is_empty());
+    }
 }

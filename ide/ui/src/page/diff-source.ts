@@ -13,13 +13,22 @@ export type DiffSource =
   /** One Harness turn's change: its pre-image → the body it left behind
       (the next turn's pre-image when one was kept, else the working copy). */
   | { type: 'turn'; turnId: string }
-  /** A revision → working copy, chosen by the user. */
-  | { type: 'compare'; ref: string }
+  /** A revision → working copy, chosen by the user. `from` is the file's
+      path at `ref` when it had another name there, relative to the
+      repository's top level. `reverse`: working copy → the revision
+      (Swap branches in a comparison). */
+  | { type: 'compare'; ref: string; from?: string; reverse?: true }
   /** An exact recorded change (`coder::change-diff`) from a chat card. */
   | { type: 'change'; changeId: string }
   /** One revision against another: a commit against its parent, a stash
       against its base. `label` names the newer side (`0d5b60e`, `stash@{1}`). */
   | { type: 'revision'; from: string; to: string; label: string }
+  /** One commit's change to the file: its parent (null for a root commit)
+      → the commit. `from` is a rename's source, relative to the
+      repository's top level rather than the browsed root. */
+  | { type: 'commit'; sha: string; parent: string | null; from?: string }
+
+const HEX = /^[0-9a-f]{4,64}$/i
 
 export function diffSourceKey(source: DiffSource): string {
   switch (source.type) {
@@ -32,9 +41,11 @@ export function diffSourceKey(source: DiffSource): string {
     case 'turn':
       return `turn=${source.turnId}`
     case 'compare':
-      return `compare=${source.ref}`
+      return `compare=${source.ref}${source.from ? `:${source.from}` : ''}${source.reverse ? ':reverse' : ''}`
     case 'change':
       return `change=${source.changeId}`
+    case 'commit':
+      return `commit=${source.parent ?? ''}..${source.sha}`
   }
 }
 
@@ -60,6 +71,8 @@ export function diffSourceLabel(source: DiffSource, turnLabel?: string): string 
       return source.ref.replace(/^refs\/(heads|tags|remotes)\//, '')
     case 'change':
       return 'Change'
+    case 'commit':
+      return source.sha.slice(0, 7)
   }
 }
 
@@ -77,16 +90,20 @@ export function diffSourceSides(source: DiffSource, turnLabel?: string): { old: 
     case 'turn':
       return { old: `before ${turnLabel ?? 'the turn'}`, new: `after ${turnLabel ?? 'the turn'}` }
     case 'compare':
-      return { old: diffSourceLabel(source), new: 'working copy' }
+      return source.reverse
+        ? { old: 'working copy', new: diffSourceLabel(source) }
+        : { old: diffSourceLabel(source), new: 'working copy' }
     case 'change':
       return { old: 'before the call', new: 'after the call' }
+    case 'commit':
+      return { old: source.parent === null ? 'empty' : source.parent.slice(0, 7), new: source.sha.slice(0, 7) }
   }
 }
 
 /** Diffs that follow the working copy re-read when the disk changes; a
-    recorded change or a pair of revisions is fixed. */
+    recorded change, a pair of revisions and a commit are fixed. */
 export function diffSourceFollowsDisk(source: DiffSource): boolean {
-  return source.type !== 'change' && source.type !== 'revision'
+  return source.type !== 'change' && source.type !== 'revision' && source.type !== 'commit'
 }
 
 /** Tabs worth keeping across reloads: a change id dies with the worker
@@ -105,19 +122,33 @@ export function parseDiffSource(value: unknown): DiffSource | null {
     case 'unstaged':
       return { type: raw.type }
     case 'revision':
-      return typeof raw.from === 'string' && raw.from !== '' &&
-        typeof raw.to === 'string' && raw.to !== '' &&
-        typeof raw.label === 'string' && raw.label !== ''
+      return typeof raw.from === 'string' &&
+        raw.from !== '' &&
+        typeof raw.to === 'string' &&
+        raw.to !== '' &&
+        typeof raw.label === 'string' &&
+        raw.label !== ''
         ? { type: 'revision', from: raw.from, to: raw.to, label: raw.label }
         : null
     case 'turn':
       return typeof raw.turnId === 'string' && raw.turnId !== '' ? { type: 'turn', turnId: raw.turnId } : null
     case 'compare':
-      return typeof raw.ref === 'string' && raw.ref !== '' ? { type: 'compare', ref: raw.ref } : null
+      if (typeof raw.ref !== 'string' || raw.ref === '') return null
+      return {
+        type: 'compare',
+        ref: raw.ref,
+        ...(typeof raw.from === 'string' && raw.from !== '' ? { from: raw.from } : {}),
+        ...(raw.reverse === true ? { reverse: true as const } : {}),
+      }
     case 'change':
-      return typeof raw.changeId === 'string' && raw.changeId !== ''
-        ? { type: 'change', changeId: raw.changeId }
-        : null
+      return typeof raw.changeId === 'string' && raw.changeId !== '' ? { type: 'change', changeId: raw.changeId } : null
+    case 'commit': {
+      if (typeof raw.sha !== 'string' || !HEX.test(raw.sha)) return null
+      if (raw.parent !== null && (typeof raw.parent !== 'string' || !HEX.test(raw.parent))) return null
+      if (raw.from !== undefined && (typeof raw.from !== 'string' || raw.from === '')) return null
+      const source: DiffSource = { type: 'commit', sha: raw.sha, parent: raw.parent }
+      return typeof raw.from === 'string' ? { ...source, from: raw.from } : source
+    }
     default:
       return null
   }

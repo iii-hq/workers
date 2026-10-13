@@ -2,12 +2,17 @@
 name: pubsub
 tags: pubsub, publish, subscribe, events, redis
 description: >-
-  Fire-and-forget topic pub/sub: broadcast an event with `publish` and every
+  DEPRECATED (will be removed in an upcoming release; migration guide
+  https://github.com/iii-hq/iii/blob/6901a589dd39d9c34f9d5b6bd8bc82170ee21548/docs/next/upgrading/migrate-from-streams.mdx). Fire-and-forget topic pub/sub: broadcast an event with `publish` and every
   matching `subscribe` trigger receives it. Use for real-time notifications
   where missed events are acceptable.
 ---
 
 # pubsub
+
+> **Deprecated:** pubsub is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://github.com/iii-hq/iii/blob/6901a589dd39d9c34f9d5b6bd8bc82170ee21548/docs/next/upgrading/migrate-from-streams.mdx
+>
+> Applies to `publish`, the `subscribe` trigger type and the `pubsub` configuration entry. Do not start new work on it: use a worker-owned trigger type for fire-and-forget fan-out, or the `queue` worker (`iii::durable::publish` + `durable:subscriber`) when every event must be processed. The worker logs rate-limited deprecation warnings (target `iii::deprecation`); topic `stream.events`, used by the engine's iii-stream bridge, is exempt.
 
 The `pubsub` worker is topic-based publish/subscribe messaging. Publish an event to a named topic with the `publish` function and every registered `subscribe` trigger whose `topic` matches is invoked with the raw payload — no envelope, no persistence, no retries. It is fire-and-forget broadcast: subscribers receive each event as it arrives, and a subscriber that is offline simply misses it.
 

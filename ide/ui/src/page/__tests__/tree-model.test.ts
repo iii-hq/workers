@@ -81,6 +81,19 @@ describe('applyTreeChanges', () => {
     expect(next.loaded.has('src')).toBe(false)
   })
 
+  it('sweeps several deleted folders at once and keeps what is created in one afterwards', () => {
+    const next = applyTreeChanges(flattenTree(snapshot), [
+      { rel: 'src', kind: 'deleted', dir: true },
+      { rel: 'src/a.ts', kind: 'deleted', dir: false },
+      { rel: 'node_modules', kind: 'deleted', dir: true },
+      { rel: 'src', kind: 'created', dir: true },
+      { rel: 'src/b.ts', kind: 'created', dir: false },
+    ])
+    expect(next.paths).toEqual(['src/', 'README.md', 'src/b.ts'])
+    expect([...next.kinds.keys()].sort()).toEqual(['README.md', 'src', 'src/b.ts'])
+    expect(next.loaded.has('src/deep')).toBe(false)
+  })
+
   it('returns the same tree when nothing changed', () => {
     const tree = flattenTree(snapshot)
     expect(applyTreeChanges(tree, [{ rel: 'src/a.ts', kind: 'modified', dir: false }])).toBe(tree)

@@ -35,7 +35,7 @@ dependencies installed (`react` and `react-dom` 18+); a project with its own
 | Field | Default | Meaning |
 |---|---|---|
 | `data_path` | `data/stories` | Lines, content-addressed files, renders, history, the compiler. |
-| `console_url` | `http://127.0.0.1:3113` | Console origin the browser worker navigates to for renders. |
+| `console_url` | unset | Console origin the browser worker navigates to for renders. Unset: the ADE's address from `console::status`. |
 | `watch` | `true` | Rebuild the working tree when a story input changes. |
 | `keep_lines` | `12` | Built ref/turn lines kept per workspace before pruning. |
 | `viewport` | `1024×768 @1` | Default render viewport. |

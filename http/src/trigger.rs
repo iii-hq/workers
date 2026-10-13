@@ -593,4 +593,89 @@ mod tests {
         let routes = handler.routes.read().await;
         assert!(routes.match_route("POST", "/a").is_none());
     }
+
+    #[tokio::test]
+    async fn register_trigger_with_brace_parameters_normalizes_and_matches() {
+        let handler = HttpTriggerHandler::new();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "fn.tasks",
+                serde_json::json!({"api_path": "/tasks/{tid}", "http_method": "GET"}),
+            ))
+            .await
+            .unwrap();
+
+        let routes = handler.routes.read().await;
+        let (matched, params) = routes.match_route("GET", "/tasks/123").unwrap();
+        assert_eq!(matched.function_id, "fn.tasks");
+        assert_eq!(matched.http_path, "/tasks/:tid");
+        assert_eq!(params.get("tid"), Some(&"123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn register_trigger_with_multiple_brace_parameters_extracts_all_params() {
+        let handler = HttpTriggerHandler::new();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "fn.user_tasks",
+                serde_json::json!({
+                    "api_path": "/users/{userId}/tasks/{tid}",
+                    "http_method": "GET"
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let routes = handler.routes.read().await;
+        let (matched, params) = routes.match_route("GET", "/users/alice/tasks/42").unwrap();
+        assert_eq!(matched.function_id, "fn.user_tasks");
+        assert_eq!(matched.http_path, "/users/:userId/tasks/:tid");
+        assert_eq!(params.get("userId"), Some(&"alice".to_string()));
+        assert_eq!(params.get("tid"), Some(&"42".to_string()));
+    }
+
+    #[tokio::test]
+    async fn register_trigger_brace_and_colon_routes_conflict() {
+        let handler = HttpTriggerHandler::new();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "fn.a",
+                serde_json::json!({"api_path": "/tasks/:tid", "http_method": "GET"}),
+            ))
+            .await
+            .unwrap();
+
+        let result = handler
+            .register_trigger(trigger_config(
+                "t2",
+                "fn.b",
+                serde_json::json!({"api_path": "/tasks/{otherId}", "http_method": "GET"}),
+            ))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn register_trigger_with_brace_parameters_unregisters_cleanly() {
+        let handler = HttpTriggerHandler::new();
+        handler
+            .register_trigger(trigger_config(
+                "t1",
+                "fn.tasks",
+                serde_json::json!({"api_path": "/tasks/{tid}", "http_method": "GET"}),
+            ))
+            .await
+            .unwrap();
+
+        handler
+            .unregister_trigger(trigger_config("t1", "", serde_json::Value::Null))
+            .await
+            .unwrap();
+
+        let routes = handler.routes.read().await;
+        assert!(routes.match_route("GET", "/tasks/123").is_none());
+    }
 }

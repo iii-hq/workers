@@ -1,7 +1,9 @@
 //! `coder::delete-file` — remove one or more paths. Per-path errors are
 //! reported in the result array rather than failing the whole batch.
 //! Directories require `recursive: true`. Non-accessible paths return
-//! `C211`. Trying to delete an allowed root itself is rejected.
+//! `C211`, and a recursive delete refuses a directory holding any unless
+//! `include_protected` is set. Trying to delete an allowed root itself is
+//! rejected.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -22,6 +24,14 @@ pub struct DeleteFileInput {
     /// Required for non-empty directories. Files and empty dirs ignore it.
     #[serde(default)]
     pub recursive: bool,
+    /// With `recursive`, also remove the non-accessible entries under a
+    /// directory (`.env` files, keys, certificates) instead of refusing the
+    /// delete. Sent only by the console UI after the user confirmed the
+    /// delete twice; kept out of the published schema so agents are not
+    /// offered it.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub include_protected: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
@@ -86,6 +96,16 @@ async fn handle_impl(
             "`paths` must not be empty".into(),
         )));
     }
+    // The harness stamps fs_scope onto every call an agent makes in a
+    // session with a working directory, and an agent can neither forge nor
+    // drop it: the flag is the console's alone, after the user confirmed.
+    if req.include_protected && req.fs_scope.is_some() {
+        return Err(err_to_string(CoderError::BadInput(
+            "include_protected is only for a delete the user confirmed in the console; \
+             delete the folder without it and its protected files are left in place"
+                .into(),
+        )));
+    }
     let fs_scope = req.fs_scope.as_ref();
     let scope_anchor = crate::fs::scope_anchor(fs_scope);
     let mut entries = Vec::with_capacity(req.paths.len());
@@ -105,6 +125,7 @@ async fn handle_impl(
                 scope_anchor,
                 &p,
                 req.recursive,
+                req.include_protected,
                 resolved,
             )
         })
@@ -118,6 +139,7 @@ fn delete_one(
     scope_root: Option<&str>,
     rel: &str,
     recursive: bool,
+    include_protected: bool,
     resolved: Result<std::path::PathBuf, CoderError>,
 ) -> DeleteFileResult {
     // Resolve up front: deletion operates ONLY on the resolver-returned
@@ -137,7 +159,14 @@ fn delete_one(
         }
     };
     let wire_path = abs.display().to_string();
-    match try_delete_one(resolver, journal, scope_root, &abs, recursive) {
+    match try_delete_one(
+        resolver,
+        journal,
+        scope_root,
+        &abs,
+        recursive,
+        include_protected,
+    ) {
         Ok((removed, change_id)) => DeleteFileResult {
             path: wire_path,
             success: true,
@@ -168,6 +197,7 @@ fn try_delete_one(
     scope_root: Option<&str>,
     abs: &Path,
     recursive: bool,
+    include_protected: bool,
 ) -> Result<(bool, Option<String>), CoderError> {
     if resolver.is_root(abs) {
         return Err(CoderError::BadInput(
@@ -195,7 +225,9 @@ fn try_delete_one(
         Err(e) => return Err(CoderError::from(e)),
     };
     if md.file_type().is_dir() {
-        if recursive {
+        if recursive && include_protected {
+            std::fs::remove_dir_all(abs).map_err(CoderError::from)?;
+        } else if recursive {
             remove_dir_all_safe(abs, resolver)?;
         } else {
             std::fs::remove_dir(abs).map_err(CoderError::from)?;
@@ -257,6 +289,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -275,6 +308,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["nope.txt".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -293,6 +327,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".env".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -313,6 +348,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -331,6 +367,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -350,6 +387,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["d".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -358,6 +396,137 @@ mod tests {
         assert!(!out.results[0].success);
         assert_eq!(out.results[0].error.as_ref().unwrap().code, "C211");
         assert!(tmp.path().join("d/.env").exists());
+    }
+
+    #[tokio::test]
+    async fn include_protected_removes_a_subtree_holding_non_accessible_entries() {
+        let (tmp, r) = setup();
+        std::fs::create_dir_all(tmp.path().join("d/venv")).unwrap();
+        std::fs::write(tmp.path().join("d/venv/.env"), "secret").unwrap();
+        std::fs::write(tmp.path().join("d/a.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success, "{:?}", out.results[0].error);
+        assert!(!tmp.path().join("d").exists());
+    }
+
+    // include_protected only widens a recursive delete; without `recursive`
+    // a non-empty directory is still refused.
+    #[tokio::test]
+    async fn include_protected_without_recursive_still_refuses_non_empty_dir() {
+        let (tmp, r) = setup();
+        std::fs::create_dir(tmp.path().join("d")).unwrap();
+        std::fs::write(tmp.path().join("d/.env"), "secret").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: false,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert!(tmp.path().join("d/.env").exists());
+    }
+
+    // Hidden from the published schema, the flag still reaches the handler
+    // from the wire: the console UI sends it after the second confirmation.
+    #[test]
+    fn include_protected_is_read_from_the_wire_and_defaults_off() {
+        let sent: DeleteFileInput = serde_json::from_value(serde_json::json!({
+            "paths": ["d"], "recursive": true, "include_protected": true
+        }))
+        .unwrap();
+        assert!(sent.include_protected);
+        let omitted: DeleteFileInput =
+            serde_json::from_value(serde_json::json!({ "paths": ["d"], "recursive": true }))
+                .unwrap();
+        assert!(!omitted.include_protected);
+    }
+
+    // Naming a protected path directly is still C211: the flag covers
+    // entries under a directory, never the target itself.
+    #[tokio::test]
+    async fn include_protected_does_not_unlock_a_protected_path() {
+        let (tmp, r) = setup();
+        std::fs::write(tmp.path().join(".env"), "secret").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![".env".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C211");
+        assert!(tmp.path().join(".env").exists());
+    }
+
+    // The allowed-root guard runs before the flag is looked at.
+    #[tokio::test]
+    async fn include_protected_still_refuses_base_root() {
+        let (tmp, r) = setup();
+        std::fs::write(tmp.path().join(".env"), "secret").unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec![".".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.results[0].success);
+        assert_eq!(out.results[0].error.as_ref().unwrap().code, "C210");
+        assert!(tmp.path().join(".env").exists());
+        assert!(tmp.path().join("a.txt").exists());
+    }
+
+    // The unguarded remove_dir_all must unlink a symlink inside the subtree,
+    // not delete what it points at.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn include_protected_does_not_follow_symlinks() {
+        let (tmp, r) = setup();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("f.txt"), "x").unwrap();
+        std::fs::create_dir(tmp.path().join("d")).unwrap();
+        std::os::unix::fs::symlink(&outside, tmp.path().join("d/link")).unwrap();
+        std::fs::write(tmp.path().join("d/.env"), "secret").unwrap();
+        let out = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.results[0].success, "{:?}", out.results[0].error);
+        assert!(!tmp.path().join("d").exists());
+        assert!(outside.join("f.txt").exists());
     }
 
     // REDACTION INVARIANT: the error message for a recursive-delete blocked
@@ -374,6 +543,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["secrets".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -383,6 +553,14 @@ mod tests {
         let err = out.results[0].error.as_ref().unwrap();
         // Code must be C211.
         assert_eq!(err.code, "C211", "expected C211, got: {:?}", err.code);
+        // ide/ui/src/page/file-actions.ts isProtectedSubtreeError matches
+        // this text to offer the second confirmation; keep them in sync.
+        assert!(
+            err.message
+                .contains("subtree contains non-accessible entries"),
+            "got: {}",
+            err.message
+        );
         // The discovered child name must NOT appear in the error.
         assert!(
             !err.message.contains(".env"),
@@ -406,6 +584,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: None,
             },
         )
@@ -429,6 +608,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![".".into()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),
@@ -444,6 +624,34 @@ mod tests {
         assert!(session.join("keep.txt").exists());
     }
 
+    // The harness stamps fs_scope onto an agent's calls (and the agent can
+    // neither forge nor drop it): an agent's delete never takes protected
+    // files with it, whatever it sends.
+    #[tokio::test]
+    async fn include_protected_is_refused_on_an_agent_scoped_call() {
+        let (tmp, r) = setup();
+        let session = tmp.path().join("project");
+        std::fs::create_dir_all(session.join("d")).unwrap();
+        std::fs::write(session.join("d/.env"), "secret").unwrap();
+        let err = handle(
+            r,
+            DeleteFileInput {
+                paths: vec!["d".into()],
+                recursive: true,
+                include_protected: true,
+                fs_scope: Some(crate::fs::FsScope {
+                    root: session.to_string_lossy().into_owned(),
+                    grants: Vec::new(),
+                    boundary: crate::fs::FsBoundary::Workspace,
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("include_protected"), "{err}");
+        assert!(session.join("d/.env").exists());
+    }
+
     // The same protection must hold when the session dir is named by an
     // absolute path rather than ".".
     #[tokio::test]
@@ -457,6 +665,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec![abs.clone()],
                 recursive: true,
+                include_protected: false,
                 fs_scope: Some(crate::fs::FsScope {
                     root: abs,
                     grants: Vec::new(),
@@ -484,6 +693,7 @@ mod tests {
             DeleteFileInput {
                 paths: vec!["a.txt".into()],
                 recursive: false,
+                include_protected: false,
                 fs_scope: Some(crate::fs::FsScope {
                     root: session.to_string_lossy().into_owned(),
                     grants: Vec::new(),

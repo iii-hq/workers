@@ -13,9 +13,12 @@ export type WorkerConnectionStatus =
   | 'disconnected'
   | 'stopped'
 
-export type ComposeContainerState = 'starting' | 'ready' | 'failed' | 'stopped'
-
-export type ComposeAction = 'start' | 'stop' | 'restart'
+export type ComposeContainerState =
+  | 'starting'
+  | 'ready'
+  | 'restarting'
+  | 'failed'
+  | 'stopped'
 
 /** View-model row for the runtime workers table (no transport types). */
 export interface WorkerRow {
@@ -37,20 +40,6 @@ export interface WorkerRow {
   lastError: string | null
 }
 
-export interface WorkersFilterState {
-  search: string
-  tag: string | null
-  runtime: string | null
-  management: WorkerManagementKind | null
-}
-
-export const MANAGEMENT_ORDER: readonly WorkerManagementKind[] = [
-  'compose',
-  'supervisor',
-  'standalone',
-  'internal',
-]
-
 export const MANAGEMENT_LABEL: Record<WorkerManagementKind, string> = {
   compose: 'compose',
   supervisor: 'managed',
@@ -60,60 +49,4 @@ export const MANAGEMENT_LABEL: Record<WorkerManagementKind, string> = {
 
 export function isComposeRunning(state: ComposeContainerState): boolean {
   return state === 'ready' || state === 'starting'
-}
-
-export function composeActions(row: WorkerRow): ComposeAction[] {
-  if (row.managementKind !== 'compose' || row.composeState === null) return []
-  return isComposeRunning(row.composeState)
-    ? ['stop', 'restart']
-    : ['start', 'restart']
-}
-
-export function filterWorkerRows(
-  rows: WorkerRow[],
-  filters: WorkersFilterState,
-): WorkerRow[] {
-  const q = filters.search.trim().toLowerCase()
-  return rows.filter((row) => {
-    if (filters.tag && row.tag !== filters.tag) return false
-    if (filters.runtime && row.runtime !== filters.runtime) return false
-    if (filters.management && row.managementKind !== filters.management)
-      return false
-    if (!q) return true
-    const haystack = [
-      row.name,
-      row.runtime,
-      row.ipAddress,
-      row.version,
-      row.tag,
-      row.managementKind,
-      row.status,
-      row.pid?.toString(),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-    return haystack.includes(q)
-  })
-}
-
-export function distinctTags(rows: WorkerRow[]): string[] {
-  const tags = new Set<string>()
-  for (const row of rows) {
-    if (row.tag) tags.add(row.tag)
-  }
-  return [...tags].sort()
-}
-
-export function distinctRuntimes(rows: WorkerRow[]): string[] {
-  const runtimes = new Set<string>()
-  for (const row of rows) {
-    if (row.runtime) runtimes.add(row.runtime)
-  }
-  return [...runtimes].sort()
-}
-
-export function distinctManagement(rows: WorkerRow[]): WorkerManagementKind[] {
-  const present = new Set(rows.map((row) => row.managementKind))
-  return MANAGEMENT_ORDER.filter((kind) => present.has(kind))
 }

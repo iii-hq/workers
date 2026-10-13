@@ -75,7 +75,7 @@ export function pluginFiles(options: PluginOptions): PluginFile[] {
         {
           name: 'iii',
           description:
-            'This engine, as Claude Code sees it: the iii runtime skill, and the hooks that report every turn onto agent::events.',
+            'This engine, as Claude Code sees it: the iii runtime skill, and the hooks that report every turn onto claude::agent-event.',
           version: '0.1.0',
           // `claude plugin validate` asks for attribution; the worker that
           // wrote the directory is the honest answer.

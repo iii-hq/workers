@@ -26,7 +26,7 @@ use crate::types::event::{
     AssistantMessageEvent, ErrorKind, FunctionCallArgumentsPreview, StopReason,
 };
 use crate::types::message::{empty_assistant, AssistantMessage};
-use crate::types::model::{AgentFunction, Model, ThinkingLevel};
+use crate::types::model::{AgentFunction, Model, ProviderDefaults, ThinkingLevel};
 
 /// Remove every attachment reference from a router-bound message list (wire
 /// JSON form of `AgentMessage`): `{"type":"file"}` blocks are dropped and
@@ -678,6 +678,28 @@ impl RouterClient {
             return None;
         }
         serde_json::from_value::<Model>(model).ok()
+    }
+
+    /// One provider's declared starting point (`None` when the router is
+    /// absent, the provider is unregistered, or it declares none — the
+    /// caller keeps its old behaviour).
+    pub async fn provider_defaults(&self, provider: &str) -> Option<ProviderDefaults> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::provider::list".into(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await
+            .ok()?;
+        let entry = resp
+            .get("providers")?
+            .as_array()?
+            .iter()
+            .find(|p| p.get("id").and_then(Value::as_str) == Some(provider))?;
+        serde_json::from_value::<ProviderDefaults>(entry.clone()).ok()
     }
 
     /// Whether `model` supports a capability (false when the router is absent

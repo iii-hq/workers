@@ -1,23 +1,23 @@
-//! The ingest pipeline end to end, over a real SQLite store.
+//! The ingest pipeline end to end, over a real store (see support/db.rs).
 //!
 //! The engine is faked because its telemetry is what we are simulating; the
 //! store is not, because what these tests are really checking is that a tick
 //! becomes the right row.
 
-#[path = "support/sqlite.rs"]
-mod sqlite;
+#[path = "support/db.rs"]
+mod db;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use db::TestDb;
 use sentinel::ingest::{ring::PhantomRing, CheckoutVersions, Ingest, IngestJob, Telemetry};
 use sentinel::registry::{EngineRegistry, FunctionEntry, Registry, WorkerEntry};
 use sentinel::store::Db;
 use sentinel::{Counters, GroupStatusV1, SentinelError, Store, TraceSummary, WorkerConfig};
 use serde_json::{json, Value};
-use sqlite::SqliteDb;
 
 const NOW_NANOS: u64 = 1_789_000_000_500_000_000;
 
@@ -92,14 +92,14 @@ impl CheckoutVersions for FakeCheckouts {
 }
 
 struct Harness {
-    ingest: Ingest<SqliteDb, FakeRegistry>,
-    store: Arc<Store<SqliteDb>>,
+    ingest: Ingest<TestDb, FakeRegistry>,
+    store: Arc<Store<TestDb>>,
     counters: Arc<Counters>,
     config: WorkerConfig,
 }
 
 async fn harness(telemetry: FakeEngineTelemetry) -> Harness {
-    let store = Arc::new(Store::new(SqliteDb::in_memory()));
+    let store = Arc::new(Store::new(db::test_db().await));
     store.migrate().await.expect("migrate");
     let counters = Arc::new(Counters::default());
     let ingest = Ingest::new(
@@ -205,7 +205,7 @@ fn cas_trace() -> (TraceSummary, Vec<Value>) {
     )
 }
 
-async fn count(store: &Store<SqliteDb>, sql: &str) -> i64 {
+async fn count(store: &Store<TestDb>, sql: &str) -> i64 {
     store
         .db()
         .query(sql, vec![])
@@ -213,11 +213,11 @@ async fn count(store: &Store<SqliteDb>, sql: &str) -> i64 {
         .expect("query")
         .first()
         .and_then(|row| row.values().next().cloned())
-        .and_then(|value| value.as_i64())
+        .and_then(|value| sentinel::store::integer(&value))
         .unwrap_or(0)
 }
 
-async fn one(store: &Store<SqliteDb>, sql: &str) -> Value {
+async fn one(store: &Store<TestDb>, sql: &str) -> Value {
     store
         .db()
         .query(sql, vec![])
@@ -225,6 +225,7 @@ async fn one(store: &Store<SqliteDb>, sql: &str) -> Value {
         .expect("query")
         .first()
         .and_then(|row| row.values().next().cloned())
+        .map(db::plain)
         .unwrap_or(Value::Null)
 }
 

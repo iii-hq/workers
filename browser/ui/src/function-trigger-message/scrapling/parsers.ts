@@ -386,6 +386,8 @@ export const crawlRequestSchema = z
     max_depth: z.number().optional(),
     concurrency: z.number().optional(),
     format: z.string().optional(),
+    crawl_id: z.string().optional(),
+    /** Deprecated and ignored by the worker; still parsed so old calls render. */
     stream_name: z.string().optional(),
   })
   .refine(
@@ -412,9 +414,22 @@ export const crawlResponseSchema = z.object({
     stopped: z.string().optional(),
   }),
   items: z.array(crawlItemSchema).optional(),
-  // The worker echoes the caller's stream_name/group_id verbatim, so either
-  // may arrive as a number or boolean (e.g. group_id:3) — accept those, not
-  // just strings, or the whole card fails to parse and renders nothing.
+  // Where every item lives: browser::crawl::items with crawl.id, or the
+  // browser::crawl-item trigger. Absent on results from older workers.
+  crawl: z
+    .object({
+      id: z.string().optional(),
+      items_function: z.string().optional(),
+      trigger_type: z.string().optional(),
+      retained: z.number().optional(),
+      dropped_events: z.number().optional(),
+    })
+    .optional(),
+  warnings: z.array(z.string()).optional(),
+  // Deprecated echo. The worker echoes the caller's stream_name/group_id
+  // verbatim, so either may arrive as a number or boolean (e.g. group_id:3)
+  // — accept those, not just strings, or the whole card fails to parse and
+  // renders nothing.
   stream: z
     .object({
       name: z.union([z.string(), z.number(), z.boolean()]).optional(),

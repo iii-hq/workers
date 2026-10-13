@@ -234,6 +234,9 @@ impl AgentMessage {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
+    /// The harness asks the provider not to reason; reserves no budget
+    /// unless the model declares one for it.
+    Off,
     Minimal,
     Low,
     Medium,
@@ -484,6 +487,7 @@ mod tests {
     #[test]
     fn thinking_level_wire_names_are_snake_case() {
         for (level, wire) in [
+            (ThinkingLevel::Off, "off"),
             (ThinkingLevel::Minimal, "minimal"),
             (ThinkingLevel::Low, "low"),
             (ThinkingLevel::Medium, "medium"),

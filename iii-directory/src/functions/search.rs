@@ -378,7 +378,8 @@ supports them, to set scripts, start_after, config_override, or other supported 
 Otherwise keep the selected payload as shorthand for defaults; if settings are required, \
 report that they cannot be applied and stop the installation. Explain the worker and \
 follow the caller's installation approval requirements; if approval is still needed, \
-wait for explicit confirmation before compose::add. Choose a unique operation_id. \
+wait for explicit confirmation before compose::add. Choose a fresh operation_id that \
+starts with your session id (ids are global to Compose and never reusable). \
 Register a one-shot compose-operation \
 wake with engine::register_trigger { \"trigger_type\": \"compose-operation\", \
 \"config\": { \"operation_id\": \"<operation-id>\", \"terminal_only\": true }, \"once\": true }. \
@@ -402,9 +403,9 @@ const SEARCH_INSTALL_WORKFLOW_REPEAT: &str = "Installation workflow: follow the 
 earlier in this session (registry::workers::info, compose-operation wake, compose::add, \
 engine::workers::info).";
 
-const SEARCH_LANGUAGE_GUIDANCE: &str = "Keep user-facing text in the language of the user's task, \
-including progress, tool descriptions, and the final response, unless the user explicitly \
-requests another language. English search capabilities and tool or notification text do not \
+const SEARCH_LANGUAGE_GUIDANCE: &str = "Keep user-facing text in the session's response language \
+(the language of the user's first message), including progress, tool descriptions, and the final \
+response, unless the user explicitly requests another language. English search capabilities and tool or notification text do not \
 change the response language.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -1524,7 +1525,9 @@ async fn installed_skill_docs(
     let global_root = cfg.resolved_skills_folder();
     let local_root = cfg.local_skills_folder();
     let agents_roots = cfg.resolved_agents_skills_roots();
-    let (merged, _skipped) = crate::fs_source::scan_skills_merged(&global_root, &local_root);
+    let kit_ns = crate::kits::service::kit_namespaces();
+    let (merged, _skipped) =
+        crate::fs_source::scan_skills_merged_with_kits(&global_root, &local_root, &kit_ns);
     // Same policy as `resolve_visible_skills`: a wired daemon that cannot be
     // reached (no cached set either) yields the unfiltered set; without a
     // daemon (tests, benchmarks) the catalog namespaces are the floor.
@@ -1545,7 +1548,7 @@ async fn installed_skill_docs(
                 .iter()
                 .flat_map(|root| crate::fs_source::agents_namespaces(root))
                 .collect();
-            crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns)
+            crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns, &kit_ns)
         }
         None => merged,
     };
@@ -3244,7 +3247,7 @@ mod tests {
             .contains("Always write every `capabilities` entry in English"));
         assert!(response
             .guidance
-            .contains("Keep user-facing text in the language of the user's task"));
+            .contains("Keep user-facing text in the session's response language"));
         assert!(!response
             .guidance
             .contains("Register a one-shot compose-operation wake"));
@@ -3319,7 +3322,7 @@ mod tests {
             assert!(response.installable.is_empty());
             assert!(response
                 .guidance
-                .contains("Keep user-facing text in the language of the user's task"));
+                .contains("Keep user-facing text in the session's response language"));
         }
     }
 
@@ -3459,7 +3462,7 @@ mod tests {
             assert!(guidance.contains("preserve that exact package name"));
             assert!(guidance
                 .contains("If that package or requested version is absent, report it and stop"));
-            assert!(guidance.contains("Keep user-facing text in the language of the user's task"));
+            assert!(guidance.contains("Keep user-facing text in the session's response language"));
             assert_eq!(
                 guidance
                     .matches("Register a one-shot compose-operation wake")

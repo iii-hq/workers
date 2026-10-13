@@ -51,6 +51,25 @@ describe('mergeWorkers', () => {
     expect(rows[0]?.pid).toBe(100)
   })
 
+  it('treats the engine own available workers as connected', () => {
+    const rows = mergeWorkers(
+      snapshot({
+        engineWorkers: [
+          {
+            id: 'configuration',
+            name: 'configuration',
+            status: 'available',
+            function_count: 8,
+            connected_at_ms: 0,
+            active_invocations: 0,
+          },
+        ],
+      }),
+    )
+
+    expect(rows[0]?.status).toBe('connected')
+  })
+
   it('classifies supervisor-managed workers with stop enabled when running', () => {
     const rows = mergeWorkers(
       snapshot({

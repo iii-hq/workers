@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: pubsub
 tags: [pubsub, messaging, events, topics]
-description: Topic-based publish/subscribe messaging — registers the `subscribe` trigger type and the `publish` function.
+description: "pubsub is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://github.com/iii-hq/iii/blob/6901a589dd39d9c34f9d5b6bd8bc82170ee21548/docs/next/upgrading/migrate-from-streams.mdx — Topic-based publish/subscribe messaging; registers the `subscribe` trigger type and the `publish` function."
 config:
   adapter:
     name: local

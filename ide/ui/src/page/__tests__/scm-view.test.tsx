@@ -67,7 +67,7 @@ describe('SCM view', () => {
       entries={[entry('a/x.txt'), entry('a/b/y.txt'), entry('z.txt')]}
       mode="tree"
       renderEntry={(file) => <span key={file.path}>{file.path}</span>}
-      renderDirectoryActions={(files, directory) => <button type="button" data-folder={directory.path} data-files={files.map((file) => file.path).join(',')}>stage</button>}
+      renderDirectoryActions={(files, directory) => <button type="button" data-folder={directory.path} data-files={files().map((file) => file.path).join(',')}>stage</button>}
     />)
     expect(html).toContain('data-folder="a" data-files="a/b/y.txt,a/x.txt"')
     expect(html).toContain('data-folder="a/b" data-files="a/b/y.txt"')

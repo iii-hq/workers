@@ -364,7 +364,6 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
               timeout_ms: 1800000,
               type: 'standard',
               backoff_ms: 1000,
-              poll_interval_ms: 100,
               redeliver_on_engine_restart: false,
             },
             [
@@ -374,7 +373,6 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
               number('timeout_ms', 'Invocation timeout (ms)', undefined, { min: 1 }),
               text('message_group_field', 'FIFO message group field', undefined, { optional: true }),
               number('backoff_ms', 'Retry backoff (ms)', undefined, { min: 0 }),
-              number('poll_interval_ms', 'Poll interval (ms)', undefined, { min: 1 }),
               toggle('redeliver_on_engine_restart', 'Redeliver after engine restart'),
               number('max_priority', 'Maximum priority levels', undefined, { min: 1, optional: true }),
               text('priority_field', 'Priority payload field', undefined, { optional: true }),
@@ -402,7 +400,6 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
       'queue_configs.*.type',
       'queue_configs.*.message_group_field',
       'queue_configs.*.backoff_ms',
-      'queue_configs.*.poll_interval_ms',
       'queue_configs.*.redeliver_on_engine_restart',
       'queue_configs.*.max_priority',
       'queue_configs.*.priority_field',

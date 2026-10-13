@@ -48,4 +48,7 @@ describe('parseShellPanelContext', () => {
     expect(parseShellPanelContext({ type: 'file', path: 'a.ts', line: 1e30, column: 3 })).toEqual({ type: 'file', path: 'a.ts' })
     expect(parseShellPanelContext({ type: 'file', path: 'a.ts', line: 2, column: 0 })).toEqual({ type: 'file', path: 'a.ts', line: 2 })
   })
+  it('opens the New worker dialog on request', () => {
+    expect(parseShellPanelContext({ type: 'new-worker' })).toEqual({ type: 'new-worker' })
+  })
 })

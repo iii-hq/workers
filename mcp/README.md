@@ -68,7 +68,8 @@ are excluded from `tools/list` and rejected at `tools/call`. The defaults
 mirror the hard floor enforced by the `skills` worker: `engine::`, `state::`,
 `stream::`, `iii.`, `iii::`, `mcp::`, `a2a::`, `skills::`, `prompts::`. The
 bridge's own handler id (`mcp::handler`) is already covered by the `mcp::`
-prefix, so it is auto-hidden.
+prefix, so it is auto-hidden. `stream::` covers the deprecated iii-stream
+functions; they stay hidden while engines still host them.
 
 ### Tool naming
 

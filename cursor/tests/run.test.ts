@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { BridgeRpcError, BridgeTransportError } from '../src/bridge.js';
-import { makeEmitter, releaseEmitterSequence } from '../src/events.js';
+import { TriggerAction } from 'iii-sdk';
+import { createAgentFeeds, releaseEmitterSequence } from '../src/agent-feed.js';
 import {
   CursorRunRequestSchema,
   CursorWorker,
@@ -9,45 +10,60 @@ import {
 } from '../src/run.js';
 import type { RunStreamMessageWire, SessionRecord } from '../src/types.js';
 import {
+  AGENT,
+  boundFeeds,
   clone,
+  consumerFor,
   FakeBridgeClient,
   FakeBridgeFactory,
   frames,
   MockIII,
+  RAW,
   terminalFrames,
   testConfig,
 } from './helpers.js';
 
 describe('CursorWorker run lifecycle', () => {
-  it('routes stream writes to the engine default namespace', async () => {
+  it('delivers to the binding namespace and starts a new epoch after a sequence reset', async () => {
     const iii = new MockIII();
-    const emit = makeEmitter(iii.asClient(), () => 'agent::events');
+    const { emit } = createAgentFeeds(iii.asClient());
+    await iii.bind(AGENT, 'session-one', { namespace: 'tenant-a' });
 
+    await expect(emit('session-one', { type: 'message_update' })).resolves.toBe(true);
     await emit('session-one', { type: 'message_update' });
-    const firstItemId = (iii.streamItems[0] as { item_id: string }).item_id;
     releaseEmitterSequence('session-one');
     await emit('session-one', { type: 'message_update' });
-    const secondItemId = (iii.streamItems[1] as { item_id: string }).item_id;
+    await emit('session-one', { type: 'message_update' }, 'cursor-stable');
+    const [first, second, third, fourth] = iii.feedPayloads(AGENT);
 
     expect(iii.triggerCalls.at(-1)).toMatchObject({
-      function_id: 'stream::set',
-      namespace: 'default',
+      function_id: consumerFor(AGENT),
+      namespace: 'tenant-a',
+      action: TriggerAction.Void(),
     });
-    expect(firstItemId).not.toBe(secondItemId);
-    expect(firstItemId.endsWith('00000000')).toBe(true);
-    expect(secondItemId.endsWith('00000000')).toBe(true);
+    expect(iii.triggerCalls.some((call) => call.function_id === 'stream::set')).toBe(false);
+    expect([first.seq, second.seq, third.seq, fourth.seq]).toEqual([0, 1, 0, 1]);
+    expect(second.epoch).toBe(first.epoch);
+    expect(third.epoch).not.toBe(first.epoch);
+    expect(fourth.epoch).toBe(third.epoch);
+    expect(first.epoch).toMatch(/^[0-9a-f-]{36}-[0-9a-f-]{36}$/);
+    expect(first.event_id).toBe(`session-one-${first.epoch}-00000000`);
+    expect(third.event_id).toBe(`session-one-${third.epoch}-00000000`);
+    expect(first.event_id).not.toBe(third.event_id);
+    expect(fourth.event_id).toBe('cursor-stable');
+    expect(fourth.source).toBe('cursor');
   });
 
   it('redacts credentials from event-delivery warnings', async () => {
     const iii = new MockIII();
+    const { emit } = createAgentFeeds(iii.asClient());
+    await iii.bind(AGENT, 'session');
     iii.trigger = async () => {
       throw new Error('delivery failed for token_private_123');
     };
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    await expect(makeEmitter(iii.asClient(), () => 'agent::events')('session', {})).resolves.toBe(
-      false,
-    );
+    await expect(emit('session', {})).resolves.toBe(false);
 
     expect(warning).toHaveBeenCalledWith(expect.not.stringContaining('token_private_123'));
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('<redacted>'));
@@ -673,8 +689,7 @@ describe('CursorWorker run lifecycle', () => {
 
   it('does not publish non-durable Send deltas and de-duplicates durable Observe replay', async () => {
     const iii = new MockIII();
-    const emit = makeEmitter(iii.asClient(), () => 'agent::events');
-    const emitRaw = makeEmitter(iii.asClient(), () => 'cursor::events');
+    const { emit, emitRaw } = await boundFeeds(iii, 'stream-replay');
     const firstClient = new FakeBridgeClient(unaryResponse, (call) => firstProcessStream(call));
     const firstWorker = new CursorWorker(
       iii.asClient(),
@@ -692,12 +707,9 @@ describe('CursorWorker run lifecycle', () => {
     };
 
     const failed = await firstWorker.executeRun(request);
-    expect(
-      iii.streamItems.filter((item) => {
-        const payload = item as { stream_name?: string; data?: { type?: string } };
-        return payload.stream_name === 'agent::events' && payload.data?.type === 'message_complete';
-      }),
-    ).toHaveLength(0);
+    expect(iii.feedEvents(AGENT).filter((event) => event.type === 'message_complete')).toHaveLength(
+      0,
+    );
     const secondClient = new FakeBridgeClient(unaryResponse, (call) => {
       if (call.method !== 'ObserveRun') throw new Error(`unexpected stream ${call.method}`);
       return frames(...durableFrames());
@@ -710,20 +722,24 @@ describe('CursorWorker run lifecycle', () => {
       new FakeBridgeFactory(secondClient),
     ).executeRun(request);
 
-    const normalizedFinal = iii.streamItems.filter((item) => {
-      const payload = item as { stream_name?: string; data?: { llm_event?: { delta?: string } } };
-      return payload.stream_name === 'agent::events' && payload.data?.llm_event?.delta === 'Hello';
-    });
-    const nonDurable = iii.streamItems.filter((item) => {
-      const payload = item as {
-        stream_name?: string;
-        data?: { interactionUpdate?: { update?: { delta?: string } } };
-      };
-      return payload.data?.interactionUpdate?.update?.delta === 'Hel';
-    });
+    // The feed is not a store: a replayed durable frame is re-delivered, under
+    // the same stable cursor- event_id, so consumers deduplicate it.
+    const normalizedFinal = iii
+      .feedPayloads(AGENT)
+      .filter(
+        (payload) =>
+          (payload.event as { llm_event?: { delta?: string } }).llm_event?.delta === 'Hello',
+      );
+    const nonDurable = [...iii.feedPayloads(AGENT), ...iii.feedPayloads(RAW)].filter(
+      (payload) =>
+        (payload.event as { interactionUpdate?: { update?: { delta?: string } } }).interactionUpdate
+          ?.update?.delta === 'Hel',
+    );
     expect(failed.is_error).toBe(true);
     expect(recovered.status).toBe('FINISHED');
-    expect(normalizedFinal).toHaveLength(1);
+    expect(normalizedFinal.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(normalizedFinal.map((payload) => payload.event_id)).size).toBe(1);
+    expect(normalizedFinal[0]?.event_id.startsWith('cursor-')).toBe(true);
     expect(nonDurable).toHaveLength(0);
 
     async function* firstProcessStream(call: { method: string }) {
@@ -1541,29 +1557,29 @@ describe('CursorWorker run lifecycle', () => {
     });
   });
 
-  it('falls back to a complete body when a streamed delta cannot be persisted', async () => {
+  it('falls back to a complete body when a streamed delta cannot be delivered', async () => {
     const iii = new MockIII();
     const originalTrigger = iii.trigger.bind(iii);
     let rejected = false;
     iii.trigger = async (request: Record<string, unknown>) => {
-      const payload = request.payload as { stream_name?: string; data?: { type?: string } };
+      const payload = request.payload as { event?: { type?: string } };
       if (
         !rejected &&
-        request.function_id === 'stream::set' &&
-        payload.stream_name === 'agent::events' &&
-        payload.data?.type === 'message_update'
+        request.function_id === consumerFor(AGENT) &&
+        payload.event?.type === 'message_update'
       ) {
         rejected = true;
-        throw new Error('stream unavailable');
+        throw new Error('consumer unavailable');
       }
       return originalTrigger(request);
     };
-    const emit = makeEmitter(iii.asClient(), () => 'agent::events');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { emit, emitRaw } = await boundFeeds(iii, 'delivery-failure');
     const worker = new CursorWorker(
       iii.asClient(),
       testConfig,
       emit,
-      makeEmitter(iii.asClient(), () => 'cursor::events'),
+      emitRaw,
       new FakeBridgeFactory(successfulClient('run-delivery', 'complete text')),
     );
 
@@ -1574,14 +1590,62 @@ describe('CursorWorker run lifecycle', () => {
       prompt: 'test delivery',
       session_id: 'delivery-failure',
     });
-    const complete = iii.streamItems.find((item) => {
-      const payload = item as { stream_name?: string; data?: { type?: string } };
-      return payload.stream_name === 'agent::events' && payload.data?.type === 'message_complete';
-    }) as { data?: { body_streamed?: boolean } };
+    const complete = iii.feedEvents(AGENT).find((event) => event.type === 'message_complete');
 
     expect(response.status).toBe('FINISHED');
     expect(rejected).toBe(true);
-    expect(complete.data).not.toHaveProperty('body_streamed');
+    expect(complete).toBeDefined();
+    expect(complete).not.toHaveProperty('body_streamed');
+    warning.mockRestore();
+  });
+
+  it('marks the body streamed only when a bound consumer received the deltas', async () => {
+    const bound = new MockIII();
+    const feeds = await boundFeeds(bound, 'streamed');
+    await new CursorWorker(
+      bound.asClient(),
+      testConfig,
+      feeds.emit,
+      feeds.emitRaw,
+      new FakeBridgeFactory(successfulClient('run-streamed', 'complete text')),
+    ).executeRun({
+      runtime: 'local',
+      cwd: '/repo',
+      model: 'composer-2',
+      prompt: 'stream it',
+      session_id: 'streamed',
+    });
+    const types = bound.feedEvents(AGENT).map((event) => event.type);
+    expect(types).toContain('message_update');
+    expect(types.slice(-3)).toEqual(['message_complete', 'turn_end', 'agent_end']);
+    expect(
+      bound.feedEvents(AGENT).find((event) => event.type === 'message_complete'),
+    ).toMatchObject({ body_streamed: true });
+    expect(bound.feedPayloads(AGENT).map((payload) => payload.seq)).toEqual(
+      bound.feedPayloads(AGENT).map((_, index) => index),
+    );
+    expect(bound.feedPayloads(RAW).map((payload) => payload.seq)).toEqual(
+      bound.feedPayloads(RAW).map((_, index) => index),
+    );
+
+    // Nobody bound: no trigger call at all, the turn still finishes.
+    const unbound = new MockIII();
+    const quiet = createAgentFeeds(unbound.asClient());
+    const response = await new CursorWorker(
+      unbound.asClient(),
+      testConfig,
+      quiet.emit,
+      quiet.emitRaw,
+      new FakeBridgeFactory(successfulClient('run-quiet', 'complete text')),
+    ).executeRun({
+      runtime: 'local',
+      cwd: '/repo',
+      model: 'composer-2',
+      prompt: 'nobody listens',
+      session_id: 'quiet',
+    });
+    expect(response.status).toBe('FINISHED');
+    expect(unbound.triggerCalls.some((call) => call.action !== undefined)).toBe(false);
   });
 });
 

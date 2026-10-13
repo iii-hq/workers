@@ -185,20 +185,44 @@ pub fn kept_in_collapsed_run(run: &[&SessionEntry]) -> Vec<bool> {
         .collect()
 }
 
+/// The harness's single-tool wrapper. Its row label is not the function id
+/// but `arguments.function` (the target) and `arguments.description` (the
+/// user-facing action label), so elision keeps those two.
+const AGENT_TRIGGER: &str = "agent_trigger";
+/// Bound on a kept `agent_trigger` label field. The harness schema caps
+/// `description` at 120 chars; a model that ignored it must not make a
+/// collapsed run heavy again.
+const MAX_KEPT_LABEL_CHARS: usize = 120;
+/// A target id longer than this is not a real function id: drop it and let
+/// the reader fall back to the wrapper's unresolved placeholder.
+const MAX_KEPT_TARGET_CHARS: usize = 256;
+
 /// Strip the heavy parts of a message the collapsed view does not draw,
 /// keeping everything it needs to draw the placeholder and to swap the full
 /// entry in later: text (the visible phase summaries), every `function_call`
 /// id and function id (the row's identity and label), every result's
-/// `function_call_id` and `is_error` (pairing and status). Arguments,
-/// result bodies, details and thinking are what a 300-call run is heavy
-/// with, and exactly what `session::messages-range` brings back on demand.
+/// `function_call_id` and `is_error` (pairing and status). An
+/// `agent_trigger` call also keeps its string `function` and `description`
+/// arguments — its label lives there — and drops `payload`; every other
+/// call's arguments become `{}`. Arguments, result bodies, details and
+/// thinking are what a 300-call run is heavy with, and exactly what
+/// `session::messages-range` brings back on demand.
 pub fn elide_message(message: &mut AgentMessage) {
     match message {
         AgentMessage::Assistant { content, .. } => {
             content.retain(|b| !matches!(b, ContentBlock::Thinking { .. }));
             for block in content.iter_mut() {
-                if let ContentBlock::FunctionCall { arguments, .. } = block {
-                    *arguments = Value::Object(JsonMap::new());
+                if let ContentBlock::FunctionCall {
+                    function_id,
+                    arguments,
+                    ..
+                } = block
+                {
+                    *arguments = if function_id == AGENT_TRIGGER {
+                        agent_trigger_label(arguments)
+                    } else {
+                        Value::Object(JsonMap::new())
+                    };
                 }
             }
         }
@@ -210,6 +234,27 @@ pub fn elide_message(message: &mut AgentMessage) {
         }
         AgentMessage::User { .. } | AgentMessage::Custom { .. } => {}
     }
+}
+
+/// The label half of an `agent_trigger` wrapper's arguments: `function`
+/// (when a plausible id) and `description` (bounded), both only when they
+/// are strings. Everything else — `payload` above all — is dropped.
+fn agent_trigger_label(arguments: &Value) -> Value {
+    let mut kept = JsonMap::new();
+    if let Some(target) = arguments
+        .get("function")
+        .and_then(Value::as_str)
+        .filter(|target| target.chars().count() <= MAX_KEPT_TARGET_CHARS)
+    {
+        kept.insert("function".into(), Value::String(target.to_string()));
+    }
+    if let Some(description) = arguments.get("description").and_then(Value::as_str) {
+        kept.insert(
+            "description".into(),
+            Value::String(description.chars().take(MAX_KEPT_LABEL_CHARS).collect()),
+        );
+    }
+    Value::Object(kept)
 }
 
 #[cfg(test)]
@@ -390,5 +435,61 @@ mod tests {
         assert_eq!(round["is_error"], false);
         assert_eq!(round["content"], json!([]));
         assert_eq!(round["details"], Value::Null);
+    }
+
+    fn wrapper_call(arguments: Value) -> AgentMessage {
+        let SessionEntry::Message { message, .. } = entry(
+            "a1",
+            json!({ "role": "assistant", "content": [
+                        { "type": "function_call", "id": "c1", "function_id": "agent_trigger",
+                          "arguments": arguments }
+                    ],
+                    "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 1 }),
+        ) else {
+            unreachable!()
+        };
+        *message
+    }
+
+    fn elided_arguments(mut message: AgentMessage) -> Value {
+        elide_message(&mut message);
+        serde_json::to_value(&message).unwrap()["content"][0]["arguments"].clone()
+    }
+
+    /// Prevents: a reloaded transcript labeling every collapsed `agent_trigger`
+    /// call with its bare function id while a few whole calls keep their
+    /// description — the label lives inside the arguments.
+    #[test]
+    fn elision_keeps_the_agent_trigger_label_and_drops_its_payload() {
+        let message = wrapper_call(json!({
+            "function": "compose::status",
+            "description": "Check existing containers",
+            "payload": { "big": "x".repeat(10_000) },
+            "_partial": true
+        }));
+        assert_eq!(
+            elided_arguments(message),
+            json!({ "function": "compose::status", "description": "Check existing containers" })
+        );
+    }
+
+    #[test]
+    fn elision_bounds_or_drops_malformed_agent_trigger_labels() {
+        let long = "d".repeat(500);
+        let message = wrapper_call(json!({ "function": "fs::read", "description": long }));
+        let kept = elided_arguments(message);
+        assert_eq!(kept["function"], "fs::read");
+        assert_eq!(kept["description"].as_str().unwrap().chars().count(), 120);
+
+        // Non-string fields (and an implausible target) are not labels.
+        let message = wrapper_call(json!({
+            "function": "f".repeat(300), "description": { "nested": true }, "payload": {}
+        }));
+        assert_eq!(elided_arguments(message), json!({}));
+        let message = wrapper_call(json!({ "function": 7, "description": ["x"] }));
+        assert_eq!(elided_arguments(message), json!({}));
+        // A streaming-salvaged or absent argument object stays empty.
+        let message = wrapper_call(json!("{\"function\": \"x"));
+        assert_eq!(elided_arguments(message), json!({}));
     }
 }

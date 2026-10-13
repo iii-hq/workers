@@ -144,8 +144,8 @@ describe('shell::exec request', () => {
     if (nul.success) expect(nul.data.args).toBeNull()
   })
 
-  it('swallows junk timeout_ms via .catch (server silently ignores non-u64)', () => {
-    for (const junk of ['soon', -5, 1.5]) {
+  it('swallows junk timeout_ms via z.catch (server silently ignores non-u64)', () => {
+    for (const junk of ['soon', -5, 1.5, null]) {
       const parsed = shellExecRequestSchema.safeParse({
         command: 'ls',
         timeout_ms: junk,
@@ -296,8 +296,17 @@ describe('shell::status / shell::kill', () => {
 describe('shell::list / shell::config-status', () => {
   it('list request tolerates the engine-injected _caller_worker_id', () => {
     expect(
-      shellListRequestSchema.safeParse({ _caller_worker_id: 'w1' }).success,
-    ).toBe(true)
+      shellListRequestSchema.safeParse({ _caller_worker_id: 'w1' }).data,
+    ).toEqual({ _caller_worker_id: 'w1' })
+  })
+
+  it('keyed schemas drop unknown keys instead of rejecting them', () => {
+    expect(
+      shellStatusRequestSchema.safeParse({
+        job_id: 'job-1',
+        _caller_worker_id: 'w1',
+      }).data,
+    ).toEqual({ job_id: 'job-1' })
   })
 
   it('list response accepts empty and populated job tables', () => {

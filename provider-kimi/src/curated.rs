@@ -159,7 +159,8 @@ pub fn enrich(id: &str) -> Model {
             max_output_tokens: meta.max_output_tokens,
             input_limit: None,
             supports_thinking: Some(meta.supports_thinking),
-            supports_xhigh: None, // Moonshot has no effort ladder
+            supports_xhigh: None,        // Moonshot has no effort ladder
+            supports_thinking_off: None, // thinking is per model; no documented switch
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: Some(meta.supports_vision),
@@ -178,6 +179,7 @@ pub fn enrich(id: &str) -> Model {
             input_limit: None,
             supports_thinking: None,
             supports_xhigh: None,
+            supports_thinking_off: None,
             reasoning_efforts: None,
             supports_tools: Some(true),
             supports_vision: None,

@@ -30,31 +30,6 @@ pub const MODELS_REFRESH_INTERVAL: Duration = Duration::from_secs(3 * 60);
 /// conservative router metadata rather than a request parameter.
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 128_000;
 const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
-/// GPT-6 Astra's full context window; the backend may expose its 272K pricing
-/// threshold as `context_window` instead of the model's actual limit.
-const GPT_6_ASTRA_CONTEXT_WINDOW: u64 = 1_050_000;
-
-/// Keep the Codex catalog aligned with the provider's curated model metadata.
-fn curated_context_window(slug: &str) -> Option<u64> {
-    if slug == "gpt-6-astra" {
-        return Some(GPT_6_ASTRA_CONTEXT_WINDOW);
-    }
-
-    let suffix = slug.strip_prefix("gpt-6-astra-")?;
-    let bytes = suffix.as_bytes();
-    if bytes.len() == 10
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
-    {
-        Some(GPT_6_ASTRA_CONTEXT_WINDOW)
-    } else {
-        None
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct CatalogRefreshState {
@@ -136,6 +111,13 @@ fn models_url(api_url: &str) -> Result<reqwest::Url, Error> {
     Ok(url)
 }
 
+/// Efforts offered for a Codex model: the ones the Codex app shows that the
+/// Responses API also accepts. The catalog advertises two more. `max` the
+/// API accepts but the app does not offer, so neither do we. `ultra`
+/// ("automatic task delegation") is an app mode: the API rejects it with
+/// `Invalid value: 'ultra'`.
+const API_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
+
 fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
     remote.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.slug.cmp(&b.slug)));
     let mut seen = HashSet::new();
@@ -144,7 +126,10 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
         .filter(|model| model.visibility == "list")
         .filter(|model| !model.slug.trim().is_empty())
         .filter(|model| seen.insert(model.slug.clone()))
-        .map(|model| {
+        .map(|mut model| {
+            model
+                .supported_reasoning_levels
+                .retain(|level| API_EFFORTS.contains(&level.effort.as_str()));
             let supports_thinking = !model.supported_reasoning_levels.is_empty();
             let supports_xhigh = model
                 .supported_reasoning_levels
@@ -168,14 +153,24 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 id: format!("codex/{}", model.slug),
                 provider: PROVIDER_ID.to_string(),
                 display_name: Some(format!("{} (Codex)", model.display_name)),
-                context_window: curated_context_window(&model.slug)
+                // `context_window` is the Codex CLI's default working window
+                // (272K); the backend accepts input up to ~922K on current
+                // models, so the catalog's override ceiling is the real limit
+                // we can safely advertise.
+                context_window: model
+                    .max_context_window
                     .or(model.context_window)
-                    .or(model.max_context_window)
                     .unwrap_or(DEFAULT_CONTEXT_WINDOW),
                 max_output_tokens: model.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
                 input_limit: None,
                 supports_thinking: Some(supports_thinking),
                 supports_xhigh: Some(supports_xhigh),
+                supports_thinking_off: supports_thinking.then(|| {
+                    model
+                        .supported_reasoning_levels
+                        .iter()
+                        .any(|level| level.effort == "none")
+                }),
                 reasoning_efforts,
                 supports_tools: Some(true),
                 supports_vision: Some(supports_vision),
@@ -360,7 +355,7 @@ mod tests {
             visibility: visibility.into(),
             priority,
             context_window: Some(272_000),
-            max_context_window: Some(1_000_000),
+            max_context_window: Some(872_000),
             max_output_tokens: None,
             supported_reasoning_levels: vec![ReasoningLevel {
                 effort: "xhigh".into(),
@@ -374,8 +369,8 @@ mod tests {
     fn dynamic_mapping_filters_hidden_sorts_and_namespaces() {
         let mut first = model("new-first", "list", 1);
         first.supported_reasoning_levels.push(ReasoningLevel {
-            effort: "ultra".into(),
-            description: Some("Maximum reasoning with delegation".into()),
+            effort: "high".into(),
+            description: Some("Greater reasoning depth".into()),
         });
         let models = map_models(vec![
             model("old-hidden", "hide", 0),
@@ -389,7 +384,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["codex/new-first", "codex/new-second"]
         );
-        assert_eq!(models[0].context_window, 272_000);
+        assert_eq!(models[0].context_window, 872_000);
         assert_eq!(models[0].supports_xhigh, Some(true));
         assert_eq!(models[0].supports_vision, Some(true));
         assert_eq!(
@@ -401,13 +396,38 @@ mod tests {
                         description: Some("Extra high reasoning depth".into()),
                     },
                     ReasoningEffort {
-                        effort: "ultra".into(),
-                        description: Some("Maximum reasoning with delegation".into()),
+                        effort: "high".into(),
+                        description: Some("Greater reasoning depth".into()),
                     },
                 ]
                 .as_slice(),
             )
         );
+    }
+
+    /// gpt-5.6-terra's catalog row lists `max` and `ultra`. The Codex app
+    /// offers neither, and the Responses API rejects `ultra` (`Invalid value:
+    /// 'ultra'`), so neither becomes a slider stop.
+    #[test]
+    fn efforts_the_app_does_not_offer_are_dropped_from_the_ladder() {
+        let mut terra = model("gpt-5.6-terra", "list", 1);
+        terra.supported_reasoning_levels = ["low", "xhigh", "max", "ultra"]
+            .into_iter()
+            .map(|effort| ReasoningLevel {
+                effort: effort.into(),
+                description: None,
+            })
+            .collect();
+        let models = map_models(vec![terra]);
+        let efforts: Vec<&str> = models[0]
+            .reasoning_efforts
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|effort| effort.effort.as_str())
+            .collect();
+        assert_eq!(efforts, vec!["low", "xhigh"]);
+        assert_eq!(models[0].supports_xhigh, Some(true));
     }
 
     #[test]
@@ -428,11 +448,14 @@ mod tests {
     }
 
     #[test]
-    fn astra_uses_the_curated_context_window() {
-        for slug in ["gpt-6-astra", "gpt-6-astra-2026-09-15"] {
-            let models = map_models(vec![model(slug, "list", 1)]);
-            assert_eq!(models[0].context_window, 1_050_000);
-        }
+    fn context_window_is_the_override_ceiling_else_the_default_window() {
+        let models = map_models(vec![model("gpt-6-astra", "list", 1)]);
+        assert_eq!(models[0].context_window, 872_000);
+
+        let mut no_ceiling = model("gpt-6-astra", "list", 1);
+        no_ceiling.max_context_window = None;
+        let models = map_models(vec![no_ceiling]);
+        assert_eq!(models[0].context_window, 272_000);
     }
 
     #[test]

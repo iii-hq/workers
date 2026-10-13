@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "judge-provider"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Bounded HTTP transport, caller-scoped cancellation and secret:// keys shared by the judge-<provider> workers"
+
+[dependencies]
+judge-contract = { path = "../judge-contract" }
+# Workers carry their own exact SDK pins. Widen this range together with
+# theirs (0.24): a second iii-sdk version makes `IIIClient` a different type
+# from the one the worker passes in.
+iii-sdk = ">=0.23.0, <0.24.0"
+# The worker picks TLS and the other reqwest features.
+reqwest = { version = "0.12", default-features = false }
+tokio = { version = "1", features = ["sync", "time"] }
+httpdate = "1"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+tracing = "0.1"
+
+[dev-dependencies]
+async-trait = "0.1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }

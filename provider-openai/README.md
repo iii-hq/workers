@@ -79,10 +79,13 @@ costs nothing, and needs no network).
   so nothing is sent. `prompt_tokens_details.cached_tokens` lands on
   `usage.cache_read`.
 - **Curated snapshot:** `src/curated.rs` carries windows / output ceilings /
-  capability flags / pricing (USD per MTok). Update it against models.dev
+  capability flags / pricing (USD per MTok). Update it against the
+  [official model specifications](https://developers.openai.com/api/docs/models)
   when OpenAI ships new models — discovery only supplies bare ids.
-  GPT-6 Astra uses the [official model specifications](https://developers.openai.com/api/docs/models/gpt-6-astra):
-  a 1,050,000-token context window and 128,000-token output ceiling. Its tiered
+  GPT-5.4 / Pro, GPT-5.5 / Pro, GPT-5.6 / Sol / Terra / Luna,
+  GPT-6 Astra / Sol / Luna and GPT-6.1 Sol have 1,050,000-token context windows.
+  GPT-5.3 Codex and GPT-5.4 Mini / Nano have 400,000-token context windows.
+  All of these models have 128,000-token output ceilings. Context-tiered
   pricing is intentionally omitted from the flat-rate catalog fields.
 
 ## Image generation

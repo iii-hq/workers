@@ -20,12 +20,12 @@ const variantTone: Record<
   warn: {
     fill: 'bg-warn-muted',
     icon: 'text-warn',
-    headline: 'text-warn',
+    headline: 'text-warn-strong',
   },
   alert: {
     fill: 'bg-alert-muted',
     icon: 'text-alert',
-    headline: 'text-alert',
+    headline: 'text-alert-strong',
   },
 }
 
@@ -70,12 +70,22 @@ export function StatusPanel({
       ) : null}
       <div className="min-w-0 flex flex-col gap-y-0.5">
         <div
-          className={cn('font-sans text-[13px] font-semibold', tone.headline)}
+          className={cn(
+            'font-sans text-[13px] font-semibold [overflow-wrap:anywhere]',
+            tone.headline,
+          )}
         >
           {headline}
         </div>
         {detail ? (
-          <div className="font-sans text-[12px] text-ink-faint">{detail}</div>
+          <div
+            className={cn(
+              'font-sans text-[12px] [overflow-wrap:anywhere]',
+              variant === 'success' ? 'text-ink' : 'text-ink-faint',
+            )}
+          >
+            {detail}
+          </div>
         ) : null}
       </div>
       {action ? (

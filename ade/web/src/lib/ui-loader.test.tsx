@@ -556,6 +556,97 @@ describe('injectable UI script updates', () => {
   })
 })
 
+describe('console:module assets', () => {
+  const base = 'http://console.test/base/ui'
+  // Lets queued `delete`/`sync` pushes apply; neither has a visible effect.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('never imports a module at mount', async () => {
+    const importModule = vi.fn(async () => ({}))
+    const harness = createHarness({ importModule })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'w/heavy.js', kind: 'module', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(getUiAssetsStatus()).toBe('ready'))
+    expect(importModule).not.toHaveBeenCalled()
+    harness.stop()
+  })
+
+  it('imports a module on demand, unversioned once it is gone', async () => {
+    const heavy: UiModule = {}
+    let host: Parameters<SetupFn>[0] | undefined
+    let imported: Promise<unknown> | undefined
+    const importModule = vi.fn(async (url: string) => {
+      if (!url.includes('/page.js')) return heavy
+      return {
+        default(next: Parameters<SetupFn>[0]) {
+          host = next
+          imported = next.importModule?.('w/heavy.js')
+        },
+      }
+    })
+    const harness = createHarness({ importModule })
+    // Listed after the script: its setup still sees the module's hash.
+    harness.emit({
+      event: 'sync',
+      assets: [
+        { path: 'w/page.js', kind: 'script', hash: 'one' },
+        { path: 'w/heavy.js', kind: 'module', hash: 'one' },
+      ],
+    })
+    await vi.waitFor(() => expect(imported).toBeDefined())
+    expect(importModule).toHaveBeenLastCalledWith(`${base}/w/heavy.js?v=one`)
+    await expect(imported).resolves.toBe(heavy)
+
+    harness.emit({
+      event: 'delete',
+      path: 'w/heavy.js',
+      kind: 'module',
+      hash: 'one',
+    })
+    await settle()
+    await host?.importModule?.('w/heavy.js')
+    expect(importModule).toHaveBeenLastCalledWith(`${base}/w/heavy.js`)
+
+    harness.emit({
+      event: 'set',
+      path: 'w/heavy.js',
+      kind: 'module',
+      hash: 'two',
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'w/page.js', kind: 'script', hash: 'one' }],
+    })
+    await settle()
+    await host?.importModule?.('w/heavy.js')
+    expect(importModule).toHaveBeenLastCalledWith(`${base}/w/heavy.js`)
+    harness.stop()
+  })
+
+  it('disposes a script whose path becomes a module', async () => {
+    const teardown = vi.fn()
+    const harness = createHarness({
+      importModule: vi.fn(async () => ({ default: () => teardown })),
+    })
+    harness.emit({
+      event: 'set',
+      path: 'w/heavy.js',
+      kind: 'script',
+      hash: 'one',
+    })
+    harness.emit({
+      event: 'set',
+      path: 'w/heavy.js',
+      kind: 'module',
+      hash: 'two',
+    })
+    await vi.waitFor(() => expect(teardown).toHaveBeenCalledOnce())
+    harness.stop()
+  })
+})
+
 describe('injectable UI conversation adapters', () => {
   it('opens an editable investigation draft without selecting or sending a session', async () => {
     const openDraft = vi.fn()

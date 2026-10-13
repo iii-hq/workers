@@ -58,6 +58,13 @@ board page and a ticket page into the console.
 - `kanban::activity::list` — the ticket's timeline, oldest first, optionally narrowed by type or time.
 - `kanban::agent::list` — assignable agent profiles and their ids.
 
+A user may mention a ticket in chat as `@kanban(id="<uuid>")`; the message
+then arrives with a `<mentions>` block carrying the ticket's summary and the
+pre-verified `kanban::ticket::get` call. To point the user at a ticket in a
+reply, write `@kanban(id="<uuid>")` with the `id` a function returned — the
+console renders it as a ticket pill. (`kanban::mention::search` and
+`kanban::mention::get` serve the composer and that block; they are internal.)
+
 ## Reactive triggers
 
 Register a `kanban:comment` trigger when a session or function should run

@@ -11,7 +11,7 @@
 
 import { Dialog, DialogContent, DialogTitle, type Host, Kbd, StatusPanel } from '@iii-dev/console-ui'
 import { Search } from 'lucide-react'
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
@@ -77,7 +77,7 @@ function FocusReturn({ target }: { target: React.MutableRefObject<HTMLElement | 
   return null
 }
 
-export function QuickOpen({ host, root, open, onOpenChange, recent, onOpenFile }: QuickOpenProps) {
+function QuickOpenView({ host, root, open, onOpenChange, recent, onOpenFile }: QuickOpenProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Results>({ kind: 'idle' })
   const [searching, setSearching] = useState(false)
@@ -289,3 +289,6 @@ export function QuickOpen({ host, root, open, onOpenChange, recent, onOpenFile }
     </Dialog>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const QuickOpen = memo(QuickOpenView)

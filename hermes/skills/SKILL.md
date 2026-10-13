@@ -39,8 +39,11 @@ on here.
 - `hermes::run` / `hermes::send` are not agent-callable without human approval
   (privilege + outbound messaging); read-only introspection is allowed (see
   iii-permissions.yaml).
-- Hermes one-shot returns only final text, so `agent::events` carries whole-turn
-  frames (`turn_end`, `agent_end`), not per-tool frames.
+- Hermes one-shot returns only final text, so `hermes::agent-event` carries
+  whole-turn frames (`turn_end`, `agent_end`), not per-tool frames. Bind it (and
+  `hermes::raw-event` for the raw `result` frame and inbound deliveries) with
+  `{ session_id }`; frames are ephemeral, so use `hermes::status` /
+  `hermes::sessions::list` for history.
 - Hermes's own shell/code/web tools and MCP are intentionally not re-exposed —
   iii already has `shell`, `coder`, `web`.
 
@@ -53,4 +56,13 @@ on here.
 - `hermes::status` — session state + live flag.
 - `hermes::stop` — interrupt a live run.
 - `run::start_and_wait` — alias for `hermes::run`.
-- `hermes::inbound` (HTTP) — inbound gateway delivery sink; republishes events.
+- `hermes::inbound` (HTTP) — inbound gateway delivery sink; republishes each
+  delivery on `hermes::raw-event`.
+
+## Trigger types
+
+- `hermes::agent-event` — normalized AgentEvent frames of one session; config
+  `{ session_id, metadata? }`; payload
+  `{ session_id, event_id, seq, epoch, source, event }`.
+- `hermes::raw-event` — raw Hermes frames (`result`, `inbound`), same config and
+  payload.

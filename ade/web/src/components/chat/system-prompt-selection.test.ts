@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { Message } from '@/types/chat'
 import {
   AGENT_CHOICE_PREFIX,
   agentIdForSend,
@@ -10,6 +11,7 @@ import {
   skillSelectionForSend,
   toggleSkillSelection,
   toSelection,
+  turnEstablishedFrom,
   valueToChoice,
   withAgentChoice,
   withoutAgentChoice,
@@ -126,6 +128,95 @@ describe('selectionForSend', () => {
 
   it('later sends omit the prompt fields — the harness inherits', () => {
     expect(selectionForSend(named, true)).toBeNull()
+  })
+})
+
+describe('turnEstablishedFrom', () => {
+  const user: Message = {
+    id: 'e_idem_m1',
+    role: 'user',
+    content: 'Cat or dog?',
+    createdAt: 1,
+  }
+  const assistant: Message = {
+    id: 'e_a1:0',
+    role: 'assistant',
+    content: 'Noted.',
+    createdAt: 2,
+  }
+  // A first turn that ended on harness::ask: the call is its only row.
+  const askCall: Message = {
+    id: 'e_a1:0',
+    role: 'function-trigger',
+    functionId: 'harness::ask',
+    input: { questions: [] },
+    output: { content: [], details: { status: 'awaiting_answer' } },
+    functionTriggerId: 'call_ask_1',
+    createdAt: 2,
+  }
+  // What ChatView appends when a send fails before any turn ran.
+  const sendError: Message = {
+    id: 'n1',
+    role: 'system',
+    content: 'harness::send failed — engine unreachable',
+    tone: 'error',
+    createdAt: 2,
+  }
+
+  it('a lone user row is not an established turn', () => {
+    expect(turnEstablishedFrom([])).toBe(false)
+    expect(turnEstablishedFrom([user])).toBe(false)
+  })
+
+  it('an assistant row is', () => {
+    expect(turnEstablishedFrom([user, assistant])).toBe(true)
+  })
+
+  it('a function-trigger row is: a first turn that ended on harness::ask', () => {
+    expect(turnEstablishedFrom([user, askCall])).toBe(true)
+  })
+
+  it('a send that failed before any turn ran is not', () => {
+    expect(turnEstablishedFrom([user, sendError])).toBe(false)
+  })
+
+  it('a turn the harness ran and failed is: the session identity is frozen', () => {
+    // What the session log maps for a first turn that died assembling
+    // context (entry-mapper): the harness holds a turn record, so a resent
+    // options.agent would be refused.
+    const overflow: Message = {
+      id: 'e_t1_error',
+      role: 'system',
+      kind: 'turn-failure',
+      content:
+        'context/overflow: assembled context requires 5391 tokens but usable budget is 2048',
+      tone: 'error',
+      failure: {
+        summary:
+          'The conversation could not be compacted to fit the selected model.',
+      },
+      technicalDetails: {
+        code: 'harness.context_overflow',
+        class: 'llm.context_overflow',
+      },
+      createdAt: 2,
+    }
+    expect(turnEstablishedFrom([user, overflow])).toBe(true)
+    // A harness failure row without technical details still came from a turn.
+    expect(
+      turnEstablishedFrom([user, { ...overflow, technicalDetails: undefined }]),
+    ).toBe(true)
+    // The console's own stamp on a send the engine never accepted does not count.
+    const stamped: Message = {
+      ...overflow,
+      content: 'send failed — engine unreachable',
+      failure: { summary: 'The message could not be sent.' },
+      technicalDetails: {
+        code: 'console.send_failed',
+        detail: 'engine unreachable',
+      },
+    }
+    expect(turnEstablishedFrom([user, stamped])).toBe(false)
   })
 })
 

@@ -38,6 +38,7 @@ export const spawnModeSchema = z.enum(['ask', 'agent'])
 export type SpawnMode = z.infer<typeof spawnModeSchema>
 
 export const thinkingLevelSchema = z.enum([
+  'off',
   'minimal',
   'low',
   'medium',

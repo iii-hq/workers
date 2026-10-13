@@ -15,6 +15,7 @@ import { ConnectionNotice } from '@/components/ConnectionNotice'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { EmailPrompt } from '@/components/EmailPrompt'
 import { ExtOverlays } from '@/components/ExtOverlays'
+import { OnboardingWizardHost } from '@/components/onboarding/OnboardingWizard'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
@@ -505,6 +506,7 @@ export function App({
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         <EmailPrompt />
+        <OnboardingWizardHost />
         <PaletteHost
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
@@ -1331,202 +1333,210 @@ function WorkspacePanes({
   )
 
   return (
-    <section
-      ref={containerRef}
-      onScroll={(event) => handleMobileScroll(event.currentTarget)}
-      className="relative flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden pb-0 sm:snap-none sm:px-4 sm:pb-1.5"
-      aria-label="workspace panels"
-    >
-      {Array.from({ length: columns }, (_, column) => {
-        const screen = activeTab.screens[column] ?? null
-        const paneId = paneIds[column]
-        const isDragged = panelDrag?.paneId === paneId
-        const isDropTarget =
-          panelDrag?.overPaneId === paneId && panelDrag.paneId !== paneId
-        const isExiting =
-          exitingPanel?.tabId === activeTab.id && exitingPanel.paneId === paneId
-        const isEntering =
-          !isExiting &&
-          enteringPanel?.tabId === activeTab.id &&
-          enteringPanel.paneId === paneId
-        const motionDirection = isExiting
-          ? exitingPanel.direction
-          : isEntering
-            ? enteringPanel.direction
-            : undefined
-        // 'right' only for the rightmost column of a multi-column tab —
-        // a full-width single column keeps the default 'left' orientation.
-        const panelSide: PanelSide =
-          columns > 1 && column === columns - 1 ? 'right' : 'left'
-        // The header ✕ on every screen: in a split the column goes; the
-        // last column detaches its screen instead (back to the attach
-        // affordance) — a tab never loses its final pane.
-        const closePane = () =>
-          onRequestClosePane(activeTab.id, paneId, () =>
-            columns > 1
-              ? requestPanelRemoval(column)
-              : workspace.detachScreen(activeTab.id, column),
-          )
-        const pane = (
-          <section
-            key="panel"
-            // ×1000: flex-grow sums below 1 only distribute that fraction
-            // of the free space — scaling keeps the ratios AND fills the row.
-            style={
-              {
-                '--panel-grow': sizes[column] * 1000,
-              } as CSSProperties
-            }
-            className={cn(
-              'group/panel relative flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden [scroll-snap-stop:always]',
-              'focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent',
-              'sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)]',
-              isDragged && 'opacity-60',
-              isDropTarget && 'z-10 outline-2 -outline-offset-2 outline-accent',
-              isEntering &&
-                (motionDirection === 'left'
-                  ? 'workspace-panel-enter-left'
-                  : 'workspace-panel-enter-right'),
-              isExiting &&
-                (motionDirection === 'left'
-                  ? 'workspace-panel-exit-left pointer-events-none'
-                  : 'workspace-panel-exit-right pointer-events-none'),
-            )}
-            data-workspace-panel={column}
-            data-workspace-pane-id={paneId}
-            data-panel-drag-state={
-              isDragged ? 'dragging' : isDropTarget ? 'target' : undefined
-            }
-            data-motion-state={
-              isEntering ? 'entering' : isExiting ? 'exiting' : 'idle'
-            }
-            inert={isExiting || undefined}
-            aria-hidden={isExiting || undefined}
-            aria-label={`panel ${column + 1} of ${columns}`}
-            tabIndex={-1}
-            onDragOver={(event) => {
-              if (!panelDragRef.current) return
-              event.preventDefault()
-              event.dataTransfer.dropEffect = 'move'
-              targetPanelDrag(paneId)
-            }}
-            onDrop={(event) => {
-              if (!panelDragRef.current) return
-              event.preventDefault()
-              dropPanel(paneId)
-            }}
-            onAnimationEnd={(event) => {
-              const rootGeometryFinished =
-                event.target === event.currentTarget &&
-                (event.animationName === 'workspace-panel-expand' ||
-                  event.animationName === 'workspace-panel-collapse')
-              const mobileSurfaceFinished =
-                !desktopPanelMotion &&
-                event.target !== event.currentTarget &&
-                event.animationName.startsWith('workspace-panel-surface-')
-              if (
+    // The edge add zones are absolutely positioned siblings of the scroller,
+    // not children: their nudge/preview transforms push past the scroller's
+    // edge and would count toward its scrollWidth, flashing a classic
+    // horizontal scrollbar that steals height from every pane (MOT-5202).
+    <div className="relative flex min-h-0 flex-1">
+      <section
+        ref={containerRef}
+        onScroll={(event) => handleMobileScroll(event.currentTarget)}
+        className="relative flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden pb-0 sm:snap-none sm:px-4 sm:pb-1.5"
+        aria-label="workspace panels"
+      >
+        {Array.from({ length: columns }, (_, column) => {
+          const screen = activeTab.screens[column] ?? null
+          const paneId = paneIds[column]
+          const isDragged = panelDrag?.paneId === paneId
+          const isDropTarget =
+            panelDrag?.overPaneId === paneId && panelDrag.paneId !== paneId
+          const isExiting =
+            exitingPanel?.tabId === activeTab.id &&
+            exitingPanel.paneId === paneId
+          const isEntering =
+            !isExiting &&
+            enteringPanel?.tabId === activeTab.id &&
+            enteringPanel.paneId === paneId
+          const motionDirection = isExiting
+            ? exitingPanel.direction
+            : isEntering
+              ? enteringPanel.direction
+              : undefined
+          // 'right' only for the rightmost column of a multi-column tab —
+          // a full-width single column keeps the default 'left' orientation.
+          const panelSide: PanelSide =
+            columns > 1 && column === columns - 1 ? 'right' : 'left'
+          // The header ✕ on every screen: in a split the column goes; the
+          // last column detaches its screen instead (back to the attach
+          // affordance) — a tab never loses its final pane.
+          const closePane = () =>
+            onRequestClosePane(activeTab.id, paneId, () =>
+              columns > 1
+                ? requestPanelRemoval(column)
+                : workspace.detachScreen(activeTab.id, column),
+            )
+          const pane = (
+            <section
+              key="panel"
+              // ×1000: flex-grow sums below 1 only distribute that fraction
+              // of the free space — scaling keeps the ratios AND fills the row.
+              style={
+                {
+                  '--panel-grow': sizes[column] * 1000,
+                } as CSSProperties
+              }
+              className={cn(
+                'group/panel relative flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden [scroll-snap-stop:always]',
+                'focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent',
+                'sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)]',
+                isDragged && 'opacity-60',
+                isDropTarget &&
+                  'z-10 outline-2 -outline-offset-2 outline-accent',
                 isEntering &&
-                enteringPanel &&
-                (rootGeometryFinished || mobileSurfaceFinished)
-              ) {
-                clearPanelEntry(enteringPanel.token)
-              }
-              if (
+                  (motionDirection === 'left'
+                    ? 'workspace-panel-enter-left'
+                    : 'workspace-panel-enter-right'),
                 isExiting &&
-                exitingPanel &&
-                (rootGeometryFinished || mobileSurfaceFinished)
-              ) {
-                finalizePanelExit(exitingPanel.token)
-              }
-            }}
-          >
-            {columns > 1 ? (
-              <PanelDragHandle
-                index={column}
-                count={columns}
-                disabled={panelInteractionDisabled}
-                dragging={isDragged}
-                onDragStart={(event) => startPanelDrag(paneId, event)}
-                onDragEnd={clearPanelDrag}
-                onMove={(nextIndex) => {
-                  const targetPaneId = paneIds[nextIndex]
-                  if (targetPaneId) requestPanelReorder(paneId, targetPaneId)
-                }}
-              />
-            ) : null}
-            <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
-              {screen === null ? (
-                <EmptyPane
-                  screenOptions={screenOptions}
-                  onAttach={(next) =>
-                    workspace.attachScreen(activeTab.id, column, next)
-                  }
-                  onRemove={
-                    columns > 1
-                      ? () =>
-                          onRequestClosePane(activeTab.id, paneId, () =>
-                            requestPanelRemoval(column),
-                          )
-                      : undefined
-                  }
-                />
-              ) : (
-                <ScreenBody
-                  key={screen}
-                  screen={screen}
-                  panelSide={panelSide}
-                  tabId={activeTab.id}
-                  paneId={paneId}
-                  onClose={closePane}
-                />
+                  (motionDirection === 'left'
+                    ? 'workspace-panel-exit-left pointer-events-none'
+                    : 'workspace-panel-exit-right pointer-events-none'),
               )}
+              data-workspace-panel={column}
+              data-workspace-pane-id={paneId}
+              data-panel-drag-state={
+                isDragged ? 'dragging' : isDropTarget ? 'target' : undefined
+              }
+              data-motion-state={
+                isEntering ? 'entering' : isExiting ? 'exiting' : 'idle'
+              }
+              inert={isExiting || undefined}
+              aria-hidden={isExiting || undefined}
+              aria-label={`panel ${column + 1} of ${columns}`}
+              tabIndex={-1}
+              onDragOver={(event) => {
+                if (!panelDragRef.current) return
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+                targetPanelDrag(paneId)
+              }}
+              onDrop={(event) => {
+                if (!panelDragRef.current) return
+                event.preventDefault()
+                dropPanel(paneId)
+              }}
+              onAnimationEnd={(event) => {
+                const rootGeometryFinished =
+                  event.target === event.currentTarget &&
+                  (event.animationName === 'workspace-panel-expand' ||
+                    event.animationName === 'workspace-panel-collapse')
+                const mobileSurfaceFinished =
+                  !desktopPanelMotion &&
+                  event.target !== event.currentTarget &&
+                  event.animationName.startsWith('workspace-panel-surface-')
+                if (
+                  isEntering &&
+                  enteringPanel &&
+                  (rootGeometryFinished || mobileSurfaceFinished)
+                ) {
+                  clearPanelEntry(enteringPanel.token)
+                }
+                if (
+                  isExiting &&
+                  exitingPanel &&
+                  (rootGeometryFinished || mobileSurfaceFinished)
+                ) {
+                  finalizePanelExit(exitingPanel.token)
+                }
+              }}
+            >
+              {columns > 1 ? (
+                <PanelDragHandle
+                  index={column}
+                  count={columns}
+                  disabled={panelInteractionDisabled}
+                  dragging={isDragged}
+                  onDragStart={(event) => startPanelDrag(paneId, event)}
+                  onDragEnd={clearPanelDrag}
+                  onMove={(nextIndex) => {
+                    const targetPaneId = paneIds[nextIndex]
+                    if (targetPaneId) requestPanelReorder(paneId, targetPaneId)
+                  }}
+                />
+              ) : null}
+              <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
+                {screen === null ? (
+                  <EmptyPane
+                    screenOptions={screenOptions}
+                    onAttach={(next) =>
+                      workspace.attachScreen(activeTab.id, column, next)
+                    }
+                    onRemove={
+                      columns > 1
+                        ? () =>
+                            onRequestClosePane(activeTab.id, paneId, () =>
+                              requestPanelRemoval(column),
+                            )
+                        : undefined
+                    }
+                  />
+                ) : (
+                  <ScreenBody
+                    key={screen}
+                    screen={screen}
+                    panelSide={panelSide}
+                    tabId={activeTab.id}
+                    paneId={paneId}
+                    onClose={closePane}
+                  />
+                )}
+              </div>
+            </section>
+          )
+          return (
+            <Fragment key={`${activeTab.id}:${paneId}`}>
+              {column > 0 ? (
+                <ResizeHandle
+                  key="divider"
+                  value={sizes[column - 1] * 100}
+                  disabled={panelInteractionDisabled || panelDrag !== null}
+                  motionState={
+                    column === exitingDivider
+                      ? 'exiting'
+                      : column === enteringDivider
+                        ? 'entering'
+                        : undefined
+                  }
+                  onResize={(delta) => resizePair(column - 1, delta)}
+                  onCommit={commitResize}
+                  onResizeStart={startResize}
+                  onResizeEnd={endResize}
+                  containerWidth={() =>
+                    containerRef.current?.getBoundingClientRect().width ?? 0
+                  }
+                />
+              ) : null}
+              {pane}
+            </Fragment>
+          )
+        })}
+
+        {columns < MAX_COLUMNS ? (
+          <section
+            aria-label="swipe to split right"
+            className="flex min-h-0 min-w-full basis-full shrink-0 snap-center items-center justify-center border-y border-dashed border-edge bg-panel/60 px-6 text-center [scroll-snap-stop:always] sm:hidden"
+          >
+            <div className="flex flex-col items-center gap-2 font-sans text-ink-faint">
+              <span className="flex size-12 items-center justify-center rounded-sm bg-surface">
+                <Plus className="size-5 shrink-0" aria-hidden />
+              </span>
+              <span className="text-base">Split right</span>
+              <span className="text-base text-ink-ghost">
+                Keep swiping to add it
+              </span>
             </div>
           </section>
-        )
-        return (
-          <Fragment key={`${activeTab.id}:${paneId}`}>
-            {column > 0 ? (
-              <ResizeHandle
-                key="divider"
-                value={sizes[column - 1] * 100}
-                disabled={panelInteractionDisabled || panelDrag !== null}
-                motionState={
-                  column === exitingDivider
-                    ? 'exiting'
-                    : column === enteringDivider
-                      ? 'entering'
-                      : undefined
-                }
-                onResize={(delta) => resizePair(column - 1, delta)}
-                onCommit={commitResize}
-                onResizeStart={startResize}
-                onResizeEnd={endResize}
-                containerWidth={() =>
-                  containerRef.current?.getBoundingClientRect().width ?? 0
-                }
-              />
-            ) : null}
-            {pane}
-          </Fragment>
-        )
-      })}
-
-      {columns < MAX_COLUMNS ? (
-        <section
-          aria-label="swipe to split right"
-          className="flex min-h-0 min-w-full basis-full shrink-0 snap-center items-center justify-center border-y border-dashed border-edge bg-panel/60 px-6 text-center [scroll-snap-stop:always] sm:hidden"
-        >
-          <div className="flex flex-col items-center gap-2 font-sans text-ink-faint">
-            <span className="flex size-12 items-center justify-center rounded-sm bg-surface">
-              <Plus className="size-5 shrink-0" aria-hidden />
-            </span>
-            <span className="text-base">Split right</span>
-            <span className="text-base text-ink-ghost">
-              Keep swiping to add it
-            </span>
-          </div>
-        </section>
-      ) : null}
+        ) : null}
+      </section>
 
       {columns < MAX_COLUMNS ? (
         <>
@@ -1546,7 +1556,7 @@ function WorkspacePanes({
           />
         </>
       ) : null}
-    </section>
+    </div>
   )
 }
 
@@ -1619,7 +1629,16 @@ function ScreenBody({
     )
   }
   if (screen === 'workers')
-    return <Workers onRequestClose={onClose} commands={commands} />
+    return (
+      <Workers
+        onRequestClose={onClose}
+        commands={commands}
+        panelSide={panelSide}
+        tabId={tabId}
+        paneId={paneId}
+        setDirty={setDirty}
+      />
+    )
   return <TracesV2 onRequestClose={onClose} commands={commands} />
 }
 

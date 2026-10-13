@@ -1,5 +1,5 @@
 import type { PanelOpenRequest } from '@iii-dev/console-ui'
-import { z } from 'zod'
+import * as z from 'zod/mini'
 
 const CREATE_ID = 'coder::create-file'
 const UPDATE_ID = 'coder::update-file'
@@ -8,10 +8,10 @@ const DELETE_ID = 'coder::delete-file'
 const resultSchema = z.object({
   path: z.string(),
   success: z.boolean(),
-  bytes_written: z.number().optional(),
-  removed: z.boolean().optional(),
-  applied: z.number().optional(),
-  change_id: z.string().optional(),
+  bytes_written: z.optional(z.number()),
+  removed: z.optional(z.boolean()),
+  applied: z.optional(z.number()),
+  change_id: z.optional(z.string()),
 })
 
 const responseSchema = z.object({ results: z.array(resultSchema) })
@@ -25,7 +25,7 @@ const createRequestSchema = z.object({
     z.object({
       path: z.string(),
       content: z.string(),
-      overwrite: z.boolean().optional(),
+      overwrite: z.optional(z.boolean()),
     }),
   ),
 })
@@ -46,16 +46,22 @@ const updateOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('replace') }),
 ])
 
+// Ops are parsed one by one: an op this card cannot read (e.g. sent without
+// `op`, which the worker may infer) only hides the +/- counts, never the row.
 const updateRequestSchema = z.object({
   files: z.array(
     z.object({
       path: z.string(),
-      ops: z.array(updateOpSchema),
+      ops: z.array(z.unknown()),
     }),
   ),
 })
 
-const deleteRequestSchema = z.object({ paths: z.array(z.string()) })
+const deleteRequestSchema = z.object({
+  paths: z.array(z.string()),
+  recursive: z.optional(z.boolean()),
+  include_protected: z.optional(z.boolean()),
+})
 
 export type FileChangeStatus = 'created' | 'updated' | 'deleted' | 'unchanged' | 'failed'
 
@@ -73,6 +79,9 @@ export interface FileChangeRow {
 export interface FileChangesSummary {
   action: 'created' | 'updated' | 'deleted'
   rows: FileChangeRow[]
+  /** A delete that also removes the protected files (.env, keys) under its
+      folders: said up front, above all on a call waiting for approval. */
+  protectedToo?: boolean
 }
 
 export function diffPanelRequest(row: FileChangeRow): PanelOpenRequest {
@@ -87,19 +96,15 @@ export function diffPanelRequest(row: FileChangeRow): PanelOpenRequest {
   }
 }
 
+/** Counts newlines without splitting: a large write stays one pass. */
 function countLines(content: string): number {
   if (content.length === 0) return 0
-  const lines = content.split('\n')
-  return lines.at(-1) === '' ? lines.length - 1 : lines.length
+  let lines = 1
+  for (let at = content.indexOf('\n'); at !== -1; at = content.indexOf('\n', at + 1)) lines++
+  return content.endsWith('\n') ? lines - 1 : lines
 }
 
-function resultAt(output: unknown, index: number) {
-  const parsed = responseSchema.safeParse(output)
-  return parsed.success ? parsed.data.results[index] : undefined
-}
-
-function resultContext(output: unknown, index: number) {
-  const result = resultAt(output, index)
+function resultContext(result: z.infer<typeof resultSchema> | undefined) {
   return {
     ...(result?.path ? { absolutePath: result.path } : {}),
     ...(result?.change_id ? { changeId: result.change_id } : {}),
@@ -107,16 +112,19 @@ function resultContext(output: unknown, index: number) {
 }
 
 export function summarizeFileChanges(functionId: string, input: unknown, output?: unknown): FileChangesSummary | null {
+  // The response is parsed once; each row reads its own result by index.
+  const parsed = responseSchema.safeParse(output)
+  const results = parsed.success ? parsed.data.results : []
   if (functionId === CREATE_ID) {
     const req = createRequestSchema.safeParse(input)
     if (!req.success) return null
     return {
       action: 'created',
       rows: req.data.files.map((file, index) => {
-        const result = resultAt(output, index)
+        const result = results[index]
         return {
           path: file.path,
-          ...resultContext(output, index),
+          ...resultContext(result),
           status: result && !result.success ? 'failed' : file.overwrite ? 'updated' : 'created',
           additions: countLines(file.content),
         }
@@ -130,11 +138,17 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
     return {
       action: 'updated',
       rows: req.data.files.map((file, index) => {
-        const result = resultAt(output, index)
+        const result = results[index]
         let additions = 0
         let deletions = 0
         let countsKnown = true
-        for (const op of file.ops) {
+        for (const raw of file.ops) {
+          const parsed = updateOpSchema.safeParse(raw)
+          if (!parsed.success) {
+            countsKnown = false
+            continue
+          }
+          const op = parsed.data
           if (op.op === 'insert') additions += countLines(op.content)
           else if (op.op === 'remove') {
             deletions += op.to_line - op.from_line + 1
@@ -147,7 +161,7 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
         }
         return {
           path: file.path,
-          ...resultContext(output, index),
+          ...resultContext(result),
           status: result && !result.success ? 'failed' : 'updated',
           additions: countsKnown ? additions : undefined,
           deletions: countsKnown ? deletions : undefined,
@@ -161,11 +175,13 @@ export function summarizeFileChanges(functionId: string, input: unknown, output?
     if (!req.success) return null
     return {
       action: 'deleted',
+      // The worker honors the flag only on a recursive delete.
+      ...(req.data.recursive === true && req.data.include_protected === true ? { protectedToo: true } : {}),
       rows: req.data.paths.map((path, index) => {
-        const result = resultAt(output, index)
+        const result = results[index]
         return {
           path,
-          ...resultContext(output, index),
+          ...resultContext(result),
           status: result && !result.success ? 'failed' : result?.removed === false ? 'unchanged' : 'deleted',
         }
       }),

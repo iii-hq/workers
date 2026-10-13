@@ -16,13 +16,24 @@ export interface ModelOption {
    * "assume it can" rather than refusing to send a picture on missing metadata.
    */
   supportsVision?: boolean
+  /**
+   * Whether `off` can switch the model's reasoning off. `true` offers Off,
+   * `false` hides it (the model always reasons or the provider has no
+   * switch), `undefined` means the router did not say: Off shows disabled.
+   */
+  supportsThinkingOff?: boolean
   reasoningEfforts?: ReasoningEffortOption[]
 }
 
 export interface ReasoningEffortOption {
   effort: string
   description?: string
+  /** Shown but not selectable: the catalog could not confirm it works. */
+  disabled?: boolean
 }
+
+/** The level that asks the provider not to reason at all. */
+export const THINKING_OFF: ThinkingLevel = 'off'
 
 /** Model-selected reasoning effort. `default` omits every effort override. */
 export type ThinkingLevel = string
@@ -38,6 +49,12 @@ export const THINKING_LEVELS: ThinkingLevel[] = [
 ]
 
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
+
+/**
+ * A request, not a level: the harness resolves it to the model's lowest
+ * effort on the next send and the console then shows what it chose.
+ */
+export const THINKING_LOWEST: ThinkingLevel = 'lowest'
 
 export type Role = 'user' | 'assistant' | 'thought' | 'function-trigger'
 
@@ -306,6 +323,7 @@ export interface SystemMessage extends BaseMessage {
     | 'turn-failure'
     | 'working-dir'
     | 'skills'
+    | 'model-note'
   /** User-facing remediation supplied by a structured lifecycle record. */
   nextActions?: string[]
   /** Diagnostic context kept behind a collapsed disclosure. */
@@ -316,6 +334,8 @@ export interface SystemMessage extends BaseMessage {
   scope?: WorkingDirScope
   /** The skill index behind a `kind: 'skills'` marker. */
   skills?: SkillCatalogUpdate
+  /** What the model was shown, behind a `kind: 'model-note'` row. */
+  note?: ModelNote
   /**
    * Live-only fallback for a durable transcript entry with the same id.
    * It may fill a delivery gap, but must never replace the transcript-backed
@@ -362,6 +382,25 @@ export interface WorkingDirScope {
   path: string | null
   previousPath?: string | null
   cause: 'selected' | 'recovered' | 'unavailable'
+}
+
+/**
+ * Text the harness or a hook showed the model mid-turn (a `model_notice`
+ * entry). `label` names it for a reader ("memory", "preloaded stale");
+ * `mentions` is set for the judge's `<mentions>` block, parsed.
+ */
+export interface ModelNote {
+  label: string
+  text: string
+  mentions?: ModelNoteMention[]
+}
+
+export interface ModelNoteMention {
+  name: string
+  id: string
+  status: 'resolved' | 'not-found' | 'unknown-provider' | 'error'
+  summary: string
+  details?: string
 }
 
 /** One row of the skill index the harness handed the model. */

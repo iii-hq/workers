@@ -158,7 +158,190 @@ pub struct ContextSnapshotV1 {
     /// replaced the prompt head; its prompt still wins, it just shares nothing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sections_fallback: Option<String>,
+    /// Already-sent rows this session's requests rewrote, newest last (at
+    /// most [`MAX_PREFIX_DIVERGENCES`]), carried from step to step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefix_divergences: Vec<PrefixDivergenceV1>,
     pub timestamp: i64,
+}
+
+/// One generation that rewrote a row an earlier request of the session had
+/// already sent: a prefix-matching provider cache (DeepSeek) stops reusing
+/// at that row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PrefixDivergenceV1 {
+    pub turn_id: String,
+    pub step: u64,
+    /// First row (0 = system prompt, then one per message) that differs from
+    /// the session's previous request. Absent when only the provider's wire
+    /// mapping changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
+    /// Rows the previous request carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_len: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// What rewrote the row, as far as the harness can tell: `prune`
+    /// (context-manager pruned or reduced function results to fit the
+    /// budget that step) or `system_prompt` (row 0: a compaction summary
+    /// or a prompt change).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+    /// The provider's own wire-level finding, cause included, when it
+    /// reported one (a final-message warning starting with
+    /// [`PROVIDER_PREFIX_NOTE`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_note: Option<String>,
+    /// `usage.cache_read` of the rewriting request: what the provider still
+    /// reused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<u64>,
+}
+
+pub const MAX_PREFIX_DIVERGENCES: usize = 32;
+
+/// How provider-deepseek's final-message warning for a rewritten wire row
+/// starts (`provider-deepseek/src/wire/messages.rs`, `PREFIX_CHANGED_NOTE`).
+pub const PROVIDER_PREFIX_NOTE: &str = "context prefix changed";
+
+const PREVIEW_CHARS: usize = 200;
+const MAX_TRACKED_SESSIONS: usize = 256;
+
+/// The first row of the session's previous request that this one rewrote.
+#[derive(Debug, PartialEq)]
+pub struct RowChange {
+    pub index: usize,
+    pub prev_len: usize,
+    pub role: String,
+    pub call_id: Option<String>,
+    /// Byte offset into the row's text where it first changed (chunk
+    /// aligned); `None` when only a non-text field did.
+    pub offset: Option<usize>,
+    /// The previous row's two ends.
+    pub before: String,
+    /// The row's text from `offset` on, or its two ends without one.
+    pub after: String,
+}
+
+const CHUNK_BYTES: usize = 256;
+
+/// A request row as the prefix check remembers it.
+struct SentRow {
+    hash: u64,
+    /// One hash per [`CHUNK_BYTES`] of the row's text, to locate an edit in
+    /// the middle of a long row (a summary spliced into the prompt).
+    chunks: Vec<u64>,
+    preview: String,
+}
+
+// ponytail: in-process, forgotten on restart and cleared wholesale past
+// MAX_TRACKED_SESSIONS; persist the rows if the check must span restarts.
+fn sent_rows() -> &'static Mutex<HashMap<String, Vec<SentRow>>> {
+    static ROWS: OnceLock<Mutex<HashMap<String, Vec<SentRow>>>> = OnceLock::new();
+    ROWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn hash_of(value: impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What the previews and chunks read: the content, or the prompt itself.
+fn row_text(row: &serde_json::Value) -> String {
+    row.get("content").unwrap_or(row).to_string()
+}
+
+fn sent_row(row: &serde_json::Value) -> SentRow {
+    let hash = match row.as_object() {
+        // `timestamp` and `usage` never go on the wire.
+        Some(fields) => hash_of(
+            fields
+                .iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "timestamp" | "usage"))
+                .map(|(key, value)| (key, value.to_string()))
+                .collect::<Vec<_>>(),
+        ),
+        None => hash_of(row.to_string()),
+    };
+    let text = row_text(row);
+    SentRow {
+        hash,
+        chunks: text.as_bytes().chunks(CHUNK_BYTES).map(hash_of).collect(),
+        preview: ends(&text),
+    }
+}
+
+/// The text's two ends, [`PREVIEW_CHARS`] in all.
+fn ends(text: &str) -> String {
+    if text.chars().count() <= PREVIEW_CHARS {
+        return text.to_string();
+    }
+    let half = PREVIEW_CHARS / 2;
+    let head: String = text.chars().take(half).collect();
+    let mut tail: Vec<char> = text.chars().rev().take(half).collect();
+    tail.reverse();
+    format!("{head} … {}", tail.into_iter().collect::<String>())
+}
+
+/// [`PREVIEW_CHARS`] of the text from `offset` (moved back to a char
+/// boundary).
+fn window(text: &str, mut offset: usize) -> String {
+    offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    format!(
+        "…{}",
+        text[offset..]
+            .chars()
+            .take(PREVIEW_CHARS)
+            .collect::<String>()
+    )
+}
+
+/// Compare this request (the system prompt, then each message) with the
+/// session's previous one and remember it for the next. `Some` names the
+/// first row both requests carry that differs; rows appended after the
+/// previous request's end never count.
+pub fn prefix_change(
+    session_id: &str,
+    system_prompt: Option<&str>,
+    messages: &[serde_json::Value],
+) -> Option<RowChange> {
+    let system = serde_json::Value::String(system_prompt.unwrap_or_default().to_string());
+    let rows: Vec<&serde_json::Value> = std::iter::once(&system).chain(messages).collect();
+    let sent: Vec<SentRow> = rows.iter().map(|row| sent_row(row)).collect();
+    let mut tracked = sent_rows().lock().ok()?;
+    if tracked.len() >= MAX_TRACKED_SESSIONS && !tracked.contains_key(session_id) {
+        tracked.clear();
+    }
+    let prev = tracked.insert(session_id.to_string(), sent)?;
+    let current = &tracked[session_id];
+    let index = prev
+        .iter()
+        .zip(current)
+        .position(|(before, after)| before.hash != after.hash)?;
+    let (before, after) = (&prev[index], &current[index]);
+    let offset = (0..before.chunks.len().max(after.chunks.len()))
+        .find(|&i| before.chunks.get(i) != after.chunks.get(i))
+        .map(|i| i * CHUNK_BYTES);
+    let field = |key| rows[index].get(key).and_then(serde_json::Value::as_str);
+    Some(RowChange {
+        index,
+        prev_len: prev.len(),
+        role: field("role").unwrap_or("system").to_string(),
+        call_id: field("function_call_id").map(str::to_string),
+        offset,
+        before: before.preview.clone(),
+        after: match offset {
+            Some(offset) if offset > 0 => window(&row_text(rows[index]), offset),
+            _ => after.preview.clone(),
+        },
+    })
 }
 
 /// Store the session's latest snapshot (whole-value write; the loop holds
@@ -442,6 +625,51 @@ fn apply_exact_counts(
 mod tests {
     use super::*;
 
+    fn row(role: &str, text: &str, timestamp: i64) -> serde_json::Value {
+        json!({ "role": role, "content": [{ "type": "text", "text": text }], "timestamp": timestamp })
+    }
+
+    #[test]
+    fn appending_to_the_previous_request_is_no_prefix_change() {
+        let first = vec![row("user", "hi", 1)];
+        assert_eq!(prefix_change("s_append", Some("sys"), &first), None);
+        // Same rows re-stamped and a usage-bearing assistant appended: the
+        // wire-invisible fields never count.
+        let mut assistant = row("assistant", "hello", 3);
+        assistant["usage"] = json!({ "input": 10 });
+        let second = vec![row("user", "hi", 2), assistant];
+        assert_eq!(prefix_change("s_append", Some("sys"), &second), None);
+    }
+
+    #[test]
+    fn a_rewritten_sent_row_is_named_with_before_and_after() {
+        let mut result = row("function_result", "interrupted", 1);
+        result["function_call_id"] = json!("c_1");
+        let first = vec![row("user", "go", 1), result.clone(), row("user", "more", 1)];
+        assert_eq!(prefix_change("s_rewrite", Some("sys"), &first), None);
+
+        result["content"][0]["text"] = json!("elided");
+        let second = vec![row("user", "go", 1), result, row("user", "more", 1)];
+        let change = prefix_change("s_rewrite", Some("sys"), &second).unwrap();
+        assert_eq!(change.index, 2, "row 0 is the system prompt");
+        assert_eq!(change.prev_len, 4);
+        assert_eq!(change.role, "function_result");
+        assert_eq!(change.call_id.as_deref(), Some("c_1"));
+        assert!(change.before.contains("interrupted"), "{}", change.before);
+        assert!(change.after.contains("elided"), "{}", change.after);
+
+        // A summary spliced into the middle of a long prompt: `after` reads
+        // from the changed chunk on.
+        let (identity, aid) = ("identity ".repeat(100), "aid ".repeat(100));
+        prefix_change("s_rewrite", Some(&format!("{identity}{aid}")), &second);
+        let summarized = format!("{identity}<summary>{aid}");
+        let change = prefix_change("s_rewrite", Some(&summarized), &second).unwrap();
+        assert_eq!((change.index, change.role.as_str()), (0, "system"));
+        assert_eq!(change.offset, Some(768), "the chunk holding byte 901");
+        assert!(change.after.contains("<summary>"), "{}", change.after);
+        assert!(!change.before.contains("<summary>"), "{}", change.before);
+    }
+
     #[test]
     fn snapshot_without_skills_category_defaults_to_zero() {
         let value = serde_json::json!({
@@ -498,6 +726,7 @@ mod tests {
             session_cost_usd: None,
             prompt_surface_digest: None,
             prompt_sections_fallback: None,
+            prefix_divergences: Vec::new(),
             timestamp: 1,
         };
 
@@ -567,6 +796,17 @@ mod tests {
             session_cost_usd: Some(1.37),
             prompt_surface_digest: None,
             prompt_sections_fallback: None,
+            prefix_divergences: vec![PrefixDivergenceV1 {
+                turn_id: "t_1".into(),
+                step: 2,
+                index: Some(7),
+                prev_len: Some(9),
+                role: Some("function_result".into()),
+                call_id: Some("c_1".into()),
+                cause: Some("prune".into()),
+                provider_note: None,
+                cache_read: Some(7_000),
+            }],
             timestamp: 1_722_700_000_000,
         };
         let mut value = serde_json::to_value(&snapshot).unwrap();

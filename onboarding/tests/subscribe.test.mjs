@@ -46,3 +46,12 @@ test('progress is written with atomic ops, never read-then-replace', () => {
   assert.match(source, /function_id: 'state::update'/)
   assert.doesNotMatch(source, /function_id: 'state::set'/, 'a set() call can lose an interleaved write')
 })
+
+test('a signup is remembered as a time on the progress, never as the address', () => {
+  // Read, not called (the worker registers against a live engine at import):
+  // the page shows "You are on the list." from `subscribed_at`.
+  const source = readFileSync(join(root, 'src', 'index.mjs'), 'utf8')
+  const handler = source.slice(source.indexOf("'onboarding::subscribe'"), source.indexOf('// Injected console UI'))
+  assert.match(handler, /merge', value: \{ subscribed_at: at, updated_at: at \}/)
+  assert.doesNotMatch(handler, /stateUpdate\([^)]*email/s, 'the address must not reach state')
+})

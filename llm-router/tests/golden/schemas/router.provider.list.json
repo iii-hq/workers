@@ -1,5 +1,5 @@
 {
-  "description": "List registered providers with their configured/available status.",
+  "description": "List registered providers with their configured/available status, where each credential comes from (credential_source, credential_ref, credential_error; never a value), and the provider's starting point (default_model: the newest model of the best-ranked variant its preferences name, else its first declared preference present in the catalog, else the closest same-family model; default_thinking_level).",
   "function_id": "router::provider::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10,7 +10,84 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "CredentialOrigin": {
+        "description": "`credential_source`: where the precedence found the provider's credential. `secret` is a `secret://NAME` or `env://NAME` reference in the slice, resolved through the `secrets` worker; `configured` says whether it actually yielded one.",
+        "enum": [
+          "config",
+          "env",
+          "secret",
+          "none"
+        ],
+        "type": "string"
+      },
+      "DiscoveryCode": {
+        "description": "Explicit allowlist: arbitrary error strings cannot cross the router boundary.",
+        "enum": [
+          "permission-denied",
+          "invalid-api-key",
+          "insufficient-credits",
+          "spending-limit-exceeded",
+          "rate-limit-exceeded"
+        ],
+        "type": "string"
+      },
+      "DiscoveryOutcome": {
+        "description": "Safe discovery categories. No upstream message, team id or URL is retained.",
+        "enum": [
+          "success",
+          "empty",
+          "not_configured",
+          "billing",
+          "authentication",
+          "permission",
+          "rate_limit",
+          "unavailable",
+          "invalid_response"
+        ],
+        "type": "string"
+      },
+      "DiscoveryStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiscoveryCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "http_status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/definitions/DiscoveryOutcome"
+          },
+          "stale": {
+            "description": "A transient failure left a previous catalog in place.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checked_at_ms",
+          "outcome",
+          "stale"
+        ],
+        "type": "object"
+      },
       "ProviderInfo": {
+        "description": "One `router::provider::list` entry.",
         "properties": {
           "available": {
             "type": "boolean"
@@ -18,12 +95,73 @@
           "configured": {
             "type": "boolean"
           },
+          "context_overflow_hint": {
+            "description": "Provider-specific guidance a console appends to a context-overflow failure on one of this provider's models; copied from the declaration. Absent when the provider declared none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "credential_env_var": {
             "description": "Environment variable declared by API-key providers. `None` means the provider owns authentication (OAuth, local app login, device flow).",
             "type": [
               "string",
               "null"
             ]
+          },
+          "credential_error": {
+            "description": "Why the configured credential cannot be used, in words an operator can act on (e.g. the secret is missing or this worker may not read it).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credential_ref": {
+            "description": "The slice's `secret://NAME` or `env://NAME` reference, when it uses one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credential_source": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/CredentialOrigin"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the credential comes from: `config`, `env`, `secret` or `none`."
+          },
+          "default_model": {
+            "description": "The model a consumer should start with when nothing else names one: the newest model of the best-ranked variant its declared `default_models` name (Terra, Sol, Astra, Luna for GPT providers; Sonnet, Opus, Fable, Haiku for Claude providers), else the first declared id in its catalog slice, else the closest same-family model, else absent (see `registry::availability::resolve_default_model`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_thinking_level": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ThinkingLevel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The thinking level a consumer should start with when nothing else names one; copied from the declaration. Absent means omit the level and let the provider apply its own default."
+          },
+          "discovery": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiscoveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last completed discovery, independent of configuration and availability."
           },
           "display_name": {
             "type": "string"
@@ -50,6 +188,18 @@
           "supports_model_listing"
         ],
         "type": "object"
+      },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
       }
     },
     "properties": {

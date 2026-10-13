@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 use tokio::sync::{mpsc, oneshot};
@@ -158,17 +159,20 @@ struct State {
 }
 
 pub struct Registry {
-    state: Mutex<State>,
+    /// Shared with each session's actor, which removes its own entry when
+    /// its idle deadline passes.
+    state: Arc<Mutex<State>>,
     max_sessions: usize,
-    idle_timeout_ms: u64,
+    /// None = sessions never expire for idleness.
+    idle_timeout: Option<Duration>,
 }
 
 impl Registry {
     pub fn new(max_sessions: u64, idle_timeout_s: u64) -> Self {
         Self {
-            state: Mutex::new(State::default()),
+            state: Arc::new(Mutex::new(State::default())),
             max_sessions: usize::try_from(max_sessions).unwrap_or(usize::MAX),
-            idle_timeout_ms: idle_timeout_s.saturating_mul(1_000),
+            idle_timeout: (idle_timeout_s > 0).then(|| Duration::from_secs(idle_timeout_s)),
         }
     }
 
@@ -223,7 +227,12 @@ impl Registry {
             backend,
             commands,
         });
-        tokio::spawn(run_actor(entry.clone(), receiver));
+        tokio::spawn(run_actor(
+            entry.clone(),
+            receiver,
+            Arc::downgrade(&self.state),
+            self.idle_timeout,
+        ));
         state.insertion_order.push(id.clone());
         state.entries.insert(id.clone(), entry);
         Ok(json!({"session_id": id, "type": session_type.as_str()}))
@@ -374,34 +383,62 @@ impl Registry {
             .collect::<Vec<_>>();
         json!({"sessions": sessions})
     }
-
-    pub fn sweep_idle(&self) -> Vec<String> {
-        let idle_ms = self.idle_timeout_ms;
-        if idle_ms == 0 {
-            return Vec::new();
-        }
-        let cutoff = now_ms().saturating_sub(i64::try_from(idle_ms).unwrap_or(i64::MAX));
-        let mut state = self.lock();
-        let stale = state
-            .insertion_order
-            .iter()
-            .filter_map(|id| state.entries.get(id).map(|entry| (id, entry)))
-            .filter(|(_, entry)| entry.last_used_ms.load(Ordering::Relaxed) < cutoff)
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        for id in &stale {
-            if let Some(entry) = state.entries.remove(id) {
-                state.insertion_order.retain(|existing| existing != id);
-                let (response, _) = oneshot::channel();
-                let _ = entry.commands.send(Command::Close { response });
-            }
-        }
-        stale
-    }
 }
 
-async fn run_actor(entry: Arc<Entry>, mut receiver: mpsc::UnboundedReceiver<Command>) {
-    while let Some(command) = receiver.recv().await {
+/// Remove `entry` from the registry if it is still listed; true when this
+/// call removed it.
+fn unlist(state: &Weak<Mutex<State>>, entry: &Arc<Entry>) -> bool {
+    let Some(state) = state.upgrade() else {
+        return false;
+    };
+    let mut state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let listed = state
+        .entries
+        .get(&entry.id)
+        .is_some_and(|listed| Arc::ptr_eq(listed, entry));
+    if listed {
+        state.entries.remove(&entry.id);
+        state
+            .insertion_order
+            .retain(|existing| existing != &entry.id);
+    }
+    listed
+}
+
+/// One session's actor: runs its jobs in order and closes it on `Close`.
+/// It also owns the idle deadline: `idle` after the last job finished (or
+/// the open) the session unlists itself and closes, after any job already
+/// queued. Nothing wakes before that deadline unless a command arrives.
+async fn run_actor(
+    entry: Arc<Entry>,
+    mut receiver: mpsc::UnboundedReceiver<Command>,
+    state: Weak<Mutex<State>>,
+    idle: Option<Duration>,
+) {
+    let mut idle_due = idle.map(|idle| tokio::time::Instant::now() + idle);
+    loop {
+        let command = tokio::select! {
+            biased;
+            command = receiver.recv() => match command {
+                Some(command) => command,
+                None => return,
+            },
+            _ = tokio::time::sleep_until(idle_due.unwrap_or_else(tokio::time::Instant::now)),
+                if idle_due.is_some() =>
+            {
+                idle_due = None;
+                if unlist(&state, &entry) {
+                    tracing::info!(session = %entry.id, "scrapling session reaped (idle)");
+                    // Queued behind any job accepted before the unlist, the
+                    // way an explicit close is.
+                    let (response, _) = oneshot::channel();
+                    let _ = entry.commands.send(Command::Close { response });
+                }
+                continue;
+            }
+        };
         match command {
             Command::Run { job, response } => {
                 entry.last_used_ms.store(now_ms(), Ordering::Relaxed);
@@ -411,6 +448,9 @@ async fn run_actor(entry: Arc<Entry>, mut receiver: mpsc::UnboundedReceiver<Comm
                 // behind it — the root cause the FIFO actor used to expose.
                 let result = job.await;
                 entry.last_used_ms.store(now_ms(), Ordering::Relaxed);
+                if idle_due.is_some() {
+                    idle_due = idle.map(|idle| tokio::time::Instant::now() + idle);
+                }
                 let _ = response.send(result);
             }
             Command::Close { response } => {
@@ -823,7 +863,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn idle_reap_removes_metadata_and_backend_together() {
         let registry = Registry::new(1, 1);
         let opened = registry
@@ -831,19 +871,44 @@ mod tests {
             .await
             .unwrap();
         let sid = id(&opened).to_string();
-        registry
-            .lock()
-            .entries
-            .get(&sid)
-            .unwrap()
-            .last_used_ms
-            .store(now_ms() - 2_000, Ordering::Relaxed);
-        assert_eq!(registry.sweep_idle(), std::slice::from_ref(&sid));
+        // Its own deadline, one second after the open; nothing sweeps.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
         assert_eq!(registry.list(None), json!({"sessions": []}));
         assert_eq!(
             registry.http_backend(&sid).unwrap_err(),
             format!("unknown session: {sid}")
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_job_rearms_the_idle_deadline() {
+        let registry = Registry::new(1, 1);
+        let opened = registry
+            .open_http(&json!({}), false, HttpMode::Safe)
+            .await
+            .unwrap();
+        let sid = id(&opened).to_string();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        registry
+            .run(&sid, Box::pin(async { Ok(Value::Null) }))
+            .await
+            .unwrap();
+        // 1.2s after the open but 0.6s after the job: still listed.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(registry.http_backend(&sid).is_ok());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(registry.http_backend(&sid).is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_timeout_zero_never_reaps() {
+        let registry = Registry::new(1, 0);
+        let opened = registry
+            .open_http(&json!({}), false, HttpMode::Safe)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+        assert!(registry.http_backend(id(&opened)).is_ok());
     }
 
     #[tokio::test]

@@ -59,8 +59,11 @@ fn rejects_malformed_records_without_echoing_their_contents() {
     assert!(!error.contains("private transcript text"));
 }
 
+/// Decay is a prune rule, and prune runs only over budget: under this
+/// generous budget the history goes out verbatim, decay or not, so the
+/// provider prompt cache keeps every earlier request's prefix.
 #[tokio::test]
-async fn shrinks_a_long_medium_result_history_with_shipped_guards() {
+async fn decay_leaves_an_under_budget_history_verbatim() {
     let mut lines = Vec::new();
     for turn in 0..130 {
         lines.push(
@@ -110,7 +113,10 @@ async fn shrinks_a_long_medium_result_history_with_shipped_guards() {
         .expect("generous inline budget avoids emergency reduction");
 
     assert_eq!(comparison.turn_count(), 130);
-    assert!(comparison.final_decay_tokens() < comparison.final_baseline_tokens());
+    assert_eq!(
+        comparison.final_decay_tokens(),
+        comparison.final_baseline_tokens()
+    );
 }
 
 #[tokio::test]
@@ -220,7 +226,7 @@ fn six_large_results() -> Vec<Value> {
 
 /// Every step of `context::assemble` that rewrites a message the previous
 /// request already sent breaks Opus 5.5 / Fable 5.1 preserved thinking
-/// (MOT-4845). Each row pins a site as it behaves today, so the follow-up
+/// (MOT-4845) and the provider prompt cache from that message on. Each row pins a site as it behaves today, so the follow-up
 /// that fixes it flips exactly its row.
 #[tokio::test]
 async fn bound_prefix_edits_by_site() {
@@ -301,14 +307,24 @@ async fn bound_prefix_edits_by_site() {
             AssembleOptions::default,
             vec![],
         ),
-        // control: Step 1 prune rewrites turns 1-2's results at turn 6's
-        // first request (36k freed >= min_free_tokens).
+        // fixed: Step 1 prune runs only over budget. It used to rewrite
+        // turns 1-2's results at turn 6's first request here (36k freed >=
+        // min_free_tokens) with the 1M window a tenth full.
         (
-            "step 1 prune",
+            "step 1 prune under budget",
             six_large_results(),
             opus(1_000_000, 128_000),
             AssembleOptions::default,
-            vec![(10, "messages[2]", "prune")],
+            vec![],
+        ),
+        // Over budget it still runs first, and here frees enough that
+        // compaction never runs: the 120k window overflows at request 11.
+        (
+            "step 1 prune over budget",
+            six_large_results(),
+            opus(120_000, 8_000),
+            AssembleOptions::default,
+            vec![(11, "messages[2]", "prune")],
         ),
         // fixed by this branch: the harness sends allow_prune: false for
         // models that bind thinking to the prefix.

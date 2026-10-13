@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { onHarnessConfigSaved } from '@/lib/harness-config-events'
 import {
+  catalogKeysInRouterOrder,
   catalogRowsToModelOptions,
   fetchModelsCatalog,
   fetchProviderList,
@@ -35,64 +36,65 @@ export function useModelPickerSource(
   refresh: () => Promise<void>
 } {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  // Catalog keys in the router's order (its best model first), unlike the
+  // picker's alphabetical list: the fallback for a new chat comes from here.
+  const [catalogKeys, setCatalogKeys] = useState<string[]>([])
   const [presentProviders, setPresentProviders] = useState<ProviderListEntry[]>(
     [],
   )
   const providerEventVersion = useRef(0)
+  const hasCatalog = useRef(false)
   const [catalogLoading, setCatalogLoading] = useState(
     backendId === 'real' && harnessAvailable,
   )
 
   const refresh = useCallback(async () => {
+    const version = ++providerEventVersion.current
     if (backendId !== 'real') {
       setModelOptions([])
+      setCatalogKeys([])
       setCatalogLoading(false)
       return
     }
     if (!harnessAvailable) {
+      setPresentProviders([])
       setModelOptions([])
+      setCatalogKeys([])
       setCatalogLoading(false)
       return
     }
-    setCatalogLoading(true)
+    // Only the first read shows as loading. A background re-read (a key was
+    // stored, a provider registered) keeps the current list on screen: a
+    // loading picker is disabled, and a disabled picker closes under the
+    // person configuring it.
+    if (!hasCatalog.current) setCatalogLoading(true)
     try {
-      const rows = await fetchModelsCatalog()
+      const [rows, providers] = await Promise.all([
+        fetchModelsCatalog(),
+        fetchProviderList(),
+      ])
+      if (version !== providerEventVersion.current) return
+      setPresentProviders(providers)
       setModelOptions(catalogRowsToModelOptions(rows))
+      setCatalogKeys(catalogKeysInRouterOrder(rows))
+      hasCatalog.current = true
     } catch {
-      setModelOptions([])
+      // A transient read failure must not silently replace an existing selection.
+      if (!hasCatalog.current) {
+        setModelOptions([])
+        setCatalogKeys([])
+      }
     } finally {
-      setCatalogLoading(false)
+      if (version === providerEventVersion.current) setCatalogLoading(false)
     }
   }, [backendId, harnessAvailable])
 
   useEffect(() => {
     void refresh()
-  }, [refresh])
-
-  // One initial snapshot. Subsequent availability changes are applied from
-  // `router::provider::changed`, so model refreshes never re-read this list.
-  useEffect(() => {
-    if (backendId !== 'real' || !harnessAvailable) {
-      setPresentProviders([])
-      return
-    }
-    let cancelled = false
-    const snapshotVersion = providerEventVersion.current
-    void fetchProviderList()
-      .then((providers) => {
-        if (!cancelled && providerEventVersion.current === snapshotVersion) {
-          setPresentProviders(providers)
-        }
-      })
-      .catch(() => {
-        if (!cancelled && providerEventVersion.current === snapshotVersion) {
-          setPresentProviders([])
-        }
-      })
     return () => {
-      cancelled = true
+      providerEventVersion.current += 1
     }
-  }, [backendId, harnessAvailable])
+  }, [refresh])
 
   // Live updates: re-pull the catalog when the harness signals a model change
   // (provider configured/cleared, refresh_models, CLI edits). The harness
@@ -105,13 +107,11 @@ export function useModelPickerSource(
     let timer: ReturnType<typeof setTimeout> | null = null
 
     const onModelsChanged = () => {
+      providerEventVersion.current += 1
       if (timer !== null) clearTimeout(timer)
       timer = setTimeout(() => {
         timer = null
         void refresh()
-        void fetchProviderList()
-          .then(setPresentProviders)
-          .catch(() => undefined)
       }, 150)
     }
 
@@ -121,7 +121,8 @@ export function useModelPickerSource(
     })
 
     void subscribeProviderChanges(({ provider, op }) => {
-      providerEventVersion.current += 1
+      onModelsChanged()
+      if (op === 'discovery') return
       setPresentProviders((current) => {
         const available = op !== 'unavailable'
         const existing = current.find((entry) => entry.id === provider)
@@ -158,16 +159,8 @@ export function useModelPickerSource(
     if (backendId !== 'real' || !harnessAvailable) return
     return onHarnessConfigSaved(() => {
       void refresh()
-      void fetchProviderList()
-        .then(setPresentProviders)
-        .catch(() => undefined)
     })
   }, [backendId, harnessAvailable, refresh])
-
-  const catalogKeys = useMemo(
-    () => modelOptions.map((o) => o.id),
-    [modelOptions],
-  )
 
   return {
     modelOptions,

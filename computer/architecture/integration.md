@@ -40,6 +40,19 @@ plumbing (flagged internal, denied in `iii-permissions.yaml`). Agents use
 Both accept an optional `{ "session_id": "..." }` equality filter. Bind them
 instead of polling `sessions::list`.
 
+| Trigger type | Fires when | Payload |
+|---|---|---|
+| `computer::frame-changed` | The stored newest frame of a session changed: `change` is `updated` (new frame) or `cleared` (screencast/session stopped, capture failed) | `session_id`, `epoch`, `frame_seq`, `change`, `width`, `height`, `mime?`, `bytes?`, `timestamp` |
+
+Config `{ "session_id": "..." }` is required; unknown keys are rejected; at most
+64 live bindings. The payload carries no image: read it with `computer::frame`
+(`since_frame` = the `frame_seq` you already have). Order by `(epoch,
+frame_seq)`. Delivery is latest-state only: while a delivery to a binding is in
+flight, newer notifications replace the pending one, so a slow consumer sees
+fewer notifications, never a backlog. Nothing is stored or replayed: bind
+first, then read `computer::frame` for the current frame, and read again after
+a reconnect.
+
 ## The guardrail split (read this before wiring an agent)
 
 `computer::act` has **no** confirm step, denylist, or read-only mode. That is

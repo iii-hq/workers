@@ -28,6 +28,20 @@ describe('atTriggerFn', () => {
     expect(atTriggerFn('@shell ', editor)).toBeNull()
     expect(atTriggerFn('@a)', editor)).toBeNull()
   })
+
+  it('keeps a scoped @worker: search open across spaces', () => {
+    expect(atTriggerFn('ask @kanban:fix login', editor)).toEqual({
+      leadOffset: 4,
+      matchingString: 'kanban:fix login',
+      replaceableString: '@kanban:fix login',
+    })
+    expect(atTriggerFn('@kanban:', editor)?.matchingString).toBe('kanban:')
+    // A function id is not a scope: it stays one space-free word.
+    expect(atTriggerFn('@kanban::ticket::get', editor)?.matchingString).toBe(
+      'kanban::ticket::get',
+    )
+    expect(atTriggerFn('@kanban::ticket get', editor)).toBeNull()
+  })
 })
 
 describe('hashTriggerFn', () => {

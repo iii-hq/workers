@@ -26,13 +26,17 @@ function reply(overrides: Partial<{ exit_code: number | null; stdout: string; st
   }
 }
 
+/** Answers git by its arguments, with the read-only flag every call must carry stripped. */
 function hostAnswering(answer: (args: string[]) => ReturnType<typeof reply>) {
   const calls: string[][] = []
+  const flagged: boolean[] = []
   const trigger = vi.fn(async (_fn: string, payload: { args: string[] }) => {
-    calls.push(payload.args)
-    return answer(payload.args)
+    const [first, ...rest] = payload.args
+    flagged.push(first === '--no-optional-locks')
+    calls.push(rest)
+    return answer(rest)
   })
-  return { host: { iii: { trigger } } as unknown as Parameters<typeof gitLog>[0], calls }
+  return { host: { iii: { trigger } } as unknown as Parameters<typeof gitLog>[0], calls, flagged }
 }
 
 const SHA_A = 'a'.repeat(40)
@@ -83,8 +87,10 @@ describe('parseLog', () => {
 
 describe('gitLog', () => {
   it('asks for the first-parent history under the root with full decorations', async () => {
-    const { host, calls } = hostAnswering(() => reply({ stdout: '' }))
+    const { host, calls, flagged } = hostAnswering(() => reply({ stdout: '' }))
     await gitLog(host, '/r', 50)
+    // A read never takes index.lock, so a commit or stash can't lose the race to it.
+    expect(flagged).toEqual([true])
     expect(calls[0]).toEqual([
       'log',
       '--first-parent',

@@ -26,8 +26,10 @@ pub enum ClaimOutcome {
     /// because it dwarfs the other two variants and this is returned on every
     /// fire.
     Claimed(Box<Binding>),
-    /// The lifecycle was spent by whoever won the race.
-    Exhausted,
+    /// The lifecycle was spent — by whoever won the race, or by its
+    /// deadline. Carries the record as found, so the caller can tell a
+    /// spent budget (a duplicate attempt) from an expiry.
+    Exhausted(Box<Binding>),
     /// The binding was retired while this fire was in flight.
     Gone,
 }
@@ -50,6 +52,9 @@ pub struct BindingStore {
     iii: std::sync::Arc<IIIClient>,
     timeout_ms: u64,
     events: crate::events::TurnEvents,
+    /// The process's binding deadline timers: a deleted record never keeps
+    /// its expiry timer armed (see `super::expiry`).
+    expiry: crate::timer::OneShots,
 }
 
 impl BindingStore {
@@ -62,7 +67,16 @@ impl BindingStore {
             iii,
             timeout_ms,
             events,
+            expiry: crate::timer::OneShots::new(),
         }
+    }
+
+    /// Share the process's binding deadline timers, so every successful
+    /// delete — a fire that retires the binding, an unregister, a session
+    /// teardown, expiry itself — cancels the binding's timer.
+    pub fn with_expiry_timers(mut self, expiry: crate::timer::OneShots) -> Self {
+        self.expiry = expiry;
+        self
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<Binding>, HarnessError> {
@@ -240,6 +254,8 @@ impl BindingStore {
     pub async fn delete_if_unchanged(&self, binding: &Binding) -> Result<bool, HarnessError> {
         let deleted = state::cas_delete_binding(&self.iii, binding, self.timeout_ms).await?;
         if deleted {
+            // The record is gone, so its deadline has nothing left to retire.
+            self.expiry.cancel(&binding.id);
             self.events
                 .emit_triggers_changed(&binding.owner.session_id)
                 .await;
@@ -277,7 +293,7 @@ impl BindingStore {
         for _ in 0..ATTEMPTS {
             let now = crate::types::message::AgentMessage::now_ms();
             if expected.is_exhausted(now) {
-                return Ok(ClaimOutcome::Exhausted);
+                return Ok(ClaimOutcome::Exhausted(Box::new(expected)));
             }
             let mut next = expected.clone();
             next.fires = expected.fires + 1;

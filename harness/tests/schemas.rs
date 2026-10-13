@@ -50,6 +50,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         vec![
             "harness::send",
             "harness::spawn",
+            "harness::ask",
             "harness::turn",
             "harness::function::trigger",
             "harness::function::resolve",

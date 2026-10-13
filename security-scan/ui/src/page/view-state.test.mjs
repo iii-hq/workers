@@ -5,7 +5,6 @@ import {
   automaticFocusTarget,
   beginRetry,
   isRepositoryScopeCurrent,
-  isStreamLive,
   nextVisibleFindingCount,
   scanHistoryDescription,
   settleRetry,
@@ -91,12 +90,6 @@ test('keeps concurrent retry state isolated by run id', () => {
 
   assert.deepEqual(states['run-a'], { pending: false, error: 'retry failed' })
   assert.deepEqual(states['run-b'], { pending: true, error: null })
-})
-
-test('reports live only for a registered binding on a connected host', () => {
-  assert.equal(isStreamLive(true, 'connected'), true)
-  assert.equal(isStreamLive(true, 'reconnecting'), false)
-  assert.equal(isStreamLive(false, 'connected'), false)
 })
 
 test('keeps the scan history summary readable in narrow panes', () => {

@@ -111,6 +111,13 @@
               "null"
             ]
           },
+          "supports_thinking_off": {
+            "description": "Whether `thinking_level: off` can switch the model's reasoning off. `Some(true)`: a native off switch exists. `Some(false)`: the model always reasons, or the provider has no switch. `None`: the provider does not know; consoles show the choice disabled.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "supports_tools": {
             "type": [
               "boolean",

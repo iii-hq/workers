@@ -30,6 +30,7 @@ import {
   CardHeader,
   CardHighlight,
 } from '@/components/ui/Surface'
+import { rememberedProvider } from '@/lib/models-catalog'
 import { skillUpdateSummary } from '@/lib/skill-update'
 import {
   classifyTurnFailure,
@@ -44,6 +45,7 @@ import type {
   WorkingDirScope,
 } from '@/types/chat'
 import { CopyMessageButton } from './CopyMessageButton'
+import { ModelNoteMarker } from './ModelNoteMarker'
 import { splitNotice } from './system-notice-copy'
 import {
   TimelineActivityDisclosure,
@@ -68,6 +70,9 @@ import {
  * - `turn-failure` — a turn the provider or iii could not finish: the
  *   diagnosis card, which leads with WHO has to act (a chip and one plain
  *   sentence) before what happened and what to do.
+ * - `model-note` — text the harness or a hook showed the model: the
+ *   quietest activity row, what it said behind the disclosure (see
+ *   `ModelNoteMarker`).
  * - everything else — a one-line operational status on the StatusPanel
  *   recipe (tinted fill, small icon, headline + detail). No stripe, no
  *   outline, no caps transform.
@@ -81,6 +86,9 @@ export function SystemNotice({ message }: { message: SystemMessage }) {
   }
   if (message.kind === 'turn-failure') {
     return <TurnFailureCard message={message} />
+  }
+  if (message.kind === 'model-note' && message.note) {
+    return <ModelNoteMarker message={message} note={message.note} />
   }
   return <InlineNotice message={message} />
 }
@@ -166,8 +174,12 @@ const OWNER_CHIP: Record<TurnFailureOwner, ChipTone> = {
 
 function TurnFailureCard({ message }: { message: SystemMessage }) {
   const titleId = useId()
-  const presentation = classifyTurnFailure(message)
   const details = message.technicalDetails
+  const presentation = classifyTurnFailure(message, {
+    providerHint: details?.provider
+      ? rememberedProvider(details.provider)?.context_overflow_hint
+      : undefined,
+  })
   const failure = message.failure
   const Icon = CATEGORY_ICON[presentation.category]
   // A transient failure is amber (it will pass); anything someone has to fix
@@ -268,7 +280,11 @@ function TurnFailureCard({ message }: { message: SystemMessage }) {
               aria-hidden
               className="mt-0.5 size-5 shrink-0 stroke-ink-faint sm:size-4"
             />
-            <NextActions actions={presentation.actions} heading />
+            <NextActions
+              actions={presentation.actions}
+              heading
+              note={presentation.providerNote}
+            />
           </CardHighlight>
         </CardBody>
 
@@ -612,10 +628,13 @@ function skillsCopy(update: SkillCatalogUpdate): {
 function NextActions({
   actions,
   heading = false,
+  note,
   className,
 }: {
   actions: string[]
   heading?: boolean
+  /** Provider-declared add-on shown under the steps (see `providerNote`). */
+  note?: string
   className?: string
 }) {
   return (
@@ -636,6 +655,14 @@ function NextActions({
           <li key={action}>{action}</li>
         ))}
       </ol>
+      {note ? (
+        <p
+          data-provider-hint
+          className="text-pretty wrap-break-word text-ink-faint"
+        >
+          {note}
+        </p>
+      ) : null}
     </div>
   )
 }

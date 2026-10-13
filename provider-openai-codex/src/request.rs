@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 /// `gpt-6-astra` needs >= 0.153.0). Bump to the installed `codex --version`
 /// when the CLI lists a model this provider does not; the configuration UI
 /// shows the current value.
-pub(crate) const CODEX_COMPAT_VERSION: &str = "0.153.4";
+pub(crate) const CODEX_COMPAT_VERSION: &str = "0.159.0";
 
 const SUMMARY_UNSUPPORTED_MODEL: &str = "gpt-5.3-codex-spark";
 

@@ -8,6 +8,7 @@
 //! - [`events`] — the two trigger types and their fan-out.
 //! - [`functions`] — the typed `kanban::*` function catalog.
 //! - [`agents`] — assignable profiles via iii-directory or the agents folder.
+//! - [`mentions`] — the `@kanban(id=…)` chat mention provider.
 
 pub mod agents;
 pub mod board;
@@ -15,5 +16,6 @@ pub mod config;
 pub mod configuration;
 pub mod events;
 pub mod functions;
+pub mod mentions;
 pub mod store;
 pub mod ui;

@@ -11,15 +11,16 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::store::{Db, Statement, Store};
+use crate::store::{integer, number, Db, Statement, Store};
+use crate::triage;
 use crate::{
     evidence::EvidenceBundleV1, ids, lifecycle, DiagnosesListRequestV1, DiagnosesListResponseV1,
     ErrorSourceV1, EvidenceGetRequestV1, EvidenceGetResponseV1, GroupActionRequestV1,
     GroupChangeReasonV1, GroupGetRequestV1, GroupGetResponseV1, GroupHistoryRequestV1,
-    GroupHistoryResponseV1, GroupStateResponseV1, GroupStatusV1, GroupSummaryV1,
+    GroupHistoryResponseV1, GroupStateResponseV1, GroupStatusV1, GroupSummaryV1, GroupTriageV1,
     GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1, IgnoreRuleV1,
     NamedRow, OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
-    ResolveRequestV1, SentinelError, Transition,
+    RelevanceV1, ResolveRequestV1, SentinelError, Transition,
 };
 
 const DEFAULT_LIMIT: u32 = 50;
@@ -82,18 +83,50 @@ impl<D: Db> Service<D> {
             ]);
         }
 
-        let total = self
+        // Both sides are counted under the same filters, so the page can say
+        // what the other side holds without a second request.
+        let relevant = triage::relevant_sql();
+        let counts = self
             .store
             .db()
             .query(
-                &format!("SELECT COUNT(*) AS total FROM sentinel_groups WHERE {where_sql}"),
+                &format!(
+                    "SELECT COUNT(*) AS total, \
+                     SUM(CASE WHEN {relevant} THEN 1 ELSE 0 END) AS relevant \
+                     FROM sentinel_groups WHERE {where_sql}"
+                ),
                 params.clone(),
             )
-            .await?
-            .first()
-            .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
-            .unwrap_or(0) as u64;
+            .await?;
+        let count = |column: &str| {
+            counts
+                .first()
+                .and_then(|row| row.get(column))
+                .and_then(integer)
+                .unwrap_or(0)
+                .max(0) as u64
+        };
+        let relevant_total = count("relevant");
+        let noise_total = count("total").saturating_sub(relevant_total);
+        let total = match request.relevance {
+            Some(RelevanceV1::Relevant) => {
+                where_sql.push_str(&format!(" AND {relevant}"));
+                relevant_total
+            }
+            Some(RelevanceV1::Noise) => {
+                where_sql.push_str(&format!(" AND NOT {relevant}"));
+                noise_total
+            }
+            None => relevant_total + noise_total,
+        };
+        // Noise reads best by kind: a run of closed tabs, then a run of bad
+        // arguments.
+        let order = if request.relevance == Some(RelevanceV1::Noise) {
+            // The stored triage starts with its kind, so this groups by kind.
+            "triage, last_seen_ms DESC"
+        } else {
+            "(status = 'regressed') DESC, COALESCE(regressed_at_ms, 0) DESC, last_seen_ms DESC"
+        };
 
         let mut page_params = params;
         page_params.push(json!(limit as i64));
@@ -104,9 +137,7 @@ impl<D: Db> Service<D> {
             .query(
                 &format!(
                     "SELECT * FROM sentinel_groups WHERE {where_sql} \
-                     ORDER BY (status = 'regressed') DESC, \
-                     COALESCE(regressed_at_ms, 0) DESC, last_seen_ms DESC \
-                     LIMIT ? OFFSET ?"
+                     ORDER BY {order} LIMIT ? OFFSET ?"
                 ),
                 page_params,
             )
@@ -129,7 +160,12 @@ impl<D: Db> Service<D> {
                 )
             })
             .collect();
-        Ok(GroupsListResponseV1 { groups, total })
+        Ok(GroupsListResponseV1 {
+            groups,
+            total,
+            relevant_total,
+            noise_total,
+        })
     }
 
     pub async fn get(
@@ -185,7 +221,7 @@ impl<D: Db> Service<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0) as u64;
         let rows = self
             .store
@@ -226,7 +262,7 @@ impl<D: Db> Service<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0)
             .max(0) as u64;
         let rows = self
@@ -308,7 +344,7 @@ impl<D: Db> Service<D> {
                     json!(transition.status.as_str()),
                     json!(ids::now_ms()),
                     json!(version),
-                    json!(request.until_version_change),
+                    json!(i64::from(request.until_version_change)),
                     json!(ids::now_ms()),
                 ],
             )
@@ -533,7 +569,7 @@ impl<D: Db> Service<D> {
             .await?
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0) as u64)
     }
 
@@ -552,12 +588,12 @@ impl<D: Db> Service<D> {
             .await?;
         let mut bars = vec![0u64; SPARKLINE_HOURS as usize];
         for row in rows {
-            let Some(hour) = row.get("hour_ms").and_then(Value::as_i64) else {
+            let Some(hour) = row.get("hour_ms").and_then(integer) else {
                 continue;
             };
             let index = ((hour - from) / HOUR_MS) as usize;
             if index < bars.len() {
-                bars[index] = row.get("count").and_then(Value::as_i64).unwrap_or(0) as u64;
+                bars[index] = row.get("count").and_then(integer).unwrap_or(0) as u64;
             }
         }
         Ok(bars)
@@ -636,6 +672,12 @@ fn empty_sparkline() -> Vec<u64> {
 }
 
 fn summary(row: &NamedRow, sessions_affected: u64, sparkline: Vec<u64>) -> GroupSummaryV1 {
+    let status = status_of(text(row, "status").as_deref());
+    let occurrence_count = number(row, "occurrence_count").unwrap_or_default().max(0) as u64;
+    let first_seen_ms = number(row, "first_seen_ms").unwrap_or_default();
+    let last_seen_ms = number(row, "last_seen_ms").unwrap_or_default();
+    let triage: Option<GroupTriageV1> =
+        text(row, "triage").and_then(|json| serde_json::from_str(&json).ok());
     GroupSummaryV1 {
         id: text(row, "id").unwrap_or_default(),
         sessions_affected,
@@ -647,10 +689,10 @@ fn summary(row: &NamedRow, sessions_affected: u64, sparkline: Vec<u64>) -> Group
         function_id: text(row, "function_id"),
         exception_type: text(row, "exception_type"),
         title: text(row, "title").unwrap_or_default(),
-        status: status_of(text(row, "status").as_deref()),
-        occurrence_count: number(row, "occurrence_count").unwrap_or_default().max(0) as u64,
-        first_seen_ms: number(row, "first_seen_ms").unwrap_or_default(),
-        last_seen_ms: number(row, "last_seen_ms").unwrap_or_default(),
+        status,
+        occurrence_count,
+        first_seen_ms,
+        last_seen_ms,
         first_version: text(row, "first_version"),
         last_version: text(row, "last_version"),
         has_diagnosis: text(row, "diagnosis_id").is_some(),
@@ -661,6 +703,14 @@ fn summary(row: &NamedRow, sessions_affected: u64, sparkline: Vec<u64>) -> Group
         resolved_version: text(row, "resolved_version"),
         resolve_until_version_change: number(row, "resolve_until_version_change")
             .is_some_and(|flag| flag != 0),
+        triage: triage.clone(),
+        relevant: triage::is_relevant(
+            status,
+            triage.as_ref().map(|triage| triage.kind),
+            occurrence_count,
+            first_seen_ms,
+            last_seen_ms,
+        ),
     }
 }
 
@@ -682,10 +732,6 @@ fn text(row: &NamedRow, column: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|value| !value.is_empty())
-}
-
-fn number(row: &NamedRow, column: &str) -> Option<i64> {
-    row.get(column).and_then(Value::as_i64)
 }
 
 fn flag(row: &NamedRow, column: &str) -> bool {

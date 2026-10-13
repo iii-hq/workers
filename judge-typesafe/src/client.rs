@@ -1,13 +1,12 @@
 //! Atomic JEV calls with worker-wide concurrency and cancellation.
-use crate::{
-    cancellation::CancellationRegistry,
-    transport::{self, check_deadline, Failure, RetryPolicy, DEFAULT_RETRY},
-};
 use judge_contract::{
     encode_evaluation_with_limits, validate_answer, validate_request_with_limits, Answer,
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, RequestOptions, Stats, Usage,
-    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TIMEOUT_MS,
+};
+use judge_provider::{
+    cancellation::CancellationRegistry,
+    transport::{self, check_deadline, ExecutionLimits, Failure, RetryPolicy, DEFAULT_RETRY},
 };
 use serde::Deserialize;
 use std::{
@@ -16,7 +15,6 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::Semaphore,
@@ -26,41 +24,6 @@ use tokio::{
 
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const CONCURRENCY: usize = 4;
-/// Independent request/response byte guards and a whole-call deadline ceiling.
-#[derive(Clone, Copy, Debug)]
-pub struct ExecutionLimits {
-    pub max_request_bytes: usize,
-    pub max_response_bytes: usize,
-    pub max_timeout_ms: u64,
-}
-
-impl Default for ExecutionLimits {
-    fn default() -> Self {
-        Self {
-            max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
-            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
-            max_timeout_ms: DEFAULT_MAX_TIMEOUT_MS,
-        }
-    }
-}
-
-impl ExecutionLimits {
-    pub(crate) fn validate(self) -> Result<(), ErrorCode> {
-        if self.max_request_bytes == 0
-            || self.max_response_bytes == 0
-            || self.max_request_bytes > isize::MAX as usize
-            || self.max_response_bytes > isize::MAX as usize
-            || self.max_timeout_ms == 0
-            || i64::try_from(self.max_timeout_ms).is_err()
-            || Instant::now()
-                .checked_add(Duration::from_millis(self.max_timeout_ms))
-                .is_none()
-        {
-            return Err(ErrorCode::InvalidRequest);
-        }
-        Ok(())
-    }
-}
 
 /// Clone or use `with_api_key` for every handler; constructing another client
 /// creates another worker transport and concurrency pool. Credentials are never
@@ -212,8 +175,12 @@ impl JevClient {
         default_model: &str,
     ) -> EvaluateResponse {
         let started = Instant::now();
-        let deadline = match self.deadline(started, request.timeout_ms, request.expires_at_unix_ms)
-        {
+        let deadline = match transport::deadline(
+            self.limits,
+            started,
+            request.timeout_ms,
+            request.expires_at_unix_ms,
+        ) {
             Ok(deadline) => deadline,
             Err(code) => {
                 return EvaluateResponse::Error {
@@ -396,8 +363,12 @@ impl JevClient {
     /// List provider models using the same credential snapshot and HTTP permits.
     pub async fn list_models(&self, request: ModelsRequest) -> ModelsResponse {
         let started = Instant::now();
-        let deadline = match self.deadline(started, request.timeout_ms, request.expires_at_unix_ms)
-        {
+        let deadline = match transport::deadline(
+            self.limits,
+            started,
+            request.timeout_ms,
+            request.expires_at_unix_ms,
+        ) {
             Ok(deadline) => deadline,
             Err(code) => {
                 return ModelsResponse::Error {
@@ -459,34 +430,6 @@ impl JevClient {
                 stats,
             },
         }
-    }
-
-    fn deadline(
-        &self,
-        started: Instant,
-        timeout_ms: u64,
-        expiry: Option<u64>,
-    ) -> Result<Instant, ErrorCode> {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let remaining_ms = expiry
-            .map(|expiry| u128::from(expiry).saturating_sub(now_ms))
-            .unwrap_or(u128::MAX);
-        // Absolute expiry wins, while invalid relative timeouts stay validation errors.
-        if remaining_ms == 0 {
-            return Err(ErrorCode::Deadline);
-        }
-        self.limits.validate()?;
-        if !(1..=self.limits.max_timeout_ms).contains(&timeout_ms) {
-            return Err(ErrorCode::InvalidRequest);
-        }
-        let budget_ms = u64::try_from(remaining_ms.min(u128::from(timeout_ms)))
-            .map_err(|_| ErrorCode::InvalidRequest)?;
-        started
-            .checked_add(Duration::from_millis(budget_ms))
-            .ok_or(ErrorCode::InvalidRequest)
     }
 
     async fn send_http(
@@ -561,6 +504,7 @@ mod tests {
     use super::*;
     use futures_util::poll;
     use serde_json::{json, Value};
+    use std::time::Duration;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},

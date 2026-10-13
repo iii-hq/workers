@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { filePathFromTreeEvent, reactivateSelectedFile, shouldActivateTreeSelection } from '../tree-activation'
+import {
+  filePathFromTreeEvent,
+  reactivateSelectedFile,
+  shouldActivateTreeSelection,
+  treeItemFromEvent,
+} from '../tree-activation'
 
 describe('shouldActivateTreeSelection', () => {
   it('suppresses controlled selection while allowing a new user selection', () => {
@@ -89,5 +94,15 @@ describe('reactivateSelectedFile', () => {
 
     expect(handled).toBe(false)
     expect(activated).toEqual([])
+  })
+})
+
+describe('treeItemFromEvent', () => {
+  it('reads a folder row as a directory: @pierre/trees marks it `folder`', () => {
+    const row = (itemPath: string, itemType: string) => ({
+      composedPath: () => [{}, { dataset: { itemPath, itemType } }],
+    })
+    expect(treeItemFromEvent(row('src/page/', 'folder'))).toEqual({ path: 'src/page/', kind: 'directory' })
+    expect(treeItemFromEvent(row('src/page/a.ts', 'file'))).toEqual({ path: 'src/page/a.ts', kind: 'file' })
   })
 })

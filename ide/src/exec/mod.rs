@@ -2,6 +2,7 @@
 //! `shell::exec` / `shell::exec_bg`.
 
 pub mod backend;
+pub mod confine;
 pub mod error;
 pub mod host;
 pub mod policy;

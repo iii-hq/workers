@@ -72,6 +72,11 @@ pub struct SkillContext {
     pub filter: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline: Option<String>,
+    /// `harness_prompt` key of `baseline`'s text. Stored records carry only
+    /// this, as `"baseline": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `baseline` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_ref: Option<String>,
 }
 
 /// The effective skill view this session most recently admitted. A
@@ -103,8 +108,21 @@ pub struct AgentIdentity {
     pub color: Option<String>,
 }
 
+/// The language every user-facing text of a session is written in: detected
+/// from the user's first message with enough prose (`crate::language`), then
+/// pinned. Named to the model in the runtime context and the `agent_trigger`
+/// schema so it never guesses one from names, paths or the locale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResponseLanguage {
+    /// ISO 639-3 code (`eng`, `por`, `spa`).
+    pub code: String,
+    /// English name (`English`, `Portuguese`, `Spanish`).
+    pub name: String,
+}
+
 /// Per-send options frozen onto the turn record when it is created; they
-/// apply unchanged until the turn ends (a merged send never changes them).
+/// apply unchanged until the turn ends (a merged send never changes them,
+/// except to adopt a first `response_language`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TurnOptions {
     pub model: String,
@@ -112,6 +130,11 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// `harness_prompt` key of `system_prompt`'s text. Stored records carry
+    /// only this, as `"system_prompt": {"$ref": ..}` (`state::put_turn`);
+    /// `state::get_turn` fills `system_prompt` back in from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_ref: Option<String>,
     /// Legacy-only attribution for skill bodies previously frozen from
     /// session metadata. New sessions never populate this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +188,12 @@ pub struct TurnOptions {
     /// prefix; its digests are merged into `preloaded_contracts`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seeded_contracts: Option<String>,
+    /// The session's pinned response language. Set once from the first user
+    /// message whose prose detects reliably (mirrored in session metadata
+    /// `response_language`), inherited by every later turn and copied to
+    /// spawned children. `None` until a message is long enough to tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_language: Option<ResponseLanguage>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -196,6 +225,17 @@ impl TurnOptions {
             .and_then(Value::as_object)
             .and_then(|scope| scope.get(FS_SCOPE_ROOT_KEY))
             .and_then(Value::as_str)
+    }
+
+    /// Adopt `incoming`'s response language when this turn has none yet — a
+    /// steer merged into a running turn whose first message was too short to
+    /// detect. A pinned language never changes this way.
+    pub fn adopt_response_language_from(&mut self, incoming: &TurnOptions) -> bool {
+        if self.response_language.is_some() || incoming.response_language.is_none() {
+            return false;
+        }
+        self.response_language = incoming.response_language.clone();
+        true
     }
 
     pub fn refresh_filesystem_root_from(&mut self, incoming: &TurnOptions) -> bool {
@@ -349,11 +389,15 @@ pub struct TurnRecord {
     /// nest them. Never set alongside `parent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_parent_session_id: Option<String>,
-    /// Function-registry generation this session last acknowledged; a mismatch
-    /// at generate time appends a registry-change notice so session-cached
-    /// contracts get re-fetched.
+    /// Digests of the functions this session's policy permits, as it last
+    /// acknowledged them ([`FunctionsSnapshot::permitted_digests`]). One that
+    /// changed or left by generate time appends a registry-change notice so
+    /// session-cached contracts get re-fetched; a function that only joined,
+    /// or one the session cannot call, never reaches it.
+    ///
+    /// [`FunctionsSnapshot::permitted_digests`]: crate::discovery::FunctionsSnapshot::permitted_digests
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub functions_generation: Option<u64>,
+    pub functions_acknowledged: Option<Vec<u32>>,
     /// Function contracts whose exact full source result was retained in the
     /// most recently assembled model context for this session.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -394,6 +438,16 @@ pub struct TurnRecord {
     pub validation_retries: u32,
     #[serde(default)]
     pub transient_resumes: u32,
+    /// The step whose `harness::ask` was accepted (its card is shown). Read
+    /// back to end the turn on the question, also when the step is
+    /// redelivered after a crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_step: Option<u64>,
+    /// The step in which a `harness::ask` was last decided, accepted OR
+    /// refused. Read back to refuse any further ask in that step (one per
+    /// step), also when the step is redelivered after a crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_seen_step: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -436,6 +490,21 @@ impl TurnRecord {
                     && !checkpoint.child_session_reused
             })
             .count()
+    }
+
+    /// Drop what only a running turn reads, before the terminal write: done
+    /// calls without a child, the per-turn failure counts, the steering
+    /// watermark and the stream id. Open calls stay (deletion refuses a
+    /// `Triggered` one; verbose status lists pending ids) and so do calls with
+    /// a child (status children, stop cascade). `seed_new` resets all of these
+    /// for the next turn.
+    pub(crate) fn slim_finished(&mut self) {
+        self.calls.retain(|_, c| {
+            c.state != CallState::Done || c.child_session_id.is_some() || c.child_turn_id.is_some()
+        });
+        self.failed_calls.clear();
+        self.watermark_entry_id = None;
+        self.stream_request_id = None;
     }
 }
 
@@ -514,11 +583,13 @@ pub(crate) mod tests {
                 max_transient_resumes: 1,
                 preloaded_contracts: None,
                 seeded_contracts: None,
+                system_prompt_ref: None,
+                response_language: None,
             },
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
-            functions_generation: None,
+            functions_acknowledged: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
             skill_ack: None,
@@ -530,9 +601,51 @@ pub(crate) mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            ask_step: None,
+            ask_seen_step: None,
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn ask_seen_step_is_omitted_when_unset_and_defaults_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("ask_seen_step").is_none(), "{value}");
+
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("ask_seen_step");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.ask_seen_step, None);
+
+        let seen = TurnRecord {
+            ask_seen_step: Some(4),
+            ..record()
+        };
+        let wire = serde_json::to_value(&seen).unwrap();
+        assert_eq!(wire["ask_seen_step"], json!(4));
+        let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.ask_seen_step, Some(4));
+    }
+
+    #[test]
+    fn ask_step_is_omitted_when_unset_and_defaults_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("ask_step").is_none(), "{value}");
+
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("ask_step");
+        let decoded: TurnRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.ask_step, None);
+
+        let asked = TurnRecord {
+            ask_step: Some(3),
+            ..record()
+        };
+        let wire = serde_json::to_value(&asked).unwrap();
+        assert_eq!(wire["ask_step"], json!(3));
+        let decoded: TurnRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.ask_step, Some(3));
     }
 
     #[test]
@@ -651,6 +764,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn slim_finished_keeps_children_and_open_calls() {
+        let mut r = record();
+        r.calls
+            .insert("done".into(), cp(CallState::Done, None, false));
+        r.calls.insert(
+            "done_child".into(),
+            cp(CallState::Done, Some("s_child"), false),
+        );
+        r.calls
+            .insert("pending".into(), cp(CallState::Pending, None, false));
+        r.calls
+            .insert("triggered".into(), cp(CallState::Triggered, None, false));
+        r.failed_calls.insert(
+            "digest".into(),
+            FailedCall {
+                error_digest: "e".into(),
+                count: 2,
+            },
+        );
+        r.watermark_entry_id = Some("e_watermark".into());
+        r.stream_request_id = Some("req_1".into());
+        let children = r.spawned_children();
+        let pending = r.pending_call_ids();
+
+        r.slim_finished();
+
+        assert_eq!(
+            r.calls.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["done_child", "pending", "triggered"]
+        );
+        assert!(r.failed_calls.is_empty());
+        assert_eq!(r.watermark_entry_id, None);
+        assert_eq!(r.stream_request_id, None);
+        // `harness::status` builds `children` and verbose
+        // `pending_function_calls` from these; both are unchanged.
+        assert_eq!(r.spawned_children(), children);
+        assert_eq!(r.pending_call_ids(), pending);
+    }
+
+    #[test]
     fn legacy_spawn_checkpoint_counts_as_a_session_creation() {
         let checkpoint: CallCheckpoint = serde_json::from_value(json!({
             "state": "done",
@@ -700,6 +853,7 @@ pub(crate) mod tests {
         assert_eq!(r.options.agent, None);
         assert_eq!(r.options.preloaded_contracts, None);
         assert_eq!(r.options.seeded_contracts, None);
+        assert_eq!(r.options.response_language, None);
     }
 
     #[test]
@@ -726,6 +880,7 @@ pub(crate) mod tests {
         r.options.skill_context = Some(SkillContext {
             filter: Some(vec!["review".into()]),
             baseline: Some("<available_skills>review</available_skills>".into()),
+            baseline_ref: None,
         });
         r.skill_ack = Some(SkillAck {
             generation: 3,
@@ -741,6 +896,42 @@ pub(crate) mod tests {
         assert_eq!(value["skill_ack"]["generation"], 3);
         let back: TurnRecord = serde_json::from_value(value).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn response_language_round_trips_and_is_adopted_only_when_unset() {
+        let english = ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let mut r = record();
+        assert!(serde_json::to_value(&r.options)
+            .unwrap()
+            .get("response_language")
+            .is_none());
+        r.options.response_language = Some(english.clone());
+        let value = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            value["options"]["response_language"],
+            json!({ "code": "eng", "name": "English" })
+        );
+        assert_eq!(serde_json::from_value::<TurnRecord>(value).unwrap(), r);
+
+        let mut running = record().options;
+        let mut incoming = record().options;
+        assert!(!running.adopt_response_language_from(&incoming));
+        incoming.response_language = Some(english.clone());
+        assert!(running.adopt_response_language_from(&incoming));
+        assert_eq!(running.response_language, Some(english));
+        incoming.response_language = Some(ResponseLanguage {
+            code: "spa".into(),
+            name: "Spanish".into(),
+        });
+        assert!(
+            !running.adopt_response_language_from(&incoming),
+            "a pinned language never changes on a merge"
+        );
+        assert_eq!(running.response_language.unwrap().name, "English");
     }
 
     #[test]

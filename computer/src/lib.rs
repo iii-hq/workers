@@ -6,6 +6,7 @@ pub mod config;
 pub mod configuration;
 pub mod driver;
 pub mod events;
+pub mod frames;
 pub mod functions;
 pub mod manifest;
 pub mod session;

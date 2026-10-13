@@ -1,6 +1,6 @@
 # grok
 
-The [xAI Grok CLI](https://docs.x.ai) as an iii worker: the Grok agent exposed as functions and streams on the iii bus, nothing else. The worker spawns the same `grok` binary the user runs in their terminal, with the same `XAI_API_KEY`, the same filesystem, and the same working directory. `grok::run` executes one headless turn (`grok --single <prompt> --output-format streaming-json`) and returns the result; the raw Grok events mirror verbatim onto the `grok::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console and any sibling worker observe a Grok run exactly like a native harness turn.
+The [xAI Grok CLI](https://docs.x.ai) as an iii worker: the Grok agent exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `grok` binary the user runs in their terminal, with the same `XAI_API_KEY`, the same filesystem, and the same working directory. `grok::run` executes one headless turn (`grok --single <prompt> --output-format streaming-json`) and returns the result; the raw Grok events are delivered verbatim on the `grok::raw-event` trigger type, and a translated AgentEvent view on `grok::agent-event`, so the acp worker and any sibling worker observe a Grok run exactly like a native harness turn.
 
 ## Install
 
@@ -89,11 +89,37 @@ Two ids come back from every run. `session_id` is the iii session id: the key fo
 
 ### Raw events
 
-Every line Grok emits on its `--output-format streaming-json` stream is mirrored verbatim onto the `grok::events` stream, group_id = session_id. Consumers that want the exact Grok wire format read `grok::events`; consumers that want harness-shaped frames read `agent::events`. Same turn, two views.
+Every line Grok emits on its `--output-format streaming-json` stream is delivered verbatim on the `grok::raw-event` trigger type. Consumers that want the exact Grok wire format bind `grok::raw-event`; consumers that want harness-shaped frames bind `grok::agent-event`. Same turn, two views (see Event feeds below).
 
-The streaming-json stream (captured from Grok CLI 0.2.77) is delta-based: assistant text arrives as `{"type":"text","data":"<chunk>"}` lines, the turn closes with `{"type":"end","stopReason","sessionId","requestId"}`, and failures arrive as `{"type":"error","message"}`. The worker accumulates the text deltas and emits one `message_complete` frame on `agent::events` at `end`.
+The streaming-json stream (captured from Grok CLI 0.2.77) is delta-based: assistant text arrives as `{"type":"text","data":"<chunk>"}` lines, the turn closes with `{"type":"end","stopReason","sessionId","requestId"}`, and failures arrive as `{"type":"error","message"}`. The worker accumulates the text deltas and emits one `message_complete` frame on `grok::agent-event` at `end`.
 
-> Note: the Grok CLI streaming-json schema is not formally published, so the typed model in [`src/grok/events_types.rs`](src/grok/events_types.rs) is lenient — unrecognized event types pass through verbatim on `grok::events` and are skipped on the translated stream rather than failing the turn. Headless output carries no token usage and does not break out tool-call events today.
+> Note: the Grok CLI streaming-json schema is not formally published, so the typed model in [`src/grok/events_types.rs`](src/grok/events_types.rs) is lenient — unrecognized event types pass through verbatim on `grok::raw-event` and are skipped on the translated feed rather than failing the turn. Headless output carries no token usage and does not break out tool-call events today.
+
+## Event feeds
+
+The worker owns two trigger types. Bind one to a function of your own with `{ session_id }` to receive one session's frames:
+
+| Trigger type | Carries |
+| --- | --- |
+| `grok::agent-event` | translated AgentEvent frames (`message_complete`, `turn_end`, `agent_end`), what the acp worker renders |
+| `grok::raw-event` | every streaming-json line, verbatim |
+
+Binding config: `{ "session_id": "<iii session id>", "metadata": { } }`. `session_id` is required (non-empty, at most 512 characters); `metadata` is optional and is handed to your function (it wins over the binding's own metadata). Any other key rejects the binding, and each trigger type accepts at most 256 bindings.
+
+Your function gets one fire-and-forget call per frame:
+
+```json
+{
+  "session_id": "sess-1",
+  "event_id": "sess-1-<epoch>-00000002",
+  "seq": 2,
+  "epoch": "<uuid>",
+  "source": "grok",
+  "event": { "type": "text", "data": "Hello" }
+}
+```
+
+`seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and a binding made mid-turn only sees later frames. History lives in the session record (`grok::status`, `grok::sessions::list`) and in the `grok::run` result. A failing consumer never fails the turn. These trigger types replace the former `agent::events` / `grok::events` streams (see the guide "Migrate from iii-stream and pubsub").
 
 ## Configuration
 
@@ -105,8 +131,6 @@ defaults:
   cwd: ""               # default working directory for runs
   always_approve: true  # auto-approve tool/command execution on headless turns
 
-events_stream: agent::events     # translated AgentEvent frames
-raw_events_stream: grok::events  # verbatim Grok streaming-json events
 grok_executable: ""              # path to the grok CLI; empty = PATH resolution
 ```
 
@@ -137,8 +161,8 @@ Every `grok::run` is an ordinary traced invocation on the engine: the trace carr
 | Grok | iii |
 | --- | --- |
 | one headless `grok --single` turn | `grok::run` invocation |
-| every streaming-json line, verbatim | `grok::events` stream frame |
-| accumulated `text` deltas at `end` | `message_complete` frame on `agent::events` |
+| every streaming-json line, verbatim | `grok::raw-event` delivery |
+| accumulated `text` deltas at `end` | `message_complete` frame on `grok::agent-event` |
 | turn `end` | `turn_end` + `agent_end` frames, function return value |
 | `end.sessionId` → `--resume` next turn | engine state scope `grok_sessions`, keyed by iii session_id |
 | extra capability | another iii worker on the bus (`shell`, `database`, `storage`, ...) |

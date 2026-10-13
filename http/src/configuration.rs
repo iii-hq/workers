@@ -163,6 +163,61 @@ pub fn register_listener_status(
     );
 }
 
+/// Where the public HTTP server listens in this process.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct HttpStatus {
+    /// The bound interface (`0.0.0.0` serves every network interface). None
+    /// while the server is stopped.
+    pub host: Option<String>,
+    /// The bound port (the OS-assigned one for port 0). None while stopped.
+    pub port: Option<u16>,
+    /// The base URL to open from this machine, e.g. `http://127.0.0.1:3111`:
+    /// loopback when the server listens on every interface.
+    pub url: Option<String>,
+    /// Last configuration reload failure, e.g. the port is already in use;
+    /// cleared by the next successful reload.
+    pub last_reload_error: Option<String>,
+}
+
+/// The base URL a local client opens for a server bound to `addr`.
+pub fn local_url(addr: std::net::SocketAddr) -> String {
+    let host = match addr.ip() {
+        ip if ip.is_unspecified() && ip.is_ipv4() => "127.0.0.1".to_string(),
+        ip if ip.is_unspecified() => "[::1]".to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+        ip => ip.to_string(),
+    };
+    format!("http://{host}:{}", addr.port())
+}
+
+/// `http::status`: where the public server actually listens, so agents and
+/// UIs build page URLs from it instead of assuming port 3111. Read-only;
+/// exposes nothing else of the configuration.
+pub fn register_status(iii: &Arc<IIIClient>, control: ServerControlCell, apply_lock: ApplyLock) {
+    iii.register_function(
+        "http::status",
+        RegisterFunction::new_async(move |_request: ConfigurationIdentityRequest| {
+            let (control, apply_lock) = (control.clone(), apply_lock.clone());
+            async move {
+                // Waits for an in-flight reload, then reports its outcome.
+                let reload = apply_lock.lock().await;
+                let bound = control.lock().await.as_ref().map(|c| c.local_addr);
+                Ok::<_, Error>(HttpStatus {
+                    host: bound.map(|addr| addr.ip().to_string()),
+                    port: bound.map(|addr| addr.port()),
+                    url: bound.map(local_url),
+                    last_reload_error: reload.last_error.clone(),
+                })
+            }
+        })
+        .description(
+            "Where the public HTTP server listens: its host, its port and the base URL to open from \
+             this machine (for example http://127.0.0.1:3111). Read-only; use it instead of \
+             assuming port 3111.",
+        ),
+    );
+}
+
 /// Register the `http` configuration entry: schema + metadata refresh on every
 /// boot; `initial_value` (the `--config` seed, or built-in defaults) is included
 /// only when nothing is stored yet, so runtime edits survive restarts.
@@ -469,6 +524,26 @@ fn is_not_found(error: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_url_uses_loopback_for_every_interface() {
+        assert_eq!(
+            super::local_url("0.0.0.0:3111".parse().unwrap()),
+            "http://127.0.0.1:3111"
+        );
+        assert_eq!(
+            super::local_url("127.0.0.1:3137".parse().unwrap()),
+            "http://127.0.0.1:3137"
+        );
+        assert_eq!(
+            super::local_url("[::]:3111".parse().unwrap()),
+            "http://[::1]:3111"
+        );
+        assert_eq!(
+            super::local_url("192.168.0.2:80".parse().unwrap()),
+            "http://192.168.0.2:80"
+        );
+    }
+
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../crates/config-client/tests/support/is_not_found_cases.rs"

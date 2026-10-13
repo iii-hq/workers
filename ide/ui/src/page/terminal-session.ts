@@ -1,7 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useTerminalFontSize } from '@iii-workers/terminal-font'
-import { FitAddon } from '@xterm/addon-fit'
-import { Terminal } from '@xterm/xterm'
+import type { Terminal } from '@xterm/xterm'
 import {
   useCallback,
   useEffect,
@@ -99,9 +98,14 @@ interface ActiveTerminalSession {
   reconnectToken: string
   lastSequence: number
   unsubscribe: () => void
+  /** Keyboard input for this session, coalesced while a write is in flight. */
+  write: (data: Uint8Array) => void
 }
 
-export type UnmountTerminalSession = Omit<ActiveTerminalSession, 'generation'>
+export type UnmountTerminalSession = Omit<
+  ActiveTerminalSession,
+  'generation' | 'write'
+>
 
 export interface TerminalSession {
   atBottom: boolean
@@ -118,7 +122,74 @@ export interface TerminalSession {
 }
 
 const MAX_QUEUED_INPUT_BYTES = 64 * 1024
+/** The backend's MAX_INPUT_BYTES: no `shell::pty::write` may carry more. */
+const MAX_WRITE_BYTES = 64 * 1024
 const HEARTBEAT_MS = 10_000
+
+type XtermModule = typeof import('../../xterm')
+
+let xtermLoad: Promise<XtermModule> | null = null
+
+/**
+ * The terminal emulator, imported once on first use: it ships as its own
+ * console:module (ui/xterm.ts) so a console tab that never opens a terminal
+ * never downloads it. A failed import clears the memo so the next attempt
+ * imports again. The memo outlives a hot reload of xterm.js alone: new bytes
+ * reach a tab when page.js reloads.
+ */
+function loadXterm(host: Host): Promise<XtermModule> {
+  if (!host.importModule) {
+    return Promise.reject(
+      new Error('this console predates lazy modules; update the ade worker'),
+    )
+  }
+  xtermLoad ??= host
+    .importModule<XtermModule>('ide/xterm.js')
+    .catch((error: unknown) => {
+      xtermLoad = null
+      throw error
+    })
+  return xtermLoad
+}
+
+/**
+ * Input typed while a write is in flight goes out together when it lands: one
+ * `shell::pty::write` per round trip instead of one per keystroke, in order,
+ * none larger than `maxBytes` (a bigger paste goes in pieces). `send` reports
+ * its own failures; the writer only carries on with what is left.
+ */
+export function createTerminalInputWriter(
+  send: (data: Uint8Array) => Promise<void>,
+  maxBytes = MAX_WRITE_BYTES,
+): (data: Uint8Array) => void {
+  const pending: Uint8Array[] = []
+  let pendingBytes = 0
+  let flushing = false
+  const flush = async () => {
+    flushing = true
+    while (pendingBytes > 0) {
+      const chunk = new Uint8Array(Math.min(pendingBytes, maxBytes))
+      let filled = 0
+      while (filled < chunk.length) {
+        const head = pending[0]
+        const take = Math.min(head.length, chunk.length - filled)
+        chunk.set(head.subarray(0, take), filled)
+        filled += take
+        if (take === head.length) pending.shift()
+        else pending[0] = head.subarray(take)
+      }
+      pendingBytes -= chunk.length
+      await send(chunk).catch(() => undefined)
+    }
+    flushing = false
+  }
+  return (data) => {
+    if (data.byteLength === 0) return
+    pending.push(data)
+    pendingBytes += data.byteLength
+    if (!flushing) void flush()
+  }
+}
 
 function decodeBase64(value: string): Uint8Array {
   const binary = window.atob(value)
@@ -143,6 +214,16 @@ function binaryStringToBytes(value: string): Uint8Array {
     bytes[index] = value.charCodeAt(index) & 0xff
   }
   return bytes
+}
+
+/**
+ * Whether a pane measures large enough to size a terminal from. One mid-layout
+ * (docking, splitting, a collapsed sidebar) measures as a sliver, and one in a
+ * hidden panel or tab, still mounted, measures nothing at all.
+ */
+export function terminalPaneMeasurable(container: Element): boolean {
+  const rect = container.getBoundingClientRect()
+  return rect.width >= 40 && rect.height >= 24
 }
 
 function browserLocalStorage(): Storage | null {
@@ -216,8 +297,9 @@ export function useTerminalSession(
   )
   const [atBottom, setAtBottom] = useState(true)
   const [restartToken, setRestartToken] = useState(0)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const terminalRef = useRef<Terminal | null>(null)
-  const fitAddonRef = useRef<FitAddon | null>(null)
+  const fitRef = useRef<(() => void) | null>(null)
   // The size every terminal in the console shares, agent pages included. Held
   // in a ref for the mount effect below: changing the type must not rebuild a
   // terminal, which would drop the pane's scrollback.
@@ -231,7 +313,14 @@ export function useTerminalSession(
   const preMountOutputRef = useRef<Uint8Array[]>([])
   const queuedInputRef = useRef<Uint8Array[]>([])
   const queuedInputBytesRef = useRef(0)
-  const inputChainRef = useRef(Promise.resolve())
+  // What this pane's xterm shows: a session, through a sequence, in that
+  // terminal instance. A reattach while the instance lives resumes after it
+  // instead of clearing the screen and replaying everything the backend kept.
+  const shownRef = useRef<{
+    terminal: Terminal
+    sessionId: string
+    sequence: number
+  } | null>(null)
   const resizeTimerRef = useRef<number | null>(null)
   const gapReplayTimerRef = useRef<number | null>(null)
   const connectionPromiseRef = useRef<Promise<TerminalConnection> | null>(null)
@@ -289,20 +378,12 @@ export function useTerminalSession(
         })
         return
       }
+      // The sequence lives in `active` only: nothing renders it, and the
+      // lease gets it when the pane unmounts, so a frame re-renders nothing
+      // and writes nothing to storage.
       active.lastSequence = frame.sequence
-      try {
-        saveLease({
-          paneId,
-          sessionId: active.sessionId,
-          reconnectToken: active.reconnectToken,
-          lastSequence: active.lastSequence,
-        })
-      } catch (error) {
-        dispatch({ type: 'failed', error: errorMessage(error) })
-      }
-      dispatch({ type: 'frame-applied', sequence: frame.sequence })
     },
-    [appendOutput, paneId, saveLease],
+    [appendOutput],
   )
 
   const scheduleReplay = useCallback(() => {
@@ -367,26 +448,22 @@ export function useTerminalSession(
   )
 
   const writeInput = useCallback(
-    (session: ActiveTerminalSession, data: Uint8Array) => {
+    async (session: ActiveTerminalSession, data: Uint8Array) => {
       if (!host) return
-      inputChainRef.current = inputChainRef.current
-        .catch(() => undefined)
-        .then(async () => {
-          try {
-            await host.iii.trigger('shell::pty::write', {
-              session_id: session.sessionId,
-              access_key: session.accessKey,
-              data: encodeBase64(data),
-            })
-          } catch (error) {
-            if (
-              activeRef.current?.sessionId === session.sessionId &&
-              activeRef.current.generation === session.generation
-            ) {
-              dispatch({ type: 'failed', error: errorMessage(error) })
-            }
-          }
+      try {
+        await host.iii.trigger('shell::pty::write', {
+          session_id: session.sessionId,
+          access_key: session.accessKey,
+          data: encodeBase64(data),
         })
+      } catch (error) {
+        if (
+          activeRef.current?.sessionId === session.sessionId &&
+          activeRef.current.generation === session.generation
+        ) {
+          dispatch({ type: 'failed', error: errorMessage(error) })
+        }
+      }
     },
     [host],
   )
@@ -396,7 +473,7 @@ export function useTerminalSession(
       if (data.byteLength === 0) return
       const active = activeRef.current
       if (active) {
-        writeInput(active, data)
+        active.write(data)
         return
       }
       if (
@@ -412,7 +489,7 @@ export function useTerminalSession(
       queuedInputRef.current.push(data)
       queuedInputBytesRef.current += data.byteLength
     },
-    [writeInput],
+    [],
   )
 
   const sendResize = useCallback(
@@ -447,149 +524,195 @@ export function useTerminalSession(
   )
 
   useEffect(() => {
-    if (!visible || !container) return
-    const readTheme = () => {
-      const styles = window.getComputedStyle(container)
-      const color = (name: string, fallback: string) =>
-        styles.getPropertyValue(name).trim() || fallback
-      const background = color('--color-bg', styles.backgroundColor || '#111111')
-      return {
-        background,
-        foreground: color('--color-ink', styles.color || '#e5e5e5'),
-        cursor: color('--color-ink', styles.color || '#e5e5e5'),
-        cursorAccent: background,
-        selectionBackground: color('--color-surface-active', '#3a3a3a'),
-        ...terminalAnsiPalette(background),
-      }
-    }
-    const styles = window.getComputedStyle(container)
-    const color = (name: string, fallback: string) =>
-      styles.getPropertyValue(name).trim() || fallback
-    const terminal = new Terminal({
-      cursorBlink: true,
-      cursorStyle: 'block',
-      fontFamily: color(
-        '--font-mono',
-        'ui-monospace, SFMono-Regular, Menlo, monospace',
-      ),
-      fontSize: fontSizeRef.current,
-      lineHeight: 1.2,
-      scrollback: 10_000,
-      scrollOnUserInput: true,
-      theme: readTheme(),
-    })
-    const fitAddon = new FitAddon()
-    const terminalHost = document.createElement('div')
-    terminalHost.className = 'shui-xterm-host'
-    terminal.loadAddon(fitAddon)
-    container.appendChild(terminalHost)
-    terminal.open(terminalHost)
-    terminalRef.current = terminal
-    fitAddonRef.current = fitAddon
-
-    const input = terminal.onData((data) =>
-      sendInput(new TextEncoder().encode(data)),
-    )
-    const binary = terminal.onBinary((data) =>
-      sendInput(binaryStringToBytes(data)),
-    )
-    const resized = terminal.onResize(({ cols, rows }) =>
-      sendResize(cols, rows),
-    )
-    const scrolled = terminal.onScroll((viewportY) => {
-      setAtBottom(viewportY >= terminal.buffer.active.baseY)
-    })
-    for (const chunk of preMountOutputRef.current) terminal.write(chunk)
-    preMountOutputRef.current = []
-
-    let fitFrame = 0
-    const fitTerminal = () => {
-      // A pane mid-layout (docking, splitting, a collapsed sidebar) measures
-      // as a sliver. Fitting against that hands the PTY a 1-column terminal,
-      // and the shell redraws its prompt at that width — the stray "%" marks
-      // and clipped prompts that survive the pane growing back.
-      const rect = container.getBoundingClientRect()
-      if (rect.width < 40 || rect.height < 24) return
-      try {
-        fitAddon.fit()
-      } catch {
-        return
-      }
-      dimensionsRef.current = normalizeTerminalDimensions(
-        terminal.cols,
-        terminal.rows,
-      )
-    }
-    const scheduleFit = () => {
-      if (fitFrame) window.cancelAnimationFrame(fitFrame)
-      fitFrame = window.requestAnimationFrame(() => {
-        fitFrame = 0
-        fitTerminal()
+    if (!visible || !container || !host) return
+    let cancelled = false
+    let retryTimer = 0
+    // The import can take a while: focus the user has since put elsewhere
+    // (the editor, the chat composer) stays there.
+    const focusedBefore = document.activeElement
+    // A module still registering 404s at first: retry, backing off. A
+    // console without importModule never loads it, so that fails once.
+    const load = (attempt: number): Promise<XtermModule> =>
+      loadXterm(host).catch((error: unknown) => {
+        if (cancelled) throw error
+        preMountOutputRef.current = []
+        setLoadError(`Terminal failed to load: ${errorMessage(error)}`)
+        if (!host.importModule) throw error
+        return new Promise<XtermModule>((resolve) => {
+          retryTimer = window.setTimeout(
+            () => resolve(load(attempt + 1)),
+            Math.min(30_000, 1_000 * 2 ** attempt),
+          )
+        })
       })
-    }
-    const observer = new ResizeObserver(scheduleFit)
-    observer.observe(container)
-    const themeObserver = new MutationObserver(() => {
-      terminal.options.theme = readTheme()
-    })
-    themeObserver.observe(document.documentElement, {
-      attributeFilter: ['data-theme', 'class'],
-    })
-    const frame = window.requestAnimationFrame(() => {
-      fitTerminal()
-      terminal.focus()
-    })
+    void load(0).then(
+      ({ Terminal, FitAddon }) => {
+        if (cancelled) return
+        setLoadError(null)
+        const readTheme = () => {
+          const styles = window.getComputedStyle(container)
+          const color = (name: string, fallback: string) =>
+            styles.getPropertyValue(name).trim() || fallback
+          const background = color('--color-bg', styles.backgroundColor || '#111111')
+          return {
+            background,
+            foreground: color('--color-ink', styles.color || '#e5e5e5'),
+            cursor: color('--color-ink', styles.color || '#e5e5e5'),
+            cursorAccent: background,
+            selectionBackground: color('--color-surface-active', '#3a3a3a'),
+            ...terminalAnsiPalette(background),
+          }
+        }
+        const styles = window.getComputedStyle(container)
+        const color = (name: string, fallback: string) =>
+          styles.getPropertyValue(name).trim() || fallback
+        const terminal = new Terminal({
+          cursorBlink: true,
+          cursorStyle: 'block',
+          fontFamily: color(
+            '--font-mono',
+            'ui-monospace, SFMono-Regular, Menlo, monospace',
+          ),
+          fontSize: fontSizeRef.current,
+          lineHeight: 1.2,
+          scrollback: 10_000,
+          scrollOnUserInput: true,
+          theme: readTheme(),
+        })
+        const fitAddon = new FitAddon()
+        const terminalHost = document.createElement('div')
+        terminalHost.className = 'shui-xterm-host'
+        terminal.loadAddon(fitAddon)
+        container.appendChild(terminalHost)
+        terminal.open(terminalHost)
+        terminalRef.current = terminal
 
-    terminalCleanupRef.current = () => {
-      window.cancelAnimationFrame(frame)
-      if (fitFrame) window.cancelAnimationFrame(fitFrame)
-      themeObserver.disconnect()
-      observer.disconnect()
-      scrolled.dispose()
-      resized.dispose()
-      binary.dispose()
-      input.dispose()
-      terminal.dispose()
-      if (terminalRef.current === terminal) terminalRef.current = null
-      if (fitAddonRef.current === fitAddon) fitAddonRef.current = null
-    }
+        const input = terminal.onData((data) =>
+          sendInput(new TextEncoder().encode(data)),
+        )
+        const binary = terminal.onBinary((data) =>
+          sendInput(binaryStringToBytes(data)),
+        )
+        const resized = terminal.onResize(({ cols, rows }) =>
+          sendResize(cols, rows),
+        )
+        const scrolled = terminal.onScroll((viewportY) => {
+          setAtBottom(viewportY >= terminal.buffer.active.baseY)
+        })
+        for (const chunk of preMountOutputRef.current) terminal.write(chunk)
+        preMountOutputRef.current = []
+
+        let fitFrame = 0
+        const fitTerminal = () => {
+          // Fitting a sliver hands the PTY a 1-column terminal, and the shell
+          // redraws its prompt at that width — the stray "%" marks and clipped
+          // prompts that survive the pane growing back. Inside a hidden panel the
+          // fit addon reads the CSS size, "100%", as 100px: a few cells square.
+          if (!terminalPaneMeasurable(container)) return
+          try {
+            fitAddon.fit()
+          } catch {
+            return
+          }
+          dimensionsRef.current = normalizeTerminalDimensions(
+            terminal.cols,
+            terminal.rows,
+          )
+        }
+        const scheduleFit = () => {
+          if (fitFrame) window.cancelAnimationFrame(fitFrame)
+          fitFrame = window.requestAnimationFrame(() => {
+            fitFrame = 0
+            fitTerminal()
+          })
+        }
+        fitRef.current = fitTerminal
+        const observer = new ResizeObserver(scheduleFit)
+        observer.observe(container)
+        const themeObserver = new MutationObserver(() => {
+          terminal.options.theme = readTheme()
+        })
+        themeObserver.observe(document.documentElement, {
+          attributeFilter: ['data-theme', 'class'],
+        })
+        const frame = window.requestAnimationFrame(() => {
+          fitTerminal()
+          const focused = document.activeElement
+          if (!focused || focused === document.body || focused === focusedBefore) {
+            terminal.focus()
+          }
+        })
+
+        terminalCleanupRef.current = () => {
+          window.cancelAnimationFrame(frame)
+          if (fitFrame) window.cancelAnimationFrame(fitFrame)
+          themeObserver.disconnect()
+          observer.disconnect()
+          scrolled.dispose()
+          resized.dispose()
+          binary.dispose()
+          input.dispose()
+          terminal.dispose()
+          if (terminalRef.current === terminal) terminalRef.current = null
+          if (fitRef.current === fitTerminal) fitRef.current = null
+        }
+      },
+      () => undefined,
+    )
     return () => {
+      cancelled = true
+      window.clearTimeout(retryTimer)
       terminalCleanupRef.current?.()
       terminalCleanupRef.current = null
     }
-  }, [container, sendInput, sendResize, visible])
+  }, [container, host, sendInput, sendResize, visible])
 
   // New type means new cell metrics: the pane refits, and the PTY learns the
-  // new geometry through the onResize path the session already forwards.
+  // new geometry through the onResize path the session already forwards. A
+  // pane too small to fit (a hidden one) keeps its size until the
+  // ResizeObserver refits it.
   useEffect(() => {
     const terminal = terminalRef.current
     if (!terminal) return
     terminal.options.fontSize = fontSize
-    try {
-      fitAddonRef.current?.fit()
-    } catch {
-      // Mid-layout a pane measures as a sliver; the ResizeObserver refits.
-    }
+    fitRef.current?.()
   }, [fontSize])
 
   useEffect(() => {
     void restartToken
-    if (!visible || !router || !host || !root) return
+    // No shell behind a terminal that failed to load: it detaches until a
+    // retry mounts one, and its output stays with the backend meanwhile.
+    if (!visible || !router || !host || !root || loadError) return
+    // Closing, the pane only waits to be removed: no attach, and above all no
+    // fresh shell when the attach finds the old one gone.
+    if (connectionCoordinator.closing) return
     let cancelled = false
     const attempt = connectionCoordinator.begin()
     const { generation } = attempt
     const { cols, rows } = dimensionsRef.current
     const lease = findPaneLease(leaseStore, storageKey, paneId)
     leaseRef.current = lease
-    exitNotifiedRef.current = false
+    // The terminal still shows this session up to a sequence (a transport
+    // reconnect, a sequence gap, a retried attach): attach after it and keep
+    // the screen. Anything else starts again from a clean screen.
+    const shown = shownRef.current
+    const resumeAfter =
+      lease &&
+      shown &&
+      shown.sessionId === lease.sessionId &&
+      shown.terminal === terminalRef.current
+        ? shown.sequence
+        : 0
     preMountOutputRef.current = []
     queuedInputRef.current = []
     queuedInputBytesRef.current = 0
-    inputChainRef.current = Promise.resolve()
     activeRef.current = null
     liveFramesRef.current.clear()
-    dispatch({ type: 'connecting', cwd: root })
-    terminalRef.current?.reset()
+    if (resumeAfter === 0) {
+      exitNotifiedRef.current = false
+      dispatch({ type: 'connecting', cwd: root })
+      terminalRef.current?.reset()
+    }
 
     const connectionPromise = connectTerminalSession({
       host,
@@ -599,6 +722,7 @@ export function useTerminalSession(
       requestId: attempt.requestId,
       cols,
       rows,
+      afterSequence: resumeAfter,
     })
     connectionPromiseRef.current = connectionPromise
     void connectionPromise
@@ -631,7 +755,7 @@ export function useTerminalSession(
               paneId,
               sessionId: connection.sessionId,
               reconnectToken: connection.reconnectToken,
-              lastSequence: 0,
+              lastSequence: resumeAfter,
             },
           })
           if (!nextLease) {
@@ -651,6 +775,9 @@ export function useTerminalSession(
             reconnectToken: connection.reconnectToken,
             lastSequence: nextLease.lastSequence,
             unsubscribe: connection.unsubscribe,
+            write: createTerminalInputWriter((data) =>
+              writeInput(active, data),
+            ),
           }
           activeRef.current = active
           dispatch({
@@ -660,6 +787,12 @@ export function useTerminalSession(
           })
           const activated = connection.activate(applyOutputEvent)
           if (connection.truncated) {
+            // Output after the resume point is gone, so what the backend kept
+            // no longer continues the screen: it starts over from that.
+            if (resumeAfter > 0) {
+              exitNotifiedRef.current = false
+              terminalRef.current?.reset()
+            }
             dispatch({ type: 'replay-truncated' })
             appendOutput(new TextEncoder().encode(REPLAY_TRUNCATION_NOTICE))
           }
@@ -696,7 +829,7 @@ export function useTerminalSession(
           const queuedInput = queuedInputRef.current
           queuedInputRef.current = []
           queuedInputBytesRef.current = 0
-          for (const data of queuedInput) writeInput(active, data)
+          for (const data of queuedInput) active.write(data)
           const latest = dimensionsRef.current
           if (latest.cols !== cols || latest.rows !== rows) {
             sendResize(latest.cols, latest.rows)
@@ -724,7 +857,7 @@ export function useTerminalSession(
         }
       })
       .catch((error) => {
-        if (cancelled) return
+        if (cancelled || connectionCoordinator.closing) return
         if (lease && backendConfirmedSessionMissing(error)) {
           removeLease()
           setRestartToken((token) => token + 1)
@@ -759,6 +892,13 @@ export function useTerminalSession(
       queuedInputRef.current = []
       queuedInputBytesRef.current = 0
       if (!active) return
+      if (terminalRef.current) {
+        shownRef.current = {
+          terminal: terminalRef.current,
+          sessionId: active.sessionId,
+          sequence: active.lastSequence,
+        }
+      }
       void detachTerminalSessionForUnmount(
         host,
         router,
@@ -775,6 +915,7 @@ export function useTerminalSession(
     connectionCoordinator,
     host,
     leaseStore,
+    loadError,
     paneId,
     removeLease,
     restartToken,
@@ -814,10 +955,18 @@ export function useTerminalSession(
   }, [connectionCoordinator, host, visible])
 
   useEffect(() => {
-    if (!visible || !host) return
+    if (!visible || !host || !container) return
     const heartbeat = window.setInterval(() => {
       const active = activeRef.current
-      if (!active) return
+      // A backgrounded page, or a pane in a hidden panel or tab, has nothing
+      // to keep in step; the next beat after it shows again does.
+      if (
+        !active ||
+        document.visibilityState === 'hidden' ||
+        !terminalPaneMeasurable(container)
+      ) {
+        return
+      }
       const { cols, rows } = dimensionsRef.current
       void host.iii
         .trigger('shell::pty::resize', {
@@ -836,7 +985,7 @@ export function useTerminalSession(
         })
     }, HEARTBEAT_MS)
     return () => window.clearInterval(heartbeat)
-  }, [host, visible])
+  }, [container, host, visible])
 
   useEffect(
     () => () => {
@@ -851,6 +1000,7 @@ export function useTerminalSession(
   )
 
   const close = useCallback(async () => {
+    connectionCoordinator.closing = true
     if (connectionPromiseRef.current) {
       try {
         await connectionPromiseRef.current
@@ -867,6 +1017,7 @@ export function useTerminalSession(
         })
       } catch (error) {
         if (!backendConfirmedSessionMissing(error)) {
+          connectionCoordinator.closing = false
           dispatch({ type: 'failed', error: errorMessage(error) })
           throw error
         }
@@ -896,6 +1047,7 @@ export function useTerminalSession(
         dispatch({ type: 'closed' })
         return warning
       } catch (error) {
+        connectionCoordinator.closing = false
         dispatch({ type: 'failed', error: errorMessage(error) })
         throw error
       }
@@ -908,17 +1060,27 @@ export function useTerminalSession(
     }
     dispatch({ type: 'closed' })
     return null
-  }, [host, leaseStore, paneId, removeLease, router, saveLease, storageKey])
+  }, [
+    connectionCoordinator,
+    host,
+    leaseStore,
+    paneId,
+    removeLease,
+    router,
+    saveLease,
+    storageKey,
+  ])
 
   const restart = useCallback(() => {
     void close()
       .then(() => {
+        connectionCoordinator.closing = false
         terminalRef.current?.reset()
         preMountOutputRef.current = []
         setRestartToken((token) => token + 1)
       })
       .catch(() => undefined)
-  }, [close])
+  }, [close, connectionCoordinator])
 
   const forget = useCallback(() => {
     const active = activeRef.current
@@ -942,10 +1104,11 @@ export function useTerminalSession(
 
   const startFresh = useCallback(() => {
     forget()
+    connectionCoordinator.closing = false
     terminalRef.current?.reset()
     preMountOutputRef.current = []
     setRestartToken((token) => token + 1)
-  }, [forget])
+  }, [connectionCoordinator, forget])
 
   const focus = useCallback(() => terminalRef.current?.focus(), [])
   const jumpToLatest = useCallback(() => {
@@ -954,17 +1117,34 @@ export function useTerminalSession(
     setAtBottom(true)
   }, [])
 
-  return {
-    atBottom,
-    cwd: state.cwd,
-    error: state.error,
-    focus,
-    jumpToLatest,
-    restart,
-    startFresh,
-    forget,
-    close,
-    setContainer,
-    status: state.status,
-  }
+  // One object per change, not per render: panes register it and memoized
+  // slots pass it down, so a fresh one each render would redo both.
+  return useMemo(
+    () => ({
+      atBottom,
+      cwd: state.cwd,
+      error: loadError ?? state.error,
+      focus,
+      jumpToLatest,
+      restart,
+      startFresh,
+      forget,
+      close,
+      setContainer,
+      status: state.status,
+    }),
+    [
+      atBottom,
+      close,
+      focus,
+      forget,
+      jumpToLatest,
+      loadError,
+      restart,
+      startFresh,
+      state.cwd,
+      state.error,
+      state.status,
+    ],
+  )
 }

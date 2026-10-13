@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-kanban"
-version = "0.1.15"
+version = "0.1.19"
 edition = "2024"
 description = "Kanban worker for iii — file-backed tickets, comments and agent assignment, the kanban:change / kanban:comment trigger types, and an injectable console board"
 license = "Apache-2.0"
@@ -25,6 +25,8 @@ iii-sdk = "=0.23.0"
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
 iii-worker-paths = { path = "../crates/worker-paths" }
+# Chat mention provider descriptor + search/get wire types (`@kanban(id=…)`).
+mention-contract = { path = "../crates/mention-contract" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "fs"] }
 serde = { version = "1", features = ["derive"] }

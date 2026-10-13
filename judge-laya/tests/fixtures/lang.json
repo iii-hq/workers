@@ -10,7 +10,8 @@
    "is_english": true,
    "language_undecided": false,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "short_en": {
@@ -24,7 +25,8 @@
    "is_english": true,
    "language_undecided": true,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "empty": {
@@ -36,7 +38,8 @@
    "is_english": true,
    "language_undecided": true,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "digits": {
@@ -48,7 +51,8 @@
    "is_english": true,
    "language_undecided": true,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "portuguese": {
@@ -62,7 +66,8 @@
    "is_english": false,
    "language_undecided": false,
    "diacritic_rate": 0.0367,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "spanish": {
@@ -76,7 +81,8 @@
    "is_english": false,
    "language_undecided": false,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "french": {
@@ -90,7 +96,8 @@
    "is_english": false,
    "language_undecided": false,
    "diacritic_rate": 0.0312,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "german": {
@@ -104,7 +111,8 @@
    "is_english": false,
    "language_undecided": false,
    "diacritic_rate": 0.0101,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "romanian": {
@@ -118,7 +126,8 @@
    "is_english": false,
    "language_undecided": false,
    "diacritic_rate": 0.0682,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "turkish_no_stop": {
@@ -132,7 +141,8 @@
    "is_english": false,
    "language_undecided": true,
    "diacritic_rate": 0.0988,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "hindi": {
@@ -146,7 +156,8 @@
    "is_english": false,
    "language_undecided": true,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 1.0
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
   }
  },
  "japanese": {
@@ -161,14 +172,15 @@
    "is_english": false,
    "language_undecided": true,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 1.0
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
   }
  },
  "mixed_dict": {
   "input": {
-   "subject": "Refund",
    "body": "Veuillez rembourser la facture en double, merci beaucoup pour votre aide.",
    "n": 3,
+   "subject": "Refund",
    "tags": [
     "urgent",
     "facture"
@@ -183,7 +195,8 @@
    "is_english": false,
    "language_undecided": false,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "nested_list": {
@@ -202,7 +215,8 @@
    "is_english": false,
    "language_undecided": false,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  },
  "html_like": {
@@ -216,7 +230,1912 @@
    "is_english": true,
    "language_undecided": false,
    "diacritic_rate": 0.0,
-   "non_latin_fraction": 0.0
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_form_subject": {
+  "input": {
+   "body": "Quero cancelar meu plano",
+   "subject": "New ticket from the web form"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": "Quero cancelar meu plano"
+  }
+ },
+ "pt_error_payload": {
+  "input": {
+   "descricao": "O pagamento não foi processado",
+   "error": {
+    "message": "Your card was declined. Please try again with a different card or contact your bank for more details."
+   }
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0076,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": "O pagamento não foi processado"
+  }
+ },
+ "pt_traceback": {
+  "input": "O sistema caiu de novo hoje de manhã, segue o log:\nTraceback (most recent call last):\n  File \"app.py\", line 42, in handle\n    conn = db.connect()\nConnectionError: the connection to the database was refused by the server",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0046,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": "O sistema caiu de novo hoje de manhã, segue o log:"
+  }
+ },
+ "pt_form_json_pretty": {
+  "input": "{\n  \"subject\": \"New ticket from the web form\",\n  \"body\": \"Quero cancelar meu plano\",\n  \"channel\": \"web\",\n  \"priority\": \"normal\"\n}",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": "\"body\": \"Quero cancelar meu plano\","
+  }
+ },
+ "pt_form_json_compact": {
+  "input": "{\"subject\": \"New ticket from the web form\", \"body\": \"Quero cancelar meu plano\", \"channel\": \"web\", \"priority\": \"normal\"}",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_line_in_en_text": {
+  "input": "Customer wrote the following message today:\nOlá, não consigo acessar minha conta desde ontem\nPlease advise on next steps for this account.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0145,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": "Olá, não consigo acessar minha conta desde ontem"
+  }
+ },
+ "pt_comment_in_code": {
+  "input": "def total(items):\n    # soma os valores da fatura para o cliente\n    return sum(items)",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_acronym_line": {
+  "input": "Radio bands for tonight:\nMON LA EST COM DES are listed below\nThe schedule changes every week",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_slash_compounds": {
+  "input": "Check the Nav/Com panel and the OS/2 drive at C:\\DOS\\mode\nThen restart ESA/UN mirror servers before noon",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_code_lines": {
+  "input": "import os\nresult = os.path.join(base, name)\nvalue = round(el, 2)\nif non_english: print(value)",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "es_json_pretty": {
+  "input": "{\n  \"asunto\": \"Factura duplicada\",\n  \"prioridad\": \"alta\",\n  \"mensaje\": \"Hola, me cobraron dos veces la misma factura y necesito el reembolso\"\n}",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "es",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "es_json_pretty_ascii": {
+  "input": "{\n  \"asunto\": \"Factura duplicada\",\n  \"prioridad\": \"alta\",\n  \"mensaje\": \"Hola, me cobraron dos veces la misma factura y necesito el reembolso\"\n}",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "es",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_json_compact": {
+  "input": "{\"ticket\": 123, \"summary\": \"Customer cannot log in after password reset\", \"tags\": [\"login\", \"auth\"]}",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_crlf_lines": {
+  "input": "Hello team,\r\nO pagamento não foi processado ontem à noite\r\nThanks",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0308,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_unicode_spaces": {
+  "input": "Hello team\nQuero cancelar\u001fmeu plano agora mesmo",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "es_conversation": {
+  "input": [
+   {
+    "content": "Hi, I need help with my order",
+    "role": "user"
+   },
+   {
+    "content": "Sure, what is the order number?",
+    "role": "assistant"
+   },
+   {
+    "content": "Es el pedido 4521 y todavía no ha llegado a mi casa",
+    "role": "user"
+   }
+  ],
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "es",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0075,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": "Es el pedido 4521 y todavía no ha llegado a mi casa"
+  }
+ },
+ "pt_list_of_strings": {
+  "input": [
+   "Please see below",
+   "Quero cancelar meu plano agora mesmo por favor"
+  ],
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_after_long_en": {
+  "input": {
+   "a_description": "The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering.",
+   "message": "Die Rechnung ist falsch und ich will mein Geld zurück"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_after_long_en": {
+  "input": {
+   "a_description": "The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering.",
+   "message": "Quero cancelar meu plano agora mesmo"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "han_after_long_en": {
+  "input": {
+   "a_description": "The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering.",
+   "message": "我的订单还没到，请帮我查一下"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "han_short_after_long_en": {
+  "input": {
+   "a_description": "The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering.",
+   "message": "我的订单还没到"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_after_long_en_as_string": {
+  "input": "{\"a_description\": \"The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering.\", \"message\": \"Die Rechnung ist falsch und ich will mein Geld zur\\u00fcck\"}",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_after_long_note": {
+  "input": {
+   "msg": "Ich habe zweimal bezahlt",
+   "note": "The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering."
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": "Ich habe zweimal bezahlt"
+  }
+ },
+ "de_line_past_window": {
+  "input": "The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering.\nDie Rechnung ist falsch und ich will mein Geld zurück",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_after_digits": {
+  "input": {
+   "a_digits": "1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 ",
+   "message": "Die Rechnung ist falsch und ich will mein Geld zurück"
+  },
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "multi_leaf_en": {
+  "input": {
+   "assignee": "Maria",
+   "body": "I cannot log in to the dashboard since this morning",
+   "status": "open",
+   "subject": "Login issue"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "multi_leaf_es": {
+  "input": {
+   "body": "No puedo entrar a mi cuenta desde ayer por la tarde",
+   "subject": "Problema",
+   "user": "jperez"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "name_field_only": {
+  "input": {
+   "comment": "Please call me back tomorrow about the order",
+   "name": "José"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0204,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "accented_leaf_undecided": {
+  "input": {
+   "a_note": "The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering. The customer reported that the dashboard loads slowly after the latest release, and the support team is collecting browser logs to share with engineering.",
+   "z_msg": "Zamówienie nie dotarło, proszę o pomoc"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_at_depth_6": {
+  "input": {
+   "a": {
+    "b": {
+     "c": {
+      "d": {
+       "e": {
+        "f": "Die Rechnung ist falsch und ich will mein Geld zurück"
+       }
+      }
+     }
+    }
+   },
+   "x": "Please check the invoice status today"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.011,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_at_depth_7": {
+  "input": {
+   "a": {
+    "b": {
+     "c": {
+      "d": {
+       "e": {
+        "f": {
+         "g": "Die Rechnung ist falsch und ich will mein Geld zurück"
+        }
+       }
+      }
+     }
+    }
+   },
+   "x": "Please check the invoice status today"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "it_ascii": {
+  "input": "Il cliente e stato addebitato due volte e vuole un rimborso",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "it",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "fr_ascii": {
+  "input": "Je veux annuler mon abonnement et etre rembourse",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "fr",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "shared_words_only": {
+  "input": "la factura e la o casa",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "it_articulated": {
+  "input": "la fattura nella cartella dei documenti",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "it",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "fr_merci": {
+  "input": "merci pour votre aide",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "fr",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "es_ascii": {
+  "input": "Hola, necesito ayuda porque me cobraron dos veces y quiero que me devuelvan el dinero",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "es",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_br_voce": {
+  "input": "Voce pode me mandar a nota fiscal?",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_br_bug_report": {
+  "input": "Deu erro 500 no endpoint de login depois do update",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_br_no_accents": {
+  "input": "Oi, preciso de ajuda pra cancelar minha assinatura, nao consigo acessar a conta",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_shouting": {
+  "input": "QUERO CANCELAR MEU PLANO AGORA MESMO, NAO AGUENTO MAIS",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_decomposed_accents": {
+  "input": "Não consegui pagar a fatura, você pode ajudar?",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_ascii": {
+  "input": "ich habe heute keine zeit",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_in_was": {
+  "input": "was ist in der box drin",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_ascii_fuer": {
+  "input": "Ich brauche eine neue Rechnung fuer meinen Vertrag bitte",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "nl": {
+  "input": "Ik heb de factuur nog niet ontvangen en wil graag weten wanneer die komt",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "ro_vs_it": {
+  "input": "Clientul a primit factura dar nu a plătit încă suma",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "ro",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0588,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_loanword_jose": {
+  "input": "Send the invoice to José before Friday",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0263,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_loanword_cafe": {
+  "input": "Please send me the café menu today please",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0244,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_loanword_resume": {
+  "input": "Could you email me your résumé before the meeting",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0408,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "en_loanword_zurich": {
+  "input": "We visited Zürich last summer and loved it",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0238,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "collision_come": {
+  "input": "Come one, come all",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "collision_son": {
+  "input": "My son, your son",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "collision_do": {
+  "input": "Do more, do less",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "collision_care": {
+  "input": "Care more, care less",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "collision_plus": {
+  "input": "add 45 to 87 plus 54 plus 43 plus 22",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "de_der_twice": {
+  "input": "reduzieren der helligkeit der lichter",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "identifiers_dict": {
+  "input": {
+   "email": "user@acme.com",
+   "url": "github.com"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "identifiers_string": {
+  "input": "github.com acme.com",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "identifiers_in_english": {
+  "input": "see github.com/os/com and docs.os.com for the os.path com.da details",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "identifiers_only": {
+  "input": "os.path com.br da.org os.com do.it",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "emails_versions": {
+  "input": "Contact admin@example.org about v1.2.3 and the U.S.A. release notes",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "sv_kan_inte": {
+  "input": "Kan inte logga in",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "sv",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "sv_jag_kan_inte": {
+  "input": "jag kan inte logga in",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "sv",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "sv_ascii": {
+  "input": "jag behover hjalp med losenord idag",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "sv",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "sv_accented": {
+  "input": "Jag behöver hjälp med min faktura, den har inte kommit fram än",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "sv",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0484,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "sv_short_fragment": {
+  "input": "glömt lösenord",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "sv",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.1429,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "sv_short_ascii": {
+  "input": "glomt losenord",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "sv",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "nordic_greeting": {
+  "input": "hej tack",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "da_overlap": {
+  "input": "Hej, jeg kommer om lidt og vi ses",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "da_sentence": {
+  "input": "Jeg har ikke modtaget min pakke endnu, kan I hjælpe mig?",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0179,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "da_ascii": {
+  "input": "hej, jeg vil gerne have hjaelp med min ordre tak",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "han_with_brand": {
+  "input": {
+   "body": "我的 iPhone 15 Pro Max 订单还没到"
+  },
+  "expected": {
+   "script": "han",
+   "script_profile": {
+    "latin": 0.631578947368421,
+    "han": 0.3684210526315789
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.3684,
+   "mixed_segment": null
+  }
+ },
+ "kana_with_brand": {
+  "input": {
+   "body": "Amazonで買ったiPhoneが届かない"
+  },
+  "expected": {
+   "script": "kana",
+   "script_profile": {
+    "latin": 0.5714285714285714,
+    "kana": 0.3333333333333333,
+    "han": 0.09523809523809523
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.4286,
+   "mixed_segment": null
+  }
+ },
+ "korean_with_brand": {
+  "input": "갤럭시 S24 Ultra 주문이 아직 안 왔어요",
+  "expected": {
+   "script": "hangul",
+   "script_profile": {
+    "latin": 0.3333333333333333,
+    "hangul": 0.6666666666666666
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.6667,
+   "mixed_segment": null
+  }
+ },
+ "hindi_with_brand": {
+  "input": "Samsung Galaxy S24 Ultra Pro Max order नहीं आया",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.8823529411764706,
+    "devanagari": 0.11764705882352941
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.1176,
+   "mixed_segment": null
+  }
+ },
+ "en_greek_symbol": {
+  "input": "Set α to 0.05 and rerun the test with the same seed",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.9722222222222222,
+    "greek": 0.027777777777777776
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0278,
+   "mixed_segment": null
+  }
+ },
+ "en_cyrillic_name": {
+  "input": "The ticket was filed by Дмитрий Петрович Савицкий yesterday",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.5490196078431373,
+    "cyrillic": 0.45098039215686275
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.451,
+   "mixed_segment": null
+  }
+ },
+ "en_cyrillic_combining_name": {
+  "input": "The report was written by Влади́мир yesterday evening",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.8222222222222222,
+    "cyrillic": 0.17777777777777778
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.1778,
+   "mixed_segment": null
+  }
+ },
+ "en_ipa": {
+  "input": "The name Vladimir is pronounced [vlɐˈdʲimʲɪr] in Russian",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.9361702127659575,
+    "other": 0.06382978723404255
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0638,
+   "mixed_segment": null
+  }
+ },
+ "en_greek_word": {
+  "input": "Please translate the word καλημέρα for the customer",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.8181818181818182,
+    "greek": 0.18181818181818182
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.1818,
+   "mixed_segment": null
+  }
+ },
+ "en_greek_words": {
+  "input": "Please translate καλημέρα σας φίλε for the customer",
+  "expected": {
+   "script": "greek",
+   "script_profile": {
+    "latin": 0.6590909090909091,
+    "greek": 0.3409090909090909
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.3409,
+   "mixed_segment": null
+  }
+ },
+ "en_halfwidth_kana": {
+  "input": "Order ｶｷｸｹｺ shipped",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.7058823529411765,
+    "other": 0.29411764705882354
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.2941,
+   "mixed_segment": null
+  }
+ },
+ "bopomofo": {
+  "input": "ㄅㄆㄇㄈ ㄉㄊㄋㄌ ㄍㄎㄏ",
+  "expected": {
+   "script": "other",
+   "script_profile": {
+    "other": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "halfwidth_kana": {
+  "input": "ｱｲｳｴｵ ｶｷｸｹｺ",
+  "expected": {
+   "script": "other",
+   "script_profile": {
+    "other": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "cjk_ext_b": {
+  "input": "𠀀𠀁𠀂𠀃",
+  "expected": {
+   "script": "other",
+   "script_profile": {
+    "other": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "fullwidth_latin": {
+  "input": "ＨＥＬＬＯ ＷＯＲＬＤ",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "az": {
+  "input": "Mən sizin xidmətinizdən razı deyiləm və pulumu geri istəyirəm",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "az",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.1311,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "az_dotted_i": {
+  "input": "İndi mən və siz bu məsələni həll etməliyik",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "az",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.1628,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "tr_dotted_i": {
+  "input": "İstanbul ofisindeki İnsan Kaynakları ekibi bu ayın maaşını henüz ödemedi",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0946,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "bn_romanized": {
+  "input": "ami invoice er jonno duibar charge peyechi, refund chai",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "bn",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "bn_romanized_2": {
+  "input": "ami tomake bhalobashi kintu amar kotha shono",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "bn",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_undecided_short": {
+  "input": "Quero cancelar",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "pt_undecided_dict": {
+  "input": {
+   "message": "Esqueci minha senha"
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "korean": {
+  "input": "주문한 상품이 아직 도착하지 않았습니다",
+  "expected": {
+   "script": "hangul",
+   "script_profile": {
+    "hangul": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "arabic": {
+  "input": "لم يصل طلبي حتى الآن، أرجو المساعدة",
+  "expected": {
+   "script": "arabic",
+   "script_profile": {
+    "arabic": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "hebrew": {
+  "input": "ההזמנה שלי עדיין לא הגיעה",
+  "expected": {
+   "script": "hebrew",
+   "script_profile": {
+    "hebrew": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "thai": {
+  "input": "สินค้าที่สั่งยังไม่มาถึง",
+  "expected": {
+   "script": "thai",
+   "script_profile": {
+    "thai": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "ethiopic": {
+  "input": "ትዕዛዜ እስካሁን አልደረሰም",
+  "expected": {
+   "script": "ethiopic",
+   "script_profile": {
+    "ethiopic": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "georgian": {
+  "input": "ჩემი შეკვეთა ჯერ არ მოსულა",
+  "expected": {
+   "script": "georgian",
+   "script_profile": {
+    "georgian": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "armenian": {
+  "input": "Իմ պատվերը դեռ չի եկել",
+  "expected": {
+   "script": "armenian",
+   "script_profile": {
+    "armenian": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "tamil": {
+  "input": "என் ஆர்டர் இன்னும் வரவில்லை",
+  "expected": {
+   "script": "tamil",
+   "script_profile": {
+    "tamil": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "cyrillic_greek_tie": {
+  "input": "абв αβγ",
+  "expected": {
+   "script": "cyrillic",
+   "script_profile": {
+    "cyrillic": 0.5,
+    "greek": 0.5
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "greek_cyrillic_tie": {
+  "input": "αβγ абв",
+  "expected": {
+   "script": "greek",
+   "script_profile": {
+    "greek": 0.5,
+    "cyrillic": 0.5
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0,
+   "mixed_segment": null
+  }
+ },
+ "latin_cyrillic_tie": {
+  "input": "abc абв",
+  "expected": {
+   "script": "cyrillic",
+   "script_profile": {
+    "latin": 0.5,
+    "cyrillic": 0.5
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.5,
+   "mixed_segment": null
+  }
+ },
+ "pl_no_list": {
+  "input": "Zamówienie nie dotarło jeszcze, proszę o pomoc w tej sprawie",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.05,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "vi": {
+  "input": "Tôi chưa nhận được đơn hàng của mình",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.1389,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "emoji_en": {
+  "input": "Thanks so much for the quick help 🙏🎉 you are the best",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "rounding_diacritic_160": {
+  "input": "café ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0063,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "rounding_diacritic_800": {
+  "input": "café ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0013,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "rounding_non_latin_160": {
+  "input": "α abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc abc ",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.99375,
+    "greek": 0.00625
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0062,
+   "mixed_segment": null
+  }
+ },
+ "arabic_mark_after_unicode_9": {
+  "input": {
+   "msg": "ok ب࢘ت",
+   "name": "Ana"
+  },
+  "expected": {
+   "script": "arabic",
+   "script_profile": {
+    "latin": 0.7142857142857143,
+    "arabic": 0.2857142857142857
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.2857,
+   "mixed_segment": null
+  }
+ },
+ "hangul_malayalam_mark": {
+  "input": "Order ok: 졄഻찃",
+  "expected": {
+   "script": "hangul",
+   "script_profile": {
+    "latin": 0.7777777777777778,
+    "hangul": 0.2222222222222222
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.2222,
+   "mixed_segment": null
+  }
+ },
+ "telugu_nukta_after_unicode_9": {
+  "input": "ok ఎ఼ ok",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 0.8,
+    "telugu": 0.2
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.2,
+   "mixed_segment": null
+  }
+ },
+ "pt_shouting_with_pharyngeal": {
+  "input": "Hello team, please see the note below.\nQUERO CANCELAR MEU PLANO ʕ",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "null_state": {
+  "input": null,
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "number_state": {
+  "input": 42,
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "bool_state": {
+  "input": true,
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "empty_dict": {
+  "input": {},
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
+  }
+ },
+ "empty_list": {
+  "input": [],
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0,
+   "mixed_segment": null
   }
  }
 }

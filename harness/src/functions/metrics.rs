@@ -263,7 +263,8 @@ pub async fn handle(
         }
         let mut context = None;
         if let Some(turn) =
-            crate::state::get_turn(&deps.iii, &node.session_id, cfg.session_timeout_ms).await?
+            crate::state::get_turn_unhydrated(&deps.iii, &node.session_id, cfg.session_timeout_ms)
+                .await?
         {
             context = turn.context_snapshot.clone();
             if context.is_none() {

@@ -113,6 +113,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             "judge-typesafe::models::list".to_owned(),
             "judge-typesafe::cancel".to_owned(),
             "judge-typesafe::on-config-change".to_owned(),
+            "judge-typesafe::on-secret-change".to_owned(),
         ]);
         if console_ui_enabled {
             expected_functions.insert("judge-typesafe::ui-content".to_owned());
@@ -127,9 +128,11 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             !console_ui_enabled,
             false,
         );
+        let mut secret_reload = false;
         while !(config
             && functions == expected_functions
             && reload
+            && secret_reload
             && script
             && style
             && identity
@@ -183,6 +186,12 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         })
                     );
                     reload = true;
+                }
+                // Bound even though no secrets worker exists: the engine parks it.
+                "registertrigger" if value["trigger_type"] == "secrets::changed" => {
+                    assert_eq!(value["function_id"], "judge-typesafe::on-secret-change");
+                    assert_eq!(value["config"], json!({}));
+                    secret_reload = true;
                 }
                 "registertrigger" if value["trigger_type"] == "console:script" => {
                     assert!(console_ui_enabled);

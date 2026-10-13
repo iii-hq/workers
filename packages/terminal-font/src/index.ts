@@ -36,9 +36,26 @@ function storage(): Storage | null {
   }
 }
 
+/**
+ * The size as last read or written. `useSyncExternalStore` reads a snapshot on
+ * every render of every terminal that shows the size, so storage is read once
+ * and then only when something changes it. `store` is the storage it came
+ * from: a store swapped or newly blocked underneath is read again.
+ *
+ * Only the listeners below keep it current, so it holds only while one is
+ * attached: with none, another page's copy of this module can store a new
+ * size unseen, and the next step would start from the stale one.
+ */
+let cached: { store: Storage | null; size: number } | null = null
+let subscribers = 0
+
 export function readFontSize(): number {
-  const stored = storage()?.getItem(STORAGE_KEY)
-  return stored === null || stored === undefined ? DEFAULT_FONT_SIZE : clampFontSize(stored)
+  const store = storage()
+  if (subscribers > 0 && cached !== null && cached.store === store) return cached.size
+  const stored = store?.getItem(STORAGE_KEY)
+  const size = stored === null || stored === undefined ? DEFAULT_FONT_SIZE : clampFontSize(stored)
+  cached = { store, size }
+  return size
 }
 
 /** Persists the clamped size, tells every listener, and returns what it wrote. */
@@ -50,6 +67,7 @@ export function writeFontSize(value: unknown): number {
     // Full or blocked: the size still applies to this page, it just will not
     // survive a reload.
   }
+  cached = { store: storage(), size }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: size }))
   }
@@ -59,13 +77,24 @@ export function writeFontSize(value: unknown): number {
 /** Fires on a change from this tab and from any other tab. */
 export function subscribeFontSize(onChange: () => void): () => void {
   if (typeof window === 'undefined') return () => {}
-  const fromOtherTab = (event: StorageEvent) => {
-    if (event.key === null || event.key === STORAGE_KEY) onChange()
+  // Another page's bundle carries its own copy of this module, so a change
+  // made in this tab arrives with its size instead of through this cache.
+  const fromThisTab = (event: Event) => {
+    cached = { store: storage(), size: clampFontSize((event as CustomEvent).detail) }
+    onChange()
   }
-  window.addEventListener(CHANGE_EVENT, onChange)
+  const fromOtherTab = (event: StorageEvent) => {
+    if (event.key !== null && event.key !== STORAGE_KEY) return
+    cached = null
+    onChange()
+  }
+  // What was cached before anything listened may be stale already.
+  if (subscribers++ === 0) cached = null
+  window.addEventListener(CHANGE_EVENT, fromThisTab)
   window.addEventListener('storage', fromOtherTab)
   return () => {
-    window.removeEventListener(CHANGE_EVENT, onChange)
+    subscribers--
+    window.removeEventListener(CHANGE_EVENT, fromThisTab)
     window.removeEventListener('storage', fromOtherTab)
   }
 }

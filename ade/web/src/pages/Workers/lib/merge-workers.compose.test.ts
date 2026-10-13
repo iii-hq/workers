@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RawWorkersSnapshot } from '../api/workers'
 import type { WorkerRow } from '../types'
-import { composeActions, distinctManagement, filterWorkerRows } from '../types'
-import {
-  mergeWorkers,
-  mergeWorkersView,
-  summarizeCompose,
-} from './merge-workers'
+import { mergeWorkers } from './merge-workers'
 
 function row(rows: WorkerRow[], name: string): WorkerRow {
   const found = rows.find((r) => r.name === name)
@@ -80,7 +75,6 @@ describe('mergeWorkers with compose', () => {
       stopEnabled: false,
       stopDisabledReason: null,
     })
-    expect(composeActions(found)).toEqual(['stop', 'restart'])
   })
 
   it('compose wins over supervisor classification', () => {
@@ -121,66 +115,5 @@ describe('mergeWorkers with compose', () => {
       status: 'stopped',
       pid: null,
     })
-  })
-
-  it('offers start for stopped and failed containers, stop while running', () => {
-    const rows = mergeWorkers(snapshot({ compose }))
-    expect(composeActions(row(rows, 'web'))).toEqual(['start', 'restart'])
-    expect(composeActions(row(rows, 'provider-anthropic'))).toEqual([
-      'start',
-      'restart',
-    ])
-    expect(composeActions(row(rows, 'provider-openai'))).toEqual([
-      'stop',
-      'restart',
-    ])
-  })
-
-  it('offers no compose actions to rows compose does not supervise', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        engineWorkers: [engineWorker('todo-app')],
-        compose,
-      }),
-    )
-    expect(composeActions(row(rows, 'todo-app'))).toEqual([])
-  })
-
-  it('summarizes the compose project for the page header', () => {
-    expect(summarizeCompose(compose)).toEqual({
-      namespace: 'my-project',
-      file: '/proj/worker-compose.yaml',
-      daemonPid: 27045,
-      ready: 1,
-      total: 4,
-    })
-    expect(summarizeCompose(null)).toBeNull()
-    expect(mergeWorkersView(snapshot({ compose })).compose?.total).toBe(4)
-  })
-
-  it('filters by management kind and lists the kinds present in a fixed order', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        engineWorkers: [engineWorker('todo-app')],
-        compose,
-      }),
-    )
-    expect(distinctManagement(rows)).toEqual(['compose', 'standalone'])
-    expect(
-      filterWorkerRows(rows, {
-        search: '',
-        tag: null,
-        runtime: null,
-        management: 'compose',
-      }).map((r) => r.name),
-    ).toEqual(['llm-router', 'provider-anthropic', 'provider-openai', 'web'])
-    expect(
-      filterWorkerRows(rows, {
-        search: 'failed',
-        tag: null,
-        runtime: null,
-        management: null,
-      }).map((r) => r.name),
-    ).toEqual(['provider-anthropic'])
   })
 })

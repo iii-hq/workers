@@ -2,7 +2,7 @@
 //! declare-with-backoff loop (spec § Registration lifecycle).
 use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models, refresh_models_periodically};
-use crate::errors::invalid_request_from_serde;
+use crate::errors::{invalid_request, invalid_request_from_serde};
 use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{auth, router_client, state, PROVIDER_ID};
@@ -12,6 +12,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::types::model::ThinkingLevel;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -37,6 +38,22 @@ pub fn declaration() -> ProviderDeclaration {
         // registration and periodically while the worker is running; a curated
         // fallback covers an OAuth-rejected models endpoint.
         supports_model_listing: Some(true),
+        // Starting point for callers that name no model. The router ranks
+        // by variant in this order (Sonnet, then Opus, then Fable, then
+        // Haiku), then the newest version within the variant.
+        default_models: Some(vec![
+            "claude-code/claude-sonnet-5-5".into(),
+            "claude-code/claude-sonnet-5".into(),
+            "claude-code/claude-sonnet-4-6".into(),
+            "claude-code/claude-opus-5-5".into(),
+            "claude-code/claude-opus-5".into(),
+            "claude-code/claude-fable-5-1".into(),
+            "claude-code/claude-haiku-5-5".into(),
+            "claude-code/claude-haiku-4-5".into(),
+        ]),
+        default_thinking_level: Some(ThinkingLevel::Minimal),
+        context_overflow_hint: None,
+        credential_optional: None,
         models: None,
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-claude-code".into()),
@@ -188,6 +205,25 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                 }
             })
             .description(surface::ON_ROUTER_READY_DESC)
+            .metadata(json!({ "internal": true })),
+        );
+    }
+
+    // Exact prompt token count behind router::count_tokens, authenticated
+    // with the same OAuth credential path as stream.
+    {
+        let (iii_count, http_count, cache_count) = (iii.clone(), http.clone(), cache.clone());
+        iii.register_function(
+            surface::COUNT_TOKENS_ID,
+            typed_async_with_bad_request(
+                move |req: crate::count_tokens::CountTokensRequest| {
+                    let (iii, http, cache) =
+                        (iii_count.clone(), http_count.clone(), cache_count.clone());
+                    async move { crate::count_tokens::handle(&iii, &http, &cache, req).await }
+                },
+                |e: serde_json::Error| invalid_request(format!("bad CountTokensRequest: {e}")),
+            )
+            .description(surface::COUNT_TOKENS_DESC)
             .metadata(json!({ "internal": true })),
         );
     }

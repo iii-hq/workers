@@ -82,7 +82,8 @@ or lists. `start_after` names container keys and includes required package depen
 An unversioned package resolves the latest matching version; use an explicit version
 to keep it pinned. Settings changes can restart a running worker.
 
-Before installation, choose a unique operation ID and register a one-shot wake with
+Before installation, choose a fresh operation ID that starts with your session id (ids are
+global to Compose and never reusable) and register a one-shot wake with
 `engine::register_trigger { trigger_type: "compose-operation", config: {
 operation_id: "<operation-id>", terminal_only: true }, once: true }`.
 Keep the subscription ID and pass the same `operation_id` to `compose::add`.

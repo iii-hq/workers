@@ -1,0 +1,6 @@
+name: Plain project
+description: A template without a worker block; never scaffoldable.
+requires:
+  - typescript
+files:
+  - README.md

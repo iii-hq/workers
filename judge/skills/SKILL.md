@@ -83,6 +83,18 @@ call, which answers `code: "cancelled"`. Absent, finished or other callers' ids
 return `cancelled: false`. Details and the bus example:
 [cancellation](../reference.md#cancellation).
 
+## Resolve chat mentions
+
+`judge::mentions::resolve { "text": "…@kanban(id=\"KAN-12\")…" }` (or
+`{ "mentions": [{ "name": "kanban", "id": "KAN-12" }] }`) resolves
+worker-defined `@<name>(id="…")` mentions through their providers: each one's
+`status` (`resolved`, `not_found`, `unknown_provider`, `error`), one-line
+`summary` and the `details` call that returns the full item. Agents rarely
+need it — the judge's harness hook already resolves the mentions users write
+into a `<mentions>` block — but it verifies a new provider
+(`ade/mentions`) and serves surfaces outside the harness. See
+[chat mentions](../reference.md#chat-mentions).
+
 ## Result and operational boundaries
 
 - Success carries the effective `model`, all `results` and `stats`; errors carry

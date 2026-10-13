@@ -35,6 +35,7 @@ import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
 import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
+import type { MentionSearchContext } from '@/lib/mentions/types'
 import { cn } from '@/lib/utils'
 import type {
   Attachment,
@@ -42,6 +43,10 @@ import type {
   ModelOption,
   ThinkingLevel,
 } from '@/types/chat'
+import type {
+  ComposerControlProps,
+  ComposerControlRegistration,
+} from '@/types/injectable-ui'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
 import { GENERIC_COMPOSER_PLACEHOLDER } from './agent-defaults'
@@ -104,6 +109,25 @@ function ComposerActionsSlot({
   return visible ? <>{children}</> : null
 }
 
+/**
+ * Injected composer controls (`host.chat.registerComposerControl`) rendered
+ * for one session and split by where they sit: `project` ones go to the
+ * working-directory strip, the rest (and a placement this console does not
+ * know) beside the model picker.
+ */
+export function composerControlNodes(
+  controls: readonly ComposerControlRegistration[],
+  props: ComposerControlProps,
+): { footer: ReactNode[]; project: ReactNode[] } {
+  const nodes = { footer: [] as ReactNode[], project: [] as ReactNode[] }
+  for (const { id, placement, render: Control } of controls) {
+    nodes[placement === 'project' ? 'project' : 'footer'].push(
+      <Control key={id} {...props} />,
+    )
+  }
+  return nodes
+}
+
 export interface ComposerSubmitPayload {
   text: string
   attachments: Attachment[]
@@ -125,7 +149,8 @@ const actionIdleClass =
 
 /** The chevron at the project strip's edge that folds the card away (phone only). */
 const stripToggleClass = cn(
-  'absolute top-0 right-1 flex size-8 items-center justify-center rounded-full text-ink-faint sm:hidden',
+  // Offset by the strip's 1px transparent border, so it sits where it did.
+  'absolute -top-px right-[3px] flex size-8 items-center justify-center rounded-full text-ink-faint sm:hidden',
   'hover:bg-surface-hover hover:text-ink',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
 )
@@ -193,6 +218,13 @@ interface ComposerProps {
   blocked?: boolean
   /** Prevent sending without locking the editor (e.g. transcript hydration). */
   submitBlocked?: boolean
+  /**
+   * Claims a send someone already decided for this chat's draft (see
+   * `sendDraftWhenReady`), answering the text it was decided for. Asked the
+   * first time the composer can send; the draft goes only if it still holds
+   * that text.
+   */
+  claimDraftSend?: () => string | undefined
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
@@ -251,12 +283,23 @@ interface ComposerProps {
    * `host.chat.registerComposerControl` slot), already built by the host.
    */
   composerControls?: ReactNode
+  /**
+   * The same slot's `placement: 'project'` controls, rendered in the
+   * working-directory strip right after the folder (so only while that
+   * strip shows).
+   */
+  projectControls?: ReactNode
   functionEntries?: FunctionEntry[]
   /**
    * File search under `workingDir` for the `@` / `#` menus. Absent (mock
    * backends, no shell) = the menus offer functions only.
    */
   searchFiles?: FileSearchFn
+  /**
+   * Where worker mention searches (`@kanban:…`) are asked from: this chat's
+   * session and folder.
+   */
+  mentionContext?: MentionSearchContext
   /**
    * Open a mentioned file where it can be read (the shell explorer, on the
    * referenced lines) when its pill is clicked. Absent = clicking a pill
@@ -312,6 +355,7 @@ export function Composer({
   queueWhileStreaming,
   blocked,
   submitBlocked,
+  claimDraftSend,
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
@@ -323,8 +367,10 @@ export function Composer({
   syncedAttachments,
   composerActions,
   composerControls,
+  projectControls,
   functionEntries,
   searchFiles,
+  mentionContext,
   onOpenFileMention,
   queuedForEdit,
   onEditQueued,
@@ -473,6 +519,17 @@ export function Composer({
     updateAttachments,
   ])
 
+  // A draft whose send was decided before the chat opened goes the moment
+  // the composer can send it — with a model, or the send would be refused
+  // after the editor was already cleared. The editor reports no change for
+  // its seeded text, so a different text means the user edited the draft
+  // meanwhile: it is theirs to send.
+  useEffect(() => {
+    if (submitDisabled || !model) return
+    const decided = claimDraftSend?.()
+    if (decided?.trim() && decided === textRef.current) handleSubmit()
+  }, [submitDisabled, model, claimDraftSend, handleSubmit])
+
   const handleAttach = useCallback(
     (next: Attachment[]) => {
       updateAttachments([...attachmentsRef.current, ...next], {
@@ -607,14 +664,30 @@ export function Composer({
       )}
     >
       {showWorkingDir && onWorkingDirChange ? (
-        /* The project strip: a folder bar inset 8px from the card's edges and
-           tucked behind its top edge. The button is taller than the visible
-           strip (its bottom padding hides under the card), so the label sits
-           centred in what shows; folded, the card is gone and the strip
-           rounds off on its own. Fill and ink are both nudged a few percent
-           toward each other so the strip reads as a step behind the card in
-           either theme; hover only nudges the fill further — no outline. */
-        <div className="composer-project-tab absolute inset-x-2 top-0 z-0">
+        /* The project strip: a bar inset 8px from the card's edges and
+           tucked behind its top edge. It is taller than what shows (its
+           bottom padding hides under the card), so the folder and the
+           project controls after it sit centred in what shows; folded, the
+           card is gone and the strip rounds off on its own. Fill and ink are
+           both nudged a few percent toward each other so the strip reads as
+           a step behind the card in either theme, and its type and ink carry
+           into the controls. The folder is a pill as wide as its name that
+           only nudges the fill further on hover or while its picker is open
+           — no outline. */
+        <div
+          className={cn(
+            'composer-project-tab absolute inset-x-2 top-0 z-0 flex items-center gap-1 border border-transparent pr-12 pl-[7px] text-xs font-medium text-[color-mix(in_oklab,var(--color-ink)_80%,var(--color-panel-raised))]',
+            cardHidden
+              ? 'h-8 rounded-xl shadow-lift'
+              : 'h-11 rounded-t-xl pb-3',
+            // While options are locked the fill fades with the folder, as
+            // the one-button strip did; controls that stay usable (the fold
+            // toggle, a project control) keep their full ink.
+            optionsDisabled
+              ? 'bg-[color-mix(in_oklab,var(--color-panel-raised)_96%,var(--color-ink))]/50'
+              : 'bg-[color-mix(in_oklab,var(--color-panel-raised)_96%,var(--color-ink))]',
+          )}
+        >
           <DirectoryPicker
             value={workingDir ?? null}
             onChange={onWorkingDirChange}
@@ -623,13 +696,12 @@ export function Composer({
             externalError={workingDirError}
             defaultDir={defaultWorkingDir}
             worktrees={worktreePicker}
-            className={cn(
-              'w-full [&>button]:w-full [&>button]:justify-start [&>button]:gap-2 [&>button]:bg-[color-mix(in_oklab,var(--color-panel-raised)_96%,var(--color-ink))] [&>button]:pr-12 [&>button]:pl-4 [&>button]:text-xs [&>button]:font-medium [&>button]:text-[color-mix(in_oklab,var(--color-ink)_80%,var(--color-panel-raised))] [&>button:hover]:bg-[color-mix(in_oklab,var(--color-panel-raised)_90%,var(--color-ink))] [&>button>svg]:size-4',
-              cardHidden
-                ? '[&>button]:h-8 [&>button]:rounded-xl [&>button]:shadow-lift'
-                : '[&>button]:h-11 [&>button]:rounded-t-xl [&>button]:rounded-b-none [&>button]:pb-3',
-            )}
+            popoverAlign="start"
+            // A finger gets a bigger target around the pill, reaching down
+            // under the strip rather than up over what sits above it.
+            className="[&>button]:relative [&>button]:h-7 [&>button]:rounded-full [&>button]:px-2 [&>button]:text-xs [&>button]:text-inherit [&>button:hover]:bg-[color-mix(in_oklab,var(--color-panel-raised)_90%,var(--color-ink))] [&>button[aria-expanded=true]]:bg-[color-mix(in_oklab,var(--color-panel-raised)_90%,var(--color-ink))] pointer-coarse:[&>button]:after:absolute pointer-coarse:[&>button]:after:-inset-x-1 pointer-coarse:[&>button]:after:-top-0.5 pointer-coarse:[&>button]:after:-bottom-2.5 pointer-coarse:[&>button]:after:content-['']"
           />
+          {projectControls}
           <button
             type="button"
             onClick={() => setFolded(!collapsedRef.current)}
@@ -709,6 +781,7 @@ export function Composer({
             initialContent={resolvedInitialContent}
             functionEntries={functionEntries}
             searchFiles={searchFiles}
+            mentionContext={mentionContext}
             onOpenFileMention={onOpenFileMention}
             menuFrameRef={card}
             onHistoryNav={onEditQueued ? handleHistoryNav : undefined}

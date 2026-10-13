@@ -4,6 +4,11 @@
 //!
 //! `engine_url` is intentionally NOT here — it is bootstrap (you need it to
 //! reach the configuration worker), so it stays on the `--url` CLI flag.
+//!
+//! The event feeds are the fixed trigger types `grok::agent-event` and
+//! `grok::raw-event` (see `agent_feed`), so there are no stream-name keys.
+//! A stored config that still carries the retired `events_stream` /
+//! `raw_events_stream` keys keeps loading: unknown fields are ignored.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -38,12 +43,6 @@ impl Default for Defaults {
 pub struct Config {
     /// Per-turn defaults applied when a `grok::run` payload omits a field.
     pub defaults: Defaults,
-    /// Stream that carries the translated AgentEvent frames (what the console
-    /// and acp worker render). Grouped by session_id.
-    pub events_stream: String,
-    /// Stream that carries the raw Grok streaming-json events, verbatim.
-    /// Grouped by session_id.
-    pub raw_events_stream: String,
     /// Path to the Grok CLI binary. Empty = resolve `grok` on PATH.
     pub grok_executable: String,
     /// Prepend the iii runtime context to the first prompt of a session so the
@@ -55,8 +54,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             defaults: Defaults::default(),
-            events_stream: "agent::events".to_string(),
-            raw_events_stream: "grok::events".to_string(),
             grok_executable: String::new(),
             iii_context: true,
         }

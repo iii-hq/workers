@@ -3,9 +3,12 @@
 //! Implements the injection protocol from
 //! `iii/tech-specs/2026-07-17-injectable-ui/injection-protocol.md`:
 //!
-//! - Workers register `console:script` / `console:style` triggers whose
-//!   `config.path` is the asset's identity; the trigger's `function_id`
-//!   names the *content function* the console invokes to fetch source.
+//! - Workers register `console:script` / `console:style` /
+//!   `console:module` triggers whose `config.path` is the asset's identity;
+//!   the trigger's `function_id` names the *content function* the console
+//!   invokes to fetch source. Modules are served like scripts but the SPA
+//!   loader never imports them at mount — pages pull them on demand via
+//!   `host.importModule`.
 //! - Console tabs register `console:assets` triggers — subscriptions whose
 //!   `function_id` is the per-tab handler the console pushes
 //!   `sync`/`set`/`delete` events to.
@@ -38,6 +41,7 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const SCRIPT_TYPE: &str = "console:script";
 pub const STYLE_TYPE: &str = "console:style";
+pub const MODULE_TYPE: &str = "console:module";
 pub const ASSETS_TYPE: &str = "console:assets";
 
 /// Max bytes per fetched asset. Multi-MiB assets are a bundling smell; the
@@ -51,7 +55,7 @@ const FETCH_ATTEMPTS: u32 = 2;
 const FETCH_TIMEOUT_MS: u64 = 3_000;
 const FETCH_BACKOFF_MS: u64 = 250;
 
-/// Trigger config schema for both asset types (`additionalProperties`
+/// Trigger config schema for every asset type (`additionalProperties`
 /// enforced console-side; the engine treats trigger config schemas as
 /// advisory).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -69,25 +73,26 @@ pub struct AssetTriggerConfig {
 pub struct SubscriptionTriggerConfig {}
 
 /// Short asset kind — trigger type ids are `console:*`, kinds stay
-/// `script`/`style` in push payloads and the manifest.
+/// `script`/`style`/`module` in push payloads and the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AssetKind {
     Script,
     Style,
+    Module,
 }
 
 impl AssetKind {
     pub fn content_type(self) -> &'static str {
         match self {
-            AssetKind::Script => "text/javascript; charset=utf-8",
+            AssetKind::Script | AssetKind::Module => "text/javascript; charset=utf-8",
             AssetKind::Style => "text/css; charset=utf-8",
         }
     }
 
     fn extension(self) -> &'static str {
         match self {
-            AssetKind::Script => ".js",
+            AssetKind::Script | AssetKind::Module => ".js",
             AssetKind::Style => ".css",
         }
     }
@@ -96,6 +101,7 @@ impl AssetKind {
         match self {
             AssetKind::Script => "script",
             AssetKind::Style => "style",
+            AssetKind::Module => "module",
         }
     }
 }
@@ -109,7 +115,8 @@ pub struct Asset {
     pub hash: String,
     pub content: String,
     pub content_type: String,
-    /// Style-lint findings (warn-only). Empty for scripts and clean styles.
+    /// Style-lint findings (warn-only). Empty for scripts, modules, and clean
+    /// styles.
     pub warnings: Vec<String>,
 }
 
@@ -361,6 +368,7 @@ impl UiBus for SdkBus {
 enum EventSource {
     Script,
     Style,
+    Module,
     Subscription,
 }
 
@@ -411,7 +419,7 @@ impl UiControl {
     }
 }
 
-/// One handler instance per trigger type; all three feed the same queue so
+/// One handler instance per trigger type; all four feed the same queue so
 /// asset commits and subscription syncs are mutually ordered.
 struct QueueingTriggerHandler {
     source: EventSource,
@@ -543,6 +551,7 @@ impl Processor {
             }
             EventSource::Script => self.register_asset(AssetKind::Script, config).await,
             EventSource::Style => self.register_asset(AssetKind::Style, config).await,
+            EventSource::Module => self.register_asset(AssetKind::Module, config).await,
         }
     }
 
@@ -590,7 +599,7 @@ impl Processor {
             return Err(format!(
                 "path '{path}' must end in '{}' for a {} asset",
                 kind.extension(),
-                SCRIPT_OR_STYLE(kind),
+                trigger_type_of(kind),
             ));
         }
 
@@ -609,7 +618,7 @@ impl Processor {
         let hash = content_hash(&fetched.content);
         let warnings = match kind {
             AssetKind::Style => lint_style(&fetched.content),
-            AssetKind::Script => Vec::new(),
+            AssetKind::Script | AssetKind::Module => Vec::new(),
         };
         for w in &warnings {
             tracing::warn!(path = %path, "style lint: {w}");
@@ -743,15 +752,15 @@ impl Processor {
     }
 }
 
-#[allow(non_snake_case)]
-fn SCRIPT_OR_STYLE(kind: AssetKind) -> &'static str {
+fn trigger_type_of(kind: AssetKind) -> &'static str {
     match kind {
         AssetKind::Script => SCRIPT_TYPE,
         AssetKind::Style => STYLE_TYPE,
+        AssetKind::Module => MODULE_TYPE,
     }
 }
 
-/// Register the three `console:*` trigger types and spawn the queue
+/// Register the four `console:*` trigger types and spawn the queue
 /// consumer. Must run **before** `functions::register_all` (the
 /// approval-gate/memory ordering convention). Returns the registry the
 /// HTTP routes and `console::ui-manifest` read from, plus the control
@@ -791,6 +800,19 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     );
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
+            MODULE_TYPE,
+            "An ESM JavaScript module the console serves but never imports at mount; \
+             pages load it on demand with host.importModule(path). Same contract as \
+             console:script with a .js path.",
+            QueueingTriggerHandler {
+                source: EventSource::Module,
+                tx: tx.clone(),
+            },
+        )
+        .trigger_request_format::<AssetTriggerConfig>(),
+    );
+    let _ = iii.register_trigger_type(
+        RegisterTriggerType::new(
             ASSETS_TYPE,
             "A console tab's live-update subscription. The trigger's function_id is the \
              per-tab handler the console pushes sync/set/delete asset events to.",
@@ -802,7 +824,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         .trigger_request_format::<SubscriptionTriggerConfig>(),
     );
     tracing::info!(
-        trigger_types = ?[SCRIPT_TYPE, STYLE_TYPE, ASSETS_TYPE],
+        trigger_types = ?[SCRIPT_TYPE, STYLE_TYPE, MODULE_TYPE, ASSETS_TYPE],
         "registered injectable-ui trigger types"
     );
     (registry, control)
@@ -1142,6 +1164,32 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains(".css"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn module_is_listed_synced_and_served_as_javascript() {
+        let bus = MockBus::new();
+        bus.set_content("ide/xterm.js", "export const x = 1");
+        let (p, registry) = processor(bus.clone());
+        p.register_asset(AssetKind::Module, trigger("t1", "f", "ide/xterm.js"))
+            .await
+            .unwrap();
+        p.register_subscription(subscription("sub1", "tab1")).await;
+
+        let manifest = serde_json::to_value(registry.manifest()).unwrap();
+        assert_eq!(manifest[0]["kind"], "module");
+        assert_eq!(bus.pushes()[0].1["assets"][0]["kind"], "module");
+        let (_, ctype, _) = registry.serve("ide/xterm.js").unwrap();
+        assert!(ctype.starts_with("text/javascript"));
+
+        let err = p
+            .register_asset(AssetKind::Module, trigger("t2", "f", "ide/xterm.css"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains(".js") && err.contains(MODULE_TYPE),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

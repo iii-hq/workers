@@ -1,7 +1,8 @@
 /* The Stash tab: the repository's stashes newest first, the files the
    selected one records (each opens its diff against the stash's base), and
-   Apply / Pop / As new branch / Drop. "Stash changes…" sets the working tree
-   aside, optionally with unversioned files. */
+   Apply / Pop / Unstash… / Drop, all also on a stash's right-click menu
+   with Clear and Show diff. "Stash changes…" sets the working tree aside,
+   optionally with unversioned files. */
 
 import type { Host } from '@iii-dev/console-ui'
 import {
@@ -17,14 +18,25 @@ import {
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { Archive, CircleAlert, GitBranch, RefreshCw, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { anchorFromEvent, useContextMenu } from './ContextMenu'
 import type { DiffSource } from './diff-source'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitFileStatus } from './git'
-import { gitStashApply, gitStashBranch, gitStashDrop, gitStashPush, statusLetter, statusTitle } from './git-actions'
+import {
+  gitStashApply,
+  gitStashBranch,
+  gitStashClear,
+  gitStashDrop,
+  gitStashPush,
+  statusLetter,
+  statusTitle,
+} from './git-actions'
 import { type GitStash, gitStashFiles, gitStashList, type StashFile, stashFileSource } from './git-log'
 import { basename, dirname } from './paths'
+import { stashMenu } from './scm-menus'
 import { TextDialog } from './TextDialog'
 import { useSpin } from './use-spin'
+import { VirtualList } from './VirtualList'
 
 interface StashViewProps {
   host: Host
@@ -51,12 +63,23 @@ export function StashView({
   const [list, setList] = useState<Load<GitStash[]>>({ kind: 'loading' })
   const [selected, setSelected] = useState<string | null>(null)
   const [files, setFiles] = useState<Load<StashFile[]> | null>(null)
+  // A reload retries details that failed to load: the sha they are keyed on
+  // comes back the same.
+  const [retry, setRetry] = useState(0)
+  const filesRef = useRef(files)
+  filesRef.current = files
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<{ text: string; failed: boolean } | null>(null)
   const [stashOpen, setStashOpen] = useState(false)
   const [includeUntracked, setIncludeUntracked] = useState(false)
-  const [branchFor, setBranchFor] = useState<GitStash | null>(null)
+  const [unstashFor, setUnstashFor] = useState<GitStash | null>(null)
+  const [unstashPop, setUnstashPop] = useState(false)
+  const [unstashIndex, setUnstashIndex] = useState(false)
   const [dropFor, setDropFor] = useState<GitStash | null>(null)
+  const [clearOpen, setClearOpen] = useState(false)
+  const menu = useContextMenu()
+  // The stash the open menu acts on, marked in the list while it is open.
+  const [menuStash, setMenuStash] = useState<string | null>(null)
   const [epoch, setEpoch] = useState(0)
   // Only the Refresh button spins the icon; reloads after an action don't.
   const [refreshing, setRefreshing] = useState(false)
@@ -72,6 +95,7 @@ export function StashView({
         setRefreshing(false)
         setList({ kind: 'ready', value: stashes })
         setSelected((current) => (stashes.some((stash) => stash.sha === current) ? current : (stashes[0]?.sha ?? null)))
+        if (filesRef.current?.kind === 'error') setRetry((value) => value + 1)
       })
       .catch((err: unknown) => {
         if (seqRef.current !== seq) return
@@ -83,6 +107,9 @@ export function StashView({
   const stashes = list.kind === 'ready' ? list.value : []
   const current = stashes.find((stash) => stash.sha === selected) ?? null
 
+  // Keyed on the sha: a reload finds the same entry as a new object, and
+  // a sha's content never changes.
+  const currentSha = current?.sha ?? null
   useEffect(() => {
     if (root === null || current === null) {
       setFiles(null)
@@ -96,7 +123,7 @@ export function StashView({
     return () => {
       live = false
     }
-  }, [host, root, current])
+  }, [host, root, currentSha, retry])
 
   const perform = useCallback(
     async (label: string, action: () => Promise<string>) => {
@@ -114,6 +141,30 @@ export function StashView({
     },
     [onChanged],
   )
+
+  const apply = (stash: GitStash, pop: boolean) =>
+    void perform(pop ? 'pop' : 'apply', async () => {
+      await gitStashApply(host, root ?? '', stash.ref, pop)
+      return `${pop ? 'popped' : 'applied'} ${stash.ref}`
+    })
+
+  const unstash = (stash: GitStash) => {
+    setUnstashPop(false)
+    setUnstashIndex(false)
+    setUnstashFor(stash)
+  }
+
+  // A stash's diff tab is one per file: Show diff opens its first.
+  const showDiff = async (stash: GitStash, pin: boolean) => {
+    setSelected(stash.sha)
+    try {
+      const [first] = await gitStashFiles(host, root ?? '', stash.sha)
+      if (first) onOpenDiff(first.path, stashFileSource(stash, first), pin)
+      else setNote({ text: `${stash.ref} changed nothing under this folder`, failed: false })
+    } catch (err: unknown) {
+      setNote({ text: `show diff failed: ${errorMessage(err)}`, failed: true })
+    }
+  }
 
   return (
     <div className="shui-stash">
@@ -175,13 +226,34 @@ export function StashView({
           <ul className="shui-log-rows" aria-label="Stashes">
             {stashes.map((stash) => (
               <li key={stash.sha}>
-                <div className="shui-log-row" data-selected={stash.sha === selected || undefined}>
+                <div
+                  className="shui-log-row"
+                  data-selected={stash.sha === selected || undefined}
+                  data-menu={(menu.isOpen && menuStash === stash.sha) || undefined}
+                >
                   <button
                     type="button"
                     className="shui-log-main"
                     aria-current={stash.sha === selected || undefined}
                     title={stash.message}
                     onClick={() => setSelected(stash.sha)}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      setMenuStash(stash.sha)
+                      // Under the row, at the pointer's x: the marked row stays in sight.
+                      const row = event.currentTarget.closest('.shui-log-row') ?? event.currentTarget
+                      menu.open(
+                        { x: anchorFromEvent(event).x, y: row.getBoundingClientRect().bottom },
+                        stashMenu(stash, {
+                          busy,
+                          apply,
+                          unstash,
+                          drop: setDropFor,
+                          clear: () => setClearOpen(true),
+                          showDiff: (target, pin) => void showDiff(target, pin),
+                        }),
+                      )
+                    }}
                   >
                     <span className="subject">{stash.message}</span>
                     <span className="meta">
@@ -231,37 +303,15 @@ export function StashView({
             onOpen={(file, pin) => onOpenDiff(file.path, stashFileSource(current, file), pin)}
           />
           <div className="shui-log-details-actions">
-            <Button
-              type="button"
-              variant="primary"
-              size="sm"
-              disabled={busy}
-              onClick={() =>
-                void perform('apply', async () => {
-                  await gitStashApply(host, root ?? '', current.ref, false)
-                  return `applied ${current.ref}`
-                })
-              }
-            >
+            <Button type="button" variant="primary" size="sm" disabled={busy} onClick={() => apply(current, false)}>
               Apply
             </Button>
-            <Button
-              type="button"
-              variant="pill"
-              size="sm"
-              disabled={busy}
-              onClick={() =>
-                void perform('pop', async () => {
-                  await gitStashApply(host, root ?? '', current.ref, true)
-                  return `popped ${current.ref}`
-                })
-              }
-            >
+            <Button type="button" variant="pill" size="sm" disabled={busy} onClick={() => apply(current, true)}>
               Pop
             </Button>
             <span className="spacer" />
-            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setBranchFor(current)}>
-              As new branch…
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => unstash(current)}>
+              Unstash…
             </Button>
           </div>
         </section>
@@ -291,25 +341,59 @@ export function StashView({
         />
       </TextDialog>
       <TextDialog
-        open={branchFor !== null}
-        title="Unstash as a new branch"
-        description={
-          branchFor ? `Checks out a new branch where ${branchFor.ref} was made and applies it there.` : undefined
-        }
-        label="Branch name"
-        placeholder="feat/…"
-        confirmLabel="Create branch"
-        onCancel={() => setBranchFor(null)}
+        open={unstashFor !== null}
+        title={unstashFor ? `Unstash ${unstashFor.ref}` : 'Unstash'}
+        description="With a branch name, a new branch is checked out where the stash was made and the stash is popped there; the boxes below then do not apply."
+        label="As new branch"
+        placeholder="Leave empty to unstash here"
+        allowEmpty
+        confirmLabel="Unstash"
+        onCancel={() => setUnstashFor(null)}
         onConfirm={(name) => {
-          const stash = branchFor
-          setBranchFor(null)
+          const stash = unstashFor
+          setUnstashFor(null)
           if (!stash) return
-          void perform('branch', async () => {
-            await gitStashBranch(host, root ?? '', name, stash.ref)
-            return `switched to ${name} with ${stash.ref} applied`
+          if (name !== '') {
+            void perform('branch', async () => {
+              await gitStashBranch(host, root ?? '', name, stash.ref)
+              return `switched to ${name} with ${stash.ref} applied`
+            })
+            return
+          }
+          void perform(unstashPop ? 'pop' : 'apply', async () => {
+            await gitStashApply(host, root ?? '', stash.ref, unstashPop, unstashIndex)
+            return `${unstashPop ? 'popped' : 'applied'} ${stash.ref}${unstashIndex ? ' with its index' : ''}`
+          })
+        }}
+      >
+        <Checkbox
+          label="Pop stash"
+          checked={unstashPop}
+          onChange={(event) => setUnstashPop(event.currentTarget.checked)}
+        />
+        <Checkbox
+          label="Reinstate index"
+          checked={unstashIndex}
+          onChange={(event) => setUnstashIndex(event.currentTarget.checked)}
+        />
+      </TextDialog>
+      <ConfirmDialog
+        open={clearOpen}
+        onOpenChange={(open) => (open ? undefined : setClearOpen(false))}
+        title="Clear all stashes?"
+        description={`Every stash (${stashes.length}) is deleted. This can't be undone.`}
+        confirmLabel="Clear"
+        tone="danger"
+        onCancel={() => setClearOpen(false)}
+        onConfirm={() => {
+          setClearOpen(false)
+          void perform('clear', async () => {
+            await gitStashClear(host, root ?? '')
+            return 'cleared every stash'
           })
         }}
       />
+      {menu.element}
       <ConfirmDialog
         open={dropFor !== null}
         onOpenChange={(open) => (open ? undefined : setDropFor(null))}
@@ -364,10 +448,18 @@ export function FileList<T extends FileListItem>({
       </p>
     )
   if (files.value.length === 0) return <p className="shui-log-details-empty">No file changes under this folder.</p>
+  // Windowed: a commit or stash of thousands of files mounts only the rows in view.
   return (
-    <ul className="shui-log-files" aria-label="Files">
-      {files.value.map((file) => (
-        <li key={file.path}>
+    <VirtualList
+      rows={files.value}
+      rowHeight={28}
+      rowKey={(file) => file.path}
+      className="shui-log-files"
+      role="list"
+      aria-label="Files"
+      renderRow={(file) => (
+        // biome-ignore lint/a11y/useSemanticElements: a <li> cannot sit in VirtualList's row
+        <div role="listitem">
           <button
             type="button"
             className="shui-log-file"
@@ -383,8 +475,8 @@ export function FileList<T extends FileListItem>({
               {statusLetter(file.status)}
             </span>
           </button>
-        </li>
-      ))}
-    </ul>
+        </div>
+      )}
+    />
   )
 }

@@ -79,11 +79,21 @@ timeout, and engine interruption/restart codes), never from result text. A
 subsequent confirmed reply clears its witness and signals the waiter.
 
 Admission for session creation, message enqueue/append, binding registration and
-target dispatch checks the selected session **and its durable ancestors**.
-These `ensure_live`/ancestry guards perform state and session RPCs on regular
-send/spawn/wake/dispatch paths (roughly proportional to lineage depth). This is
-an intentional current latency/load cost; this review does not add caching or
-speculative optimization that could weaken the deletion boundary.
+target dispatch checks the selected session **and its durable ancestors** (one
+guard read and one lineage read per level). A negative answer (no tombstone on
+the lineage) is memoized per session in `crate::liveness`: every guard CAS in
+this process invalidates the whole memo as soon as it returns, and an entry is
+honoured only at the epoch it was stamped with before its walk began, so no
+memoized answer outlives a tombstone written here. Owners are never memoized,
+deletion's own conflict and parent checks use the uncached walk, and a
+2-second TTL bounds staleness against writers outside the process.
+Target dispatch takes no process-wide lock. It writes its witness (one CAS on
+a fresh key) **before** the liveness check, while deletion claims its guards
+before it lists witnesses: either the dispatch sees the tombstone and withdraws
+its witness without invoking the target, or deletion sees the witness and waits
+for its reply. A confirmed reply clears the witness with one CAS from the value
+it wrote. A live dispatch therefore adds two CAS calls and, while the memo
+holds, no lineage reads.
 Enumeration uses `session_tree::collect` / `SessionClient::children`, not the
 last turn's spawn checkpoints. Creation metadata is serialized against tree
 planning. All members receive cancellation signals before the first busy tool
@@ -127,7 +137,8 @@ result to a legacy wait.
 - As with `SessionLocks` / `TurnCancels`, concurrency guarantees assume one
   harness process owns these sessions. Multiple independently running harness
   replicas need a distributed lifecycle/admission lock; private CAS storage
-  alone is not such a lock.
+  alone is not such a lock. The liveness memo is per process as well: its TTL
+  bounds staleness but is not a distributed invalidation.
 - Writers bypassing harness and directly editing session-manager lineage or
   creating sessions are outside the admission boundary. Route Console subtree
   deletion through the new API, not raw `session::delete`.

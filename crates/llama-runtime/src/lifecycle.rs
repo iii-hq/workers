@@ -8,6 +8,7 @@
 use judge_contract::{ErrorCode, EvaluateResponse, ModelsResponse, ProviderError, Stats};
 use serde_json::Value;
 use std::{
+    panic::{self, AssertUnwindSafe},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -79,6 +80,18 @@ struct State<T> {
     model: Model<T>,
     pinned: bool,
     last_used: Instant,
+    /// Calls holding an [`InUse`].
+    in_flight: usize,
+}
+
+/// Held for a call's whole life (see [`ModelSlot::in_use`]).
+pub struct InUse<T: Clone + Send + 'static>(Arc<ModelSlot<T>>);
+impl<T: Clone + Send + 'static> Drop for InUse<T> {
+    fn drop(&mut self) {
+        let mut state = self.0.lock();
+        state.in_flight -= 1;
+        state.last_used = Instant::now();
+    }
 }
 
 enum Model<T> {
@@ -93,7 +106,7 @@ enum Model<T> {
 }
 
 impl<T: Clone + Send + 'static> ModelSlot<T> {
-    /// `load` runs on a blocking thread each time the model is (re)loaded.
+    /// `load` runs on a thread of its own each time the model is (re)loaded.
     pub fn new(load: impl Fn() -> anyhow::Result<T> + Send + Sync + 'static) -> Arc<Self> {
         Arc::new(Self {
             load: Arc::new(load),
@@ -101,8 +114,16 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
                 model: Model::Empty,
                 pinned: false,
                 last_used: Instant::now(),
+                in_flight: 0,
             }),
         })
+    }
+
+    /// Held for a call's whole life: an unpinned model is not released while
+    /// any call holds it, and its idle clock restarts when the last one ends.
+    pub fn in_use(self: &Arc<Self>) -> InUse<T> {
+        self.lock().in_flight += 1;
+        InUse(self.clone())
     }
 
     /// The model if it is loaded now; never starts a load.
@@ -134,7 +155,7 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
             match stored {
                 // Stored: Ready or Failed on the next pass.
                 Ok(true) => continue,
-                // Only when the runtime shuts down mid-load.
+                // Only when the load thread ended without storing an outcome.
                 Ok(false) => {
                     return Err(Unloaded::failed(
                         "the load ended without a result",
@@ -208,16 +229,19 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
         }
     }
 
-    /// Release an unpinned model after `idle` without a call, and retry a
-    /// pinned model's failed load. In-flight calls keep their own handle, so
-    /// the model is freed once the last of them ends. Runs until dropped.
+    /// Release an unpinned model after `idle` without a call (none holding
+    /// [`Self::in_use`]), and retry a pinned model's failed load. Runs until
+    /// dropped.
     pub async fn release_idle(self: Arc<Self>, idle: Duration) {
         let mut tick = tokio::time::interval((idle / 4).max(Duration::from_millis(1)));
         loop {
             tick.tick().await;
             let mut state = self.lock();
             let (release, retry) = match &state.model {
-                Model::Ready(_) => (!state.pinned && state.last_used.elapsed() >= idle, false),
+                Model::Ready(_) => (
+                    !state.pinned && state.in_flight == 0 && state.last_used.elapsed() >= idle,
+                    false,
+                ),
                 Model::Failed { at, .. } => {
                     (false, state.pinned && at.elapsed() >= RETRY_LOAD_AFTER)
                 }
@@ -237,33 +261,44 @@ impl<T: Clone + Send + 'static> ModelSlot<T> {
         let (tx, rx) = watch::channel(false);
         state.model = Model::Loading(rx.clone());
         let slot = self.clone();
-        tokio::spawn(async move {
-            let started = Instant::now();
-            tracing::info!("loading the model");
-            let load = slot.load.clone();
-            let outcome = match tokio::task::spawn_blocking(move || load()).await {
-                Ok(loaded) => loaded.map_err(|error| format!("{error:#}")),
-                Err(error) => Err(format!("the model load panicked: {error}")),
-            };
-            let model = match outcome {
-                Ok(model) => {
-                    tracing::info!(
-                        elapsed_ms = started.elapsed().as_millis() as u64,
-                        "model loaded"
-                    );
-                    Model::Ready(model)
-                }
-                Err(message) => {
-                    tracing::warn!(error = %message, "model load failed");
-                    Model::Failed {
-                        message,
-                        at: Instant::now(),
+        // Its own thread, not `spawn_blocking`: a runtime waits for its
+        // blocking tasks when it shuts down, so a load in flight (minutes
+        // while it downloads) would hold up the worker's exit on SIGTERM.
+        let spawned = std::thread::Builder::new()
+            .name("model-load".into())
+            .spawn(move || {
+                let started = Instant::now();
+                tracing::info!("loading the model");
+                let outcome = match panic::catch_unwind(AssertUnwindSafe(|| (slot.load)())) {
+                    Ok(loaded) => loaded.map_err(|error| format!("{error:#}")),
+                    Err(_) => Err("the model load panicked".to_string()),
+                };
+                let model = match outcome {
+                    Ok(model) => {
+                        tracing::info!(
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "model loaded"
+                        );
+                        Model::Ready(model)
                     }
-                }
+                    Err(message) => {
+                        tracing::warn!(error = %message, "model load failed");
+                        Model::Failed {
+                            message,
+                            at: Instant::now(),
+                        }
+                    }
+                };
+                slot.lock().model = model;
+                let _ = tx.send(true);
+            });
+        // The closure (and its sender) is dropped: waiters see the load end.
+        if let Err(error) = spawned {
+            state.model = Model::Failed {
+                message: format!("could not start the load: {error}"),
+                at: Instant::now(),
             };
-            slot.lock().model = model;
-            let _ = tx.send(true);
-        });
+        }
         rx
     }
 
@@ -321,6 +356,25 @@ mod tests {
         assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn shutting_down_the_calling_runtime_does_not_wait_for_the_load() {
+        let (slot, _) = counting(1_000, true);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let unloaded = runtime.block_on(slot.get(within(10))).unwrap_err();
+        assert!(matches!(unloaded.code, ErrorCode::Deadline));
+        let started = Instant::now();
+        drop(runtime);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // The load still lands, for the next call.
+        while slot.loaded().is_none() {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[tokio::test]
     async fn a_failed_load_is_not_retried_at_once() {
         let (slot, loads) = counting(0, false);
@@ -372,5 +426,19 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(pinned.loaded(), None);
         assert_eq!(pinned.get(within(2_000)).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_model_in_use_is_not_released() {
+        let (slot, loads) = counting(0, true);
+        let call = slot.in_use();
+        assert_eq!(slot.get(within(2_000)).await.unwrap(), 1);
+        tokio::spawn(slot.clone().release_idle(Duration::from_millis(40)));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(slot.loaded(), Some(1), "held past `idle`");
+        drop(call);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(slot.loaded(), None);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 }

@@ -74,3 +74,42 @@ fn configuration_ensure_is_denied() {
         Decision::Deny { .. }
     ));
 }
+
+/// `harness::on-session-deleted` is the `session::deleted` cleanup hook, engine
+/// plumbing like the other internal harness hooks. Called directly with a live
+/// session id, it would wipe that session's turn record and bindings.
+#[test]
+fn harness_on_session_deleted_is_denied() {
+    assert!(matches!(
+        repository_permissions().check(
+            "harness::on-session-deleted",
+            &json!({ "session_id": "s_live" }),
+            PermissionMode::Manual
+        ),
+        Decision::Deny { .. }
+    ));
+}
+
+/// Listing templates reads the templates checkout or the IDE's own cache; it
+/// writes nothing in the project, so agents call it without a prompt.
+#[test]
+fn coder_list_templates_is_allowed() {
+    assert!(matches!(
+        repository_permissions().check("coder::list-templates", &json!({}), PermissionMode::Manual),
+        Decision::Allow { .. }
+    ));
+}
+
+/// Scaffolding writes a whole worker package, so it stays approval-gated like
+/// coder::create-file: no rule, the needs_approval default.
+#[test]
+fn coder_scaffold_worker_needs_approval() {
+    assert!(matches!(
+        repository_permissions().check(
+            "coder::scaffold-worker",
+            &json!({ "template": "worker-node-ade", "name": "my-worker" }),
+            PermissionMode::Manual
+        ),
+        Decision::NeedsApproval
+    ));
+}

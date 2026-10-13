@@ -114,6 +114,8 @@ export type StreamEvent =
        */
       kind: 'turn-status'
       phase: 'accepted' | 'merged' | 'queued' | 'started'
+      /** The effort the harness chose for a `lowest` request. */
+      reasoningEffort?: string
     }
 
 export interface ChatStreamOptions {

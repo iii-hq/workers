@@ -11,15 +11,18 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::agent_feed::{
+    FeedEvent, Sequencer, binding_config, final_text_from_brain_result, is_not_found_error,
+    parse_feed_payload, readiness_error, resolve_events_trigger_types,
+};
 use crate::session::{
-    self, AGENT_EVENTS_STREAM, ActivePromptClaim, CloseHistoryResult, HistoryOwnerResult,
-    PromptClaimResult, PromptDispatchIdentity, PromptRecoveryFinishResult, PromptRecoveryResult,
-    SessionRecord, append_history_once, append_session_to_index, begin_prompt_recovery,
-    claim_prompt, close_history_owned_by, durable_publish, finish_prompt_recovery,
-    history_owned_by, now_ms, read_active_prompt_claim, read_history, read_session_index,
-    release_prompt_claim, remove_session_from_index, restore_history_owner, scope,
-    session_history_key, session_key, set_history_owner, state_compare_and_set, state_delete,
-    state_get, state_set,
+    self, ActivePromptClaim, CloseHistoryResult, HistoryOwnerResult, PromptClaimResult,
+    PromptDispatchIdentity, PromptRecoveryFinishResult, PromptRecoveryResult, SessionRecord,
+    append_history_once, append_session_to_index, begin_prompt_recovery, claim_prompt,
+    close_history_owned_by, durable_publish, finish_prompt_recovery, history_owned_by, now_ms,
+    read_active_prompt_claim, read_history, read_session_index, release_prompt_claim,
+    remove_session_from_index, restore_history_owner, scope, session_history_key, session_key,
+    set_history_owner, state_compare_and_set, state_delete, state_get, state_set,
 };
 use crate::transport::Outbound;
 use crate::types::{
@@ -89,7 +92,7 @@ pub struct AcpHandler {
     cancels: DashMap<String, CancelHandle>,
     // Per-session write mutex serializing append_history calls in-process.
     // Engine state::update lacks an array-append op so each append is a
-    // read-modify-write; without this lock concurrent agent::events for one
+    // read-modify-write; without this lock concurrent agent events for one
     // session race and drop entries.
     history_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     update_seq: Arc<AtomicU64>,
@@ -99,20 +102,22 @@ pub struct AcpHandler {
     brain_model: Option<String>,
     brain_provider: Option<String>,
     brain_system_prompt: Option<String>,
-    // Session ids owned by this connection. The agent::events stream
-    // subscriber filters by this set so we don't forward events for
-    // sessions another iii-acp subprocess owns. Also written by
-    // session/new and session/close so close cleans up.
+    // Session ids owned by this connection. Agent events are only bound and
+    // forwarded for these sessions. Written by session/new, load, resume and
+    // prompt; cleared by session/close.
     owned_sessions: Arc<DashSet<String>>,
-    // Trigger + function guards. Dropping them tears the registration
-    // down on the engine, so they live for the lifetime of the handler.
-    _event_subscriber: Option<iii_sdk::trigger::Trigger>,
+    // `<namespace>::agent-event` trigger types bound per owned session when an
+    // external brain is configured (see agent_feed).
+    events_trigger_types: Vec<String>,
+    // One binding per (owned session, events trigger type). Unregistered on
+    // session/close and when the handler drops; the engine also drops them
+    // when this connection goes away, and the SDK replays them on reconnect.
+    event_bindings: DashMap<String, Vec<iii_sdk::trigger::Trigger>>,
+    event_sink: Arc<EventSink>,
+    // The handler function every binding targets. Kept alive for the life
+    // of the handler. None when no external brain is configured.
     _event_function: Option<FunctionRef>,
-    // True iff agent::events stream subscriber registered cleanly. When an
-    // external brain is configured but this is false, session/prompt fails
-    // fast with an actionable error rather than running the brain whose
-    // updates would silently never reach stdout.
-    event_subscriber_healthy: bool,
+    event_function_id: String,
 }
 
 pub struct BrainConfig {
@@ -121,7 +126,14 @@ pub struct BrainConfig {
     pub model: Option<String>,
     pub provider: Option<String>,
     pub system_prompt: Option<String>,
+    /// Explicit `<namespace>::agent-event` trigger types; empty derives the
+    /// default from `function_id` (`claude::run` -> `claude::agent-event`).
+    pub events_trigger_types: Vec<String>,
 }
+
+// Grace period before the brain-response fallback, so frames still in flight
+// when the brain returns are not rendered twice.
+const FALLBACK_GRACE_MS: u64 = 300;
 
 impl AcpHandler {
     pub fn new(iii: IIIClient, outbound: Arc<Outbound>, brain: BrainConfig) -> Self {
@@ -132,28 +144,37 @@ impl AcpHandler {
             Arc::new(DashMap::new());
         tracing::info!(%conn_id, "acp handler initialized");
 
-        // Subscribe to the canonical agent::events stream once when an
-        // external brain is configured. Echo brain bypasses (it emits
-        // session/update directly via send_notification).
+        let event_sink = Arc::new(EventSink {
+            iii: iii.clone(),
+            conn_id: conn_id.clone(),
+            outbound: outbound.clone(),
+            update_seq: update_seq.clone(),
+            owned: owned_sessions.clone(),
+            history_locks: history_locks.clone(),
+            sequencer: std::sync::Mutex::new(Sequencer::new()),
+            visible_updates: DashMap::new(),
+            flush_scheduled: DashSet::new(),
+        });
+
+        // The external brain's worker publishes AgentEvent frames on its own
+        // `<namespace>::agent-event` trigger type. Register the handler once;
+        // bindings are added per owned session. The echo brain emits
+        // session/update directly and needs neither.
         let brain_configured = brain.function_id.is_some();
-        let (event_subscriber, event_function) = if brain_configured {
-            register_event_subscriber(
-                &iii,
-                &conn_id,
-                &outbound,
-                &update_seq,
-                &owned_sessions,
-                &history_locks,
-            )
+        let events_trigger_types = if brain_configured {
+            resolve_events_trigger_types(&brain.events_trigger_types, brain.function_id.as_deref())
         } else {
-            (None, None)
+            Vec::new()
         };
-        // Healthy when (a) no external brain is configured (echo path
-        // doesn't need the subscriber) or (b) both function + trigger
-        // registered. Failed registration here is logged inside
-        // register_event_subscriber.
-        let event_subscriber_healthy =
-            !brain_configured || (event_subscriber.is_some() && event_function.is_some());
+        let event_function_id = format!("acp::__on_event::{}", conn_id);
+        let event_function = brain_configured
+            .then(|| register_event_function(&iii, &event_function_id, &event_sink));
+        if brain_configured {
+            tracing::info!(
+                ?events_trigger_types,
+                "acp binds agent event trigger types per session"
+            );
+        }
 
         Self {
             iii,
@@ -169,9 +190,89 @@ impl AcpHandler {
             brain_provider: brain.provider,
             brain_system_prompt: brain.system_prompt,
             owned_sessions,
-            _event_subscriber: event_subscriber,
+            events_trigger_types,
+            event_bindings: DashMap::new(),
+            event_sink,
             _event_function: event_function,
-            event_subscriber_healthy,
+            event_function_id,
+        }
+    }
+
+    /// Mark a session as owned by this connection and, with an external
+    /// brain, bind its agent events (once per session).
+    fn own_session(&self, session_id: &str) {
+        self.owned_sessions.insert(session_id.to_string());
+        if self._event_function.is_none() {
+            return;
+        }
+        if let Entry::Vacant(slot) = self.event_bindings.entry(session_id.to_string()) {
+            let mut triggers = Vec::with_capacity(self.events_trigger_types.len());
+            for trigger_type in &self.events_trigger_types {
+                match self.iii.register_trigger(RegisterTriggerInput::new(
+                    trigger_type.clone(),
+                    self.event_function_id.clone(),
+                    binding_config(session_id),
+                )) {
+                    Ok(trigger) => triggers.push(trigger),
+                    Err(error) => tracing::error!(
+                        %error,
+                        trigger_type,
+                        session_id,
+                        "failed to bind agent events for session"
+                    ),
+                }
+            }
+            slot.insert(triggers);
+        }
+    }
+
+    /// Forget a session: unbind its agent events and drop sequencing state.
+    fn release_session(&self, session_id: &str) {
+        self.owned_sessions.remove(session_id);
+        if let Some((_, triggers)) = self.event_bindings.remove(session_id) {
+            for trigger in triggers {
+                trigger.unregister();
+            }
+        }
+        self.event_sink.forget(session_id);
+    }
+
+    /// Readiness of the agent event feed for an external brain: the handler
+    /// is registered and every events trigger type has a provider. Replaces
+    /// the old readiness gate on the legacy event tape.
+    async fn event_feed_readiness(&self) -> Result<(), (i32, String)> {
+        let mut missing = Vec::new();
+        if self._event_function.is_some() {
+            for trigger_type in &self.events_trigger_types {
+                let info = self
+                    .iii
+                    .trigger(TriggerRequest {
+                        function_id: "engine::triggers::info".to_string(),
+                        payload: json!({ "id": trigger_type }),
+                        action: None,
+                        timeout_ms: Some(5_000),
+                    })
+                    .await;
+                match info {
+                    Ok(_) => {}
+                    Err(error) if is_not_found_error(&error.to_string()) => {
+                        missing.push(trigger_type.clone());
+                    }
+                    Err(error) => tracing::warn!(
+                        %error,
+                        trigger_type,
+                        "could not verify the agent event trigger type; continuing"
+                    ),
+                }
+            }
+        }
+        match readiness_error(
+            self._event_function.is_some(),
+            &self.events_trigger_types,
+            &missing,
+        ) {
+            Some(message) => Err((INTERNAL_ERROR, message)),
+            None => Ok(()),
         }
     }
 
@@ -288,7 +389,7 @@ impl AcpHandler {
                 ));
             }
         }
-        self.owned_sessions.insert(session_id.clone());
+        self.own_session(&session_id);
         Ok(json!({ "sessionId": session_id }))
     }
 
@@ -307,7 +408,7 @@ impl AcpHandler {
             })?;
         self.transfer_session_ownership(&p.session_id, record_value, |_| {})
             .await?;
-        self.owned_sessions.insert(p.session_id.clone());
+        self.own_session(&p.session_id);
         let history = read_history(&self.iii, &p.session_id)
             .await
             .map_err(|e| (INTERNAL_ERROR, e.to_string()))?;
@@ -416,14 +517,8 @@ impl AcpHandler {
                     .to_string(),
             ));
         }
-        if self.brain_fn.is_some() && !self.event_subscriber_healthy {
-            return Err((
-                INTERNAL_ERROR,
-                "iii-acp: agent::events stream subscriber failed to register at startup; \
-                 external brain updates would not reach the editor. Check engine logs and \
-                 ensure `iii-stream` worker is active before retrying."
-                    .to_string(),
-            ));
+        if self.brain_fn.is_some() {
+            self.event_feed_readiness().await?;
         }
 
         let claim_id = Uuid::new_v4().to_string();
@@ -465,7 +560,7 @@ impl AcpHandler {
                 return Err((INVALID_PARAMS, "session is closed".to_string()));
             }
         }
-        self.owned_sessions.insert(p.session_id.clone());
+        self.own_session(&p.session_id);
 
         let outcome = self
             .run_brain(&p.session_id, &record.cwd, &p.prompt, cancel)
@@ -537,7 +632,7 @@ impl AcpHandler {
         if let Some((_, handle)) = self.cancels.remove(&p.session_id) {
             handle.cancel();
         }
-        self.owned_sessions.remove(&p.session_id);
+        self.release_session(&p.session_id);
 
         if errs.is_empty() {
             Ok(())
@@ -574,7 +669,7 @@ impl AcpHandler {
             record.last_activity_ms = now_ms();
         })
         .await?;
-        self.owned_sessions.insert(p.session_id.clone());
+        self.own_session(&p.session_id);
         Ok(json!({}))
     }
 
@@ -1064,11 +1159,11 @@ impl AcpHandler {
     ) -> BrainOutcome {
         // Canonical iii brain shape: feed run::start_and_wait (or any
         // function with the same input contract) a User message built
-        // from ACP prompt content blocks. The brain emits AgentEvent
-        // frames into agent::events/<session_id>; our stream subscriber
-        // (registered in AcpHandler::new) translates them to ACP
-        // session/update notifications on stdout. The brain returns
-        // synchronously with the final transcript when the turn ends.
+        // from ACP prompt content blocks. The brain's worker emits
+        // AgentEvent frames on its `<namespace>::agent-event` trigger
+        // type; the per-session binding (AcpHandler::own_session) feeds
+        // them to EventSink, which writes ACP session/update notifications
+        // on stdout. The brain returns synchronously when the turn ends.
         let payload = external_brain_payload(
             session_id,
             cwd,
@@ -1085,6 +1180,7 @@ impl AcpHandler {
             timeout_ms: Some(BRAIN_TIMEOUT_MS + 5_000),
         };
         let iii = self.iii.clone();
+        let visible_before = self.event_sink.visible_count(session_id);
         let mut brain = tokio::spawn(async move { iii.trigger(req).await });
         let ((res, error_terminal), cancellation_accepted) = tokio::select! {
             r = &mut brain => (flatten_brain_result(r), None),
@@ -1129,11 +1225,17 @@ impl AcpHandler {
             },
         };
         match res {
-            Ok(v) => BrainOutcome {
-                stop_reason: external_brain_stop_reason(&v, cancellation_accepted).to_string(),
-                terminal_confirmed: true,
-                pending: None,
-            },
+            Ok(v) => {
+                if cancellation_accepted.is_none() {
+                    self.recover_final_text(session_id, visible_before, &v)
+                        .await;
+                }
+                BrainOutcome {
+                    stop_reason: external_brain_stop_reason(&v, cancellation_accepted).to_string(),
+                    terminal_confirmed: true,
+                    pending: None,
+                }
+            }
             Err(e) => {
                 tracing::error!(error = %e, fn_id, "external brain failed");
                 BrainOutcome {
@@ -1222,6 +1324,39 @@ impl AcpHandler {
         });
     }
 
+    // Recovery when no live frame reached the editor during the prompt (a
+    // reconnect gap, a binding that was not active yet, or a brain whose
+    // frames carry no renderable update): render the final text from the
+    // brain's synchronous response once. Buffered frames are released
+    // first and in-flight deliveries get a short grace, so a turn that did
+    // stream is never rendered twice.
+    async fn recover_final_text(&self, session_id: &str, visible_before: u64, result: &Value) {
+        let Some(text) = final_text_from_brain_result(result) else {
+            return;
+        };
+        self.event_sink.flush_session(session_id, true).await;
+        if self.event_sink.visible_count(session_id) != visible_before {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(FALLBACK_GRACE_MS)).await;
+        self.event_sink.flush_session(session_id, true).await;
+        if self.event_sink.visible_count(session_id) != visible_before {
+            return;
+        }
+        tracing::info!(
+            session_id,
+            "no live agent event reached the editor; rendering the brain response"
+        );
+        self.emit_update(
+            session_id,
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": text },
+            }),
+        )
+        .await;
+    }
+
     async fn emit_update(&self, session_id: &str, update: Value) {
         let payload = json!({ "sessionId": session_id, "update": update });
         let appended = {
@@ -1252,6 +1387,16 @@ impl AcpHandler {
             Ok(())
         } else {
             Err((INTERNAL_ERROR, "not initialized".to_string()))
+        }
+    }
+}
+
+impl Drop for AcpHandler {
+    fn drop(&mut self) {
+        for entry in self.event_bindings.iter() {
+            for trigger in entry.value() {
+                trigger.unregister();
+            }
         }
     }
 }
@@ -1348,137 +1493,168 @@ async fn write_notification(outbound: &Outbound, seq: &AtomicU64, method: &str, 
     }
 }
 
-// Register a stream subscriber on the canonical `agent::events` stream.
-// Both function ref and trigger handle are returned so AcpHandler can
-// hold them; dropping either tears the registration down.
-//
-// The same stream is used by `turn-orchestrator`, every provider worker,
-// `context-compaction`, etc. iii-acp filters frames by group_id (the
-// session_id) against the per-process owned_sessions set so multiple
-// iii-acp subprocesses don't fight over the same events.
-fn register_event_subscriber(
-    iii: &IIIClient,
-    conn_id: &str,
-    outbound: &Arc<Outbound>,
-    update_seq: &Arc<AtomicU64>,
-    owned_sessions: &Arc<DashSet<String>>,
-    history_locks: &Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-) -> (Option<iii_sdk::trigger::Trigger>, Option<FunctionRef>) {
-    let fn_id = format!("acp::__on_event::{}", conn_id);
-
-    let outbound_inner = outbound.clone();
-    let seq_inner = update_seq.clone();
-    let iii_inner = iii.clone();
-    let conn_id_inner = conn_id.to_string();
-    let owned_inner = owned_sessions.clone();
-    let locks_inner = history_locks.clone();
-    let function = iii.register_function(
-        fn_id.clone(),
+// Register the handler every `<namespace>::agent-event` binding of this
+// connection targets. Bindings themselves are added per owned session
+// (`AcpHandler::own_session`) with config `{ session_id }`, so the producer
+// only delivers this connection's sessions.
+fn register_event_function(iii: &IIIClient, fn_id: &str, sink: &Arc<EventSink>) -> FunctionRef {
+    let sink = Arc::clone(sink);
+    iii.register_function(
+        fn_id.to_string(),
         RegisterFunction::new_async(move |payload: Value| {
-            let outbound = outbound_inner.clone();
-            let seq = seq_inner.clone();
-            let iii = iii_inner.clone();
-            let conn_id = conn_id_inner.clone();
-            let owned = owned_inner.clone();
-            let locks = locks_inner.clone();
+            let sink = Arc::clone(&sink);
             async move {
-                forward_agent_event(&iii, &conn_id, &outbound, &seq, &owned, &locks, payload).await;
+                sink.receive(payload).await;
                 Ok(json!({ "ok": true }))
             }
         })
-        .description("ACP agent::events → stdout fan-in"),
-    );
-
-    let trigger = match iii.register_trigger(RegisterTriggerInput::new(
-        "stream",
-        fn_id,
-        json!({ "stream_name": AGENT_EVENTS_STREAM }),
-    )) {
-        Ok(t) => Some(t),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to register acp event stream subscriber");
-            None
-        }
-    };
-
-    (trigger, Some(function))
+        .description("ACP <namespace>::agent-event -> stdout fan-in"),
+    )
 }
 
-// Stream-trigger envelope: `{ stream_name, group_id, item_id, data }`.
-// `group_id` is the session_id; `data` is an `AgentEvent` JSON.
-//
-// Translates the iii AgentEvent shape to the ACP `session/update` shape
-// and writes it to stdout. Frames for sessions we don't own (another
-// connection's editor, or sessions closed mid-flight) are skipped.
-async fn forward_agent_event(
-    iii: &IIIClient,
-    conn_id: &str,
-    outbound: &Outbound,
-    seq: &AtomicU64,
-    owned: &DashSet<String>,
-    history_locks: &DashMap<String, Arc<tokio::sync::Mutex<()>>>,
-    payload: Value,
-) {
-    // Stream-trigger envelope (engine 0.11.x):
-    //   { type:"stream", streamName, groupId, id, timestamp,
-    //     event: { type: "create"|"update", data: <AgentEvent> } }
-    // Older envelopes used snake_case (group_id / data at top level); we
-    // accept both so this code keeps working if the engine envelope flips.
-    let Some((sid, item_id, data)) = extract_event_payload(&payload) else {
-        return;
-    };
-    if !owned.contains(&sid) {
-        return;
+// Receives agent event deliveries, restores per-stream order (deliveries are
+// fire-and-forget and the SDK runs handlers concurrently), drops duplicates,
+// translates AgentEvent frames to ACP `session/update` and writes them to
+// stdout. Frames for sessions this connection does not own are skipped.
+struct EventSink {
+    iii: IIIClient,
+    conn_id: String,
+    outbound: Arc<Outbound>,
+    update_seq: Arc<AtomicU64>,
+    owned: Arc<DashSet<String>>,
+    history_locks: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    sequencer: std::sync::Mutex<Sequencer>,
+    // User-visible updates forwarded per session; lets the prompt path tell
+    // whether any live frame reached the editor (brain-response fallback).
+    visible_updates: DashMap<String, u64>,
+    // Sessions with a pending reorder-window flush task (at most one each).
+    flush_scheduled: DashSet<String>,
+}
+
+impl EventSink {
+    fn session_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.history_locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
-    let Some(updates) = translate_agent_event(&data) else {
-        return;
-    };
-    let lock = history_locks
-        .entry(sid.clone())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
-    let cursor_item_id = item_id
-        .as_deref()
-        .filter(|item_id| item_id.starts_with("cursor-"));
-    let appended = {
-        let _g = lock.lock().await;
-        match append_history_once(iii, &sid, Some(conn_id), cursor_item_id, updates.clone()).await {
-            Ok(appended) => appended,
-            Err(error) => {
-                tracing::warn!(%error, sid, "append_history failed for agent event");
-                return;
+
+    fn sequencer(&self) -> std::sync::MutexGuard<'_, Sequencer> {
+        self.sequencer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn visible_count(&self, session_id: &str) -> u64 {
+        self.visible_updates
+            .get(session_id)
+            .map(|count| *count)
+            .unwrap_or(0)
+    }
+
+    fn forget(&self, session_id: &str) {
+        self.sequencer().forget_session(session_id);
+        self.visible_updates.remove(session_id);
+    }
+
+    async fn receive(self: &Arc<Self>, payload: Value) {
+        let Some(event) = parse_feed_payload(&payload) else {
+            tracing::warn!("ignoring agent event delivery that does not follow the feed contract");
+            return;
+        };
+        if !self.owned.contains(&event.session_id) {
+            return;
+        }
+        let session_id = event.session_id.clone();
+        let lock = self.session_lock(&session_id);
+        {
+            // Offer and apply under the per-session lock: the order frames
+            // leave the sequencer is the order they reach history and stdout.
+            let _g = lock.lock().await;
+            let ready = self.sequencer().offer(event, now_ms() as u64);
+            for event in ready {
+                self.apply(event).await;
             }
         }
-    };
-    if !appended {
-        return;
+        self.schedule_flush(&session_id);
     }
-    for update in updates {
-        let params = json!({ "sessionId": sid, "update": update });
-        write_notification(outbound, seq, "session/update", params).await;
-    }
-}
 
-// Pull (group_id, AgentEvent) out of the engine's stream-trigger envelope.
-// Accepts both nested camelCase (current) and flat snake_case (older).
-fn extract_event_payload(payload: &Value) -> Option<(String, Option<String>, Value)> {
-    let sid = payload
-        .get("groupId")
-        .or_else(|| payload.get("group_id"))
-        .and_then(|v| v.as_str())?
-        .to_string();
-    let item_id = payload
-        .get("id")
-        .or_else(|| payload.get("item_id"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let data = payload
-        .get("event")
-        .and_then(|e| e.get("data"))
-        .cloned()
-        .or_else(|| payload.get("data").cloned())
-        .unwrap_or(Value::Null);
-    Some((sid, item_id, data))
+    // Release buffered frames whose reorder window expired (or all of them
+    // when `force`), in order.
+    async fn flush_session(&self, session_id: &str, force: bool) {
+        let lock = self.session_lock(session_id);
+        let _g = lock.lock().await;
+        let ready = self.sequencer().flush(session_id, now_ms() as u64, force);
+        for event in ready {
+            self.apply(event).await;
+        }
+    }
+
+    // One timer task per session while frames wait for a missing predecessor.
+    fn schedule_flush(self: &Arc<Self>, session_id: &str) {
+        if self.sequencer().next_deadline(session_id).is_none() {
+            return;
+        }
+        if !self.flush_scheduled.insert(session_id.to_string()) {
+            return;
+        }
+        let sink = Arc::clone(self);
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            loop {
+                let next = sink.sequencer().next_deadline(&session_id);
+                let Some(deadline) = next else {
+                    break;
+                };
+                let wait = deadline.saturating_sub(now_ms() as u64);
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                sink.flush_session(&session_id, false).await;
+            }
+            sink.flush_scheduled.remove(&session_id);
+            // A frame buffered between the last check and the removal above
+            // would otherwise wait for the next delivery.
+            sink.schedule_flush(&session_id);
+        });
+    }
+
+    // Caller holds the session lock.
+    async fn apply(&self, event: FeedEvent) {
+        let Some(updates) = translate_agent_event(&event.event) else {
+            return;
+        };
+        // Cursor re-emits replayed frames under stable `cursor-` ids; those
+        // are deduplicated across reconnects through the persisted window.
+        let stable_id = event
+            .event_id
+            .starts_with("cursor-")
+            .then_some(event.event_id.as_str());
+        let appended = match append_history_once(
+            &self.iii,
+            &event.session_id,
+            Some(&self.conn_id),
+            stable_id,
+            updates.clone(),
+        )
+        .await
+        {
+            Ok(appended) => appended,
+            Err(error) => {
+                tracing::warn!(%error, session_id = event.session_id, "append_history failed for agent event");
+                return;
+            }
+        };
+        if !appended {
+            return;
+        }
+        *self
+            .visible_updates
+            .entry(event.session_id.clone())
+            .or_insert(0) += updates.len() as u64;
+        for update in updates {
+            let params = json!({ "sessionId": event.session_id, "update": update });
+            write_notification(&self.outbound, &self.update_seq, "session/update", params).await;
+        }
+    }
 }
 
 // AgentEvent → ACP `session/update.update` payload(s). Returns None when
@@ -1811,16 +1987,19 @@ mod tests {
     }
 
     #[test]
-    fn extracts_stable_stream_item_id() {
+    fn feed_payload_keeps_the_stable_cursor_event_id() {
         let payload = json!({
-            "groupId": "session-one",
-            "id": "cursor-stable-item",
-            "event": { "type": "update", "data": { "type": "message_update" } }
+            "session_id": "session-one",
+            "event_id": "cursor-stable-item",
+            "seq": 0,
+            "epoch": "e",
+            "source": "cursor",
+            "event": { "type": "message_update" }
         });
-        let (session_id, item_id, data) = extract_event_payload(&payload).unwrap();
-        assert_eq!(session_id, "session-one");
-        assert_eq!(item_id.as_deref(), Some("cursor-stable-item"));
-        assert_eq!(data["type"], "message_update");
+        let event = parse_feed_payload(&payload).unwrap();
+        assert_eq!(event.session_id, "session-one");
+        assert_eq!(event.event_id, "cursor-stable-item");
+        assert_eq!(event.event["type"], "message_update");
     }
 
     #[test]

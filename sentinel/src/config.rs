@@ -183,6 +183,36 @@ pub struct InvestigationConfigV1 {
     pub provider: Option<String>,
 }
 
+/// Sorting the noise from the defects. A group waits `delay_ms` after it is
+/// first seen — long enough for a restart to finish registering what it was
+/// missing — and is then classified once: by a deterministic check when one
+/// applies, otherwise by `judge::evaluate`. Without a judge deployed the
+/// groups simply stay untriaged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct TriageConfigV1 {
+    pub enabled: bool,
+    pub delay_ms: u64,
+    /// The model the judge answers with, as its provider names it. Empty
+    /// keeps the provider's own default.
+    pub model: String,
+    /// The `judge-<provider>` worker asked, such as `openai`. Unset keeps the
+    /// judge's default provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+impl Default for TriageConfigV1 {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delay_ms: 300_000,
+            model: String::new(),
+            provider: None,
+        }
+    }
+}
+
 /// Where a worker's source lives on this machine. A worker with no repository
 /// is still grouped, still investigated — the agent just works from the
 /// evidence alone and says so.
@@ -222,6 +252,7 @@ pub struct WorkerConfig {
     pub evidence: EvidenceConfigV1,
     pub retention: RetentionConfigV1,
     pub investigation: InvestigationConfigV1,
+    pub triage: TriageConfigV1,
     /// Where each worker's source lives, so an investigation can read it.
     pub projects: Vec<RepositoryConfigV1>,
     /// The name `projects` had until 2026-09. Still read, so a value stored
@@ -256,6 +287,7 @@ impl Default for WorkerConfig {
             evidence: EvidenceConfigV1::default(),
             retention: RetentionConfigV1::default(),
             investigation: InvestigationConfigV1::default(),
+            triage: TriageConfigV1::default(),
             projects: Vec::new(),
             former_repositories: None,
             service_aliases: BTreeMap::new(),
@@ -319,6 +351,20 @@ impl WorkerConfig {
             .is_some_and(|provider| provider.trim().is_empty())
         {
             return Err(invalid("investigation.provider cannot be empty when set"));
+        }
+
+        // The judge refuses any other name, and a refused call only pauses
+        // triage: better to say so where the value is typed.
+        if self.triage.provider.as_ref().is_some_and(|provider| {
+            provider.is_empty()
+                || provider.len() > 64
+                || !provider
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        }) {
+            return Err(invalid(
+                "triage.provider must be a judge-<provider> suffix: lowercase letters, digits and hyphens, at most 64",
+            ));
         }
 
         for (span_service, worker) in &self.service_aliases {
@@ -577,6 +623,18 @@ mod tests {
         };
         let error = config.validate().expect_err("invalid regex");
         assert!(error.to_string().contains("redaction.patterns[0]"));
+    }
+
+    #[test]
+    fn a_judge_provider_must_be_a_worker_name_suffix() {
+        let mut config = WorkerConfig::default();
+        config.triage.provider = Some("openai".into());
+        config.validate().expect("a worker-name suffix");
+        for bad in ["", "OpenAI", "judge::openai"] {
+            config.triage.provider = Some(bad.into());
+            let error = config.validate().expect_err(bad);
+            assert!(error.to_string().contains("triage.provider"));
+        }
     }
 
     #[test]

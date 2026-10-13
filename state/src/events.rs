@@ -61,6 +61,23 @@ pub async fn fan_out(
     triggers_enabled: bool,
     event: StateEventData,
 ) {
+    let scope = event.scope.clone();
+    let key = event.key.clone();
+    fan_out_lazy(invoker, triggers, triggers_enabled, &scope, &key, || event).await;
+}
+
+/// Build potentially large event values only after the live gate and matching.
+/// Delivery semantics are unchanged; this does not introduce event dropping.
+pub(crate) async fn fan_out_lazy<F>(
+    invoker: Arc<dyn Invoker>,
+    triggers: &TriggerTable,
+    triggers_enabled: bool,
+    scope: &str,
+    key: &str,
+    build: F,
+) where
+    F: FnOnce() -> StateEventData,
+{
     // LIVE gate (builtin parity): checked before any trigger collection.
     if !triggers_enabled {
         tracing::debug!("state trigger fan-out disabled via configuration; skipping");
@@ -72,7 +89,7 @@ pub async fn fan_out(
         let guard = triggers.read().await;
         guard
             .values()
-            .filter(|t| matches(&t.config, &event.scope, &event.key))
+            .filter(|t| matches(&t.config, scope, key))
             .map(|t| {
                 (
                     t.function_id.clone(),
@@ -86,10 +103,7 @@ pub async fn fan_out(
         return; // no span, no task — same short-circuit as the builtin
     }
 
-    let Ok(event_json) = serde_json::to_value(&event) else {
-        tracing::error!("Failed to convert state event data to value");
-        return;
-    };
+    let event_json = event_json(build());
 
     tokio::spawn(async move {
         for (function_id, condition_id, metadata) in matched {
@@ -117,6 +131,25 @@ pub async fn fan_out(
             }
         }
     });
+}
+
+// All fields already contain JSON or strings: move them instead of recursively
+// serializing old/new values into a second identical tree.
+fn event_json(event: StateEventData) -> Value {
+    use crate::structs::StateEventType;
+    let kind = match event.event_type {
+        StateEventType::Created => "state:created",
+        StateEventType::Updated => "state:updated",
+        StateEventType::Deleted => "state:deleted",
+    };
+    let mut object = serde_json::Map::new();
+    object.insert("type".into(), Value::String(event.message_type));
+    object.insert("event_type".into(), Value::String(kind.into()));
+    object.insert("scope".into(), Value::String(event.scope));
+    object.insert("key".into(), Value::String(event.key));
+    object.insert("old_value".into(), event.old_value.unwrap_or(Value::Null));
+    object.insert("new_value".into(), event.new_value);
+    Value::Object(object)
 }
 
 #[cfg(test)]
@@ -259,5 +292,41 @@ mod tests {
             1,
             "null/no-result must pass"
         );
+    }
+
+    #[tokio::test]
+    async fn no_subscriber_or_disabled_gate_never_builds_event_payload() {
+        let inv = Arc::new(RecordingInvoker::default());
+        let t = table(vec![]);
+        fan_out_lazy(inv.clone(), &t, true, "s", "k", || {
+            panic!("payload must stay borrowed")
+        })
+        .await;
+        let t = table(vec![("t", entry(Some("other"), None, None))]);
+        fan_out_lazy(inv.clone(), &t, true, "s", "k", || {
+            panic!("unmatched payload")
+        })
+        .await;
+        fan_out_lazy(inv, &t, false, "other", "k", || panic!("disabled payload")).await;
+    }
+
+    #[test]
+    fn moved_event_matches_existing_wire_shape() {
+        for kind in [
+            StateEventType::Created,
+            StateEventType::Updated,
+            StateEventType::Deleted,
+        ] {
+            let e = StateEventData {
+                message_type: "state".into(),
+                event_type: kind,
+                scope: "s".into(),
+                key: "k".into(),
+                old_value: Some(serde_json::json!({"a":[null,true,"中文"]})),
+                new_value: Value::Null,
+            };
+            let expected = serde_json::to_value(&e).unwrap();
+            assert_eq!(event_json(e), expected);
+        }
     }
 }

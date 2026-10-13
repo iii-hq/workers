@@ -59,7 +59,7 @@ import type {
   ContextUsageReport,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
-import { requestComposerFocus } from '@/lib/composer-insert'
+import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { errText } from '@/lib/errors'
@@ -69,6 +69,11 @@ import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { getIiiClient } from '@/lib/iii-client'
+import { useMentionProviderRefresh } from '@/lib/mentions/providers'
+import {
+  onboardingWizardAvailable,
+  requestOnboardingWizard,
+} from '@/lib/onboarding/open'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
 import { isCallSettled } from '@/lib/sessions/entry-mapper'
@@ -133,7 +138,11 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { idleComposerPlaceholder } from './agent-defaults'
-import { Composer, type ComposerSubmitPayload } from './Composer'
+import {
+  Composer,
+  type ComposerSubmitPayload,
+  composerControlNodes,
+} from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
@@ -145,6 +154,7 @@ import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
   skillSelectionForSend,
+  turnEstablishedFrom,
 } from './system-prompt-selection'
 import { deriveTurnVisualState } from './turn-visual-state'
 import { useModelSwitch } from './use-model-switch'
@@ -282,6 +292,13 @@ export function ChatView({
     if (readOnly) return
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [readOnly])
+  /* With no model yet, setup does the whole job — find a signed-in CLI or a
+     key on this machine, add the worker, store the key — where the picker
+     can only list providers. The picker stays the fallback. */
+  const handleConfigureProvider = useCallback(() => {
+    if (onboardingWizardAvailable()) requestOnboardingWizard('models')
+    else handleOpenModelPicker()
+  }, [handleOpenModelPicker])
   /* An agent profile that pins the model locks the model-and-reasoning panel
      (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
      effort control, not only to the model list). */
@@ -316,6 +333,19 @@ export function ChatView({
         : undefined,
     [workingDirEnabled, conversationWorkingDir],
   )
+  // Worker mention searches (`@kanban:…`) learn which chat and folder they
+  // were asked from; a provider may rank by it or leave the asking session out.
+  const mentionContext = useMemo(
+    () => ({
+      session_id: conversation.id,
+      ...(conversationWorkingDir
+        ? { working_dir: conversationWorkingDir }
+        : {}),
+    }),
+    [conversation.id, conversationWorkingDir],
+  )
+  // A worker that joins (or leaves) brings (or takes) its `@name` with it.
+  useMentionProviderRefresh(backend.id === 'real')
   // A clicked file pill opens the shell explorer on that file — on the
   // referenced lines when the mention carries a window. Relative mentions
   // resolve against the session's folder; absolute ones (a file referenced
@@ -1015,9 +1045,10 @@ export function ChatView({
     })
   }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
 
-  // Worker settings for this session, beside the model picker. Writes go
-  // through the console's own metadata writer (never the worker's), so they
-  // cannot race the model/thinking writes and apply from the next turn on.
+  // Worker settings for this session, beside the model picker (or, placed in
+  // the project strip, after the folder). Writes go through the console's own
+  // metadata writer (never the worker's), so they cannot race the
+  // model/thinking writes and apply from the next turn on.
   const extComposerControls = useExtComposerControls()
   const setSessionMetadata = conversationsCtx?.setSessionMetadata
   const composerControls = useMemo(() => {
@@ -1025,24 +1056,22 @@ export function ChatView({
     const metadata = conversation.sessionMetadata ?? {}
     const setMetadata = (patch: Record<string, unknown>) =>
       setSessionMetadata(conversation.id, patch)
-    return [...extComposerControls].sort(compareChips).map((control) => {
-      const Control = control.render
-      return (
-        <Control
-          key={control.id}
-          sessionId={conversation.id}
-          isStreaming={streamingIndicator}
-          metadata={metadata}
-          setMetadata={setMetadata}
-        />
-      )
+    return composerControlNodes([...extComposerControls].sort(compareChips), {
+      sessionId: conversation.id,
+      isStreaming: streamingIndicator,
+      metadata,
+      setMetadata,
+      workingDir: conversationWorkingDir,
+      locked: streamingIndicator || harnessBlocked,
     })
   }, [
     extComposerControls,
     setSessionMetadata,
     conversation.id,
     conversation.sessionMetadata,
+    conversationWorkingDir,
     streamingIndicator,
+    harnessBlocked,
   ])
 
   const extComposerActions = useExtComposerActions()
@@ -1387,6 +1416,10 @@ export function ChatView({
     },
     [conversationsCtx, conversation.id],
   )
+  const claimComposerSend = useCallback(
+    () => claimDraftSend(conversation.id),
+    [conversation.id],
+  )
   // The chips follow the same route as the text. The composer is remounted
   // per conversation (ChatPanel keys this view), so without the seed every
   // switch dropped them — the reported bug. `getDraftAttachments` falls back
@@ -1463,9 +1496,15 @@ export function ChatView({
     async (payload: ComposerSubmitPayload) => {
       if (submitBlockedRef.current) return
       const conversationId = conversation.id
-      let turnEstablished = messagesRef.current.some(
-        (message) => message.role === 'assistant',
-      )
+      // Only the session's first send carries the prompt selection and the
+      // agent; the harness inherits them afterwards and refuses a repeated
+      // options.agent (see selectionForSend / agentIdForSend). Gate on a row
+      // a turn produced rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again. Function-trigger rows count as well as
+      // assistant text: a turn ran, and a first turn that ends on
+      // harness::ask produces only calls (see turnEstablishedFrom).
+      let turnEstablished = turnEstablishedFrom(messagesRef.current)
       if (imported) {
         const preparing = !isStreaming && !serverWorking
         if (preparing && importStatusPendingRef.current) {
@@ -1516,6 +1555,9 @@ export function ChatView({
         try {
           await ensureSession(conversationId, payload.text)
         } catch (err) {
+          // Nothing was sent: the text goes back into the composer (and into
+          // the new chat's saved draft) rather than being lost with the error.
+          restoreDraft(payload)
           onAppendMessage(
             conversationId,
             makeSystemNotice(
@@ -2085,6 +2127,11 @@ export function ChatView({
             case 'turn-status': {
               // `queued` renders in the queued-messages strip, not the waiting indicator.
               setTurnPhase(event.phase === 'queued' ? null : event.phase)
+              // The harness resolved a `lowest` request: show what it chose,
+              // and later turns send it like any picked effort.
+              if (event.reasoningEffort) {
+                handleThinkingLevelChange(event.reasoningEffort)
+              }
               break
             }
             case 'stop-reason': {
@@ -2196,6 +2243,7 @@ export function ChatView({
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
+      handleThinkingLevelChange,
       effectiveSystemPrompt,
       sessionId,
       contextWindow,
@@ -2839,7 +2887,7 @@ export function ChatView({
             onAlwaysAllow={handleAlwaysAllow}
             onResolveFilesystemAccess={handleFilesystemResolve}
             onManageFilesystemAccess={handleManageFilesystemAccess}
-            onConfigureProvider={handleOpenModelPicker}
+            onConfigureProvider={handleConfigureProvider}
             workingDir={conversation.workingDir ?? null}
             onWorkingDirChange={
               workingDirEnabled ? handleWorkingDirChange : undefined
@@ -3000,6 +3048,7 @@ export function ChatView({
               }
               functionEntries={functionEntries}
               searchFiles={searchFiles}
+              mentionContext={mentionContext}
               onOpenFileMention={
                 workingDirEnabled ? handleOpenFileMention : undefined
               }
@@ -3036,7 +3085,8 @@ export function ChatView({
               onAttachmentsChange={handleComposerAttachmentsChange}
               syncedAttachments={conversation.draftAttachments}
               composerActions={composerActions}
-              composerControls={composerControls}
+              composerControls={composerControls?.footer}
+              projectControls={composerControls?.project}
               onSubmit={handleSubmit}
               onStop={handleStop}
               stopping={stopping}
@@ -3047,6 +3097,7 @@ export function ChatView({
               queueWhileStreaming={!!backend.queueMessage}
               blocked={harnessBlocked}
               submitBlocked={submitBlocked || modelSwitch.pending}
+              claimDraftSend={claimComposerSend}
               autoFocus={focusComposerOnOpen && !harnessBlocked}
               idlePlaceholder={idleComposerPlaceholder(
                 conversation.agentProfile,

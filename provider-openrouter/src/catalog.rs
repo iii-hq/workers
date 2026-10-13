@@ -111,6 +111,18 @@ pub fn model_from_row(row: &Value) -> Option<Model> {
         } else {
             None
         },
+        // `none` disables reasoning on OpenRouter; a model flagged
+        // `reasoning.mandatory` rejects it even when listed. A row that
+        // advertises no efforts at all says nothing either way.
+        supports_thinking_off: if !supports_thinking {
+            None
+        } else if row.pointer("/reasoning/mandatory").and_then(Value::as_bool) == Some(true) {
+            Some(false)
+        } else if efforts.is_empty() {
+            None
+        } else {
+            Some(efforts.iter().any(|e| e.effort == "none"))
+        },
         reasoning_efforts: if efforts.is_empty() {
             None
         } else {
@@ -209,6 +221,29 @@ mod tests {
         let p = model_from_row(&row).unwrap().pricing.unwrap();
         assert_eq!(p.input, Some(0.0));
         assert_eq!(p.output, Some(0.0));
+    }
+
+    #[test]
+    fn off_flag_follows_advertised_efforts_and_the_mandatory_marker() {
+        let with = |reasoning: Value| {
+            let mut row = full_row();
+            row["reasoning"] = reasoning;
+            model_from_row(&row).unwrap().supports_thinking_off
+        };
+        assert_eq!(with(json!({})), None, "no efforts advertised: unknown");
+        assert_eq!(
+            with(json!({ "supported_efforts": ["none", "low"] })),
+            Some(true)
+        );
+        assert_eq!(
+            with(json!({ "supported_efforts": ["low", "high"] })),
+            Some(false)
+        );
+        assert_eq!(
+            with(json!({ "supported_efforts": ["none", "low"], "mandatory": true })),
+            Some(false),
+            "mandatory rejects none even when listed"
+        );
     }
 
     #[test]

@@ -101,6 +101,8 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             "judge::models::list".to_owned(),
             "judge::cancel".to_owned(),
             "judge::on-config-change".to_owned(),
+            "judge::mentions::pre-generate".to_owned(),
+            "judge::mentions::resolve".to_owned(),
         ]);
         if console_ui_enabled {
             expected_functions.insert("judge::ui-content".to_owned());
@@ -116,8 +118,10 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             false,
             false,
         );
+        let mut mention_hook = false;
         while !(config
             && functions == expected_functions
+            && mention_hook
             && reload
             && script
             && style
@@ -174,6 +178,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                             | "judge::ui-content"
                             | "judge::configuration-id"
                             | "judge::models::list"
+                            | "judge::mentions::pre-generate"
                     );
                     assert_eq!(
                         value["metadata"]["internal"].as_bool().unwrap_or(false),
@@ -198,6 +203,12 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         })
                     );
                     reload = true;
+                }
+                "registertrigger" if value["trigger_type"] == "harness::hook::pre-generate" => {
+                    // Mentions must never block a turn: the hook fails open.
+                    assert_eq!(value["function_id"], "judge::mentions::pre-generate");
+                    assert_eq!(value["config"]["on_error"], "fail_open");
+                    mention_hook = true;
                 }
                 "registertrigger" if value["trigger_type"] == "console:script" => {
                     assert!(console_ui_enabled);

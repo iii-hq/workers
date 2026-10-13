@@ -1,8 +1,8 @@
 # pi
 
-Pi coding agent as an iii worker: the Pi API exposed as functions and streams on the iii bus, nothing else. The worker runs the same in-process agent loop Pi runs in the terminal, with the same tools (read, bash, edit, write) against any host directory. `pi::run` executes one headless turn and returns the result; the raw Pi events mirror verbatim onto the `pi::events` stream, and a translated AgentEvent view lands on `agent::events`, so the iii console, the acp worker, and any sibling worker observe a Pi run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and the acp worker drive, so both run Pi with no changes.
+Pi coding agent as an iii worker: the Pi API exposed as functions and trigger types on the iii bus, nothing else. The worker runs the same in-process agent loop Pi runs in the terminal, with the same tools (read, bash, edit, write) against any host directory. `pi::run` executes one headless turn and returns the result; the raw Pi events are published verbatim on the `pi::raw-event` trigger type, and a translated AgentEvent view on `pi::agent-event`, so the iii console, the acp worker, and any sibling worker observe a Pi run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and the acp worker drive, so both run Pi with no changes.
 
-The same worker also runs pi as a **terminal on the console**: `pi::terminal::*` installs the CLI on the terminal host, equips a workspace with the iii skills, and opens pi in a `shell::pty` session on its own page — always pi, never a shell. Both halves report onto one events stream, so a headless turn and a typed turn look the same in the console. Whether they also share one login depends on where each half runs (see [Logging in](#logging-in)). Its sibling [`claude-code`](https://github.com/iii-hq/workers/tree/main/claude-code) is the same shape for Claude Code.
+The same worker also runs pi as a **terminal on the console**: `pi::terminal::*` installs the CLI on the terminal host, equips a workspace with the iii skills, and opens pi in a `shell::pty` session on its own page — always pi, never a shell. Both halves report onto one event feed (`pi::agent-event`), so a headless turn and a typed turn look the same in the console. Whether they also share one login depends on where each half runs (see [Logging in](#logging-in)). Its sibling [`claude-code`](https://github.com/iii-hq/workers/tree/main/claude-code) is the same shape for Claude Code.
 
 ## Install
 
@@ -79,16 +79,16 @@ Call `pi::run` again with the returned `session_id` to continue the same convers
 
 ![iii trigger pi::sessions::list showing the stored session records](https://raw.githubusercontent.com/iii-hq/workers/main/pi/assets/cli-sessions.png)
 
-Two ids come back from every run. `session_id` is the iii session id: the key for `pi::status`, `pi::stop`, `pi::steer`, resume, and the stream group. `pi_session_id` is Pi's internal session id — returned for reference, not a lookup key.
+Two ids come back from every run. `session_id` is the iii session id: the key for `pi::status`, `pi::stop`, `pi::steer`, resume, and the `session_id` an event-feed binding filters on. `pi_session_id` is Pi's internal session id — returned for reference, not a lookup key.
 
-Long turns: use `pi::start` to return immediately, then watch `agent::events` (group_id = your session_id) for `message_complete`, `function_execution_start/end`, and `turn_end` frames. `pi::stop` interrupts a live run, `pi::status` reads a point-in-time view, `pi::sessions::list` enumerates past sessions.
+Long turns: use `pi::start` to return immediately, then bind `pi::agent-event` with `{ session_id }` (see [Event feeds](#event-feeds)) for `message_complete`, `function_execution_start/end`, and `turn_end` frames. `pi::stop` interrupts a live run, `pi::status` reads a point-in-time view, `pi::sessions::list` enumerates past sessions.
 
 ## Functions
 
 | Function | Purpose |
 | --- | --- |
 | `pi::run` | Run one turn, wait, return the final result |
-| `pi::start` | Fire-and-forget turn; progress arrives on `agent::events` |
+| `pi::start` | Fire-and-forget turn; progress arrives on `pi::agent-event` |
 | `pi::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and read the outcome from `agent_tasks/<session id>` in state — which is what an orchestrator binds a `state` trigger to and is woken by |
 | `pi::steer` | Inject a steering instruction into a live run |
 | `pi::follow_up` | Queue a follow-up message for a live run |
@@ -97,7 +97,7 @@ Long turns: use `pi::start` to return immediately, then watch `agent::events` (g
 | `pi::sessions::list` | All sessions this worker has run |
 | `run::start_and_wait` | Alias for `pi::run` under the entrypoint the console and acp worker drive |
 | `pi::terminal::describe` | What a terminal session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`. Internal. |
-| `pi::terminal::activity` | One pi extension event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the stream, not the delivery. |
+| `pi::terminal::activity` | One pi extension event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the feed, not the delivery. |
 | `pi::auth::status` | Which plan a terminal session spends (see Billing). Agent-denied. |
 | `pi::ui-content` | Console page assets. Internal. |
 
@@ -105,11 +105,11 @@ Long turns: use `pi::start` to return immediately, then watch `agent::events` (g
 
 ### Raw events
 
-Every event Pi emits (`agent_start/end`, `turn_start/end`, `message_start/update/end`, `tool_execution_start/update/end`, and the session events `queue_update`, `compaction_start/end`) is mirrored verbatim onto the `pi::events` stream, group_id = session_id. Consumers that want the exact Pi event format read `pi::events`; consumers that want harness-shaped frames read `agent::events`. Same turn, two views.
+Every event Pi emits (`agent_start/end`, `turn_start/end`, `message_start/update/end`, `tool_execution_start/update/end`, and the session events `queue_update`, `compaction_start/end`) is published verbatim on the `pi::raw-event` trigger type. Consumers that want the exact Pi event format bind `pi::raw-event`; consumers that want harness-shaped frames bind `pi::agent-event`. Same turn, two views.
 
 ## Steering a live run
 
-A turn started with `pi::start` keeps its session reachable while it streams. Two functions push instructions into it:
+A turn started with `pi::start` keeps its session reachable while it runs. Two functions push instructions into it:
 
 ```bash
 # start a long run
@@ -123,6 +123,57 @@ iii trigger pi::follow_up --json '{"session_id":"s1","prompt":"then add tests fo
 ```
 
 `pi::steer` maps onto Pi's steering queue (interrupt-style), `pi::follow_up` onto its follow-up queue (wait-style). Both no-op with `{steered:false}` / `{queued:false}` when no run is live for the session.
+
+## Event feeds
+
+The worker owns two trigger types and publishes every turn on them (headless
+runs, `pi::task` sub-agents, `run::start_and_wait`, and the console terminal):
+
+| Trigger type | `event` carries |
+| --- | --- |
+| `pi::agent-event` | translated AgentEvent frames (`message_complete`, `function_execution_start/end`, `turn_end`, `agent_end`) |
+| `pi::raw-event` | every Pi AgentSession event verbatim (`agent_start/end`, `turn_*`, `message_*`, `tool_execution_*`, `queue_update`, `compaction_*`) |
+
+Bind a function to one session with the config `{ session_id, metadata? }`
+(`session_id` required, non-empty, up to 512 characters; `metadata` is an
+optional object handed to your function and wins over the binding's own
+metadata; any other key rejects the binding). Each trigger type accepts up to
+256 bindings.
+
+```ts
+iii.registerTrigger({
+  type: 'pi::agent-event',
+  function_id: 'my::on-pi-event',
+  config: { session_id },
+});
+```
+
+Your function receives one call per frame, fire-and-forget:
+
+```jsonc
+{
+  "session_id": "sess_...",
+  "event_id": "sess_...-<epoch>-00000007", // dedup key
+  "seq": 7,              // contiguous per (trigger type, session_id, epoch), from 0
+  "epoch": "<uuid>",     // changes when the worker restarts; seq restarts at 0
+  "source": "pi",
+  "event": { "type": "message_complete", "message": { } }
+}
+```
+
+Deliveries are not guaranteed to arrive in order: order by `(epoch, seq)` and
+drop duplicates by `event_id`. The two feeds number their frames
+independently. The feeds are ephemeral: nothing is stored or replayed, and a
+function bound after a frame was published never sees it. The durable history
+is the session record (`pi::status`, `pi::sessions::list`), the turn's return
+value, and the session-manager transcript (`session::messages`) the console
+renders. A consumer that fails or disappears never fails the turn.
+
+These replace the former iii-stream feeds `agent::events` and `pi::events`;
+the worker no longer needs iii-stream (see the guide "Migrate from iii-stream
+and pubsub"). The acp worker binds `pi::agent-event` for the brain `pi::run`;
+when it drives `run::start_and_wait` instead, start it with
+`--events-trigger-type pi::agent-event`.
 
 ## The agent on the bus
 
@@ -162,8 +213,9 @@ the workspace notes and the installed iii skills teach it how to register
 functions and triggers.
 
 ```bash
-iii trigger stream::list stream_name=agent::events
 iii trigger pi::terminal::describe   # what a session runs, and where
+iii trigger pi::status session_id=<session id>        # the session record
+iii trigger session::messages session_id=<session id> # the persisted transcript
 ```
 
 The page keeps a per-browser lease, so a reload, a pane move, or closing the
@@ -258,7 +310,7 @@ the activity extension calls the `iii` CLI, which may not exist there. The
 worker probes for it and reports the answer as `activity_bridge` on
 `pi::terminal::describe` (empty = the extension is installed but mute, with
 `detail` saying so) — the first thing to check if a terminal works while
-`agent::events` stays empty.
+nothing arrives on `pi::agent-event`.
 
 For a terminal host with no one at the keyboard, put the provider's key in the
 environment the `shell` worker starts with. Either way the badge says which one
@@ -293,8 +345,6 @@ defaults:
   tools: []                # empty = Pi defaults (read, bash, edit, write)
   agent_dir: ""            # Pi global config dir; empty = ~/.pi/agent
 
-events_stream: agent::events   # translated AgentEvent frames
-raw_events_stream: pi::events  # verbatim Pi events
 iii_context: true              # prepend the iii runtime context on fresh sessions
 
 terminal:                  # the console page: what a typed session runs
@@ -308,6 +358,10 @@ terminal:                  # the console page: what a typed session runs
 
 `config.yaml` is the seed: on first boot the worker registers it with the built-in `configuration` worker as the initial value, then reads the live value back and hot-reloads on every `configuration:updated`. `engine_url` is excluded from the managed schema — it is bootstrap, so it stays on the local seed / `--url`.
 
+The event feeds are fixed trigger types, not settings. The former
+`events_stream` / `raw_events_stream` keys are ignored; a stored configuration
+that still carries them keeps loading.
+
 ## Observability
 
 Every `pi::run` is an ordinary traced invocation on the engine: the trace carries the full input payload (prompt, cwd, caller worker id) and the output (result, stop reason, token usage, cost) as span events, with per-function p50/p95/p99 in the console's trace explorer — no extra instrumentation in the worker.
@@ -317,8 +371,8 @@ Every `pi::run` is an ordinary traced invocation on the engine: the trace carrie
 | Pi | iii |
 | --- | --- |
 | `AgentSession.prompt()` turn | `pi::run` invocation |
-| every AgentSession event, verbatim | `pi::events` stream frame |
-| assistant `message_end` | `message_complete` frame on `agent::events` |
+| every AgentSession event, verbatim | `pi::raw-event` delivery |
+| assistant `message_end` | `message_complete` frame on `pi::agent-event` |
 | `tool_execution_start` / `tool_execution_end` | `function_execution_start` / `function_execution_end` frames |
 | final result | `turn_end` + `agent_end` frames, function return value |
 | `steer()` / `followUp()` | `pi::steer` / `pi::follow_up` |

@@ -1,6 +1,6 @@
 {
   "function_id": "browser::frame",
-  "description": "Internal: newest screencast frame, or nothing when since_frame is still current. No capture round-trip; poll fast. Not an agent function.",
+  "description": "Internal: newest screencast frame, or nothing when since_frame is still current. No capture round-trip: a viewer reads it once for its first paint, then frames arrive on browser::frame-event. Not an agent function.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "FrameInput",

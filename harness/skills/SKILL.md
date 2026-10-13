@@ -25,6 +25,18 @@ refused until you allow globs per send. Sessions are minted by the harness
 (`merged: true`) instead of erroring, and a repeated `idempotency_key` returns
 the original turn without appending.
 
+A session-creating send names a `model`, or only a `provider`: the harness
+then starts on that provider's declared default model (`default_model` in
+`router::provider::list`, checked against its live catalog; a provider that
+reports none fails the send as before). A new session that names neither
+`thinking_level` nor `provider_options` also starts on the provider's
+`default_thinking_level`; an explicit level wins, and later sends into the
+session inherit the prior turn's as usual. `thinking_level` is `off`,
+`minimal`, `low`, `medium`, `high` or `xhigh`; `off` is honoured only on
+models whose catalog entry says `supports_thinking_off: true`; elsewhere the
+fallback is the provider's own (most send their lowest effort and warn, Kimi
+ignores the level).
+
 Prerequisites: `session-manager` (required — transcript store and change feed)
 and `llm-router` (required — generation and the model catalog) must be present.
 `context-manager` (token budgeting and compaction) is a soft dependency — absent
@@ -72,12 +84,40 @@ Consumer-facing:
   turn ever ran. For recovery and guards, not rendering.
 - `harness::spawn` — spawn a sub-agent in a child session. Model-facing (invoked
   through `agent_trigger`), not a consumer entry point.
+- `harness::ask` — put a decision with discrete options to the user as a
+  clickable card (1–4 questions, 2–4 options each). Model-facing (invoked
+  through `agent_trigger`) and answered by the turn loop itself: the turn ends
+  on the question and the answer arrives as the user's next message. Refused
+  in sub-agents, structured-output turns, and for a second ask in one step.
 
 Internal — the harness drives these; never trigger them directly:
 `harness::turn` (the durable loop step), `harness::function::trigger` /
 `harness::function::resolve` (dispatch and parked-call settle),
 `harness::sweep-pending` (cron expiry), and `harness::on-config-change`
 (hot-reload).
+
+## Filesystem scope
+
+`options.metadata.fs_scope.root` on a send is the session's working
+directory; a later send that omits `fs_scope` keeps it. The harness stamps a
+trusted `fs_scope { root, grants, boundary }` onto every `shell::*` /
+`coder::*` call and strips any the model supplies. `boundary` decides what
+`root` means to the `ide` worker:
+
+- `workspace` — `coder::*`, `shell::fs::*` and an exec `cwd` stay inside
+  `root` plus the session's grants (`harness::filesystem::grant`).
+- `configured_roots` — `root` only anchors relative paths; the worker's own
+  roots apply. The model's prompt says so ("default directory, not an access
+  boundary").
+
+The `filesystem_boundary` config picks it: `auto` (the default) is
+`workspace` only while approval-gate's access watch is bound; `workspace` or
+`configured_roots` pins it. `harness::filesystem::info` reports the boundary
+in effect. A sub-agent spawned in a turn into a new session starts with a
+copy of its parent's grants; later grants to the parent do not reach it.
+Under `workspace`, an in-turn spawn's `options.filesystem_root` must lie
+inside the parent's root or grants. What an exec'd process itself writes is
+the `ide` worker's `fs.exec_confinement` switch.
 
 ## Reactive triggers
 

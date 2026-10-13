@@ -108,6 +108,24 @@ PROVIDER_CONTRACT_INFRA_PATHS = {
 # the matrix but not source_changed (no version-bump gate on the PR author).
 CRATES_DIR = "crates"
 
+# crates/<name> suites that load other workers' test fixtures: a change to
+# one of these paths also runs the crate's own suite.
+CRATE_FIXTURE_PREFIXES = {
+    "llama-native": (
+        "judge-clef/tests/fixtures/",
+        "judge-decider/tests/fixtures/",
+        "judge-laya/tests/fixtures/",
+    ),
+    "judge-provider": ("judge-typesafe/tests/support/",),
+}
+
+# Worker test support that other workers' suites compile through #[path]: a
+# change under the prefix also runs those workers' lint+test (as forced picks,
+# never source_changed).
+SHARED_TEST_SUPPORT = {
+    "judge-typesafe/tests/support/": ("judge", "judge-openai"),
+}
+
 # Docs-only files inside a crate dir. Everything else — including Cargo.toml
 # and Cargo.lock, which change what dependents build against — counts as a
 # source change.
@@ -241,13 +259,28 @@ def catalog_deltas(base: str, head: str) -> tuple[set[str], set[str], bool]:
 
 
 def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> list[str]:
-    """Workers whose Cargo.toml declares a path dependency on crates/<crate>.
+    """Workers whose Cargo.toml declares a path dependency on crates/<crate>,
+    directly or through other crates (judge-decider reaches crates/llama-native
+    through crates/llama-runtime).
 
     Textual match on `crates/<crate>` inside the manifest — loose on purpose
-    (path deps read `{ path = "../crates/<crate>" }`, and a TOML parser is a
-    new CI dependency); a false positive only adds a worker to the matrix.
+    (path deps read `{ path = "../crates/<crate>" }`, between crates
+    `{ path = "../<crate>" }`, and a TOML parser is a new CI dependency); a
+    false positive only adds a worker to the matrix.
     """
-    needle = f"{CRATES_DIR}/{crate}"
+    manifests = {
+        manifest.parent.name: manifest.read_text()
+        for manifest in (repo_root / CRATES_DIR).glob("*/Cargo.toml")
+    }
+    crates = {crate}
+    grew = True
+    while grew:
+        grew = False
+        for name, text in manifests.items():
+            if name not in crates and any(f'"../{c}"' in text for c in crates):
+                crates.add(name)
+                grew = True
+    needles = [f"{CRATES_DIR}/{c}" for c in crates]
     out = []
     for w in sorted(workers):
         manifest = repo_root / w / "Cargo.toml"
@@ -255,7 +288,7 @@ def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> 
             text = manifest.read_text()
         except OSError:
             continue
-        if needle in text:
+        if any(needle in text for needle in needles):
             out.append(w)
     return out
 
@@ -304,8 +337,14 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"unknown --force-worker: {', '.join(unknown_forced)}")
 
     changed_crates = sorted(
-        c for c, rels in touched_crates.items()
-        if any(not is_crate_metadata(rel) for rel in rels)
+        {
+            c for c, rels in touched_crates.items()
+            if any(not is_crate_metadata(rel) for rel in rels)
+        }
+        | {
+            c for c, prefixes in CRATE_FIXTURE_PREFIXES.items()
+            if any(f.startswith(prefixes) for f in files)
+        }
     )
 
     # Crate dependents join the matrix exactly like --force-worker picks:
@@ -315,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
     forced = set(args.force_worker)
     for crate in changed_crates:
         forced.update(crate_dependents(repo_root, crate, workers))
+    for prefix, dependents in SHARED_TEST_SUPPORT.items():
+        if any(f.startswith(prefix) for f in files):
+            forced.update(set(dependents) & workers)
     changed = sorted(set(touched) | forced | catalog_changed)
     source_changed = sorted(
         {

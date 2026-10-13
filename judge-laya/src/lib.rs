@@ -1,6 +1,6 @@
-//! laya provider for the judge hub: ModernBERT encoder from candle plus laya's
-//! typed decision head, downloaded from the Hugging Face Hub and run in-process.
-mod cancellation;
+//! laya provider for the judge hub: laya's ModernBERT encoder and typed
+//! decision head, downloaded from the Hugging Face Hub and run in-process in
+//! llama.cpp (crates/llama-native).
 pub mod client;
 pub mod config;
 pub mod configuration;
@@ -9,7 +9,6 @@ pub mod encode;
 pub mod engine;
 pub mod gguf;
 pub mod lang;
-pub mod model;
 pub mod register;
 pub use client::{LayaClient, Limits, Routing};
 pub use config::LayaConfig;

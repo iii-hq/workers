@@ -17,6 +17,7 @@ pub mod adaptive;
 mod browserforge;
 pub mod cdp;
 pub mod crawl;
+pub mod crawl_feed;
 pub mod dom;
 pub mod egress_gate;
 pub mod fetch;
@@ -45,7 +46,7 @@ pub(crate) fn require_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, 
         .ok_or_else(|| format!("'{key}'"))
 }
 
-/// The 19 catalog function ids (in `schemas::catalog()` order) plus the
+/// The 20 catalog function ids (in `schemas::catalog()` order) plus the
 /// internal guidance hook, last. `register_all` asserts it registers exactly
 /// this set, in this order.
 pub const STATIC_IDS: &[&str] = &[
@@ -68,6 +69,7 @@ pub const STATIC_IDS: &[&str] = &[
     "browser::session-close",
     "browser::session-list",
     "browser::crawl",
+    "browser::crawl::items",
     inject_guidance::GUIDANCE_HOOK_ID,
 ];
 
@@ -112,6 +114,9 @@ pub fn dispatch_op(function_id: &str, payload: &Value) -> Result<Value, String> 
 /// carrying `schemas::catalog()`'s Python-mirrored literals are mandatory.
 /// The guidance hook uses real typed structs and relies on derivation.
 pub fn register_all(iii: &Arc<iii_sdk::IIIClient>, ctx: &Arc<net::Ctx>) {
+    // Before the functions, so a consumer binding as soon as browser::crawl
+    // appears already finds the trigger type.
+    crawl_feed::register_trigger_type(iii, &ctx.crawl_feed);
     let mut registered: Vec<&str> = Vec::new();
     for spec in crate::scrapling::schemas::catalog() {
         registered.push(spec.function_id);

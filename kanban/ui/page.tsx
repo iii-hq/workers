@@ -1,7 +1,11 @@
 import type { Host } from '@iii-dev/console-ui'
 import { BoardPage } from './src/board'
 import { KanbanConfigForm } from './src/overlays'
-import { createKanbanTriggerRenderer, createTicketRenderer } from './src/renderers'
+import {
+  createKanbanTriggerRenderer,
+  createTicketMentionRenderer,
+  createTicketRenderer,
+} from './src/renderers'
 import { BOARD_PAGE_ID, COLUMNS_CONFIGURATION_ID, TICKET_PAGE_ID } from './src/shared'
 import { TicketPage } from './src/ticket'
 
@@ -22,4 +26,6 @@ export default function setup(host: Host) {
   host.configForms.register(COLUMNS_CONFIGURATION_ID, KanbanConfigForm)
   host.functionTriggers.register(createTicketRenderer(host))
   host.triggerRenderers?.register(createKanbanTriggerRenderer(host))
+  // `@kanban(id="…")` chat mentions preview as the ticket card.
+  host.mentions?.registerRenderer(createTicketMentionRenderer(host))
 }

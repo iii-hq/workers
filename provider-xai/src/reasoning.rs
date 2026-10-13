@@ -30,6 +30,11 @@ pub fn is_reasoning_model(model: &str, catalog_supports_thinking: Option<bool>) 
 /// `low`/`high`, and every other current model rejects the param with a 400.
 fn supported_efforts(model: &str) -> &'static [&'static str] {
     let id = model.to_ascii_lowercase();
+    // docs.x.ai/developers/models/grok-4.{5,6,7}: low..high, no `none`
+    // ("Reasoning cannot be disabled"); 4.6+ add xhigh, 4.5 stops at high.
+    if id.starts_with("grok-4.6") || id.starts_with("grok-4.7") {
+        return &["low", "medium", "high", "xhigh"];
+    }
     if id.starts_with("grok-4.5") {
         return &["low", "medium", "high"];
     }
@@ -42,8 +47,21 @@ fn supported_efforts(model: &str) -> &'static [&'static str] {
     &[]
 }
 
+/// Whether the family accepts `reasoning_effort: none` (the off switch).
+pub fn can_disable(model: &str) -> bool {
+    supported_efforts(model).contains(&"none")
+}
+
+/// Whether the family accepts `reasoning_effort: xhigh` (grok-4.3, and
+/// grok-4.6 and later per the reasoning guide).
+pub fn accepts_xhigh(model: &str) -> bool {
+    let id = model.to_ascii_lowercase();
+    id.starts_with("grok-4.3") || id.starts_with("grok-4.6") || id.starts_with("grok-4.7")
+}
+
 fn level_str(level: ThinkingLevel) -> &'static str {
     match level {
+        ThinkingLevel::Off => "none",
         ThinkingLevel::Minimal => "minimal",
         ThinkingLevel::Low => "low",
         ThinkingLevel::Medium => "medium",
@@ -59,6 +77,10 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
     let ladder = supported_efforts(model);
     if ladder.is_empty() {
         return None;
+    }
+    // `off` is honoured only where the family accepts `none` (grok-4.3).
+    if level == Some(ThinkingLevel::Off) {
+        return ladder.contains(&"none").then_some("none");
     }
     let want = level_str(level?);
     if ladder.contains(&want) {
@@ -81,6 +103,30 @@ pub fn reasoning_effort_for(level: Option<ThinkingLevel>, model: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_maps_to_none_on_grok_4_3_only() {
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "grok-4.3"),
+            Some("none")
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "grok-4.5"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Off), "grok-4.7"),
+            None
+        );
+        assert_eq!(
+            reasoning_effort_for(Some(ThinkingLevel::Xhigh), "grok-4.7"),
+            Some("xhigh")
+        );
+        assert!(can_disable("grok-4.3"));
+        assert!(!can_disable("grok-4.7"));
+        assert!(accepts_xhigh("grok-4.6"));
+        assert!(!accepts_xhigh("grok-4.5"));
+    }
 
     #[test]
     fn catalog_flag_wins_over_id_pattern() {

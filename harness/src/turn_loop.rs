@@ -25,7 +25,7 @@ use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
-    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, TurnRecord, TurnStatus,
+    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -191,6 +191,9 @@ pub async fn enqueue_step(
             }
         }
     }
+    // The record may already say `Running` at this step: follow up once its
+    // window passes, or nothing would ever run it (inflight.rs).
+    crate::inflight::suspect_unenqueued(session_id, turn_id, step);
     Err(HarnessError::Dependency(format!(
         "enqueue harness::turn: {last_error}"
     )))
@@ -412,16 +415,22 @@ async fn generate_step(
     let cfg = deps.cfg().await;
     let session = deps.session().await;
 
-    let mut record =
-        match crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?
-        {
-            Some(r) => r,
-            // The turn record is the authoritative recovery snapshot. A
-            // transcript alone cannot recover budgets, parent linkage, output
-            // contracts, or dispatch policy safely, so an absent record stays
-            // a stale delivery and is acknowledged without fabricating state.
-            None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
-        };
+    // Unhydrated until the step generates: a stale, finished or stopped step
+    // needs no prompt text, so a lost prompt body cannot keep it from ending.
+    let mut record = match crate::state::get_turn_unhydrated(
+        &deps.iii,
+        &payload.session_id,
+        cfg.session_timeout_ms,
+    )
+    .await?
+    {
+        Some(r) => r,
+        // The turn record is the authoritative recovery snapshot. A
+        // transcript alone cannot recover budgets, parent linkage, output
+        // contracts, or dispatch policy safely, so an absent record stays
+        // a stale delivery and is acknowledged without fabricating state.
+        None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
+    };
 
     // Stale guards: wrong turn or any non-current step is acked and dropped.
     if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
@@ -441,6 +450,7 @@ async fn generate_step(
             .await
             .map(PreparedStep::Finished);
     }
+    crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await?;
 
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
@@ -559,12 +569,15 @@ async fn generate_step(
     // away is told again.
     // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
     let anchor = compaction_anchor(&record.session_id, &entries);
-    let window = crate::window::build(
+    let mut window = crate::window::build(
         &entries,
         anchor.window_start,
         prev_watermark.as_deref(),
         Some(&ids::assistant_entry_id(&record.turn_id, payload.step)),
     );
+    if crate::window::binds_thinking(&record.options.model) {
+        crate::window::strip_thinking_logged_before(&mut window, &entries[..anchor.record_index]);
+    }
 
     // Build every deterministic model-facing input before context assembly.
     // Everything the model is shown is append-only: the system prompt is the
@@ -574,12 +587,14 @@ async fn generate_step(
     // are persisted as `model_notice` entries where they were sent and
     // replayed there on every later step (crate::window).
     let current_generation = functions.generation;
-    // The runtime context (session id, working directory, dispatch policy,
-    // seeded contracts) is frozen into the system prompt at the session's
-    // first step; a later change reaches the model as a notice.
+    // The runtime context (session id, working directory, response language,
+    // dispatch policy, seeded contracts) is frozen into the system prompt at
+    // the session's first step; a later change reaches the model as a notice.
     let current_aid = runtime_context_aid(
         &record.session_id,
         record.options.filesystem_root(),
+        deps.filesystem_boundary("shell::exec").await,
+        record.options.response_language.as_ref(),
         record.options.functions.as_ref(),
         record.options.seeded_contracts.as_deref(),
     );
@@ -607,12 +622,17 @@ async fn generate_step(
     };
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
-    // Registry-change notice: if the function registry changed since this
-    // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently.
+    // Registry-change notice: if a function this session may call changed or
+    // left since it last acknowledged them, tell the model its cached
+    // contracts may be stale. First sighting stamps silently, and so does a
+    // function that only joined (no contract the session holds changed; the
+    // session's own function registering as its first step stamps hit that).
+    // ponytail: a broad policy (`*`) still hears every change to any function;
+    // judging only the contracts the session fetched (function_contract_ledger) is the upgrade.
+    let current_surface = functions.permitted_digests(&policy);
     let registry_changed = registry_notice(
-        record.functions_generation,
-        current_generation,
+        record.functions_acknowledged.as_deref(),
+        &current_surface,
         &policy,
         &functions,
     );
@@ -650,7 +670,7 @@ async fn generate_step(
     .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
     .collect();
     let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
-    record.functions_generation = Some(current_generation);
+    record.functions_acknowledged = Some(current_surface);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -673,7 +693,11 @@ async fn generate_step(
             "native exposure matched no registry functions; the model has no tools this turn"
         );
     }
-    let mut tools = provider_tools(expose, &decision_tools);
+    let mut tools = provider_tools(
+        expose,
+        &decision_tools,
+        record.options.response_language.as_ref(),
+    );
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -711,6 +735,7 @@ async fn generate_step(
         new_notices,
         generation_input_tokens,
         generation_max_output_tokens,
+        assembly_pruned,
     ) = loop {
         let assembled = match assemble_context(
             deps,
@@ -895,6 +920,7 @@ async fn generate_step(
                 new_notices,
                 final_request_tokens,
                 max_output_tokens,
+                assembled.pruned,
             );
         }
         if reassembled {
@@ -1062,6 +1088,39 @@ async fn generate_step(
         snapshot.prompt_surface_digest = surface_digest.clone();
         snapshot.prompt_sections_fallback = sections_fallback.map(str::to_string);
     }
+    // A prefix-matching provider cache (DeepSeek) stops reusing at the first
+    // row an earlier request already sent and this one changed: name it.
+    let prefix_change = crate::context_snapshot::prefix_change(
+        &record.session_id,
+        gen_system_prompt.as_deref(),
+        &gen_messages,
+    );
+    // What rewrote it, as far as the harness can tell: row 0 is the system
+    // prompt (a compaction summary, a prompt change); any other row on a
+    // step whose assembly pruned is the prune.
+    let prefix_cause = prefix_change
+        .as_ref()
+        .and_then(|change| match change.index {
+            0 => Some("system_prompt"),
+            _ if assembly_pruned => Some("prune"),
+            _ => None,
+        });
+    if let Some(change) = &prefix_change {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            step = payload.step,
+            index = change.index,
+            prev_len = change.prev_len,
+            role = %change.role,
+            call_id = change.call_id.as_deref().unwrap_or("-"),
+            offset = ?change.offset,
+            cause = prefix_cause.unwrap_or("-"),
+            before = %change.before,
+            after = %change.after,
+            "request rewrote an already-sent context row; the provider prompt cache stops reusing there"
+        );
+    }
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
         session_id: record.session_id.clone(),
@@ -1185,26 +1244,54 @@ async fn generate_step(
             .as_ref()
             .and_then(|u| u.cost_usd)
             .unwrap_or(0.0);
-        snapshot.session_cost_usd = match crate::context_snapshot::get(
-            &deps.iii,
-            &record.session_id,
-            cfg.session_timeout_ms,
-        )
-        .await
-        {
-            Ok(prev) => {
-                let prior_cost = prev.and_then(|p| p.session_cost_usd).unwrap_or(0.0);
-                Some(prior_cost + step_cost)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    session_id = %record.session_id,
-                    %error,
-                    "prior context snapshot read failed; session cost total unknown this step"
-                );
-                None
-            }
-        };
+        let prior =
+            crate::context_snapshot::get(&deps.iii, &record.session_id, cfg.session_timeout_ms)
+                .await;
+        if let Err(error) = &prior {
+            tracing::warn!(
+                session_id = %record.session_id,
+                %error,
+                "prior context snapshot read failed; session cost total unknown this step"
+            );
+        }
+        snapshot.session_cost_usd = prior.as_ref().ok().map(|prev| {
+            prev.as_ref()
+                .and_then(|p| p.session_cost_usd)
+                .unwrap_or(0.0)
+                + step_cost
+        });
+        snapshot.prefix_divergences = prior
+            .ok()
+            .flatten()
+            .map(|p| p.prefix_divergences)
+            .unwrap_or_default();
+        let provider_note = outcome
+            .message
+            .warnings
+            .iter()
+            .flatten()
+            .find(|w| w.starts_with(crate::context_snapshot::PROVIDER_PREFIX_NOTE))
+            .cloned();
+        if prefix_change.is_some() || provider_note.is_some() {
+            snapshot
+                .prefix_divergences
+                .push(crate::context_snapshot::PrefixDivergenceV1 {
+                    turn_id: record.turn_id.clone(),
+                    step: payload.step,
+                    index: prefix_change.as_ref().map(|c| c.index as u64),
+                    prev_len: prefix_change.as_ref().map(|c| c.prev_len as u64),
+                    role: prefix_change.as_ref().map(|c| c.role.clone()),
+                    call_id: prefix_change.as_ref().and_then(|c| c.call_id.clone()),
+                    cause: prefix_cause.map(str::to_string),
+                    provider_note,
+                    cache_read: snapshot.usage.as_ref().and_then(|u| u.cache_read),
+                });
+            let overflow = snapshot
+                .prefix_divergences
+                .len()
+                .saturating_sub(crate::context_snapshot::MAX_PREFIX_DIVERGENCES);
+            snapshot.prefix_divergences.drain(..overflow);
+        }
         crate::context_snapshot::exactify(
             snapshot,
             &router,
@@ -1255,7 +1342,8 @@ async fn generate_step(
     // baseline remains the one used for this generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let durable_record =
-        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?;
+        crate::state::get_turn_unhydrated(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
+            .await?;
     let durable_abort = durable_record.as_ref().is_some_and(|record| record.abort);
     crate::skills::refresh_filter(
         &mut record.options.skill_context,
@@ -1451,7 +1539,7 @@ async fn finish_step(
             match record.calls.get(&call.id).map(|c| c.state) {
                 Some(CallState::Done) | Some(CallState::Pending) => continue,
                 Some(CallState::Triggered) => {
-                    append_interrupted(&session, &mut record, call).await?;
+                    append_unreturned(&session, &mut record, call, interrupted_result()).await?;
                     let eid = record_entry_id(&record, &call.id);
                     mark_done(&mut record, &call.id, &eid);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -1524,7 +1612,11 @@ async fn finish_step(
             // Fail-closed glob policy first — structural and final. Hooks run
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {
-                let data = trigger::denied_result(&call.function_id);
+                let functions = deps.functions().await;
+                let did_you_mean =
+                    trigger::closest_permitted(&call.function_id, &policy, &functions);
+                let data =
+                    trigger::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -1590,16 +1682,70 @@ async fn finish_step(
                 .as_ref()
                 .map_or(&call.arguments, |r| &r.arguments);
 
+            // harness::ask is a harness control like submit_result, not a
+            // dispatched function, so it is answered HERE, before the
+            // pre_trigger chain: an approval hook could only
+            // hold it, and a held call's release re-dispatches it to the
+            // registered handler, which cannot show the card. The session's
+            // allow/deny policy, the repeated-failure breaker and argument
+            // reconciliation above still apply. Decide it (who can answer,
+            // one per step, shape, limits), record the awaiting-answer result
+            // or the refusal, and mark it Done. Never parks; refusals leave the
+            // turn running so the model can react.
+            if call.function_id == crate::functions::ASK_ID {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                // One ask per step, persisted on the record so a redelivered
+                // step still refuses a second ask and still ends on the first.
+                let mut data = match gate_ask(&mut record, strategy.is_json(), call_args) {
+                    Ok(req) => crate::ask::awaiting_result(
+                        &record.session_id,
+                        &record.turn_id,
+                        &call.id,
+                        &req,
+                    ),
+                    Err(msg) => crate::ask::refused(&msg),
+                };
+                let mut ask_annotations = serde_json::Map::new();
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut ask_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin_with(&record.turn_id, &ask_annotations),
+                )
+                .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
+            let filesystem_boundary = deps.filesystem_boundary(&call.function_id).await;
             let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
                 call_args.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
-                deps.hooks.filesystem_boundary(&call.function_id),
+                filesystem_boundary,
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
@@ -1622,7 +1768,7 @@ async fn finish_step(
                         arguments,
                         filesystem_root.as_deref(),
                         &session_grants,
-                        deps.hooks.filesystem_boundary(&call.function_id),
+                        filesystem_boundary,
                     );
                     (arguments, annotations)
                 }
@@ -1763,19 +1909,64 @@ async fn finish_step(
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
             // target. Then the post_trigger chain runs over the result.
-            let raw = crate::functions::subscribe::invoke(
-                deps,
-                &engine,
-                &policy,
+            //
+            // An engine dispatch is raced against `harness::stop`: a target
+            // that never returns would otherwise hold this step, and the
+            // session lock `harness::stop` waits on, until the dispatch
+            // timeout. Interceptions are short and not drop-safe, so they run
+            // uninterrupted.
+            let raw = if crate::functions::subscribe::is_locally_intercepted(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
-                true, // run_step holds this session's lock
-                Some(crate::functions::subscribe::CallerModel::from_options(
-                    &record.options,
-                )),
-            )
-            .await;
+                true,
+            ) {
+                crate::functions::subscribe::invoke(
+                    deps,
+                    &engine,
+                    &policy,
+                    &call.function_id,
+                    &eff_args,
+                    &record.session_id,
+                    true, // run_step holds this session's lock
+                    Some(crate::functions::subscribe::CallerModel::from_options(
+                        &record.options,
+                    )),
+                )
+                .await
+            } else {
+                let dispatch = {
+                    let (deps, engine, policy) = (deps.clone(), engine.clone(), policy.clone());
+                    let (function_id, args) = (call.function_id.clone(), eff_args.clone());
+                    let (session_id, options) = (record.session_id.clone(), record.options.clone());
+                    async move {
+                        crate::functions::subscribe::invoke(
+                            &deps,
+                            &engine,
+                            &policy,
+                            &function_id,
+                            &args,
+                            &session_id,
+                            true, // as inline: only interceptions read it
+                            Some(crate::functions::subscribe::CallerModel::from_options(
+                                &options,
+                            )),
+                        )
+                        .await
+                    }
+                };
+                match dispatch_unless_stopped(deps.cancels.watch(&record.turn_id), dispatch).await {
+                    Some(raw) => raw,
+                    None => {
+                        append_unreturned(&session, &mut record, call, stopped_result(call))
+                            .await?;
+                        let eid = record_entry_id(&record, &call.id);
+                        mark_done(&mut record, &call.id, &eid);
+                        record.abort = true;
+                        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+                    }
+                }
+            };
             let info_raw = (call.function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
@@ -1877,8 +2068,26 @@ async fn finish_step(
     }
 
     // With triggered calls and no submit_result, re-enqueue so the model
-    // reacts to the results.
+    // reacts to the results — unless the step showed a harness::ask card:
+    // then the turn ends on the question and the answer arrives as the
+    // user's next message. A user message already waiting (steering) needs
+    // the model, so that step advances as usual. Steering is only read when
+    // an ask was accepted, so ordinary function steps pay no extra reads.
     if !trigger_calls.is_empty() {
+        let asked_this_step = ask_accepted_this_step(&record);
+        let steering = asked_this_step
+            && (has_user_after_watermark(&session, &record).await?
+                || has_queued(deps, &record).await?);
+        if ends_after_ask(asked_this_step, submit_call.is_some(), steering) {
+            return finalize_with_contract(
+                deps,
+                &session,
+                &mut record,
+                &strategy,
+                &outcome.message,
+            )
+            .await;
+        }
         return advance(deps, &mut record).await;
     }
 
@@ -1888,6 +2097,39 @@ async fn finish_step(
     }
 
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+}
+
+/// Decide one in-turn `harness::ask` against the record's per-step markers
+/// and record the outcome on the record, which the caller persists. Every
+/// decided ask, accepted or refused, uses up the step's one ask
+/// (`ask_seen_step`), so the model always sees the first refusal instead of
+/// having a second ask accepted over it. Only an accepted ask sets
+/// `ask_step`, the marker that ends the turn on the question.
+fn gate_ask(
+    record: &mut TurnRecord,
+    has_output_contract: bool,
+    args: &Value,
+) -> Result<crate::ask::AskRequest, String> {
+    let already_asked = record.ask_seen_step == Some(record.step);
+    let decision = crate::ask::decide(record.depth, has_output_contract, already_asked, args);
+    record.ask_seen_step = Some(record.step);
+    if decision.is_ok() {
+        record.ask_step = Some(record.step);
+    }
+    decision
+}
+
+/// Whether this step accepted a `harness::ask`, the only kind that ends the
+/// turn on the question.
+fn ask_accepted_this_step(record: &TurnRecord) -> bool {
+    record.ask_step == Some(record.step)
+}
+
+/// Whether a step that accepted a `harness::ask` ends the turn on the
+/// question without another model call: only when no submit_result closes
+/// the step and no user message is waiting (steering needs the model).
+fn ends_after_ask(asked_this_step: bool, has_submit: bool, steering: bool) -> bool {
+    asked_this_step && !has_submit && !steering
 }
 
 fn turn_step_matches(
@@ -2065,9 +2307,20 @@ async fn complete_validated(
     value: Value,
 ) -> Result<TurnStepResult, HarnessError> {
     match deps.hooks.run_post_turn(record, record.step, &value).await {
-        Ok(()) => finalize_completed(deps, session, record, Some(value)).await,
+        // Both tails contain large async states. Inlining them propagates
+        // through the output-contract and dispatch futures, exhausting the
+        // SDK thread's debug stack when completion reads or resolves a parent.
+        Ok(()) => Box::pin(finalize_completed(deps, session, record, Some(value))).await,
         Err(deny) => {
-            retry_or_giveup_with(deps, session, record, &deny.reason, value, deny.prompt).await
+            Box::pin(retry_or_giveup_with(
+                deps,
+                session,
+                record,
+                &deny.reason,
+                value,
+                deny.prompt,
+            ))
+            .await
         }
     }
 }
@@ -2257,6 +2510,7 @@ async fn finalize_completed(
     record.result = result.clone();
     record.result_error = None;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     crate::session_status::project(session, record).await;
@@ -2492,6 +2746,7 @@ async fn finalize_failed(
     record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
     record_failure_telemetry(record, detail, failure);
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -2710,6 +2965,7 @@ pub(crate) async fn finalize_cancelled(
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Cancelled;
     record.updated_at = AgentMessage::now_ms();
+    record.slim_finished();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     // Durable stop marker: without it the transcript just ends mid-thought
@@ -2802,7 +3058,10 @@ pub async fn fail_turn(
     // guard is gone. Lock-free, this finalize could interleave with
     // harness::stop's under-lock "stopping" ack and strand the session status.
     let _guard = deps.locks.guard(session_id).await;
-    let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
+    // Unhydrated: finalizing reads no prompt text, and a lost prompt body is
+    // the step error this most often finalizes.
+    let record =
+        crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     match record {
         Some(mut rec) if rec.turn_id == turn_id && !rec.status.is_terminal() => {
             finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE).await
@@ -2938,19 +3197,70 @@ fn retryable_function_result_append_error(error: &HarnessError) -> bool {
             || message.contains("timed out"))
 }
 
-async fn append_interrupted(
-    session: &SessionClient,
-    record: &mut TurnRecord,
-    call: &policy::PlannedCall,
-) -> Result<(), HarnessError> {
-    let data = trigger::ResultData {
+fn interrupted_result() -> trigger::ResultData {
+    trigger::ResultData {
         content: vec![ContentBlock::text(
             "interrupted: executed at most once, result unknown (restart during execution)"
                 .to_string(),
         )],
         is_error: true,
         details: json!({ "error": "interrupted" }),
+    }
+}
+
+/// The result of a call `harness::stop` cut off before its target returned.
+/// The engine cannot reach the worker running it, so the text tells the model
+/// the effects are unknown, not undone.
+fn stopped_result(call: &policy::PlannedCall) -> trigger::ResultData {
+    let msg = format!(
+        "{} was stopped by the user before it returned. Its result was discarded and it may \
+         still be running on its worker: do not assume it completed, and do not assume its \
+         side effects were undone.",
+        call.function_id
+    );
+    trigger::ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({ "error": "cancelled", "cancelled_by": "user", "message": msg }),
+    }
+}
+
+/// Run one engine dispatch unless `harness::stop` fires first (`None`). The
+/// dispatch runs in its own task, spawned on first poll so an already-fired
+/// stop never starts it. A stop detaches that task instead of dropping it: the
+/// engine has no cancel primitive, and the task still clears the dispatch
+/// witness session-tree deletion waits on once the target replies. A dropped
+/// sender (turn signals cleared) is not a stop.
+async fn dispatch_unless_stopped<F>(
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    dispatch: F,
+) -> Option<trigger::ResultData>
+where
+    F: std::future::Future<Output = trigger::ResultData> + Send + 'static,
+{
+    use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
+    // Carry the step's OTel context into the task (the router::chat idiom) so
+    // the target's span still nests under the turn's trace.
+    let detached = async move {
+        tokio::spawn(dispatch.with_context(Context::current()))
+            .await
+            .unwrap_or_else(|error| {
+                trigger::invocation_error_result(None, format!("dispatch task failed: {error}"))
+            })
     };
+    tokio::select! {
+        biased;
+        Ok(_) = stop.wait_for(|fired| *fired) => None,
+        raw = detached => Some(raw),
+    }
+}
+
+async fn append_unreturned(
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    call: &policy::PlannedCall,
+    data: trigger::ResultData,
+) -> Result<(), HarnessError> {
     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
     append_function_result(
         session,
@@ -3061,7 +3371,7 @@ async fn assemble_context(
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
     };
 
-    let out = match context.assemble(params).await {
+    let mut out = match context.assemble(params).await {
         Ok(out) => out,
         Err(error) if is_context_overflow_error(&error) => {
             return Err(HarnessError::ContextOverflow(error));
@@ -3083,6 +3393,38 @@ async fn assemble_context(
         )));
     }
 
+    if strip_compacted_thinking(&mut out, &record.options.model) {
+        // The assembled count still holds the stripped blocks; an unchanged
+        // request reuses it for the budget reservation and the snapshot, so
+        // measure what is actually sent. On failure the larger count stands
+        // (it only over-reserves).
+        let recount = context
+            .count_tokens(crate::clients::context::CountTokensParams {
+                messages: out
+                    .messages
+                    .iter()
+                    .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
+                    .collect(),
+                model_id: record.options.model.clone(),
+                provider: record.options.provider.clone(),
+                system_prompt: Some(out.system_prompt.clone()),
+                tools: inputs.tools.to_vec(),
+            })
+            .await;
+        match recount {
+            Ok(count) => {
+                out.token_count = count.tokens.saturating_add(inputs.request_overhead_tokens);
+                if let (Some(breakdown), Some(by_role)) = (out.breakdown.as_mut(), count.by_role) {
+                    breakdown.by_role = by_role;
+                }
+            }
+            Err(error) => tracing::warn!(
+                session_id = %record.session_id,
+                %error,
+                "recount after stripping pre-compaction thinking failed; keeping the assembled count"
+            ),
+        }
+    }
     if out.applied.compacted {
         if let Some(summary) = &out.applied.summary {
             let tail_entry = out
@@ -3136,7 +3478,25 @@ async fn assemble_context(
         summarized,
         summarized_head_tokens,
         breakdown: out.breakdown,
+        pruned: out.applied.pruned,
     })
+}
+
+/// Everything a compacting step kept was produced before its own compaction:
+/// on a binding model strip its thinking, the same strip every later step
+/// applies (crate::window::strip_thinking_logged_before). True when it
+/// stripped, so the caller re-counts.
+fn strip_compacted_thinking(
+    out: &mut crate::clients::context::AssembleOutput,
+    model: &str,
+) -> bool {
+    if !(out.applied.compacted && crate::window::binds_thinking(model)) {
+        return false;
+    }
+    out.messages
+        .iter_mut()
+        .for_each(AgentMessage::strip_thinking);
+    true
 }
 
 /// The latest `compaction` custom entry on the path, resolved to where the
@@ -3149,6 +3509,9 @@ struct CompactionAnchor {
     window_start: usize,
     /// Size of the history the summary replaced (display only).
     summarized_head_tokens: Option<u64>,
+    /// Path index of the record whose summary is in the prompt (0 when none):
+    /// the entries before it were logged under a prefix that is gone.
+    record_index: usize,
 }
 
 /// Resolve the window from the latest compaction entry:
@@ -3203,6 +3566,7 @@ fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnc
         }
     };
     CompactionAnchor {
+        record_index: if summary.is_some() { index } else { 0 },
         summary,
         window_start,
         // The console's entry carries only `tokens_before` (the head size).
@@ -3258,6 +3622,7 @@ fn build_context_snapshot(
         usage: None,
         prompt_surface_digest: None,
         prompt_sections_fallback: None,
+        prefix_divergences: Vec::new(),
         timestamp: AgentMessage::now_ms(),
     }
 }
@@ -3319,17 +3684,32 @@ fn with_runtime_context(
 
 /// The deterministic session context appended to every model-facing prompt.
 /// Kept separate so read-only previews use the same construction as a turn.
-/// A spawned child's seeded `<preloaded_functions>` block closes it: after the
-/// cache seam, so it never forks the stable prefix sessions share.
+/// The response-language line names the session's pinned language, once one
+/// is (`crate::language`), right after the working directory, whose path must
+/// never be read as a hint of it. Under `configured_roots` the working
+/// directory only anchors relative paths, and its line says so. A spawned
+/// child's seeded `<preloaded_functions>` block closes it: after the cache
+/// seam, so it never forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
     session_id: &str,
     filesystem_root: Option<&str>,
+    boundary: crate::filesystem_scope::FilesystemBoundary,
+    response_language: Option<&ResponseLanguage>,
     functions: Option<&FunctionPolicy>,
     seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
     if let Some(dir) = filesystem_root {
-        lines.push(format!("Your working directory is {dir}."));
+        let note = match boundary {
+            crate::filesystem_scope::FilesystemBoundary::Workspace => "",
+            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots => {
+                " (default directory, not an access boundary)"
+            }
+        };
+        lines.push(format!("Your working directory is {dir}{note}."));
+    }
+    if let Some(language) = response_language {
+        lines.push(crate::language::runtime_line(language));
     }
     if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
@@ -3409,6 +3789,9 @@ struct Assembled {
     summarized: bool,
     summarized_head_tokens: Option<u64>,
     breakdown: Option<crate::clients::context::AssembleBreakdown>,
+    /// context-manager pruned or reduced function results to fit the budget
+    /// this step, rewriting rows an earlier request may have sent.
+    pruned: bool,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -3563,8 +3946,8 @@ const PRELOADED_STALE_NOTICE_KIND: &str = "preloaded-stale";
 const RUNTIME_CONTEXT_NOTICE_KIND: &str = "runtime-context";
 const HOOK_NOTICE_KIND: &str = "hook";
 
-/// The single-line notice delivered as a tail message when the registry
-/// changed under a session that had already acknowledged an earlier generation.
+/// The single-line notice delivered as a tail message when a function the
+/// session may call changed after it had acknowledged the earlier set.
 const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale.";
 
 /// How either notice tells the model to re-check contracts: name
@@ -3595,23 +3978,29 @@ fn notice_message(text: String) -> Value {
     })
 }
 
-/// Decide the registry-change notice for a step. `None` when the record already
-/// matches the live generation, or is being stamped for the first time; `Some`
-/// only when the registry changed under a session that acknowledged an earlier
-/// generation. The caller stamps `functions_generation = current` regardless.
+/// Decide the registry-change notice for a step. `None` while every function
+/// the session acknowledged is still live and unchanged
+/// ([`FunctionsSnapshot::permitted_digests`]), or when it is being stamped for
+/// the first time; `Some` only when one it may call changed or left. A function
+/// that only joined the permitted set is no staleness: nothing the session
+/// fetched before describes it. The caller stamps the current digests regardless.
+///
+/// [`FunctionsSnapshot::permitted_digests`]: crate::discovery::FunctionsSnapshot::permitted_digests
 pub(crate) fn registry_notice(
-    record_gen: Option<u64>,
-    current: u64,
+    acknowledged: Option<&[u32]>,
+    current: &[u32],
     policy: &CompiledPolicy,
     snapshot: &crate::discovery::FunctionsSnapshot,
 ) -> Option<String> {
-    match record_gen {
-        Some(g) if g != current => Some(format!(
+    let stale = acknowledged?
+        .iter()
+        .any(|digest| current.binary_search(digest).is_err());
+    stale.then(|| {
+        format!(
             "{REGISTRY_CHANGED_NOTICE} {}",
             refetch_hint(policy, snapshot)
-        )),
-        _ => None,
-    }
+        )
+    })
 }
 
 /// The frozen preloaded ids the cached snapshot cannot vouch for: frozen
@@ -3744,13 +4133,15 @@ fn concrete_allowed_tools(
 
 /// The invocation-schema surface attached to the generate request
 /// (harness.md § Exposure modes). Default: the single `agent_trigger`
-/// schema. Native: the concrete allowed tools verbatim.
+/// schema, its `description` label naming the session's response language.
+/// Native: the concrete allowed tools verbatim.
 fn provider_tools(
     expose: ExposeMode,
     concrete: &[crate::types::model::AgentFunction],
+    response_language: Option<&ResponseLanguage>,
 ) -> Vec<crate::types::model::AgentFunction> {
     match expose {
-        ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema()],
+        ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema(response_language)],
         ExposeMode::Native => concrete.to_vec(),
     }
 }
@@ -3797,7 +4188,80 @@ impl Clone for SessionStreamSink {
 }
 
 #[cfg(test)]
+mod stack_tests;
+
+#[cfg(test)]
 mod tests {
+    fn valid_ask() -> serde_json::Value {
+        serde_json::json!({ "questions": [ {
+            "header": "Approach",
+            "question": "Pause or end?",
+            "options": [ { "label": "Pause" }, { "label": "End" } ]
+        } ] })
+    }
+
+    #[test]
+    fn a_refused_first_ask_still_counts_toward_one_ask_per_step() {
+        let mut record = crate::types::turn::tests::record();
+        let first = super::gate_ask(&mut record, false, &serde_json::json!({ "questions": [] }));
+        assert!(first.is_err(), "{first:?}");
+        let second = super::gate_ask(&mut record, false, &valid_ask());
+        assert_eq!(
+            second,
+            Err(
+                "only one harness::ask per step; put all your questions (up to 4) in one call"
+                    .into()
+            )
+        );
+        assert!(
+            !super::ask_accepted_this_step(&record),
+            "a step with only refused asks must not end the turn"
+        );
+    }
+
+    #[test]
+    fn an_accepted_ask_refuses_a_second_and_ends_the_turn() {
+        let mut record = crate::types::turn::tests::record();
+        assert!(super::gate_ask(&mut record, false, &valid_ask()).is_ok());
+        let second = super::gate_ask(&mut record, false, &valid_ask());
+        assert_eq!(
+            second,
+            Err(
+                "only one harness::ask per step; put all your questions (up to 4) in one call"
+                    .into()
+            )
+        );
+        assert!(super::ask_accepted_this_step(&record));
+        assert!(super::ends_after_ask(
+            super::ask_accepted_this_step(&record),
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_step_with_only_a_refused_ask_does_not_end_the_turn() {
+        let mut record = crate::types::turn::tests::record();
+        // A structured-output turn: no human to answer, so the ask is refused.
+        assert!(super::gate_ask(&mut record, true, &valid_ask()).is_err());
+        assert!(!super::ask_accepted_this_step(&record));
+        assert!(!super::ends_after_ask(
+            super::ask_accepted_this_step(&record),
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn the_ask_markers_belong_to_one_step() {
+        let mut record = crate::types::turn::tests::record();
+        assert!(super::gate_ask(&mut record, false, &serde_json::json!({})).is_err());
+        record.step += 1;
+        assert!(!super::ask_accepted_this_step(&record));
+        assert!(super::gate_ask(&mut record, false, &valid_ask()).is_ok());
+        assert!(super::ask_accepted_this_step(&record));
+    }
+
     #[test]
     fn completed_child_resolves_parent_as_cancelled_when_guarded_or_unknown() {
         use super::parent_resolution_is_cancelled as cancelled;
@@ -3825,6 +4289,27 @@ mod tests {
         super::preloaded_stale_notice(frozen, snapshot, policy, &live)
     }
 
+    #[test]
+    fn a_step_ends_on_an_accepted_ask_only_without_submit_or_steering() {
+        // (asked this step, submit_result in the step, steering) -> ends
+        for (asked, submit, steering, ends) in [
+            (true, false, false, true),
+            (true, false, true, false),
+            (true, true, false, false),
+            (true, true, true, false),
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, true, true, false),
+        ] {
+            assert_eq!(
+                super::ends_after_ask(asked, submit, steering),
+                ends,
+                "asked={asked} submit={submit} steering={steering}"
+            );
+        }
+    }
+
     fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
         crate::discovery::snapshot_of(live.to_vec())
     }
@@ -3836,7 +4321,8 @@ mod tests {
 
     use super::{
         call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
-        retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
+        dispatch_unless_stopped, retryable_function_result_append_error, transient_resume_allowed,
+        turn_step_matches,
     };
 
     #[test]
@@ -3877,7 +4363,14 @@ mod tests {
                 summary: Some("new".into()),
                 window_start: 2,
                 summarized_head_tokens: Some(7),
+                record_index: 3,
             }
+        );
+        // The summary is in the prompt even when the boundary is off the
+        // path, so thinking logged before the record is still stale.
+        assert_eq!(
+            compaction_anchor("s", &[msg("u1"), compaction("c1", "s", json!("gone"))]).record_index,
+            1
         );
         // Null boundary: everything before the entry was summarised.
         assert_eq!(
@@ -3921,6 +4414,51 @@ mod tests {
             ),
             CompactionAnchor::default()
         );
+    }
+
+    #[test]
+    fn a_compacting_step_strips_kept_thinking_only_on_binding_models() {
+        use serde_json::json;
+        let assembled = |compacted: bool| -> crate::clients::context::AssembleOutput {
+            serde_json::from_value(json!({
+                "messages": [
+                    { "role": "user", "content": [{ "type": "text", "text": "go" }], "timestamp": 1 },
+                    { "role": "assistant", "content": [
+                        { "type": "thinking", "text": "", "signature": "sig" },
+                        { "type": "redacted_thinking", "data": "x" },
+                        { "type": "function_call", "id": "c1", "function_id": "shell::exec", "arguments": {} }
+                    ], "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 2 }
+                ],
+                "token_count": 10, "usable": 100, "effective_max_output_tokens": 10,
+                "applied": { "compacted": compacted, "summary": "s" }
+            }))
+            .unwrap()
+        };
+        let thinking = |out: &crate::clients::context::AssembleOutput| {
+            out.messages.iter().any(|m| match m {
+                AgentMessage::Assistant(a) => a.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                    )
+                }),
+                _ => false,
+            })
+        };
+        let mut out = assembled(true);
+        assert!(super::strip_compacted_thinking(
+            &mut out,
+            "claude-sonnet-5-5"
+        ));
+        assert!(!thinking(&out), "stale thinking would reach the request");
+        for (compacted, model) in [(false, "claude-opus-5-5"), (true, "claude-sonnet-4-6")] {
+            let mut out = assembled(compacted);
+            assert!(!super::strip_compacted_thinking(&mut out, model));
+            assert!(
+                thinking(&out),
+                "{model} compacted={compacted} keeps its thinking"
+            );
+        }
     }
 
     #[test]
@@ -4278,6 +4816,61 @@ mod tests {
         );
     }
 
+    /// Prevents: a model guessing the response language from the username
+    /// in the working directory (an English session labelled in Spanish).
+    /// The aid names it right after the directory; pinning it later changes
+    /// the aid, so it reaches the model as a runtime-context notice.
+    #[test]
+    fn runtime_context_names_the_response_language_after_the_working_directory() {
+        let english = super::ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let named = super::runtime_context_aid(
+            "s_1",
+            Some("/home/sergio/app"),
+            crate::filesystem_scope::FilesystemBoundary::Workspace,
+            Some(&english),
+            None,
+            None,
+        );
+        let lines: Vec<&str> = named.lines().collect();
+        assert_eq!(lines[1], "Your working directory is /home/sergio/app.");
+        assert!(lines[2].starts_with("Response language: English (from the user's first message)."));
+        let unknown = super::runtime_context_aid(
+            "s_1",
+            Some("/home/sergio/app"),
+            crate::filesystem_scope::FilesystemBoundary::Workspace,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            !unknown.contains("Response language"),
+            "an unpinned session's runtime context is unchanged"
+        );
+        let notice = super::runtime_change_notice(&unknown, &named, None).expect("pinned later");
+        assert!(notice.contains("Response language: English"));
+    }
+
+    #[test]
+    fn the_agent_trigger_tool_names_the_response_language() {
+        let english = super::ResponseLanguage {
+            code: "eng".into(),
+            name: "English".into(),
+        };
+        let label = |language: Option<&super::ResponseLanguage>| {
+            super::provider_tools(super::ExposeMode::AgentTrigger, &[], language)[0].parameters
+                ["properties"]["description"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(label(Some(&english)).contains("written in English."));
+        assert!(label(None).contains("named in the session context"));
+        assert!(super::provider_tools(super::ExposeMode::Native, &[], Some(&english)).is_empty());
+    }
+
     /// Prevents: a child's seeded contracts forking the stable prefix every
     /// default-identity session shares (MOT-4851) — they ride after the seam.
     #[test]
@@ -4292,7 +4885,16 @@ mod tests {
             .unwrap()
         };
         let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
-        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let aid = |seeded: Option<&str>| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                seeded,
+            )
+        };
         let (plain_stable, plain_full) =
             super::with_runtime_context(Some("identity".into()), &record(None), &aid(None));
         let (stable, full) = super::with_runtime_context(
@@ -4310,12 +4912,35 @@ mod tests {
         assert!(rest.ends_with(&format!("\n\n{block}")));
     }
 
+    /// Prevents: the model reading its working directory as an access
+    /// boundary when the worker only uses it to anchor relative paths
+    /// (MOT-5167).
+    #[test]
+    fn working_directory_line_says_when_it_is_not_a_boundary() {
+        use crate::filesystem_scope::FilesystemBoundary::*;
+        let aid =
+            |boundary| super::runtime_context_aid("s_1", Some("/w"), boundary, None, None, None);
+        assert!(aid(Workspace).contains("Your working directory is /w.\n"));
+        assert!(aid(ConfiguredRoots).contains(
+            "Your working directory is /w (default directory, not an access boundary).\n"
+        ));
+    }
+
     /// Prevents: a runtime context that changed after it was frozen into the
     /// system prompt (a re-seeded contract block included) never reaching the
     /// model, or reaching it again on every step (MOT-4845).
     #[test]
     fn runtime_change_notice_carries_the_whole_changed_aid_once() {
-        let aid = |seeded: Option<&str>| super::runtime_context_aid("s_1", None, None, seeded);
+        let aid = |seeded: Option<&str>| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                seeded,
+            )
+        };
         let frozen = aid(None);
         assert_eq!(super::runtime_change_notice(&frozen, &frozen, None), None);
 
@@ -4694,6 +5319,14 @@ mod tests {
         ));
     }
 
+    fn exec_fn(id: &str, schema: serde_json::Value) -> crate::clients::FunctionDescriptor {
+        crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("Run one command".into()),
+            parameters: Some(schema),
+        }
+    }
+
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {
         let all = crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
@@ -4705,15 +5338,84 @@ mod tests {
             .internal_ids
             .insert("engine::functions::info".to_string());
         // First sighting (None): stamp, no notice.
-        assert!(super::registry_notice(None, 7, &all, &with_info).is_none());
-        // Acknowledged generation still current: no notice.
-        assert!(super::registry_notice(Some(7), 7, &all, &with_info).is_none());
-        // Registry moved on: notice fires, with the same re-fetch rule as the
-        // preloaded-stale notice.
-        let notice = super::registry_notice(Some(6), 7, &all, &with_info).unwrap();
+        assert!(super::registry_notice(None, &[7], &all, &with_info).is_none());
+        // Acknowledged functions still current: no notice.
+        assert!(super::registry_notice(Some(&[7]), &[7], &all, &with_info).is_none());
+        // An acknowledged function changed or left: notice fires, with the same
+        // re-fetch rule as the preloaded-stale notice.
+        let notice = super::registry_notice(Some(&[6]), &[7], &all, &with_info).unwrap();
         assert!(notice.contains("with engine::functions::info"), "{notice}");
-        let blind = super::registry_notice(Some(6), 7, &all, &snap(&[])).unwrap();
+        let blind = super::registry_notice(Some(&[6]), &[7], &all, &snap(&[])).unwrap();
         assert!(blind.contains("cannot re-fetch"), "{blind}");
+    }
+
+    #[test]
+    fn registry_notice_ignores_changes_to_functions_the_session_cannot_call() {
+        let exec_only =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["task::exec".into()],
+                ..Default::default()
+            }));
+        let other = crate::clients::FunctionDescriptor {
+            function_id: "other::worker".into(),
+            description: None,
+            parameters: None,
+        };
+        let acknowledged = snap(&[exec_fn("task::exec", serde_json::json!({"type": "object"}))])
+            .permitted_digests(&exec_only);
+
+        // Another worker registering a function: same permitted surface, no notice.
+        let unrelated = snap(&[
+            exec_fn("task::exec", serde_json::json!({"type": "object"})),
+            other,
+        ]);
+        let current = unrelated.permitted_digests(&exec_only);
+        assert!(
+            super::registry_notice(Some(&acknowledged), &current, &exec_only, &unrelated).is_none()
+        );
+
+        // The permitted function's contract changing: notice.
+        let changed = snap(&[exec_fn(
+            "task::exec",
+            serde_json::json!({"type": "object", "required": ["command"]}),
+        )]);
+        let current = changed.permitted_digests(&exec_only);
+        assert!(
+            super::registry_notice(Some(&acknowledged), &current, &exec_only, &changed).is_some()
+        );
+    }
+
+    /// The E2E race behind the notice that survived scoping (kanban_c1, PR
+    /// #1292 validation): the session's own function registers just before
+    /// its first step, the registry cache catches up one step late, and the
+    /// function seems to "change" at step 1. It only joined: no contract the
+    /// session holds went stale. Once acknowledged, changing or leaving does.
+    #[test]
+    fn a_function_joining_the_permitted_set_is_no_staleness() {
+        let broad =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                ..Default::default()
+            }));
+        let exec = || {
+            exec_fn(
+                "kanban_eval_ab12::exec",
+                serde_json::json!({"type": "object"}),
+            )
+        };
+        let lagging = snap(&[]).permitted_digests(&broad);
+        let caught_up = snap(&[exec()]);
+        let current = caught_up.permitted_digests(&broad);
+        assert!(super::registry_notice(Some(&lagging), &current, &broad, &caught_up).is_none());
+
+        let gone = snap(&[]);
+        assert!(super::registry_notice(
+            Some(&current),
+            &gone.permitted_digests(&broad),
+            &broad,
+            &gone
+        )
+        .is_some());
     }
 
     #[test]
@@ -5159,5 +5861,72 @@ mod tests {
         );
         let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
         assert!(stale(Some(&frozen), &live, &all).is_none());
+    }
+
+    fn dispatched(text: &str) -> crate::trigger::ResultData {
+        crate::trigger::ResultData {
+            content: vec![crate::types::content::ContentBlock::text(text)],
+            is_error: false,
+            details: serde_json::Value::Null,
+        }
+    }
+
+    /// Mike's stuck `browser::snapshot`: a target that never returns must not
+    /// hold the turn once `harness::stop` fires, and the detached dispatch
+    /// still finishes (clearing its deletion witness) when the target replies.
+    #[tokio::test]
+    async fn stop_cuts_off_a_hung_dispatch_and_detaches_it() {
+        let (stop, rx) = tokio::sync::watch::channel(false);
+        let (reply, replied) = tokio::sync::oneshot::channel::<()>();
+        let (finished_tx, finished) = tokio::sync::oneshot::channel();
+        let race = tokio::spawn(dispatch_unless_stopped(rx, async move {
+            let _ = replied.await;
+            let _ = finished_tx.send(());
+            dispatched("late")
+        }));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        stop.send_replace(true);
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), race)
+            .await
+            .expect("a stop must settle a dispatch that never returns")
+            .unwrap();
+        assert!(out.is_none());
+        reply.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), finished)
+            .await
+            .expect("the detached dispatch must run to completion")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_already_fired_stop_never_starts_the_dispatch() {
+        let (_stop, rx) = tokio::sync::watch::channel(true);
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        let out = dispatch_unless_stopped(rx, async move {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            dispatched("ran")
+        })
+        .await;
+        assert!(out.is_none());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!started.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// No stop, or a cleared signal (dropped sender): the target's own result.
+    #[tokio::test]
+    async fn without_a_stop_the_dispatch_result_comes_back() {
+        let (_stop, rx) = tokio::sync::watch::channel(false);
+        let out = dispatch_unless_stopped(rx, async { dispatched("ok") }).await;
+        assert!(out.is_some_and(|raw| !raw.is_error));
+
+        let (stop, rx) = tokio::sync::watch::channel(false);
+        drop(stop);
+        let out = dispatch_unless_stopped(rx, async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            dispatched("ok")
+        })
+        .await;
+        assert!(out.is_some(), "a dropped sender is not a stop");
     }
 }

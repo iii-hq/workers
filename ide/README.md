@@ -78,6 +78,7 @@ default_timeout_ms: 30000    # applied when the caller omits timeout_ms (code de
 max_output_bytes: 1048576    # 1 MiB; stdout/stderr past this set *_truncated
 env:
   inherit: true              # forward the worker's env to children; per-call dangerous keys still blocked
+  # with inherit: false, git over SSH needs SSH_AUTH_SOCK in allow, which gives every child command the agent's keys: add it only if that is intended
   allow: [PATH, HOME, LANG, LC_ALL, TERM]  # forwarded when inherit is false; has no effect on per-call `env` (deny-only — dangerous keys never settable)
 
 # Command policy is deny-only: allow/ask policy lives in the approval-gate.
@@ -102,6 +103,8 @@ fs:
   max_write_bytes: 16777216  # 0 = unlimited
   denylist_paths: [/etc/passwd, /etc/shadow]  # primary protection while unjailed; defense in depth once you set host_roots
   allow_special_bits: false  # permit setuid/setgid/sticky bits in mode (default false)
+  exec_confinement: "off"    # landlock = a host exec carrying fs_scope writes only under its root, grants, git dir and exec_writable; fails closed (S222) without Landlock
+  exec_writable: [/tmp, /dev, ~/.cache, ~/.cargo, ~/.local/share/pnpm, ~/.gnupg]  # extra writable paths for a confined exec; missing paths skipped
 
 sandbox:
   enabled: true              # false -> every target: sandbox call returns S210
@@ -110,11 +113,19 @@ commit_messages:             # the Commit panel's Generate button (read live on 
   model: null                # router model id ("provider::model" or bare); null = the chat's default model, passed by the panel
   thinking: low              # default|minimal|low|medium|high|xhigh; "default" sends no reasoning override
   instructions: ""           # free text appended to the prompt, e.g. "Use Conventional Commits"
+
+code:
+  templates:                 # worker templates for coder::list-templates / coder::scaffold-worker
+    dir: null                # local templates checkout (repo root or its iii/ dir), read on every call; III_TEMPLATE_DIR overrides
+    url: https://github.com/iii-hq/templates.git  # shallow-cloned when dir is unset; III_TEMPLATE_URL overrides
+    ref: main                # branch or tag to clone
+    cache_dir: data/shell/templates  # clone cache; relative paths resolve against III_COMPOSE_DIR
+    refresh_secs: 600        # fetch the clone again after this long (or on coder::list-templates refresh: true)
 ```
 
 ### Zero-config default
 
-With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): unjailed (`fs.allow_unjailed: true`, empty `host_roots`), env forwarded, deny-only exec with a catastrophic-only denylist (kept in sync by a unit test). Unjailed means `shell::fs::*` and `shell::exec`'s per-call `cwd` operate against the real filesystem, confined only by `fs.denylist_paths` — matching `shell::exec` itself, which has never been confinement-based. `coder::*` is the one exception: it falls back to its own default roots (engine workspace cwd + `/tmp`) whenever `fs.host_roots` is empty, so it stays reasonably scoped even under the zero-config default. Set `fs.host_roots` if you want `shell::fs::*`/`cwd` jailed too. If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed — the failure mode only disappears once you explicitly opt in, one way or another.
+With no `--config` file and no value stored in the `configuration` worker, the worker seeds a built-in default on first registration — so it boots with nothing configured (database-style). That built-in default is the shipped [`config.yaml`](config.yaml): unjailed (`fs.allow_unjailed: true`, empty `host_roots`), env forwarded, deny-only exec with a catastrophic-only denylist (kept in sync by a unit test). Unjailed means `shell::fs::*` and `shell::exec`'s per-call `cwd` operate against the real filesystem, confined only by `fs.denylist_paths` — matching `shell::exec` itself, which has never been confinement-based. `coder::*` follows the same policy, keeping the engine workspace cwd + `/tmp` only as relative-path anchors. Set `fs.host_roots` to jail all of them. If the stored value is later nulled, the worker does not silently fall back to this seed: boot fails closed and a hot-reload keeps the last-good config. A config that is *present* but leaves `fs.host_roots` unset (without `fs.allow_unjailed: true`) also fails closed — the failure mode only disappears once you explicitly opt in, one way or another.
 
 Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `python3`) can construct a denylisted token at runtime and bypass the regex. Run untrusted input with `target: { kind: "sandbox", sandbox_id }`, which forwards through the `iii-sandbox` microVM. The denylist still applies on top of either backend.
 
@@ -127,6 +138,15 @@ Host `shell::exec` is not a security boundary: any interpreter (`sh`, `node`, `p
 - **`stdin`** (string): written to the program's standard input, which is then closed (EOF). Use it to feed `tee`, `patch`, `cat`, or any stdin filter instead of a shell heredoc. Omit it and stdin is `/dev/null`.
 
 All three fields are **host-only**. The `sandbox::exec` protocol does not forward `cwd`/`env`/`stdin`, so a sandbox-targeted call that supplies any of them is rejected with `S210` rather than silently ignoring it. Omit them and behaviour is identical to prior versions.
+
+### Harness session scope (`fs_scope`)
+
+The harness stamps a trusted `fs_scope { root, grants, boundary }` on every `shell::*`/`coder::*` call of a session. What `root` means depends on `boundary`, which the harness's `filesystem_boundary` config picks (`auto`, the default, is `workspace` only while approval-gate's access watch is bound):
+
+- `workspace`: `coder::*`, `shell::fs::*` and an exec `cwd` stay inside `root` plus `grants` (`C220`/`S220` for a path in an allowed root but outside the session, `C215`/`S215` otherwise).
+- `configured_roots`: `root` only anchors relative paths and is the default exec `cwd`; `fs.host_roots` is the jail.
+
+What a host `shell::exec`/`exec_bg` process writes is a separate switch: with `fs.exec_confinement: landlock`, a scoped exec may write only under `root`, `grants`, the root's git dir and `fs.exec_writable`, in either mode. Reads stay open, and setuid binaries do not work in a confined exec. Without Landlock the exec fails closed with `S222`. Unscoped execs (the console terminal, other workers) and sandbox targets are never confined.
 
 ## Quick start
 
@@ -178,21 +198,21 @@ Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host 
 
 The shell worker also serves the **`coder::*`** code-file functions (the former
 standalone `coder` worker, folded in). They are agent-ergonomic, structured
-file operations that share `shell::fs::*`'s jail **when `fs.host_roots` is
-set**. When it's empty (the shipped default — see
-[Zero-config default](#zero-config-default)), the two surfaces diverge:
-`shell::fs::*` becomes fully unjailed, but `coder::*` falls back to its own
-default roots (engine workspace cwd + `/tmp`) instead — it never runs
-fully unjailed, regardless of `fs.allow_unjailed`.
+file operations that share `shell::fs::*`'s jail (`fs.host_roots`). When it's
+empty (the shipped default — see [Zero-config default](#zero-config-default)),
+both surfaces are unjailed and `coder::*` keeps the engine workspace cwd +
+`/tmp` only as relative-path anchors.
 
 | Function | Purpose |
 |---|---|
 | `coder::info` | Discover the jail: roots, caps, response budgets, exclude/non-accessible globs. Call first. |
 | `coder::read-file` | Windowed reads (`line_from`/`line_to`), `stat` probe, byte-budgeted full reads, and multi-file batch reads. |
-| `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
+| `coder::search` | Literal/regex content + path search over a folder or one file, with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
+| `coder::list-templates` | The worker templates `coder::scaffold-worker` creates from, with their language and the compose containers they need. Read from `code.templates`: a local `dir`, or a cached shallow clone of `url` at `ref` (`refresh: true` re-fetches it). |
+| `coder::scaffold-worker` | Create a worker from a template in a missing or empty folder whose last segment is the worker name (default `workers/<name>`), all or nothing, with the template's name token replaced in paths and text, and return `compose_add`, the `compose::add` payload to send whole, adding `start_after` to its entry and missing `requires` as more entries (`{ workers: [compose] }`; the bare `worker` string form drops the scripts). Writes go through the `coder::create-file` path and show in the turn summary. |
 
 Roots come from `fs.host_roots` (with the cwd+`/tmp` fallback noted above);
 protection globs come from `code.non_accessible_globs` in the shipped
@@ -211,6 +231,12 @@ out explicitly below:
 | `C218` | File exceeds `max_read_bytes`/`max_write_bytes`. | `S218` |
 | `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
 | `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
+| `C230` | Worker templates unavailable: `code.templates.dir` holds no template manifest, or the templates repo cannot be cloned and no cached copy exists. | n/a |
+| `C231` | `coder::scaffold-worker` named a template that does not exist or has no `worker:` block. | n/a |
+| `C232` | Worker name breaks `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` (1–63 characters), or the scaffold `directory` does not end with the worker name. | n/a |
+| `C233` | Scaffold target directory exists and is not empty; nothing was written. | n/a |
+| `C234` | Invalid template: a bad `template.yaml` or `worker:` block, a `files:` entry that is absolute, contains `..`, is missing or leaves `worker.dir` through a symlink, a worker file that is not UTF-8 text (binary files are not supported), or no `containers.<worker.compose>` in its `worker-compose.yaml`. Nothing was written. | n/a |
+| `C235` | `coder::scaffold-worker` with `start` (the default) found a container named after the worker already in the stack: adding it would repoint that container at the new folder. Checked before any write, so nothing was written; pick another name, or pass `start: false`. | n/a |
 
 No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
 
@@ -369,6 +395,8 @@ Conventions (hold these when adding functions to either surface):
 |---|---|---|
 | `shell::job-finished` | A background job finishes, is killed, or fails. A binding filtered by `job_id` also receives a retained terminal result when registered after completion. | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
 | `shell::changed` | A file or directory under the watched root changes. | `{ path, kind, root, dir }` |
+| `shell::git-changed` | The repository `config.path` sits in changes state: HEAD, the index, refs, another worktree, or the repository itself appearing or going (a path in no repository is watched for a `.git`). One event per ~200 ms batch. `.git` is what `shell::changed` leaves out. | `{ path, worktree?, git_dir?, common_dir?, changes: ["head" \| "index" \| "refs" \| "worktrees" \| "repository"] }` |
+| `shell::turns::changed` | A session's change history (`shell::turns::list`) is stored again: a turn opened or closed, a change recorded. `config: { session_id? }`; at most one event per session per ~200 ms. | `{ session_id }` |
 
 ### Background job completion (`shell::job-finished`)
 
@@ -502,8 +530,16 @@ Every fire carries the binding's registered `metadata` and `namespace`
 back to the bound function, the same way the engine's own trigger types
 do — the harness relies on it to match a wake to its `__binding`.
 
-Each registration starts one recursive watcher; unregistering (or the
-console GC'ing a closed tab's binding) tears it down. `config.path` goes
+Bindings on one directory (and `include_ignored` setting) share one
+watch: the first starts it, the last to unregister (or the console GC'ing
+a closed tab's binding) tears it down. The watch puts one OS watch on each
+directory, `.git` and symlinks left out, and gitignored trees too unless
+the binding sets `include_ignored: true`. It takes at most 32768
+directories (a sixteenth of the host's `fs.inotify.max_user_watches` when
+that is less), breadth-first from the root: on a bigger tree, changes
+deeper down go unreported and the worker logs a warning once; the binding
+is never refused. On macOS one recursive FSEvents watch covers the whole
+tree instead. `config.path` goes
 through the same path policy as every `coder::*` call — jail containment
 (`fs.host_roots`), the operator denylist, canonicalization — and must be
 a directory: watching a tree is a read of every filename under it, so a
@@ -565,6 +601,8 @@ Returned error bodies carry a stable `code` field. Denylist rejections come back
 | `S216` | Generic shell-internal failure: host spawn error, channel error, or a bad engine response. |
 | `S217` | Invalid regex passed to `grep`/`sed`. |
 | `S218` | `fs.max_read_bytes` / `fs.max_write_bytes` cap exceeded. |
+| `S220` | Path (or a per-call `cwd`) is inside an allowed root but outside the session's `fs_scope.root` and grants (`workspace` boundary). |
+| `S222` | A scoped host exec under `fs.exec_confinement: landlock` could not be confined (no Landlock: kernel, seccomp, non-Linux); it did not run. Set `fs.exec_confinement: off` to run unconfined. |
 | `S300` | Sandbox VM boot failed (needs a virtualization host: Apple Silicon or `/dev/kvm`). |
 
 Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim instead of collapsing to `S216`: `S001`–`S004` (sandbox lifecycle), `S100`–`S102` (image/VM/resource), `S300`, and `S400`. Branch on the specific code where relevant; only an unrecognized engine code falls back to `S216`.

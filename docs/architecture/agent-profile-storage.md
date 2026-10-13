@@ -56,6 +56,26 @@ consume do not prevent a profile from loading. The keys iii consumes are
 `reasoning_effort`, `icon`, `color`, `extends`, `hidden` and
 `composer_placeholder`.
 
+## Origins and kits
+
+Profiles reach `agents_folder` from three places, and `directory::agents::list`
+/ `get` report which one in `source`:
+
+- **kit** — an installed kit owns the path (`kits.lock`, next to the compose
+  file). Kit profiles take precedence over worker ones: a worker's registry
+  download skips an id a kit owns and reports it in `agents_skipped`.
+- **worker** — a worker's registry download wrote it; the worker's completion
+  marker (`<skills_folder>/<worker>/.iii-skill-complete`, schema 2) records
+  every profile it wrote with its sha256.
+- **local** — anything else: written by hand or by a template.
+
+`global` and `builtin` mark the user-global root and the bundled profiles.
+`modified` says whether a kit's or worker's file differs from what it wrote.
+A kit install or update never replaces an existing profile without saying so:
+each collision is a warning in the plan with a replace / keep choice, and a
+kept file is recorded as `skipped` in `kits.lock` (see the iii-directory
+README, Kits).
+
 ## Composer placeholder
 
 `composer_placeholder:` is an optional example request the chat shows in an

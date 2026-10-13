@@ -5,24 +5,24 @@
 //! somebody will ask for months later: how it started, how it looks now, and
 //! how it looked on each version in between.
 
-#[path = "support/sqlite.rs"]
-mod sqlite;
+#[path = "support/db.rs"]
+mod db;
 
 use std::sync::Arc;
 
+use db::TestDb;
 use sentinel::store::Db;
 use sentinel::{
     ErrorSourceV1, IgnoreRequestV1, IgnoreRuleV1, OccurrenceWrite, RecordOutcome, Store,
     WorkerConfig,
 };
 use serde_json::{json, Value};
-use sqlite::SqliteDb;
 
 const NOW: i64 = 1_790_000_000_000;
 const DAY: i64 = 86_400_000;
 
-async fn store() -> Arc<Store<SqliteDb>> {
-    let store = Arc::new(Store::new(SqliteDb::in_memory()));
+async fn store() -> Arc<Store<TestDb>> {
+    let store = Arc::new(Store::new(db::test_db().await));
     store.migrate().await.expect("migrate");
     store
 }
@@ -53,7 +53,7 @@ fn write(dedupe: &str, at_ms: i64, version: &str) -> OccurrenceWrite {
 }
 
 /// Twelve occurrences an hour apart, the oldest four on an older version.
-async fn seed(store: &Store<SqliteDb>) -> String {
+async fn seed(store: &Store<TestDb>) -> String {
     let mut group_id = String::new();
     for index in 0..12 {
         let version = if index < 4 { "0.23.0" } else { "0.24.0" };
@@ -69,7 +69,7 @@ async fn seed(store: &Store<SqliteDb>) -> String {
     group_id
 }
 
-async fn kept(store: &Store<SqliteDb>, group_id: &str) -> Vec<(i64, String)> {
+async fn kept(store: &Store<TestDb>, group_id: &str) -> Vec<(i64, String)> {
     store
         .db()
         .query(
@@ -82,7 +82,9 @@ async fn kept(store: &Store<SqliteDb>, group_id: &str) -> Vec<(i64, String)> {
         .iter()
         .map(|row| {
             (
-                row.get("at_ms").and_then(Value::as_i64).unwrap_or_default(),
+                row.get("at_ms")
+                    .and_then(sentinel::store::integer)
+                    .unwrap_or_default(),
                 row.get("worker_version")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
@@ -135,7 +137,7 @@ async fn pruning_keeps_the_beginning_the_present_and_one_of_every_version() {
         .expect("count")
         .first()
         .and_then(|row| row.get("total"))
-        .and_then(Value::as_i64)
+        .and_then(sentinel::store::integer)
         .unwrap_or_default();
     assert_eq!(rows, 12, "the rows stay; only the bundles go");
 
@@ -237,9 +239,13 @@ async fn the_daily_pass_drops_old_buckets_and_archives_quiet_resolved_groups() {
         .await
         .expect("read");
     let row = archived.first().expect("exists");
-    assert_eq!(row.get("archived").and_then(Value::as_i64), Some(1));
     assert_eq!(
-        row.get("occurrence_count").and_then(Value::as_i64),
+        row.get("archived").and_then(sentinel::store::integer),
+        Some(1)
+    );
+    assert_eq!(
+        row.get("occurrence_count")
+            .and_then(sentinel::store::integer),
         Some(12),
         "the number of times it happened is not retention's to forget"
     );
@@ -290,7 +296,7 @@ async fn the_row_ceiling_drops_the_oldest_but_never_the_first() {
         .expect("read");
     let times: Vec<i64> = rows
         .iter()
-        .filter_map(|row| row.get("at_ms").and_then(Value::as_i64))
+        .filter_map(|row| row.get("at_ms").and_then(sentinel::store::integer))
         .collect();
     assert_eq!(times.len(), 5, "four recent plus the first: {times:?}");
     assert_eq!(times[0], NOW - 12 * 3_600_000);

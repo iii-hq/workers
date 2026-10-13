@@ -7,11 +7,13 @@
 //! layout functions (`console::workspace::*`) that let an agent show a
 //! screen to the human.
 
+pub mod mentions;
 pub mod status;
 pub mod subscribe;
 pub mod working_directory;
 pub mod workspace;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
@@ -20,6 +22,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::configuration::PortCell;
+use crate::server;
 use crate::ui_assets::{ManifestAsset, ManifestWorker, UiRegistry};
 use crate::workspace_store::WorkspaceStore;
 use status::{StatusInput, StatusOutput};
@@ -42,11 +45,14 @@ pub fn register_all(
     if let Err(error) = working_directory::bind(iii) {
         tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
     }
+    crate::onboarding::register(iii, workspace.clone());
     workspace::register(iii, workspace);
     subscribe::register(iii);
     crate::conversations::register(iii);
+    crate::compose::register(iii);
+    mentions::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::* and the console::workspace::changed trigger type"
+        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::*, console::onboarding::{{scan,get,set,prompts}}, console::compose::*, console::mentions::trace::{{search,get}}, and the console::workspace::changed and console::compose::changed trigger types"
     );
 }
 
@@ -93,7 +99,7 @@ fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
             "List the injected console UI assets currently loadable: path, kind \
              (script/style), content hash, and style-lint warnings.",
         )
-        // console-only plumbing, like console::status.
+        // console-only plumbing.
         .metadata(serde_json::json!({ "internal": true })),
     );
 }
@@ -106,18 +112,20 @@ fn register_status(iii: &Arc<IIIClient>, port: PortCell, engine_url: &str) {
             let port = port.clone();
             let engine_url = engine_url.clone();
             async move {
+                let http_port = *port.read().await;
                 Ok::<_, Error>(StatusOutput {
-                    http_port: *port.read().await,
+                    http_port,
+                    // The host is pinned at boot; the port follows rebinds.
+                    url: status::local_url(SocketAddr::new(server::bind_host(), http_port)),
                     engine_url,
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 })
             }
         })
         .description(
-            "Return the console worker's runtime knobs: http_port, engine_url, and version.",
-        )
-        // console-only plumbing; no other worker (e.g. harness) needs to
-        // discover or call it.
-        .metadata(serde_json::json!({ "internal": true })),
+            "Where this project's ADE listens: url (the base URL to open from this machine, for \
+             example http://127.0.0.1:3113; a worker page is <url>/#/worker/<scope>/<page-id>), \
+             http_port, engine_url, and version. Read-only; use it instead of assuming port 3113.",
+        ),
     );
 }

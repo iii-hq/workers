@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createTurnCache, loadDiffContents, loadTurnDiff, preImageBody, turnFileFor } from '../diff-load'
+import {
+  createTurnCache,
+  loadDiffContents,
+  loadRevisionFile,
+  loadTurnDiff,
+  preImageBody,
+  sameDiffContents,
+  turnFileFor,
+} from '../diff-load'
 import type { SessionTurn } from '../turns'
 
 function exec(overrides: Partial<{ exit_code: number; stdout: string; stderr: string }> = {}) {
@@ -86,17 +94,46 @@ describe('loadDiffContents', () => {
   })
 
   it('treats a deleted working copy as an empty new side', async () => {
+    const raw = 'handler error: {"code":"C211","message":"/r/a.ts: not found or not accessible."}'
+    // The bus rejects with the handler's error body, not an Error.
+    for (const rejection of [{ message: raw }, new Error(raw)]) {
+      const { host } = hostWith({
+        'shell::exec': () => exec({ stdout: 'old' }),
+        'coder::read-file': () => {
+          throw rejection
+        },
+      })
+      expect(await loadDiffContents(host, '/r', 'a.ts', { type: 'unstaged' }, noTurns)).toEqual({
+        oldContents: 'old',
+        newContents: '',
+        worktreeRevision: undefined,
+      })
+    }
+  })
+
+  it('does not read a protected working copy as deleted', async () => {
+    // A protected path fails its read like a missing file, though it is there.
+    const { host } = hostWith({
+      'shell::exec': () => exec({ stdout: 'TOKEN=changeme\n' }),
+      'coder::read-file': () => {
+        throw { message: 'handler error: {"code":"C211","message":"/r/.env.example: not found or not accessible."}' }
+      },
+    })
+    const isProtected = (path: string) => path === '.env.example'
+    await expect(
+      loadDiffContents(host, '/r', '.env.example', { type: 'uncommitted' }, noTurns, isProtected),
+    ).rejects.toThrow(/protected paths/)
+  })
+
+  it('fails on any other working-copy read error', async () => {
+    const rejection = { message: 'handler error: {"code":"C213","message":"permission denied"}' }
     const { host } = hostWith({
       'shell::exec': () => exec({ stdout: 'old' }),
       'coder::read-file': () => {
-        throw new Error('handler error: {"code":"C211","message":"not found or not accessible"}')
+        throw rejection
       },
     })
-    expect(await loadDiffContents(host, '/r', 'a.ts', { type: 'unstaged' }, noTurns)).toEqual({
-      oldContents: 'old',
-      newContents: '',
-      worktreeRevision: undefined,
-    })
+    await expect(loadDiffContents(host, '/r', 'a.ts', { type: 'unstaged' }, noTurns)).rejects.toBe(rejection)
   })
 
   it('flags a bad compare revision', async () => {
@@ -109,6 +146,29 @@ describe('loadDiffContents', () => {
     )
   })
 
+  it('reads a commit against its parent, a rename from its source, and nothing before a root commit', async () => {
+    const specs: string[] = []
+    const { host } = hostWith({
+      'shell::exec': ({ args }) => {
+        const spec = (args as string[])[1]
+        specs.push(spec)
+        if (spec === 'p1:old/a.ts') return exec({ stdout: 'before\n' })
+        if (spec === 'c1:./a.ts') return exec({ stdout: 'after\n' })
+        return exec({ exit_code: 128, stderr: `fatal: path 'a.ts' does not exist in '${spec.split(':')[0]}'` })
+      },
+    })
+    const renamed = { type: 'commit', sha: 'c1', parent: 'p1', from: 'old/a.ts' } as const
+    expect(await loadDiffContents(host, '/r', 'a.ts', renamed, noTurns)).toEqual({
+      oldContents: 'before\n',
+      newContents: 'after\n',
+    })
+    expect(await loadDiffContents(host, '/r', 'a.ts', { type: 'commit', sha: 'c1', parent: null }, noTurns)).toEqual({
+      oldContents: '',
+      newContents: 'after\n',
+    })
+    expect(specs).toEqual(['p1:old/a.ts', 'c1:./a.ts', 'c1:./a.ts'])
+  })
+
   it('reads recorded changes through coder::change-diff', async () => {
     const { host } = hostWith({
       'coder::change-diff': () => ({ path: '/r/a.ts', old_contents: 'a', new_contents: 'b', is_binary: false }),
@@ -117,6 +177,23 @@ describe('loadDiffContents', () => {
       oldContents: 'a',
       newContents: 'b',
     })
+  })
+})
+
+describe('loadRevisionFile', () => {
+  it('reads the file at the commit from the root, and says when the commit lacks it', async () => {
+    const { host, trigger } = hostWith({
+      'shell::exec': ({ args }) =>
+        (args as string[])[1] === 'abc1234:./../lib/x.ts'
+          ? exec({ stdout: 'then\n' })
+          : exec({ exit_code: 128, stderr: "fatal: path 'gone.ts' does not exist in 'abc1234'" }),
+    })
+    expect(await loadRevisionFile(host, '/r/app', '../lib/x.ts', 'abc1234')).toBe('then\n')
+    expect(trigger).toHaveBeenCalledWith(
+      'shell::exec',
+      expect.objectContaining({ args: ['show', 'abc1234:./../lib/x.ts'], cwd: '/r/app' }),
+    )
+    await expect(loadRevisionFile(host, '/r/app', 'gone.ts', 'abc1234')).rejects.toThrow('not in abc1234')
   })
 })
 
@@ -142,6 +219,16 @@ describe('loadTurnDiff', () => {
     const { host } = hostWith({ 'coder::read-file': () => ({ content: 'now', revision: 'r9' }) })
     const out = await loadTurnDiff(host, '/r', 'a.ts', turn([record({ before: { content: 'v1' } })]))
     expect(out).toMatchObject({ oldContents: 'v1', newContents: 'now', worktreeRevision: 'r9' })
+  })
+
+  it('reads a working copy deleted since the turn as removed', async () => {
+    const { host } = hostWith({
+      'coder::read-file': () => {
+        throw { message: 'handler error: {"code":"C211","message":"/r/a.ts: not found or not accessible."}' }
+      },
+    })
+    const out = await loadTurnDiff(host, '/r', 'a.ts', turn([record({ before: { content: 'v1' } })]))
+    expect(out).toMatchObject({ oldContents: 'v1', newContents: '' })
   })
 
   it('a watcher-observed creation has an empty before; a deletion an empty after', async () => {
@@ -217,5 +304,16 @@ describe('commit-panel diff sources', () => {
     })
     const out = await loadDiffContents(host, '/r', 'a.ts', { type: 'revision', from: 'p', to: 'c', label: 'c' }, noTurns)
     expect(out).toMatchObject({ oldContents: '', newContents: 'added\n' })
+  })
+})
+
+describe('sameDiffContents', () => {
+  it('holds for equal sides and caveat, not for any difference', () => {
+    const base = { oldContents: 'a\n', newContents: 'b\n', note: { headline: 'h', tone: 'warn' as const } }
+    expect(sameDiffContents(base, { ...base, note: { ...base.note } })).toBe(true)
+    expect(sameDiffContents(base, { ...base, newContents: 'c\n' })).toBe(false)
+    expect(sameDiffContents(base, { ...base, note: { headline: 'h' } })).toBe(false)
+    expect(sameDiffContents(base, { ...base, note: undefined })).toBe(false)
+    expect(sameDiffContents(base, { ...base, binary: true })).toBe(false)
   })
 })

@@ -2,9 +2,10 @@
 
 The worker-side half of the injectable console UI, as a crate: one builder
 that registers the *content function* (`<worker>::ui-content`), one
-`console:script` / `console:style` trigger per asset, and the dev-loop
-hot-reload watcher — the whole registration discipline from the authoring
-SOP (`workers/docs/sops/injectable-console-ui.md`), implemented once.
+`console:script` / `console:style` / `console:module` trigger per asset, and
+the dev-loop hot-reload watcher — the whole registration discipline from the
+authoring SOP (`workers/docs/sops/injectable-console-ui.md`), implemented
+once.
 
 **Linked by path, never published.** The crate versions with the console
 worker in this repo; a worker adopts it with a direct link:
@@ -29,6 +30,10 @@ pub fn register(iii: &Arc<IIIClient>) {
         .register(iii);
 }
 ```
+
+`.module(path, content)` adds a `console:module`: a `.js` asset the console
+serves but never imports at mount, loaded by a script through
+`host.importModule(path)` (the ide's xterm terminal).
 
 That's the entire worker side. Defaults derived from the worker name (each
 has a builder override):

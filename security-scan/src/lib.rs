@@ -6,6 +6,7 @@ mod config;
 pub mod configuration;
 mod contract;
 mod error;
+pub mod events;
 mod executor;
 pub mod functions;
 mod ids;

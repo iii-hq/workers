@@ -15,7 +15,7 @@ import {
   Tooltip,
 } from '@iii-dev/console-ui'
 import { truncateMiddle } from '../lib/format'
-import { renderWithHighlight } from '../lib/highlight'
+import { highlighter } from '../lib/highlight'
 import {
   type FsMatch,
   type FsSedFileResult,
@@ -88,6 +88,7 @@ export function GrepMatchList({
   pattern,
   ignoreCase,
 }: GrepMatchListProps) {
+  const highlight = highlighter(pattern, { isRegex: true, ignoreCase })
   return (
     <div className="shui-match-list">
       {matches.map((m) => (
@@ -104,12 +105,7 @@ export function GrepMatchList({
             <span className="num">{m.line}</span>
           </div>
           <pre className="shui-pre">
-            <code>
-              {renderWithHighlight(m.content, pattern, {
-                isRegex: true,
-                ignoreCase,
-              })}
-            </code>
+            <code>{highlight(m.content)}</code>
           </pre>
         </div>
       ))}

@@ -223,3 +223,15 @@
   background: color-mix(in srgb, var(--color-ok) 85%, black);
   border-color: color-mix(in srgb, var(--color-ok) 85%, black);
 }
+
+/* The remove button: pinned under the scroller at the pane's bottom right,
+   so it is in view on every step. */
+[data-iii-ui='onboarding'] .ob-footer {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border-top: 1px solid var(--color-rule);
+}

@@ -79,6 +79,7 @@ pub fn bind(iii: &IIIClient) -> Result<(), iii_sdk::errors::Error> {
                 ,"a2ui::binding::set"
                 ,"a2ui::binding::delete"
                 ,"a2ui::binding::apply"
+                ,"a2ui::binding::refresh"
                 ,"a2ui::template::save"
                 ,"a2ui::template::list"
                 ,"a2ui::template::get"

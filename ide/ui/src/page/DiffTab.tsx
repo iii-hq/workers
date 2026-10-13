@@ -41,7 +41,7 @@ import {
   WholeWord,
   WrapText,
 } from 'lucide-react'
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Breadcrumbs } from './Breadcrumbs'
 import { diffLines, diffTotals } from './diff'
 import type { DiffContents, DiffNote } from './diff-load'
@@ -85,7 +85,9 @@ export interface DiffTabActions {
 }
 
 interface DiffTabProps {
-  rootLabel: string
+  /** The header's breadcrumbs, with `onRevealDir`: a preview right under
+      its own file list goes without them. */
+  rootLabel?: string
   path: string
   source: DiffSource
   /** The turn's title when the source is a turn. */
@@ -94,7 +96,7 @@ interface DiffTabProps {
   options: DiffOptions
   onOptionsChange: (next: DiffOptions) => void
   onReload: () => void
-  onRevealDir: (dir: string) => void
+  onRevealDir?: (dir: string) => void
   actions: DiffTabActions
   compareRefs?: CompareRefs
   busy?: boolean
@@ -124,15 +126,20 @@ export function DiffTab({
   const [menuOpen, setMenuOpen] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
   const contents = state.phase === 'ready' ? state.contents : null
+  // Keyed on the two sides, not on the state object: a reload that reads
+  // the same bodies back does not run the diff again.
+  const text = contents && !contents.binary && !contents.noBaseline ? contents : null
+  const oldText = text?.oldContents
+  const newText = text?.newContents
   const ops = useMemo(
     () =>
-      contents && !contents.binary && !contents.noBaseline
+      oldText !== undefined && newText !== undefined
         ? diffLines(
-            options.hideWhitespace ? normalizedForWhitespace(contents.oldContents) : contents.oldContents,
-            options.hideWhitespace ? normalizedForWhitespace(contents.newContents) : contents.newContents,
+            options.hideWhitespace ? normalizedForWhitespace(oldText) : oldText,
+            options.hideWhitespace ? normalizedForWhitespace(newText) : newText,
           )
         : null,
-    [contents, options.hideWhitespace],
+    [oldText, newText, options.hideWhitespace],
   )
   const totals = useMemo(() => (ops ? diffTotals(ops) : null), [ops])
   const wholeFile: WholeFileChange | null =
@@ -177,7 +184,9 @@ export function DiffTab({
   return (
     <div className="shui-main-pane shui-diff-tab" data-source={source.type}>
       <div className="shui-editor-head">
-        <Breadcrumbs path={path} rootLabel={rootLabel} onSelectDir={onRevealDir} />
+        {rootLabel !== undefined && onRevealDir ? (
+          <Breadcrumbs path={path} rootLabel={rootLabel} onSelectDir={onRevealDir} />
+        ) : null}
         <span className="shui-diff-chip" title={`${sides.old} to ${sides.new}`}>
           {label}
         </span>
@@ -349,31 +358,29 @@ export function DiffTab({
                 change={wholeFile}
                 lines={wholeFile === 'deleted' ? (totals?.del ?? 0) : (totals?.add ?? 0)}
               >
-                <FileDiff
+                <StableFileDiff
                   key="whole-file"
-                  oldFile={{ name: path, contents: contents.oldContents }}
-                  newFile={{ name: path, contents: contents.newContents }}
+                  path={path}
+                  oldContents={contents.oldContents}
+                  newContents={contents.newContents}
                   diffStyle="unified"
-                  overflow={options.wordWrap ? 'wrap' : 'scroll'}
-                  lineDiffType="none"
-                  ignoreWhitespace={options.hideWhitespace}
+                  wordWrap={options.wordWrap}
+                  wordDiffs={false}
+                  hideWhitespace={options.hideWhitespace}
                   expandUnchanged={options.expandUnchanged}
-                  disableFileHeader
-                  className="shui-review-diff"
                 />
               </WholeFileSplit>
             ) : (
-              <FileDiff
+              <StableFileDiff
                 key={options.diffStyle}
-                oldFile={{ name: path, contents: contents.oldContents }}
-                newFile={{ name: path, contents: contents.newContents }}
+                path={path}
+                oldContents={contents.oldContents}
+                newContents={contents.newContents}
                 diffStyle={options.diffStyle}
-                overflow={options.wordWrap ? 'wrap' : 'scroll'}
-                lineDiffType={options.wordDiffs ? 'word-alt' : 'none'}
-                ignoreWhitespace={options.hideWhitespace}
+                wordWrap={options.wordWrap}
+                wordDiffs={options.wordDiffs}
+                hideWhitespace={options.hideWhitespace}
                 expandUnchanged={options.expandUnchanged}
-                disableFileHeader
-                className="shui-review-diff"
               />
             )}
           </>
@@ -382,6 +389,44 @@ export function DiffTab({
     </div>
   )
 }
+
+/** Takes the plain values, so an unchanged diff skips the render and
+    Pierre's layout pass that comes with it. (An older console's FileDiff
+    also re-diffs whenever its file objects are new, which an inline
+    `{ name, contents }` is on every render.) */
+const StableFileDiff = memo(function StableFileDiff({
+  path,
+  oldContents,
+  newContents,
+  diffStyle,
+  wordWrap,
+  wordDiffs,
+  hideWhitespace,
+  expandUnchanged,
+}: {
+  path: string
+  oldContents: string
+  newContents: string
+  diffStyle: 'split' | 'unified'
+  wordWrap: boolean
+  wordDiffs: boolean
+  hideWhitespace: boolean
+  expandUnchanged: boolean
+}) {
+  return (
+    <FileDiff
+      oldFile={{ name: path, contents: oldContents }}
+      newFile={{ name: path, contents: newContents }}
+      diffStyle={diffStyle}
+      overflow={wordWrap ? 'wrap' : 'scroll'}
+      lineDiffType={wordDiffs ? 'word-alt' : 'none'}
+      ignoreWhitespace={hideWhitespace}
+      expandUnchanged={expandUnchanged}
+      disableFileHeader
+      className="shui-review-diff"
+    />
+  )
+})
 
 /** A caveat above a diff that still renders: the console's status row,
     warn when the diff shows more or less than the source promises. */

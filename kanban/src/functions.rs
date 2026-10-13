@@ -7,9 +7,13 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
+use mention_contract::{
+    MentionGetRequest, MentionSearchRequest, MentionSearchResponse, MentionView,
+};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 use crate::agents::{self, AgentList};
 use crate::board::{
@@ -21,9 +25,10 @@ use crate::config::{CONFIG_ID, Column};
 use crate::events::{
     ChangeEvent, CommentEvent, SubscriberCounts, Subscribers, emit_change, emit_comment,
 };
+use crate::mentions;
 use crate::store::{Activity, Board, BoardStore, Comment, ConfigCell, Ticket, config_snapshot};
 
-pub const FUNCTION_IDS: [&str; 13] = [
+pub const FUNCTION_IDS: [&str; 15] = [
     "kanban::config::info",
     "kanban::board::get",
     "kanban::ticket::create",
@@ -37,6 +42,8 @@ pub const FUNCTION_IDS: [&str; 13] = [
     "kanban::comment::list",
     "kanban::activity::list",
     "kanban::agent::list",
+    mentions::SEARCH_FN,
+    mentions::GET_FN,
 ];
 
 pub struct Ctx {
@@ -626,6 +633,26 @@ async fn agent_list(ctx: Arc<Ctx>, _: Empty) -> Result<AgentList, Error> {
     Ok(agents::list_agents(&ctx.iii, &dir).await)
 }
 
+async fn mention_search(
+    ctx: Arc<Ctx>,
+    input: MentionSearchRequest,
+) -> Result<MentionSearchResponse, Error> {
+    let board = read(&ctx).await?;
+    let config = config_snapshot(&ctx.config);
+    Ok(MentionSearchResponse {
+        items: mentions::search(&board, &config, &input),
+    })
+}
+
+async fn mention_get(
+    ctx: Arc<Ctx>,
+    input: MentionGetRequest,
+) -> Result<Option<MentionView>, Error> {
+    let board = read(&ctx).await?;
+    let config = config_snapshot(&ctx.config);
+    Ok(board::find_ticket(&board, &input.id).map(|ticket| mentions::view(ticket, &config)))
+}
+
 /* ── registration ─────────────────────────────────────────────────────── */
 
 fn register<I, O, F, Fut>(ctx: &Arc<Ctx>, id: &'static str, description: &'static str, handler: F)
@@ -635,12 +662,35 @@ where
     F: Fn(Arc<Ctx>, I) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<O, Error>> + Send + 'static,
 {
+    register_with(ctx, id, description, None, handler);
+}
+
+fn register_with<I, O, F, Fut>(
+    ctx: &Arc<Ctx>,
+    id: &'static str,
+    description: &'static str,
+    metadata: Option<Value>,
+    handler: F,
+) where
+    I: DeserializeOwned + JsonSchema + Send + 'static,
+    O: Serialize + JsonSchema + Send + 'static,
+    F: Fn(Arc<Ctx>, I) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<O, Error>> + Send + 'static,
+{
     let captured = ctx.clone();
-    ctx.iii.register_function(
-        id,
+    let mut function =
         RegisterFunction::new_async(move |input: I| handler(captured.clone(), input))
-            .description(description),
-    );
+            .description(description);
+    if let Some(metadata) = metadata {
+        function = function.metadata(metadata);
+    }
+    ctx.iii.register_function(id, function);
+}
+
+/// Registration metadata of the mention search function: console plumbing,
+/// hidden from agents and traces like the get function that declares it.
+pub fn mention_search_metadata() -> Value {
+    serde_json::json!({ "internal": true, "trace_hidden": true })
 }
 
 pub fn register_functions(ctx: &Arc<Ctx>) {
@@ -721,5 +771,19 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
         "kanban::agent::list",
         "List assignable agent profiles, resolved through iii-directory with a fallback to the configured agents folder.",
         agent_list,
+    );
+    register_with(
+        ctx,
+        mentions::SEARCH_FN,
+        "Search live tickets for the chat @kanban mention menu, by key (KAN-12, 12) or title words; best match first.",
+        Some(mention_search_metadata()),
+        mention_search,
+    );
+    register_with(
+        ctx,
+        mentions::GET_FN,
+        "Resolve a @kanban(id=…) chat mention to its pill, preview card and agent summary; null for an unknown id. Declares the kanban mention provider.",
+        Some(mentions::provider().metadata()),
+        mention_get,
     );
 }

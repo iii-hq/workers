@@ -2,8 +2,8 @@
 Feature: context::assemble — the model-ready context pipeline
 
   Contract (context-manager.md § context::assemble): media-normalize -> cap
-  results (always) -> age-prune (always) -> (if over) compact -> (if still
-  over) emergency -> overflow. The response reports what actually happened (`applied`),
+  results (always) -> (if over) age-prune -> (if still over) compact -> (if
+  still over) emergency -> overflow. The response reports what actually happened (`applied`),
   the budget it fit into (`usable`), and how the model was resolved.
   Every successful response fits its reported usable budget. Busy
   leases, failed summarisers, disabled passes, and irreducible inputs
@@ -62,10 +62,11 @@ Feature: context::assemble — the model-ready context pipeline
     And the response messages equal the request history
     And the summariser was never invoked
 
-  # Prevents: old verbose outputs riding in context until the window
-  # overflows. Under budget, verbose outputs outside the protected window
-  # are still placeholdered even when decay is disabled.
-  Scenario: old verbose outputs are pruned even under budget
+  # Prevents: rewriting results the provider already cached while the
+  # request still fits — every prune invalidates the provider's prompt
+  # cache from the first pruned result on (Linkly tutorial: 18 rewrites,
+  # 92% of the uncached input). Under budget the history goes out as is.
+  Scenario: under budget, old verbose outputs stay verbatim
     Given the router knows model "big" with context window 200000 and max output 8000
     And config "protect_recent_tokens" is 0
     And config "min_free_tokens" is 1
@@ -76,48 +77,54 @@ Feature: context::assemble — the model-ready context pipeline
     And a user message "done"
     When I assemble the history with model "big"
     Then the call succeeds
-    And the response field "applied.pruned" is true
-    And the response field "token_count" does not exceed 172000
-    And response message 2 text is "[output of shell::run pruned: was ~5000 tokens; re-call it if still needed]"
+    And the response field "applied.pruned" is false
+    And the response field "applied.pruned_tokens" is 0
+    And response message 2 text has 20000 chars
 
+  # Prevents: assemble ignoring the decay controls — the output is not
+  # verbose (max_output_chars), so only decay makes it eligible once the
+  # request is over budget.
   Scenario: assemble reads decay controls from the worker config
-    Given the router knows model "big" with context window 200000 and max output 8000
+    Given inline model "small" with context window 5000 and max output 500
     And config "protect_recent_tokens" is 0
     And config "min_free_tokens" is 1
-    And config "max_output_chars" is 10000
+    And config "max_output_chars" is 100000
     And config "decay_user_turns" is 2
     And config "protected_user_turns" is 0
     And a user message "task"
     And an assistant function call "c1" to "shell::run"
-    And a function result for call "c1" from "shell::run" of ~100 tokens
-    And a user message "next"
-    And a user message "done"
-    When I assemble the history with model "big"
-    Then the call succeeds
-    And the response field "applied.pruned" is true
-    And response message 2 text is "[output of shell::run pruned: was ~100 tokens; re-call it if still needed]"
-
-  # Prevents: the always-on trigger swallowing the allow_prune switch.
-  # This is the only scenario that fails if prune fires when explicitly
-  # disabled under budget — the other allow_prune:false coverage is over
-  # budget, so emergency reduction fires regardless and masks a broken
-  # switch (it sets applied.pruned true either way).
-  Scenario: allow_prune false is honored even though prune now runs unconditionally
-    Given the router knows model "big" with context window 200000 and max output 8000
-    And config "protect_recent_tokens" is 0
-    And config "min_free_tokens" is 1
-    And a user message "task"
-    And an assistant function call "c1" to "shell::run"
     And a function result for call "c1" from "shell::run" of ~5000 tokens
     And a user message "next"
     And a user message "done"
-    When I assemble the history with model "big" and options:
+    When I assemble the history with model "small"
+    Then the call succeeds
+    And the response field "applied.pruned" is true
+    And the response field "applied.compacted" is false
+    And response message 2 text is "[output of shell::run pruned: was ~5000 tokens; re-call it if still needed]"
+
+  # Prevents: allow_prune false being ignored over budget. Compaction can
+  # absorb the overflow here, so emergency reduction never runs and
+  # applied.pruned stays false only if the prune pass honored the switch.
+  Scenario: over budget, allow_prune false leaves the relief to compaction
+    Given inline model "small" with context window 5000 and max output 500
+    And config "protect_recent_tokens" is 0
+    And config "min_free_tokens" is 1
+    And the summariser returns "## Goal\n- compacted instead of pruned"
+    And a user message "task"
+    And an assistant function call "c1" to "shell::run"
+    And a function result for call "c1" from "shell::run" of ~5000 tokens
+    And an assistant message "ok"
+    And a user message "next"
+    And an assistant message "r1"
+    And a user message "done"
+    When I assemble the history with model "small" and options:
       """
       { "allow_prune": false }
       """
     Then the call succeeds
     And the response field "applied.pruned" is false
-    And response message 2 text has 20000 chars
+    And the response field "applied.compacted" is true
+    And the response field "token_count" does not exceed 4000
 
   # Prevents: a single whale result consuming the window even while the
   # total request still fits — the cap is unconditional.

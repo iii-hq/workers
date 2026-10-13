@@ -1,13 +1,10 @@
 import * as ConsoleUi from '@iii-dev/console-ui'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  type BrowserClickOptions,
-  type BrowserPickHint,
-  elementLabel,
-} from '../lib/browser'
+import { type BrowserClickOptions, type BrowserPickHint, elementLabel } from '../lib/browser'
 import { cn } from '../lib/cn'
 import type { Annotation } from './annotations'
+import { createHintScheduler, type HintScheduler } from './hint-scheduler'
 import type { LiveFrame } from './useLiveFrames'
 
 /** Annotate mode: the frame is frozen, clicks drop pins instead of reaching
@@ -37,12 +34,11 @@ export interface ViewportAnnotation {
  * forwarding wins over page shortcuts, and Shift+Escape is the one reserved
  * way out of the surface. Events in the letterbox margin outside the image
  * do nothing. In pick mode the page is in
- * inspect mode: the forwarded click resolves the pick, and a throttled
- * `browser::pick::hint` drives the client-drawn hover highlight over the
- * image.
+ * inspect mode: the forwarded click resolves the pick, and a
+ * `browser::pick::hint` per pointer move (at most one per frame, one in
+ * flight) drives the client-drawn hover highlight over the image.
  */
 
-const HINT_INTERVAL_MS = 120
 /** Wheel deltas accumulate this long before one scroll act goes out: short
  * enough that a flick reads as continuous, long enough that a trackpad's
  * burst of tiny deltas is one round trip, not fifty. */
@@ -174,25 +170,22 @@ export function Viewport({
   }, [])
 
   /** Client point -> page-viewport point, null outside the rendered image. */
-  const mapToPage = useCallback(
-    (clientX: number, clientY: number): { x: number; y: number } | null => {
-      const current = frameRef.current
-      const img = imgRef.current
-      if (!current || !img || current.width <= 0 || current.height <= 0) {
-        return null
-      }
-      const rect = renderedImageRect(img)
-      if (!rect) return null
-      const relX = (clientX - rect.left) / rect.width
-      const relY = (clientY - rect.top) / rect.height
-      if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
-      return {
-        x: Math.min(current.width - 1, Math.round(relX * current.width)),
-        y: Math.min(current.height - 1, Math.round(relY * current.height)),
-      }
-    },
-    [],
-  )
+  const mapToPage = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+    const current = frameRef.current
+    const img = imgRef.current
+    if (!current || !img || current.width <= 0 || current.height <= 0) {
+      return null
+    }
+    const rect = renderedImageRect(img)
+    if (!rect) return null
+    const relX = (clientX - rect.left) / rect.width
+    const relY = (clientY - rect.top) / rect.height
+    if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
+    return {
+      x: Math.min(current.width - 1, Math.round(relX * current.width)),
+      y: Math.min(current.height - 1, Math.round(relY * current.height)),
+    }
+  }, [])
 
   // Single vs double click: a first click waits out the double-click window
   // so a dblclick can replace it with one click_count:2 act.
@@ -305,22 +298,27 @@ export function Viewport({
     }
   }
 
-  // Hover hint: while annotating, sample the latest cursor position on an
-  // interval and ask the worker what a pin dropped there would point at; the
-  // highlight box is drawn client-side over the frozen frame (the page under
-  // it is still live, so the hit-test matches what the frame shows).
+  // Hover hint: while annotating, each pointer move asks the worker what a
+  // pin dropped there would point at (at most one request per animation
+  // frame, one in flight, always for the newest point; nothing runs while
+  // the pointer rests). The highlight box is drawn client-side over the
+  // frozen frame (the page under it is still live, so the hit-test matches
+  // what the frame shows).
   const cursorRef = useRef<{ x: number; y: number } | null>(null)
+  const hintSchedulerRef = useRef<HintScheduler | null>(null)
   const [hint, setHint] = useState<HintDisplay | null>(null)
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!annotating) return
     const pt = mapToPage(e.clientX, e.clientY)
     cursorRef.current = pt
     if (!pt) setHint(null)
+    hintSchedulerRef.current?.move(pt)
   }
 
-  const handleMouseLeave = () => {
+  const handlePointerLeave = () => {
     cursorRef.current = null
+    hintSchedulerRef.current?.move(null)
     setHint(null)
   }
 
@@ -331,53 +329,44 @@ export function Viewport({
       return
     }
     let cancelled = false
-    let busy = false
-    const id = window.setInterval(() => {
-      if (busy || cancelled) return
-      const pt = cursorRef.current
-      if (!pt) return
-      busy = true
-      void (async () => {
-        try {
-          const res = await requestHint(pt.x, pt.y)
-          if (cancelled) return
-          if (!cursorRef.current || !res?.hit || !res.bounds) {
-            setHint(null)
-            return
-          }
-          const current = frameRef.current
-          const img = imgRef.current
-          const surface = surfaceRef.current
-          if (!current || !img || !surface || current.width <= 0) {
-            setHint(null)
-            return
-          }
-          const imgRect = renderedImageRect(img)
-          const surfaceRect = surface.getBoundingClientRect()
-          if (!imgRect) {
-            setHint(null)
-            return
-          }
-          const scaleX = imgRect.width / current.width
-          const scaleY = imgRect.height / current.height
-          setHint({
-            left: imgRect.left - surfaceRect.left + res.bounds.x * scaleX,
-            top: imgRect.top - surfaceRect.top + res.bounds.y * scaleY,
-            width: res.bounds.width * scaleX,
-            height: res.bounds.height * scaleY,
-            label: elementLabel(res.tag, res.id, res.classes),
-            dims: `${Math.round(res.bounds.width)}x${Math.round(res.bounds.height)}`,
-          })
-        } catch {
-          if (!cancelled) setHint(null)
-        } finally {
-          busy = false
+    const scheduler = createHintScheduler({
+      request: requestHint,
+      onResult: (res) => {
+        if (cancelled) return
+        if (!cursorRef.current || !res?.hit || !res.bounds) {
+          setHint(null)
+          return
         }
-      })()
-    }, HINT_INTERVAL_MS)
+        const current = frameRef.current
+        const img = imgRef.current
+        const surface = surfaceRef.current
+        if (!current || !img || !surface || current.width <= 0) {
+          setHint(null)
+          return
+        }
+        const imgRect = renderedImageRect(img)
+        const surfaceRect = surface.getBoundingClientRect()
+        if (!imgRect) {
+          setHint(null)
+          return
+        }
+        const scaleX = imgRect.width / current.width
+        const scaleY = imgRect.height / current.height
+        setHint({
+          left: imgRect.left - surfaceRect.left + res.bounds.x * scaleX,
+          top: imgRect.top - surfaceRect.top + res.bounds.y * scaleY,
+          width: res.bounds.width * scaleX,
+          height: res.bounds.height * scaleY,
+          label: elementLabel(res.tag, res.id, res.classes),
+          dims: `${Math.round(res.bounds.width)}x${Math.round(res.bounds.height)}`,
+        })
+      },
+    })
+    hintSchedulerRef.current = scheduler
     return () => {
       cancelled = true
-      window.clearInterval(id)
+      scheduler.dispose()
+      if (hintSchedulerRef.current === scheduler) hintSchedulerRef.current = null
       setHint(null)
     }
   }, [annotating, requestHint])
@@ -394,19 +383,14 @@ export function Viewport({
           : 'browser viewport: clicks, scrolling, and typing forward to the page'
       }
       onPointerDown={(e) => {
-        if (
-          (e.target as HTMLElement).closest(
-            '[data-annotation-pin], [data-annotation-callout]',
-          )
-        )
-          return
+        if ((e.target as HTMLElement).closest('[data-annotation-pin], [data-annotation-callout]')) return
         surfaceRef.current?.focus()
       }}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={handlePointerLeave}
       onKeyDown={handleKeyDown}
       onPaste={(e) => {
         // Cmd/Ctrl+V is left to the browser (chords never forward), so the
@@ -475,12 +459,7 @@ export function Viewport({
             height: hint.height,
           }}
         >
-          <span
-            className={cn(
-              'br-ui-vp-hint-label',
-              hint.top >= 22 ? 'above' : 'below',
-            )}
-          >
+          <span className={cn('br-ui-vp-hint-label', hint.top >= 22 ? 'above' : 'below')}>
             <span className="br-ui-vp-hint-tag">{hint.label}</span>
             <span className="br-ui-vp-hint-dims">{hint.dims}</span>
           </span>

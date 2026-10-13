@@ -1,4 +1,4 @@
 {
   "extends": "@iii-dev/console-ui/tsconfig.worker-ui.json",
-  "include": ["page.tsx", "src"]
+  "include": ["page.tsx", "xterm.ts", "src"]
 }

@@ -67,6 +67,7 @@
       "incognito",
       "read_only",
       "session_id",
+      "timed_out",
       "url"
     ],
     "properties": {
@@ -90,6 +91,10 @@
       "session_id": {
         "description": "Pass this to every other browser function.",
         "type": "string"
+      },
+      "timed_out": {
+        "description": "True when the requested url's load event did not fire inside the default navigation timeout; the tab is open and the page may still be usable; snapshot to check.",
+        "type": "boolean"
       },
       "url": {
         "type": "string"

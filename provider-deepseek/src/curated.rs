@@ -98,6 +98,8 @@ pub fn enrich(id: &str) -> Model {
                 // V4 model, and `reasoning_effort: max` is accepted by both.
                 supports_thinking: Some(true),
                 supports_xhigh: Some(true),
+                // `thinking: {type: "disabled"}` (guides/thinking_mode).
+                supports_thinking_off: Some(true),
                 reasoning_efforts: Some(efforts()),
                 // Flash documents vision, but this provider's wire is text
                 // only (image blocks degrade to a marker — see
@@ -132,6 +134,7 @@ fn base(id: &str) -> Model {
         input_limit: None,
         supports_thinking: None,
         supports_xhigh: None,
+        supports_thinking_off: None,
         reasoning_efforts: None,
         supports_tools: Some(true),
         supports_vision: None,

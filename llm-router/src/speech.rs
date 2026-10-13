@@ -476,6 +476,7 @@ mod tests {
             input_limit: None,
             supports_thinking: None,
             supports_xhigh: None,
+            supports_thinking_off: None,
             reasoning_efforts: None,
             supports_tools: None,
             supports_vision: None,

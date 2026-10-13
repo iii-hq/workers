@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
         boot.hot_router.clone(),
         boot.apply_lock.clone(),
     );
+    configuration::register_status(&iii, boot.control.clone(), boot.apply_lock.clone());
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-http shutting down");

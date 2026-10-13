@@ -6,6 +6,8 @@ import {
   gitReadSource,
   gitRecentCommits,
   gitRefs,
+  gitUncommittedFrom,
+  parseBranchHeader,
 } from '../git'
 
 interface ExecReply {
@@ -43,12 +45,7 @@ function mockedHost(...responses: Array<unknown | Error>) {
 }
 
 function repoHost(status: string, prefix = '', ...afterStatus: unknown[]) {
-  return mockedHost(
-    reply({ stdout: 'true\n' }),
-    reply({ stdout: prefix }),
-    reply({ stdout: status }),
-    ...afterStatus,
-  )
+  return mockedHost(reply({ stdout: `true\n${prefix}` }), reply({ stdout: status }), ...afterStatus)
 }
 
 function uncommittedHost(
@@ -106,12 +103,14 @@ describe('gitComparison', () => {
         },
       ],
     })
-    expect(trigger).toHaveBeenNthCalledWith(3, 'shell::exec', {
+    expect(trigger).toHaveBeenNthCalledWith(2, 'shell::exec', {
       command: 'git',
-      args: [
+      args: ['--no-optional-locks', 
         'status',
         '--porcelain=v1',
         '-z',
+        '--branch',
+        '--no-ahead-behind',
         '--untracked-files=all',
         '--renames',
         '--',
@@ -372,7 +371,7 @@ describe('gitComparison', () => {
     })
 
     const explorer = repoHost(status)
-    await expect(gitChanges(explorer.host, '/repo')).resolves.toEqual({
+    await expect(gitChanges(explorer.host, '/repo')).resolves.toMatchObject({
       kind: 'ready',
       changes: [
         {
@@ -384,12 +383,88 @@ describe('gitComparison', () => {
     })
   })
 
-  it('returns explicit errors for truncated and malformed status output', async () => {
-    const truncated = mockedHost(
-      reply({ stdout: 'true\n' }),
-      reply(),
-      reply({ stdout: ' M partial', stdout_truncated: true }),
+  it('keeps the previous state while the status reads the same', async () => {
+    const status = ['MM both.ts', 'A  added.ts', '?? new.ts'].join('\0') + '\0'
+    const state = await gitChanges(repoHost(status).host, '/repo')
+    if (state.kind !== 'ready') throw new Error(`expected a ready state, got ${state.kind}`)
+    expect(state.changes.map((change) => [change.path, change.status, change.staged])).toEqual([
+      ['both.ts', 'modified', true],
+      ['added.ts', 'added', true],
+      ['new.ts', 'untracked', false],
+    ])
+
+    // The same answer keeps the previous object; a new one replaces it.
+    expect(await gitChanges(repoHost(status).host, '/repo', state)).toBe(state)
+    const removed = ['MM both.ts', 'A  added.ts'].join('\0') + '\0'
+    const next = await gitChanges(repoHost(removed).host, '/repo', state)
+    if (next.kind !== 'ready') throw new Error(`expected a ready state, got ${next.kind}`)
+    expect(next).not.toBe(state)
+    expect(next.changes.map((change) => change.path)).toEqual(['both.ts', 'added.ts'])
+
+    // Staging the rest of both.ts leaves its change as it was (modified,
+    // staged), but not the HEAD → working-copy view: a new object.
+    const staged = ['M  both.ts', 'A  added.ts'].join('\0') + '\0'
+    const restaged = await gitChanges(repoHost(staged).host, '/repo', next)
+    expect(restaged).not.toBe(next)
+    // So does a branch switch that leaves every record as it was.
+    const onMain = await gitChanges(repoHost(`## main\0${staged}`).host, '/repo', restaged)
+    expect(onMain).not.toBe(restaged)
+    expect(await gitChanges(repoHost(`## main...origin/main [different]\0${staged}`).host, '/repo', onMain)).toBe(
+      onMain,
     )
+    expect(await gitChanges(repoHost(`## topic\0${staged}`).host, '/repo', onMain)).not.toBe(onMain)
+  })
+
+  it('names the branch from the status header', async () => {
+    expect(parseBranchHeader('main')).toBe('main')
+    expect(parseBranchHeader('feat/v1.2...origin/feat/v1.2 [ahead 1, behind 2]')).toBe('feat/v1.2')
+    expect(parseBranchHeader('main...origin/main [gone]')).toBe('main')
+    expect(parseBranchHeader('No commits yet on main')).toBe('main')
+    expect(parseBranchHeader('No commits yet on main...origin/main [gone]')).toBe('main')
+    expect(parseBranchHeader('Initial commit on trunk')).toBe('trunk')
+    // A detached HEAD keeps the header's chip, named as `rev-parse` names it.
+    expect(parseBranchHeader('HEAD (no branch)')).toBe('HEAD')
+
+    // The header is a record of its own, ahead of the entries.
+    const state = await gitChanges(repoHost('## No commits yet on main\0?? new.ts\0').host, '/repo')
+    expect(state).toMatchObject({
+      kind: 'ready',
+      changes: [{ path: 'new.ts', status: 'untracked' }],
+      status: { branch: 'main', prefix: '' },
+    })
+    await expect(gitChanges(repoHost('## main').host, '/repo')).resolves.toEqual({
+      kind: 'error',
+      message: 'git status returned an incomplete porcelain record',
+    })
+  })
+
+  it('derives the uncommitted comparison from a status already read', async () => {
+    const status = ['## main', 'MM sub/both.ts', '?? sub/new.ts'].join('\0') + '\0'
+    const read = await gitChanges(repoHost(status, 'sub/\n').host, '/repo/sub')
+    // Only HEAD's check and its diff run: no second probe or status.
+    const { host, trigger } = mockedHost(
+      reply({ stdout: `${'a'.repeat(40)}\n` }),
+      reply({ stdout: 'M\0sub/both.ts\0' }),
+    )
+    await expect(gitUncommittedFrom(host, '/repo/sub', read)).resolves.toMatchObject({
+      kind: 'ready',
+      scope: 'uncommitted',
+      changes: [
+        { path: 'both.ts', status: 'modified', x: 'M', y: 'M' },
+        { path: 'new.ts', status: 'untracked' },
+      ],
+    })
+    expect(trigger.mock.calls.map((call) => (call as unknown[])[1])).toMatchObject([
+      { args: ['--no-optional-locks', 'rev-parse', '--verify', '--quiet', 'HEAD'] },
+      { args: expect.arrayContaining(['--no-optional-locks', 'diff', 'HEAD']) },
+    ])
+    // A status that could not be read is the comparison's answer as is.
+    const failed = { kind: 'error', message: 'git status timed out' } as const
+    await expect(gitUncommittedFrom(host, '/repo/sub', failed)).resolves.toBe(failed)
+  })
+
+  it('returns explicit errors for truncated and malformed status output', async () => {
+    const truncated = mockedHost(reply({ stdout: 'true\n' }), reply({ stdout: ' M partial', stdout_truncated: true }))
     await expect(gitComparison(truncated.host, '/repo', 'unstaged')).resolves.toEqual({
       kind: 'error',
       message: 'git status stdout was truncated',
@@ -434,7 +509,7 @@ describe('gitReadSource', () => {
     ).resolves.toBe('committed\n')
     expect(head.trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', 'HEAD:./src/app.ts'],
+      args: ['--no-optional-locks', 'show', 'HEAD:./src/app.ts'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
@@ -445,7 +520,7 @@ describe('gitReadSource', () => {
     ).resolves.toBe('staged\n')
     expect(index.trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', ':./src/app.ts'],
+      args: ['--no-optional-locks', 'show', ':./src/app.ts'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
@@ -460,7 +535,7 @@ describe('gitReadSource', () => {
     ).resolves.toBe('historical\n')
     expect(revision.trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', 'abc123:./src/app.ts'],
+      args: ['--no-optional-locks', 'show', 'abc123:./src/app.ts'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
@@ -530,22 +605,24 @@ describe('git metadata', () => {
     })
     expect(trigger).toHaveBeenNthCalledWith(3, 'shell::exec', {
       command: 'git',
-      args: ['log', '--max-count=100', '--format=%H%x00%s'],
+      args: ['--no-optional-locks', 'log', '--max-count=100', '--format=%H%x00%s'],
       cwd: '/repo',
       timeout_ms: 15_000,
     })
   })
 
   it('returns no commits for an unborn repository', async () => {
+    // The log runs beside HEAD's check, and fails on an unborn HEAD.
     const { host, trigger } = mockedHost(
       reply({ stdout: 'true\n' }),
       reply({ exit_code: 1 }),
+      reply({ exit_code: 128, stderr: 'fatal: your current branch does not have any commits yet' }),
     )
     await expect(gitRecentCommits(host, '/repo')).resolves.toEqual({
       kind: 'ready',
       commits: [],
     })
-    expect(trigger).toHaveBeenCalledTimes(2)
+    expect(trigger).toHaveBeenCalledTimes(3)
   })
 
   it('lists local and remote refs while omitting symbolic remote HEAD aliases', async () => {
@@ -583,7 +660,7 @@ describe('git metadata', () => {
     })
     expect(trigger).toHaveBeenNthCalledWith(2, 'shell::exec', {
       command: 'git',
-      args: [
+      args: ['--no-optional-locks', 
         'for-each-ref',
         '--sort=refname',
         '--format=%(refname)%00%(objectname)%00%(HEAD)%00%(symref)',
@@ -626,7 +703,7 @@ describe('gitHeadBaseline', () => {
     ).resolves.toBe('committed\n')
     expect(trigger).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
-      args: ['show', 'HEAD:./app.ts'],
+      args: ['--no-optional-locks', 'show', 'HEAD:./app.ts'],
       cwd: '/root/nested/src',
       timeout_ms: 15_000,
     })

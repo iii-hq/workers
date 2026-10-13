@@ -691,6 +691,8 @@ fn send_options(job: &EvalJobRecordV1, variant: &crate::contract::EvalVariantV1)
         max_cost_usd: job.request.limits.execution.max_cost_usd,
         thinking_level: job.request.model.thinking_level,
         provider_options: job.request.model.provider_options.clone(),
+        // Evaluations name their effort (or the provider default) explicitly.
+        reasoning: None,
         output: Some(job.request.output.clone()),
         functions: Some(job.request.functions.clone()),
         skills: None,

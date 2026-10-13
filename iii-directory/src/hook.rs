@@ -277,7 +277,7 @@ fn guided_by_named_functions(messages: &[Value], tools: &[ToolSchema]) -> bool {
 fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
     let call_instruction = match expose {
         ExposeKind::AgentTrigger => {
-            "Invoke it through agent_trigger with this call envelope: { \"function\": \"directory::search_functions\", \"description\": \"<short user-facing search description in the user's language>\", \"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
+            "Invoke it through agent_trigger with this call envelope: { \"function\": \"directory::search_functions\", \"description\": \"<short user-facing search description in the response language>\", \"payload\": { \"capabilities\": [\"<needed capability>\", \"<another needed capability>\"] } }\n"
         }
         ExposeKind::Native | ExposeKind::Other => {
             "Call directory::search_functions directly with its required `capabilities` request field.\n"

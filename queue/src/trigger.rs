@@ -7,18 +7,18 @@
 //! behavior lives in the adapter (e.g. [`crate::adapters::builtin::BuiltinAdapter`]).
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::IIIClient;
+use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
 use crate::subscriber_config::SubscriberQueueConfig;
@@ -29,10 +29,17 @@ use crate::subscriber_config::SubscriberQueueConfig;
 /// is still running. 30 minutes covers the longest intended job budget.
 const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 
-/// How often [`IiiInvoker::connection_lost_since`] samples the engine epoch
-/// while an invocation is in flight, and how long one sample may take.
-const ENGINE_EPOCH_PROBE_INTERVAL_MS: u64 = 1_000;
+/// How long one engine-epoch sample may take.
 const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
+/// Internal handler the engine's registry-change triggers call; see
+/// [`bind_engine_events`].
+pub const ENGINE_CHANGE_FN_ID: &str = "queue::on-engine-change";
+/// Fired by the engine when functions are registered/unregistered.
+const FUNCTIONS_AVAILABLE_TRIGGER: &str = "engine::functions-available";
+/// Fired by the engine when a worker connects, disconnects, or announces its
+/// metadata (`engine::workers::register`) — the latter only after that
+/// worker's buffered function/trigger registrations have been applied.
+const WORKERS_AVAILABLE_TRIGGER: &str = "engine::workers-available";
 const DEFAULT_NAMESPACE: &str = "default";
 const SUBSCRIPTION_NAMESPACE_SEPARATOR: char = '@';
 const SUBSCRIPTION_NAMESPACE_ESCAPE: char = '\\';
@@ -60,6 +67,145 @@ async fn engine_epoch_ms(iii: &IIIClient) -> Option<u64> {
         .filter(|worker| worker.get("runtime").and_then(Value::as_str) == Some("engine"))
         .filter_map(|worker| worker.get("connected_at_ms").and_then(Value::as_u64))
         .min()
+}
+
+/// Engine registry change feed: a generation counter bumped every time the
+/// engine reports that functions were registered/unregistered
+/// (`engine::functions-available`) or that a worker connected, disconnected,
+/// or (re)announced itself (`engine::workers-available`) — which includes
+/// this worker's own reconnect to a restarted engine, since the SDK replays
+/// the trigger bindings before announcing.
+///
+/// Work held until the engine changes (a target function appearing, an
+/// engine restart under an in-flight invocation) re-checks once per change
+/// instead of re-checking on a timer. [`EngineEvents::default`] is an
+/// unbound feed that never fires; [`bind_engine_events`] wires one to the
+/// engine.
+#[derive(Clone)]
+pub struct EngineEvents {
+    tx: Arc<watch::Sender<u64>>,
+}
+
+impl Default for EngineEvents {
+    fn default() -> Self {
+        Self {
+            tx: Arc::new(watch::Sender::new(0)),
+        }
+    }
+}
+
+impl EngineEvents {
+    /// Record one engine change, waking every subscriber.
+    pub fn notify(&self) {
+        self.tx
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// Start observing changes. Take the subscription BEFORE checking the
+    /// condition being waited on: every change after this call wakes
+    /// [`EngineChanges::changed`], so one landing between the check and the
+    /// wait is never lost.
+    pub fn subscribe(&self) -> EngineChanges {
+        EngineChanges {
+            rx: Some(self.tx.subscribe()),
+        }
+    }
+}
+
+/// One subscriber's view of an [`EngineEvents`] feed.
+pub struct EngineChanges {
+    rx: Option<watch::Receiver<u64>>,
+}
+
+impl EngineChanges {
+    /// A feed that never fires, for invokers with nothing to wait on.
+    pub fn never() -> Self {
+        Self { rx: None }
+    }
+
+    /// Resolve once at least one change has happened since the subscription
+    /// was taken or since the previous `changed` returned (bursts coalesce).
+    /// Never resolves on an unbound or closed feed.
+    pub async fn changed(&mut self) {
+        if let Some(rx) = self.rx.as_mut() {
+            if rx.changed().await.is_ok() {
+                return;
+            }
+        }
+        std::future::pending::<()>().await
+    }
+}
+
+/// Payload of the engine's registry-change triggers. Only the advisory event
+/// tag is read; the larger fields (`functions`, `worker_id`) are ignored
+/// because a change is only a cue to re-check.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct EngineChangeEvent {
+    #[serde(default)]
+    pub event: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EngineChangeAck {
+    pub ok: bool,
+}
+
+/// Register the internal [`ENGINE_CHANGE_FN_ID`] handler and bind it to the
+/// engine's `engine::functions-available` and `engine::workers-available`
+/// triggers, returning the feed it drives. Call once per client. A failed
+/// binding only warns: held deliveries then wait for whichever feed still
+/// fires (or their own invocation timeout).
+pub fn bind_engine_events(iii: &IIIClient) -> EngineEvents {
+    let events = EngineEvents::default();
+    let handler_events = events.clone();
+    iii.register_function(
+        ENGINE_CHANGE_FN_ID,
+        RegisterFunction::new_async(move |event: EngineChangeEvent| {
+            let events = handler_events.clone();
+            async move {
+                tracing::debug!(event = ?event.event, "engine registry changed");
+                events.notify();
+                Ok::<_, Error>(EngineChangeAck { ok: true })
+            }
+        })
+        .description(
+            "Internal: wake queue deliveries held on an engine change (a target function \
+             registering, an engine restart) when functions or workers come and go.",
+        )
+        .metadata(json!({ "internal": true })),
+    );
+    for trigger_type in [FUNCTIONS_AVAILABLE_TRIGGER, WORKERS_AVAILABLE_TRIGGER] {
+        match iii.register_trigger(RegisterTriggerInput::new(
+            trigger_type.to_string(),
+            ENGINE_CHANGE_FN_ID.to_string(),
+            json!({}),
+        )) {
+            Ok(_) => tracing::debug!(trigger_type, "bound engine change trigger"),
+            Err(error) => tracing::warn!(
+                trigger_type,
+                error = %error,
+                "binding engine change trigger failed; held queue deliveries will not see these changes"
+            ),
+        }
+    }
+    events
+}
+
+/// Resolve once `probe` reports an epoch other than `baseline`, re-probing
+/// once per engine change. An unreadable epoch (`None`, outage in progress)
+/// never trips by itself; the next change decides. `changes` must have been
+/// subscribed before `baseline` was sampled.
+pub async fn wait_for_epoch_change<P, F>(baseline: u64, mut changes: EngineChanges, mut probe: P)
+where
+    P: FnMut() -> F,
+    F: Future<Output = Option<u64>>,
+{
+    loop {
+        changes.changed().await;
+        if probe().await.is_some_and(|epoch| epoch != baseline) {
+            return;
+        }
+    }
 }
 
 #[async_trait]
@@ -123,14 +269,24 @@ pub trait Invoker: Send + Sync + 'static {
         Ok(true)
     }
 
+    /// Engine registry change feed (see [`EngineEvents`]). Waiters subscribe
+    /// before checking and re-check once per change. The default never
+    /// fires, which suits invokers whose targets are always available and
+    /// whose connection never restarts.
+    fn engine_changes(&self) -> EngineChanges {
+        EngineChanges::never()
+    }
+
     /// Capture the engine epoch immediately before a restart-sensitive
     /// invocation. `None` disables restart watching for this invocation.
     async fn connection_epoch(&self) -> Result<Option<u64>, String> {
         Ok(None)
     }
 
-    /// Resolve when the engine moves away from the captured epoch.
-    async fn connection_lost_since(&self, _baseline: u64) {
+    /// Resolve when the engine moves away from the captured epoch. `changes`
+    /// is the [`Self::engine_changes`] subscription taken before `baseline`
+    /// was sampled.
+    async fn connection_lost_since(&self, _baseline: u64, _changes: EngineChanges) {
         std::future::pending::<()>().await
     }
 }
@@ -138,11 +294,24 @@ pub trait Invoker: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct IiiInvoker {
     iii: Arc<IIIClient>,
+    events: EngineEvents,
 }
 
 impl IiiInvoker {
+    /// An invoker with an unbound [`EngineEvents`] feed: enough for plain
+    /// deliveries, but a delivery held for an unregistered target (or an
+    /// engine restart) is only re-checked by [`Self::with_engine_events`].
     pub fn new(iii: Arc<IIIClient>) -> Self {
-        Self { iii }
+        Self {
+            iii,
+            events: EngineEvents::default(),
+        }
+    }
+
+    /// Attach the feed returned by [`bind_engine_events`].
+    pub fn with_engine_events(mut self, events: EngineEvents) -> Self {
+        self.events = events;
+        self
     }
 }
 
@@ -250,29 +419,27 @@ impl Invoker for IiiInvoker {
         }
     }
 
+    fn engine_changes(&self) -> EngineChanges {
+        self.events.subscribe()
+    }
+
     async fn connection_epoch(&self) -> Result<Option<u64>, String> {
         Ok(engine_epoch_ms(&self.iii).await)
     }
 
-    async fn connection_lost_since(&self, baseline: u64) {
+    async fn connection_lost_since(&self, baseline: u64, changes: EngineChanges) {
         // Neither the SDK connection state nor plain liveness probes can see
         // a fast restart: the reconnect loop reports `Connected` through its
         // silent 2s retry sleep, and outbound messages buffered during the
         // outage are answered by the NEW engine as if nothing happened
-        // (both verified against a SIGKILLed-and-respawned engine). The
-        // engine's boot epoch is the reliable signal — a buffered probe
-        // answered by a restarted engine reveals the changed epoch.
-        loop {
-            tokio::time::sleep(Duration::from_millis(ENGINE_EPOCH_PROBE_INTERVAL_MS)).await;
-            // An unreadable epoch (outage in progress) never trips by
-            // itself: nothing can progress until the engine is back, and
-            // the first successful sample afterwards decides.
-            if let Some(epoch) = engine_epoch_ms(&self.iii).await {
-                if epoch != baseline {
-                    return;
-                }
-            }
-        }
+        // (both verified against a SIGKILLed-and-respawned engine), and the
+        // SDK exposes no reconnect event. The engine's boot epoch is the
+        // reliable signal, sampled once per engine change: after a restart
+        // the SDK replays this worker's registrations — including the
+        // `engine::workers-available` binding — and then announces itself,
+        // so the restarted engine fires that trigger at us and the sample
+        // taken in response reveals the new epoch.
+        wait_for_epoch_change(baseline, changes, || engine_epoch_ms(&self.iii)).await
     }
 }
 
@@ -537,7 +704,76 @@ mod tests {
     use crate::adapter::TopicInfo;
     use crate::store::TopicStats;
     use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+
+    // A change recorded after subscribing but before waiting is not lost; an
+    // unbound feed never fires.
+    #[tokio::test(start_paused = true)]
+    async fn engine_change_before_the_wait_is_not_lost() {
+        let events = EngineEvents::default();
+        let mut changes = events.subscribe();
+        events.notify();
+        events.notify();
+        tokio::time::timeout(Duration::from_secs(1), changes.changed())
+            .await
+            .expect("a change taken after subscribing must wake the waiter");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3600), changes.changed())
+                .await
+                .is_err(),
+            "bursts coalesce: two notifies before one wait are one change"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3600), EngineChanges::never().changed())
+                .await
+                .is_err()
+        );
+    }
+
+    // The restart watch samples the engine epoch once per engine change and
+    // never on a timer: an hour of virtual time with no change costs no
+    // probe. An unreadable epoch (outage) or an unchanged one keeps waiting.
+    #[tokio::test(start_paused = true)]
+    async fn epoch_is_probed_once_per_engine_change_never_on_a_timer() {
+        let events = EngineEvents::default();
+        let changes = events.subscribe();
+        let answers = Arc::new(StdMutex::new(VecDeque::from([None, Some(1), Some(2)])));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let watcher = tokio::spawn({
+            let answers = answers.clone();
+            let probes = probes.clone();
+            async move {
+                wait_for_epoch_change(1, changes, || {
+                    probes.fetch_add(1, Ordering::SeqCst);
+                    let answer = answers.lock().unwrap().pop_front().flatten();
+                    async move { answer }
+                })
+                .await
+            }
+        });
+
+        let idle_hour = || tokio::time::sleep(Duration::from_secs(3600));
+        idle_hour().await;
+        assert_eq!(probes.load(Ordering::SeqCst), 0);
+        for expected_probes in [1, 2] {
+            events.notify();
+            idle_hour().await;
+            assert_eq!(probes.load(Ordering::SeqCst), expected_probes);
+            assert!(
+                !watcher.is_finished(),
+                "outage or same epoch must keep waiting"
+            );
+        }
+        events.notify();
+        tokio::time::timeout(Duration::from_secs(1), watcher)
+            .await
+            .expect("a changed epoch must resolve the watch")
+            .unwrap();
+        assert_eq!(probes.load(Ordering::SeqCst), 3);
+    }
 
     #[derive(Debug, Clone, PartialEq)]
     // This test record keeps the complete subscribe call visible to assertions.

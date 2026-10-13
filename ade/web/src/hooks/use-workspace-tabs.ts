@@ -70,7 +70,6 @@ const POINTER_WRITE_DELAY_MS = 150
  *  `::<browserId>`. The `iii::` prefix keeps the rings out of user-function
  *  telemetry. */
 const WORKSPACE_CHANGED_FN = 'iii::console::workspace_changed'
-const WORKSPACE_POLL_MS = 5_000
 /** Backoff cap for re-binding the ring after a failed client bootstrap. */
 const RING_RETRY_MAX_MS = 30_000
 
@@ -247,16 +246,13 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const qc = useQueryClient()
   const writer = workspaceLayoutWriter(qc)
 
-  // Re-read on the ring below, not on a timer. The interval runs only until
-  // the first ring proves the binding live (a failed bootstrap, an older
-  // console) and while there is no server copy (the local fallback).
-  const [ringLive, setRingLive] = useState(false)
+  // Re-read on the ring below (and when the tab regains focus), never on a
+  // timer: every layout write rings, so a missing server copy simply waits
+  // for the first one.
   const { data, isFetched } = useQuery<WorkspaceLayoutValue | null>({
     queryKey: WORKSPACE_LAYOUT_QUERY_KEY,
     queryFn: () => writer.readForQuery(),
     staleTime: 3_000,
-    refetchInterval: (query) =>
-      ringLive && query.state.data != null ? false : WORKSPACE_POLL_MS,
     refetchOnWindowFocus: true,
     retry: 1,
   })
@@ -272,7 +268,6 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     let offHandler: (() => void) | undefined
     let offTrigger: (() => void) | undefined
     const ring = () => {
-      setRingLive(true)
       void writer
         .whenIdle()
         .then(() =>
@@ -295,7 +290,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         offTrigger = undefined
         offHandler = undefined
         // The client bootstrap can fail and later succeed (the layout query
-        // retries on its own); keep binding, the strip polls meanwhile.
+        // retries on its own); keep binding, re-reading on focus meanwhile.
         if (cancelled) return
         retry = window.setTimeout(
           () => void bind(attempt + 1),

@@ -14,12 +14,12 @@ export interface HighlightOptions {
   ignoreCase: boolean
 }
 
-export function renderWithHighlight(
-  line: string,
+/** A highlighter for one query, compiled once for a whole list of lines. */
+export function highlighter(
   query: string,
   { isRegex, ignoreCase }: HighlightOptions,
-): ReactNode {
-  if (!query) return line
+): (line: string) => ReactNode {
+  if (!query) return (line) => line
   if (isRegex) {
     let re: RegExp | null = null
     try {
@@ -27,9 +27,10 @@ export function renderWithHighlight(
     } catch {
       re = null
     }
-    if (re) return highlightRegex(line, re)
+    // `matchAll` iterates a copy, so every line may share `re`.
+    if (re) return (line) => highlightRegex(line, re)
   }
-  return highlightSubstring(line, query, ignoreCase)
+  return (line) => highlightSubstring(line, query, ignoreCase)
 }
 
 function highlightRegex(line: string, re: RegExp): ReactNode {

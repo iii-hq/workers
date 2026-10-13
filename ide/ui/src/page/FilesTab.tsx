@@ -16,6 +16,7 @@
    diff so expansion, focus and selection survive a watcher burst. */
 
 import { ConfirmDialog, EmptyState, IconButton, SearchField } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import type { FileTreeDirectoryHandle, FileTreeRowDecoration, GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import {
@@ -25,6 +26,7 @@ import {
   FileDiff,
   FilePlus,
   FolderPlus,
+  PackagePlus,
   Pencil,
   RefreshCw,
   Search,
@@ -34,13 +36,15 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
+import { type DeleteRequest, deleteAfterRefusal } from './file-actions'
 import type { GitFileStatus } from './git'
 import { statusLetter, statusTitle } from './git-actions'
 import { ancestorDirs, basename, dirname, joinRel, stripDirSlash } from './paths'
 import {
+  markTreeMenuRows,
   reactivateSelectedFile,
   shouldActivateTreeSelection,
   treeItemFromEvent,
@@ -61,13 +65,16 @@ const CREATE_PLACEHOLDER = 'untitled'
 export interface ExplorerActions {
   create: (kind: 'file' | 'folder', rel: string) => Promise<void>
   rename: (from: string, to: string, isDir: boolean) => Promise<void>
-  remove: (rel: string, isDir: boolean) => Promise<void>
+  /** `includeProtected`: the user confirmed deleting protected files under the folder too. */
+  remove: (rel: string, isDir: boolean, includeProtected?: boolean) => Promise<void>
   duplicate: (rel: string) => Promise<void>
   openTerminal: (dir: string) => void
   copyPath: (rel: string, absolute: boolean) => void
   compare: (rel: string) => void
   /** Search the folder's contents in the Search view. */
   findInFolder: (dir: string) => void
+  /** Open the New worker dialog with `dir` as the parent folder. */
+  newWorker: (dir: string) => void
   discard: (rel: string) => void
   refresh: () => void
 }
@@ -100,12 +107,9 @@ interface FilesTabProps {
   actions: ExplorerActions
 }
 
-interface PendingDelete {
-  path: string
-  isDir: boolean
-}
+type PendingDelete = DeleteRequest
 
-export function FilesTab({
+function FilesTabView({
   tree,
   gitStatus,
   theme,
@@ -128,6 +132,7 @@ export function FilesTab({
   const [note, setNote] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
   const menu = useContextMenu()
+  const stageRef = useRef<HTMLDivElement>(null)
   // The model is created once per component lifetime; data arriving
   // later flows through batch/resetPaths/setGitStatus below. Selection
   // opens through a ref so the creation-time callback never goes stale.
@@ -173,7 +178,7 @@ export function FilesTab({
         if (placeholder !== undefined) {
           placeholdersRef.current.delete(sourcePath)
           void actionsRef.current.create(placeholder, to).catch((error: unknown) => {
-            setNote(error instanceof Error ? error.message : String(error))
+            setNote(errorMessage(error))
             try {
               model.remove(destinationPath, { recursive: true })
             } catch {
@@ -184,7 +189,7 @@ export function FilesTab({
         }
         if (from === to) return
         void actionsRef.current.rename(from, to, isFolder).catch((error: unknown) => {
-          setNote(error instanceof Error ? error.message : String(error))
+          setNote(errorMessage(error))
           try {
             model.move(destinationPath, sourcePath)
           } catch {
@@ -240,6 +245,7 @@ export function FilesTab({
     let timer: number | null = null
     const snapshot = () => {
       timer = null
+      if (model.isSearchOpen()) return
       const open = expandedDirectoryPaths(model, dirPaths)
       liveExpandedRef.current = open
       const key = open.join('\n')
@@ -248,6 +254,12 @@ export function FilesTab({
       onExpandedChange(open)
     }
     const unsubscribe = model.subscribe(() => {
+      // A filter expands every folder that holds a match, never-listed
+      // stubs included. Reporting those would list each stub, whose
+      // children can match in turn (a crawl of the workspace), and would
+      // persist the filter's expansion as the user's. The model puts the
+      // user's expansion back when the filter clears; reports resume then.
+      if (model.isSearchOpen()) return
       const open = expandedDirectoryPaths(model, dirPaths)
       liveExpandedRef.current = open
       const known = openDirsRef.current
@@ -441,8 +453,13 @@ export function FilesTab({
     const target = pendingDelete
     setPendingDelete(null)
     if (!target) return
-    void actionsRef.current.remove(target.path, target.isDir).catch((error: unknown) => {
-      setNote(error instanceof Error ? error.message : String(error))
+    const confirmed = target.protectedInside === true
+    void actionsRef.current.remove(target.path, target.isDir, confirmed).catch((error: unknown) => {
+      const message = errorMessage(error)
+      // A second confirmation, naming what the first one did not.
+      const next = deleteAfterRefusal(target, message)
+      if (next !== null) setPendingDelete(next)
+      else setNote(message)
     })
   }, [pendingDelete])
 
@@ -479,7 +496,7 @@ export function FilesTab({
           icon: <Copy />,
           onSelect: () =>
             void actionsRef.current.duplicate(rel).catch((error: unknown) => {
-              setNote(error instanceof Error ? error.message : String(error))
+              setNote(errorMessage(error))
             }),
         },
         {
@@ -499,6 +516,7 @@ export function FilesTab({
     (dir: string): ContextMenuItem[] => [
       { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', dir) },
       { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', dir) },
+      { id: 'new-worker', label: 'New worker…', icon: <PackagePlus />, onSelect: () => actionsRef.current.newWorker(dir) },
       { type: 'separator', id: 's1' },
       { id: 'terminal', label: 'Open in terminal', icon: <SquareTerminal />, onSelect: () => actionsRef.current.openTerminal(dir) },
       { id: 'find', label: 'Find in folder…', icon: <Search />, onSelect: () => actionsRef.current.findInFolder(dir) },
@@ -523,6 +541,13 @@ export function FilesTab({
     (): ContextMenuItem[] => [
       { id: 'new-file', label: 'New file…', icon: <FilePlus />, onSelect: () => beginCreate('file', '') },
       { id: 'new-folder', label: 'New folder…', icon: <FolderPlus />, onSelect: () => beginCreate('folder', '') },
+      // The empty space means the project: workers go where the templates put them.
+      {
+        id: 'new-worker',
+        label: 'New worker…',
+        icon: <PackagePlus />,
+        onSelect: () => actionsRef.current.newWorker('workers'),
+      },
       { type: 'separator', id: 's1' },
       { id: 'terminal', label: 'Open in terminal', icon: <SquareTerminal />, onSelect: () => actionsRef.current.openTerminal('') },
       { id: 'refresh', label: 'Refresh', icon: <RefreshCw />, onSelect: () => actionsRef.current.refresh() },
@@ -531,8 +556,20 @@ export function FilesTab({
     [beginCreate, collapseAll],
   )
 
+  // The menu's rows, marked while it is open.
+  const markMenuRows = useCallback((path: string | null): HTMLElement | null => {
+    const root = stageRef.current?.querySelector('file-tree-container')?.shadowRoot
+    return root ? markTreeMenuRows(root, path) : null
+  }, [])
+  useEffect(() => {
+    if (!menu.isOpen) markMenuRows(null)
+  }, [menu.isOpen, markMenuRows])
+
   const openMenuAt = useCallback(
     (anchor: { x: number; y: number }, item: { path: string; kind: 'file' | 'directory' } | null) => {
+      const row = markMenuRows(item?.path ?? null)
+      // Under the row, at the pointer's x: the menu leaves the row it marks in sight.
+      if (row !== null) anchor = { x: anchor.x, y: row.getBoundingClientRect().bottom }
       if (item === null) {
         menu.open(anchor, itemsForRoot())
         return
@@ -542,7 +579,7 @@ export function FilesTab({
       model.getItem(item.path)?.focus()
       menu.open(anchor, item.kind === 'directory' ? itemsForDir(rel) : itemsForFile(rel))
     },
-    [menu, model, itemsForDir, itemsForFile, itemsForRoot],
+    [menu, model, itemsForDir, itemsForFile, itemsForRoot, markMenuRows],
   )
 
   const onTreeKeyDown = useCallback(
@@ -582,6 +619,9 @@ export function FilesTab({
             <IconButton label="New folder" onClick={() => beginCreate('folder', dirOfFocus(model))}>
               <FolderPlus aria-hidden />
             </IconButton>
+            <IconButton label="New worker" onClick={() => actionsRef.current.newWorker(dirOfFocus(model) || 'workers')}>
+              <PackagePlus aria-hidden />
+            </IconButton>
             <IconButton label="Refresh explorer" onClick={() => actions.refresh()}>
               <RefreshCw aria-hidden />
             </IconButton>
@@ -605,6 +645,7 @@ export function FilesTab({
 
       {/* biome-ignore lint/a11y/noStaticElementInteractions: the stage relays the empty-space context menu */}
       <div
+        ref={stageRef}
         className="shui-tree-stage"
         onContextMenu={(event) => {
           event.preventDefault()
@@ -664,20 +705,32 @@ export function FilesTab({
         onOpenChange={(open) => {
           if (!open) setPendingDelete(null)
         }}
-        title={pendingDelete?.isDir ? `Delete folder ${pendingDeleteName}?` : `Delete ${pendingDeleteName}?`}
+        title={
+          pendingDelete?.protectedInside
+            ? `Delete ${pendingDeleteName} with its protected files?`
+            : pendingDelete?.isDir
+              ? `Delete folder ${pendingDeleteName}?`
+              : `Delete ${pendingDeleteName}?`
+        }
         description={
-          pendingDelete?.isDir
-            ? 'The folder and everything inside it are removed from disk.'
-            : 'The file is removed from disk.'
+          pendingDelete?.protectedInside
+            ? "The folder holds files the IDE keeps protected, like .env files, keys or certificates. They are removed with everything else. This can't be undone."
+            : pendingDelete?.isDir
+              ? 'The folder and everything inside it are removed from disk.'
+              : 'The file is removed from disk.'
         }
         details={pendingDelete ? [pendingDelete.path] : undefined}
-        confirmLabel="Delete"
+        confirmLabel={pendingDelete?.protectedInside ? 'Delete everything' : 'Delete'}
+        tone={pendingDelete?.protectedInside ? 'danger' : undefined}
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
       />
     </div>
   )
 }
+
+/** Memoized: the page re-renders often, and this only when its props change. */
+export const FilesTab = memo(FilesTabView)
 
 /** The folder a header-bar "new file" lands in: the focused folder, the
     focused file's folder, or the root. */

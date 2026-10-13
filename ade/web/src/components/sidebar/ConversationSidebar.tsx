@@ -138,12 +138,17 @@ export function ConversationSidebar({
 
   const [query, setQuery] = useState('')
 
-  /* The kind filter runs on the flat list before the tree is built, judging
-     each row by its root's kind, so hiding a kind hides whole subtrees and
-     search matches inside them alike. */
+  /* A chat joins the list on its first send: an unsent "new chat" is a
+     local draft with nothing to show yet. The kind filter runs on the flat
+     list before the tree is built, judging each row by its root's kind, so
+     hiding a kind hides whole subtrees and search matches inside them alike. */
+  const started = useMemo(
+    () => conversations.filter((c) => !c.draft),
+    [conversations],
+  )
   const visible = useMemo(
-    () => filterConversationsByKind(conversations, view.kinds),
-    [conversations, view.kinds],
+    () => filterConversationsByKind(started, view.kinds),
+    [started, view.kinds],
   )
   const byId = useMemo(
     () => new Map(conversations.map((c) => [c.id, c])),
@@ -222,7 +227,7 @@ export function ConversationSidebar({
           <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
             {query.trim() ? (
               'No matches.'
-            ) : conversations.length === 0 ? (
+            ) : started.length === 0 ? (
               'No conversations yet. Start one above.'
             ) : (
               <>

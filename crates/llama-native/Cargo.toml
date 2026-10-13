@@ -1,0 +1,23 @@
+[workspace]
+
+[package]
+name = "iii-llama-native"
+version = "0.1.0"
+edition = "2021"
+description = "llama.cpp b11379 built from source (cmake, no bindgen) behind a hand-written C shim: the native engine of the in-process judge providers"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+# Deliberately unpublished: workers in this repo link it by path, like
+# crates/config-client.
+publish = false
+# One llama.cpp per binary: Cargo refuses a graph that also builds
+# llama-cpp-sys-2 (links = "llama" too).
+links = "llama"
+
+[dependencies]
+anyhow = "1"
+
+[build-dependencies]
+cc = "1"
+cmake = "0.1"
+sha2 = "0.10"

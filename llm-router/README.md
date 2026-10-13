@@ -61,7 +61,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::transcribe` | Speech to text: `{model?, provider?, audio_base64, mime?, language?, prompt?}` → `{provider, model, text, segments[]?, language?, duration_secs?}`. The provider comes from the named `provider`, else from the catalog owner of the `stt` model, else the first provider that declared one. |
 | `router::speak` | Text to speech: `{model?, provider?, text, voice?, format?, language?, speed?}` → `{provider, model, audio_base64, mime, voice?, duration_secs?}`. Same resolution over `tts` models. |
 | `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
-| `router::provider::list` | Registered providers with `configured` / `available` status. |
+| `router::provider::list` | Registered providers with `configured` / `available` status, where each credential comes from (`credential_source`, `credential_ref`, `credential_error` — never a value), and each provider's starting point: `default_model` and `default_thinking_level` (see [Default model](#default-model)). |
 
 Only the read surface is agent-callable (`router::models::list` / `get` /
 `supports`, `router::provider::list`); everything else is denied to in-run
@@ -89,7 +89,7 @@ registration token, and every later protocol call must present it.
 | Function | Purpose |
 |---|---|
 | `router::provider::register` | Self-declaration at attach time; idempotent re-declare with the token. |
-| `router::provider::resolve` | Per-request credential + endpoint resolution (config > env > none). |
+| `router::provider::resolve` | Per-request credential + endpoint resolution (config > `secret://` / `env://` reference > env > none, see [Credentials](#credentials-and-secret-references)). |
 | `router::provider::update_credential` | Persist a refreshed credential (OAuth write-back). |
 | `router::models::reconcile` | Replace the provider's catalog slice in one write. |
 
@@ -127,7 +127,7 @@ entry at boot and keeps an in-memory snapshot synchronized by the
   "default_provider": "anthropic",
   "providers": {
     "anthropic": {
-      "api_key": "sk-…",
+      "api_key": "secret://ANTHROPIC_API_KEY",
       "api_url": "https://api.anthropic.com/v1/messages",
       "max_tokens": 8192
     }
@@ -155,13 +155,88 @@ router diffs the changed slice, debounces ~2 s, and kicks that provider's
 catalog via `router::models::reconcile` and show up in `router::models::list`
 within seconds — no restart.
 
+### Credentials and secret references
+
+The configuration service's default filesystem adapter persists this entry at
+`./config/<entry-id>.yaml` (`llm-router` unless `III_CONFIG_NAME` overrides it),
+a folder meant to be committed, so keep keys out of it: keep the key in the
+[`secrets`](https://github.com/iii-hq/workers/tree/main/secrets) worker, which `llm-router` depends on, and put a versionable
+reference in the slice:
+
+- `"api_key": "secret://ANTHROPIC_API_KEY"` — encrypted in the secrets
+  worker's vault;
+- `"api_key": "env://ANTHROPIC_API_KEY"` — the variable in the project's
+  env file (`.env`, or the secrets worker's `env_file` for this namespace;
+  else the secrets worker's environment), read by the secrets worker each
+  time, so an edit to the file applies without restarting the router.
+
+Provider keys reuse their env var name; `NAME` matches
+`^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`. Either way the secret's `consumers` must
+list `llm-router`; the Console's key field does this for you.
+
+A provider's credential is the first of:
+
+1. the slice's `credential` object (OAuth write-back via `update_credential`);
+2. a literal `api_key`;
+3. an `api_key` reference (`secret://` or `env://`), resolved through
+   `secrets::resolve`;
+4. the provider's `credential_env_var`, read in the router's process;
+5. none.
+
+A reference is never forwarded to a provider as a key. When it does not
+resolve, the provider is **not configured**, and the error says why: `secret
+NAME not found in the secrets worker`, `environment variable NAME is not set
+in the project's .env or the secrets worker's environment`, `llm-router is not
+allowed to read secret NAME; add llm-router to the secret's consumers`, or
+`secrets worker is not running`. The env var is deliberately **not** used as a fallback past an
+explicit reference: you chose the stored secret, so a missing one is reported
+rather than silently replaced by a different key. Providers built on the
+shared scaffold skip their own env fallback in that case too, and
+`router::chat` fails before dispatch with `router/not_configured` and the same
+reason.
+
+`router::provider::list` entries and the `router::provider::resolve` response
+carry `credential_source` (`config` | `env` | `secret` | `none`),
+`credential_ref` (the `secret://` or `env://` reference, when the slice uses
+one; `credential_source` is `secret` for both, as the secrets worker resolved
+it) and
+`credential_error`. All three are optional on the wire. The older `source`
+field keeps its `config` | `env` | `none` values: a resolved reference reports
+`config` there.
+
+Resolved values live only in the router's memory: never in the entry,
+logs or traces, and a cached value is wiped when replaced. They are re-read:
+
+- on `secrets::changed` (the router binds it at boot; without a secrets worker
+  the engine holds the binding until the type registers). A rotated, deleted
+  or revoked secret then nudges every provider whose slice references it
+  through `provider::<id>::on_router_ready`, so the provider drops its cached
+  resolve, re-declares and refreshes its models;
+- when a slice that references it changes, before the debounced
+  `refresh_models` fires, so a pasted reference is resolvable by the time
+  discovery asks for it;
+- when the secrets worker registers after the router, so a router that booted
+  first recovers without a restart;
+- on demand after 5 minutes (10 seconds for a failure), bounding staleness if
+  an event is ever missed. While the secrets worker is unreachable, a value
+  already resolved keeps being served: secrets cannot rotate or be revoked
+  while it is down.
+
+The reference itself is not secret: it is committed, listed and logged. Never
+paste a key after `secret://` or `env://`.
+
 ### Operational notes
 
-- **Env-var credential fallback resolves in the router's process.** A
-  provider's `credential_env_var` (e.g. `ANTHROPIC_API_KEY`) is read by the
-  llm-router binary, not by the provider worker — launch the router with
-  those variables set, or put keys in the entry. A key present only in
-  another worker's environment shows up as `configured: false`.
+- **Secret references resolve as `llm-router`.** The secrets worker checks
+  the router's engine-stamped worker identity against the secret's
+  `consumers`, not the provider's.
+- **Env-var credential fallback resolves in the router's process.** Without
+  a reference, a provider's `credential_env_var` (e.g. `ANTHROPIC_API_KEY`)
+  is read by the llm-router binary, not by the provider worker — launch the
+  router with those variables set, or put a reference in the entry. A key
+  present only in another worker's environment shows up as
+  `configured: false`. `env://NAME` is different: the secrets worker reads it
+  from the project's `.env`, so the router needs no `env_file` for it.
 - **Registration-token recovery.** Re-registering a provider id without its
   original token is rejected (anti-takeover). If a provider durably lost its
   token, delete the router's registry state (state scope `llm-router`,
@@ -184,8 +259,10 @@ file. In-run agents may only **read** the catalog and provider list:
 
 Worker-to-worker calls bypass the agent gate, so the harness, context-manager,
 and provider workers reach the full surface — only in-run agents are
-restricted. Provider credentials live in the configuration entry and are never
-readable back through any allowed function.
+restricted. Provider credentials live in the configuration entry, or behind a
+`secret://` or `env://` reference in the `secrets` worker, and are never readable back
+through any allowed function: `router::provider::list` reports where a
+credential comes from, never its value.
 
 ## Events
 
@@ -198,6 +275,10 @@ payload verbatim (no envelope).
 | `router::models::changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
 | `router::provider::changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
 | `router::ready` | the router finishes booting; providers re-declare on it | `{}` |
+
+The router itself binds the engine's `configuration` trigger (its entry) and,
+when the optional `secrets` worker is installed, `secrets::changed`
+(`router::on_secret_changed`).
 
 ```ts
 iii.registerFunction('my-worker::on-models-changed', async (payload) => {
@@ -227,8 +308,14 @@ A provider worker must:
    echoes it in `router::provider::list` and the console paints it as a
    `currentColor` mask beside the provider's models; a missing or malformed
    mark falls back to the provider's initial.
+   The declaration may also carry `default_models`, the provider's
+   recommended starting models in preference order (the current mid-range
+   model first, then its predecessors), and `default_thinking_level`, the
+   level to pair with it; see [Default model](#default-model).
 3. Resolve credentials per request via `router::provider::resolve`; never
-   read keys directly.
+   read keys directly. A response with `credential_source: "secret"` and no
+   credential is an unresolvable `secret://` or `env://` reference: report its
+   `credential_error`, do not substitute a key of your own.
 4. Treat closure of its stream channel as cancellation: abort the upstream
    request and stop writing frames.
 5. Map upstream failures to the shared `ErrorKind` taxonomy on its `error`
@@ -241,6 +328,59 @@ system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
 (`estimator: "provider"`) or a local tokenizer estimate (`estimator:
 "tiktoken"`). Providers without it simply make `router::count_tokens` return
 a typed `router/no_token_counter` error for that provider.
+
+### Default model
+
+`router::provider::list` reports one `default_model` per provider so that a
+caller with no model choice of its own (a fresh `harness::send` naming only
+a provider, a console opening its first chat) starts on something sensible.
+It is resolved at read time against the provider's current catalog slice:
+
+1. the model variant first. A variant is the first all-letter id segment
+   after the family (`terra` in `gpt-6.1-terra`, `sonnet` in
+   `claude-sonnet-5-5`), ranked in the order `default_models` first names
+   it. Within a ranked variant the newest version in the slice wins,
+   listed or not, so a newer Luna never beats a Terra when Terra is listed
+   first. A model with a ranked variant counts even outside the first
+   preference's family, as long as it has the same `vendor/` prefix, so
+   Copilot ranks GPT and Claude models in one list;
+2. ids with no ranked variant come last: the first id in the declared
+   `default_models` the slice holds, else the slice model sharing the
+   longest id prefix with the first preference, as long as they share the
+   family (the id up to its first `-`: `claude`, `gpt`, `codex/gpt`). On a
+   tie the highest version wins (`gpt-4.1` over `gpt-4o`), then the plain
+   id over a dated snapshot or a `-mini` variant;
+3. otherwise absent, and the caller keeps its previous behaviour.
+
+A provider that declares no `default_models` (local model servers, speech
+providers) never reports one. `default_thinking_level` is copied from the
+declaration; absent means the caller should omit the level and let the
+provider apply its own default.
+
+A declaration may also carry `context_overflow_hint`: one or two plain
+sentences a console shows under a context-overflow failure on one of the
+provider's models, for causes compacting cannot fix (a self-hosted server
+started with a small window, say), optionally with a link to the provider's
+docs. `router::provider::list` reports it verbatim; absent means the console
+shows only its generic steps.
+
+A provider that works without a key (a local server started without one)
+declares `credential_optional: true`. The router then reports it
+`configured` when no credential resolves; a key that is set is still
+resolved and sent. Absent or `false` means a key is required.
+
+### Thinking levels
+
+`router::chat` takes `thinking_level`: `off`, `minimal`, `low`, `medium`,
+`high` or `xhigh`. Each provider maps a level onto its own knob and warns
+when a model cannot honour it. `off` asks for no reasoning at all and is
+honoured only where the model's descriptor says `supports_thinking_off:
+true` (a native switch exists: OpenAI `reasoning_effort: none` on the
+models that take it, DeepSeek and GLM `thinking.type: disabled`, Anthropic
+Sonnet 5.5 `between_tools`). `false` means the model always reasons or the
+provider has no switch; absent means the provider does not know. Consoles
+offer, hide or disable the Off choice accordingly. A provider that cannot
+switch reasoning off sends its lowest effort instead and reports a warning.
 
 ### Speech providers
 
@@ -284,7 +424,8 @@ cargo test --test integration    # engine-backed suite; self-skips without an en
 The integration suite spawns a throwaway engine per test when `iii` is on
 `PATH` (or `III_ENGINE_BIN` points at a binary) and covers the chat relay,
 cancellation, abort, restart recovery, registration token gating, paste-a-key
-discovery, and event delivery end to end.
+discovery (literal keys, `secret://` and `env://` references, against a fake
+`secrets` worker), and event delivery end to end.
 
 To run the worker locally against an engine:
 

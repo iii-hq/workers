@@ -5,6 +5,8 @@ mod agent_identity;
 mod agent_preloaded_functions;
 mod agent_preloaded_skills;
 mod agent_shared_prompt_prefix;
+mod ask_bypasses_approval_hook;
+mod ask_ends_turn;
 mod binding_prefix_append_only;
 mod call_argument_diagnosis;
 mod call_argument_reconciliation;
@@ -33,6 +35,7 @@ mod spawn_reuse_guard;
 mod standing_wake_delivery;
 mod state_worker_sidecar;
 mod stop_cancel_cascade;
+mod stop_held_call;
 mod streamed_text;
 mod timer_wake;
 mod truncated_function_call_stream;
@@ -58,6 +61,8 @@ pub fn all() -> Vec<ScenarioFixture> {
         agent_preloaded_functions::scenario(),
         agent_preloaded_skills::scenario(),
         agent_shared_prompt_prefix::scenario(),
+        ask_bypasses_approval_hook::scenario(),
+        ask_ends_turn::scenario(),
         binding_prefix_append_only::scenario(),
         child_discovery_granted::scenario(),
         compaction_anchor::scenario(),
@@ -83,6 +88,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         router_midstream_terminal_error::scenario(),
         spawn_reuse_guard::scenario(),
         stop_cancel_cascade::scenario(),
+        stop_held_call::scenario(),
         queued_message_edit_unqueue::scenario(),
         streamed_text::scenario(),
         truncated_function_call_stream::scenario(),
@@ -100,7 +106,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 38);
+        assert_eq!(fixtures.len(), 41);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

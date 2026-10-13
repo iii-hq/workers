@@ -52,6 +52,7 @@ export type FunctionsListRequest = z.infer<typeof functionsListRequestSchema>
 export const functionSummarySchema = z.object({
   function_id: z.string(),
   worker_name: z.string(),
+  namespace: z.string().optional(),
   description: z.string().nullable().optional(),
 })
 export type FunctionSummary = z.infer<typeof functionSummarySchema>
@@ -207,6 +208,7 @@ export type WorkersListRequest = z.infer<typeof workersListRequestSchema>
 export const workerSummarySchema = z.object({
   id: z.string(),
   name: z.string().nullable().optional(),
+  namespace: z.string().optional(),
   description: z.string().nullable().optional(),
   version: z.string().nullable().optional(),
   runtime: z.string().nullable().optional(),

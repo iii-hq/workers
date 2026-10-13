@@ -1,19 +1,20 @@
 /* The vertical rail on the sidebar's outer edge — VS Code's activity bar:
    one icon per view, the active one marked with an edge rule, counters as
-   small badges. It is the page's own control; the console sidebar it sits
-   in owns collapse/resize. */
+   small badges. Changes shows only while a comparison is open (Show Diff
+   with Working Tree). It is the page's own control; the console sidebar it
+   sits in owns collapse/resize. */
 
 import { Tooltip } from '@iii-dev/console-ui'
-import { FolderTree, GitBranch, History, Search } from 'lucide-react'
+import { FileDiff, FolderTree, GitBranch, History, Search } from 'lucide-react'
 import type { ComponentType } from 'react'
 
-export type SideView = 'files' | 'search' | 'scm' | 'timeline'
+export type SideView = 'files' | 'search' | 'scm' | 'timeline' | 'changes'
 
 interface ViewSpec {
   id: SideView
   label: string
   Icon: ComponentType<{ 'aria-hidden'?: boolean; className?: string }>
-  /** The page key that opens the view, shown in the tooltip. */
+  /** The page key that opens the view, shown in the tooltip; '' for none. */
   key: string
 }
 
@@ -22,6 +23,7 @@ export const SIDE_VIEWS: readonly ViewSpec[] = [
   { id: 'search', label: 'Search', Icon: Search, key: 'F' },
   { id: 'scm', label: 'Source control', Icon: GitBranch, key: 'S' },
   { id: 'timeline', label: 'Timeline', Icon: History, key: 'H' },
+  { id: 'changes', label: 'Changes', Icon: FileDiff, key: '' },
 ]
 
 export function ActivityBar({
@@ -29,19 +31,22 @@ export function ActivityBar({
   onSelect,
   badges,
   side,
+  changes = false,
 }: {
   active: SideView
   onSelect: (view: SideView) => void
   badges: Partial<Record<SideView, number>>
   side: 'left' | 'right'
+  /** A comparison is open: its view shows. */
+  changes?: boolean
 }) {
   return (
     <nav className={`shui-activity-bar side-${side}`} aria-label="Sidebar views">
-      {SIDE_VIEWS.map(({ id, label, Icon, key }) => {
+      {SIDE_VIEWS.filter(({ id }) => id !== 'changes' || changes).map(({ id, label, Icon, key }) => {
         const count = badges[id]
         const isActive = active === id
         return (
-          <Tooltip key={id} label={`${label} (${key})`}>
+          <Tooltip key={id} label={key === '' ? label : `${label} (${key})`}>
             <button
               type="button"
               className={`shui-activity-item${isActive ? ' active' : ''}`}

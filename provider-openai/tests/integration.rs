@@ -396,16 +396,16 @@ async fn refresh_models_reconciles_filtered_live_catalog() {
         "embedding model should be filtered: {ids:?}"
     );
 
-    // known family carries the local metadata; unknown family stays default
     let sonnet = models.iter().find(|m| m["id"] == "gpt-5.2").unwrap();
     assert_eq!(sonnet["context_window"], 400_000);
     assert_eq!(sonnet["supports_structured_output"], true);
     assert!(sonnet["pricing"]["input"].as_f64().is_some_and(|p| p > 0.0));
-    let unknown = models
+    let dated = models
         .iter()
         .find(|m| m["id"] == "gpt-5.4-2026-03-05")
         .unwrap();
-    assert_eq!(unknown["context_window"], 128_000);
+    assert_eq!(dated["context_window"], 1_050_000);
+    assert_eq!(dated["max_output_tokens"], 128_000);
 
     router_iii.shutdown();
     provider_iii.shutdown();

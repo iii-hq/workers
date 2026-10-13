@@ -209,11 +209,15 @@ pub struct HookCall {
 pub struct HookResult {
     #[serde(default)]
     pub is_error: bool,
+    /// The call's return value (`post_trigger` only). `touches` reads the
+    /// files `coder::scaffold-worker` wrote from it.
+    #[serde(default)]
+    pub details: Value,
 }
 
 /// The part of the harness hook envelope this module reads. One shape
 /// serves every hook point: `call` and `result` are the trigger hooks'
-/// (`result` as `{ is_error }`), while the `post_turn` envelope puts the
+/// (`result` as `{ is_error, details }`), while the `post_turn` envelope puts the
 /// turn's own result under `result`, whatever JSON that is, so that field
 /// is read leniently rather than typed.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -242,6 +246,7 @@ where
             .get("is_error")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        details: value.get("details").cloned().unwrap_or_default(),
     }))
 }
 
@@ -301,7 +306,12 @@ pub struct Touch {
 /// `coder::delete-file` a `paths: []` array, and `shell::fs::sed` a `files`
 /// array of path strings (or a single `path`). A one-file assumption would
 /// silently drop every file but the first.
-pub fn touches(call: &HookCall) -> Vec<Touch> {
+///
+/// `details` is the call's return value, which only the post-trigger hook
+/// has (the pre-trigger hook passes `None`). `coder::scaffold-worker` names
+/// its files only there, as `files: [{path}]`; before the call its target
+/// folder is missing or empty, so there is no pre-image to take.
+pub fn touches(call: &HookCall, details: Option<&Value>) -> Vec<Touch> {
     let args = &call.arguments;
     let str_at = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
     let one = |kind: &'static str, path: Option<String>, from: Option<String>| {
@@ -309,8 +319,8 @@ pub fn touches(call: &HookCall) -> Vec<Touch> {
             .into_iter()
             .collect::<Vec<_>>()
     };
-    let file_paths = |kind: &'static str| {
-        args.get("files")
+    let file_paths = |files: Option<&Value>, kind: &'static str| {
+        files
             .and_then(Value::as_array)
             .map(|files| {
                 files
@@ -356,8 +366,9 @@ pub fn touches(call: &HookCall) -> Vec<Touch> {
             }
             out
         }
-        "coder::create-file" => file_paths("created"),
-        "coder::update-file" => file_paths("modified"),
+        "coder::create-file" => file_paths(args.get("files"), "created"),
+        "coder::update-file" => file_paths(args.get("files"), "modified"),
+        "coder::scaffold-worker" => file_paths(details.and_then(|d| d.get("files")), "created"),
         "coder::delete-file" => string_paths(args.get("paths"), "deleted"),
         "coder::move" => args
             .get("files")
@@ -916,6 +927,9 @@ pub struct TurnLog {
     /// one ended; what a contested workspace watch consults before it
     /// records a write under the session.
     activity: std::sync::Mutex<HashMap<String, Activity>>,
+    /// The `shell::turns::changed` feed, told of every stored record; unset
+    /// in unit tests.
+    changes: std::sync::OnceLock<Arc<crate::turn_events::TurnsChanged>>,
 }
 
 /// Where a child's changes belong: the top-level session and turn above it.
@@ -951,7 +965,13 @@ impl TurnLog {
             parents: std::sync::Mutex::new(HashMap::new()),
             claims: std::sync::Mutex::new(HashMap::new()),
             activity: std::sync::Mutex::new(HashMap::new()),
+            changes: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Wake `shell::turns::changed` bindings whenever a record is stored.
+    pub fn notify_changes(&self, feed: Arc<crate::turn_events::TurnsChanged>) {
+        let _ = self.changes.set(feed);
     }
 
     fn parents(&self) -> std::sync::MutexGuard<'_, HashMap<String, (String, String)>> {
@@ -1293,6 +1313,9 @@ impl TurnLog {
         apply(&mut record);
         enforce_budgets(&mut record);
         self.store.store(&record).await?;
+        if let Some(feed) = self.changes.get() {
+            feed.notify(session_id);
+        }
         // A turn the cap dropped takes its trees with it.
         let dropped: Vec<(String, TurnSnapshot)> = pinned
             .into_iter()
@@ -1578,7 +1601,7 @@ impl TurnLog {
         // contested workspace watch attributes its writes by.
         let target = self.resolve_root(&session_id, &turn_id);
         self.begin_call(&target.session_id);
-        let touches = touches(&call);
+        let touches = touches(&call, None);
         if touches.is_empty() {
             return;
         }
@@ -1610,7 +1633,7 @@ impl TurnLog {
         }
         let target = self.resolve_root(&session_id, &turn_id);
         self.end_call(&target.session_id);
-        let touches = touches(&call);
+        let touches = touches(&call, input.result.as_ref().map(|r| &r.details));
         if touches.is_empty() {
             return;
         }
@@ -1760,6 +1783,9 @@ pub fn register(
         data_dir.clone(),
         config.max_blob_bytes,
     )));
+    // Surfaces that list a session's turns hear each stored record instead
+    // of asking again on a timer.
+    log.notify_changes(crate::turn_events::register_turns_changed_trigger(iii));
     let observers = crate::turn_observe::TurnObservers::new(log.clone(), data_dir);
 
     {
@@ -1775,7 +1801,7 @@ pub fn register(
                         (input.session_id.as_deref(), input.turn_id.as_deref())
                     {
                         let root = session_root(input.metadata.as_ref());
-                        observers.ensure(session_id, turn_id, root.as_deref());
+                        observers.ensure(session_id, turn_id, root.as_deref()).await;
                     }
                     log.on_pre_trigger(input).await;
                     Ok::<HookOutput, Error>(HookOutput::default())
@@ -2356,6 +2382,22 @@ mod tests {
         Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)))
     }
 
+    /// The Timeline no longer re-lists turns on a timer: a stored record
+    /// must wake `shell::turns::changed` bindings on its session.
+    #[tokio::test]
+    async fn a_stored_record_wakes_the_session_turns_feed() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        let feed = crate::turn_events::TurnsChanged::new(None);
+        feed.bind_for_test("timeline", Some("s1"));
+        log.notify_changes(feed.clone());
+        log.on_turn_started("s1", "t1").await.unwrap();
+        log.on_turn_started("s2", "t1").await.unwrap();
+        log.on_turn_completed("s1", "t1").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert_eq!(feed.fired_sessions(), ["s1"]);
+    }
+
     fn call(function_id: &str, arguments: Value) -> HookCall {
         HookCall {
             function_id: function_id.to_string(),
@@ -2369,7 +2411,10 @@ mod tests {
             call: Some(c),
             session_id: Some(session.to_string()),
             turn_id: Some(turn.to_string()),
-            result: Some(HookResult { is_error: failed }),
+            result: Some(HookResult {
+                is_error: failed,
+                details: Value::Null,
+            }),
         }
     }
 
@@ -2434,7 +2479,7 @@ mod tests {
     #[test]
     fn touches_covers_single_and_batch_verbs() {
         let kinds = |c: HookCall| {
-            touches(&c)
+            touches(&c, None)
                 .into_iter()
                 .map(|t| (t.path, t.kind, t.from))
                 .collect::<Vec<_>>()
@@ -2478,14 +2523,14 @@ mod tests {
                 ("b".into(), "modified", None)
             ]
         );
-        assert!(touches(&call("shell::fs::read", json!({ "path": "a" }))).is_empty());
-        assert!(touches(&call(
-            "shell::fs::chmod",
-            json!({ "path": "a", "mode": "0644" })
-        ))
+        assert!(touches(&call("shell::fs::read", json!({ "path": "a" })), None).is_empty());
+        assert!(touches(
+            &call("shell::fs::chmod", json!({ "path": "a", "mode": "0644" })),
+            None
+        )
         .is_empty());
-        assert!(touches(&call("shell::exec", json!({ "command": "sed" }))).is_empty());
-        assert!(touches(&call("shell::fs::write", json!({}))).is_empty());
+        assert!(touches(&call("shell::exec", json!({ "command": "sed" })), None).is_empty());
+        assert!(touches(&call("shell::fs::write", json!({})), None).is_empty());
     }
 
     #[test]
@@ -2839,6 +2884,45 @@ mod tests {
         assert_eq!(f.kind, "created");
         assert!(f.before.as_ref().unwrap().missing);
         assert!(!f.before.as_ref().unwrap().stored);
+        assert!(f.after_revision.is_some());
+    }
+
+    #[tokio::test]
+    async fn scaffold_worker_records_the_files_its_result_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        let file = root.join("workers/orders/src/index.ts");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let path = file.to_string_lossy().into_owned();
+        let log = log_in(dir.path());
+        let scaffold = || {
+            call(
+                "coder::scaffold-worker",
+                json!({ "template": "worker-node-ade", "name": "orders" }),
+            )
+        };
+        // The request names no file: only the result does.
+        assert!(touches(&scaffold(), None).is_empty());
+
+        log.on_pre_trigger(hook("s", "t", scaffold(), &root_s, false))
+            .await;
+        std::fs::write(&file, "export {}\n").unwrap();
+        let mut post = hook("s", "t", scaffold(), &root_s, false);
+        post.result = Some(HookResult {
+            is_error: false,
+            details: json!({
+                "directory": root.join("workers/orders").to_string_lossy(),
+                "files": [{ "path": path, "bytes": 10, "revision": "sha256:00" }]
+            }),
+        });
+        log.on_post_trigger(post).await;
+
+        let record = log.load("s").await.unwrap();
+        let f = &record.turns[0].files[0];
+        assert_eq!(f.path, path);
+        assert_eq!(f.kind, "created");
+        assert_eq!(f.cause, "coder::scaffold-worker");
         assert!(f.after_revision.is_some());
     }
 

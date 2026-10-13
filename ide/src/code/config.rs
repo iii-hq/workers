@@ -142,6 +142,11 @@ pub struct CoderConfig {
     /// `truncated: true` — it degrades, it never errors.
     #[serde(default = "default_search_response_budget_bytes")]
     pub search_response_budget_bytes: u64,
+
+    /// Worker templates behind `coder::list-templates` and
+    /// `coder::scaffold-worker`: a local checkout or a cached clone.
+    #[serde(default)]
+    pub templates: TemplatesConfig,
 }
 
 fn default_default_exclude_globs() -> Vec<String> {
@@ -188,6 +193,78 @@ fn default_max_output_bytes() -> u64 {
 }
 fn default_search_response_budget_bytes() -> u64 {
     262_144
+}
+
+/// Where `coder::list-templates` and `coder::scaffold-worker` read worker
+/// templates: a local checkout (`dir`), else a shallow clone of `url@ref`
+/// cached under `cache_dir`. Read per call, so edits hot-apply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TemplatesConfig {
+    /// Local templates checkout, read on every call: the repo root or its
+    /// `iii/` dir. Wins over `url`. `III_TEMPLATE_DIR` overrides it.
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// Templates git repository, cloned when `dir` is unset.
+    /// `III_TEMPLATE_URL` overrides it.
+    #[serde(default = "default_templates_url")]
+    pub url: String,
+    /// Branch or tag of `url` to clone.
+    #[serde(rename = "ref", default = "default_templates_ref")]
+    pub git_ref: String,
+    /// Clone cache directory. Relative paths resolve against
+    /// `III_COMPOSE_DIR`.
+    #[serde(default = "default_templates_cache_dir")]
+    pub cache_dir: String,
+    /// Seconds before the cached clone is fetched again.
+    #[serde(default = "default_templates_refresh_secs")]
+    pub refresh_secs: u64,
+}
+
+impl Default for TemplatesConfig {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            url: default_templates_url(),
+            git_ref: default_templates_ref(),
+            cache_dir: default_templates_cache_dir(),
+            refresh_secs: default_templates_refresh_secs(),
+        }
+    }
+}
+
+impl TemplatesConfig {
+    /// This config with `III_TEMPLATE_DIR` / `III_TEMPLATE_URL` applied when
+    /// set and non-empty (the variables the templates repo's smoke test and
+    /// the iii CLI read). Callers apply it before `resolve_source`.
+    pub fn with_env(self) -> Self {
+        self.with_overrides(
+            std::env::var("III_TEMPLATE_DIR").ok(),
+            std::env::var("III_TEMPLATE_URL").ok(),
+        )
+    }
+
+    fn with_overrides(mut self, dir: Option<String>, url: Option<String>) -> Self {
+        if let Some(dir) = dir.filter(|d| !d.is_empty()) {
+            self.dir = Some(dir);
+        }
+        if let Some(url) = url.filter(|u| !u.is_empty()) {
+            self.url = url;
+        }
+        self
+    }
+}
+
+fn default_templates_url() -> String {
+    "https://github.com/iii-hq/templates.git".into()
+}
+fn default_templates_ref() -> String {
+    "main".into()
+}
+fn default_templates_cache_dir() -> String {
+    "data/shell/templates".into()
+}
+fn default_templates_refresh_secs() -> u64 {
+    600
 }
 
 /// A signature of everything the boot-time security jail (`PathResolver`) and
@@ -243,6 +320,7 @@ impl Default for CoderConfig {
             batch_read_budget_bytes: default_batch_read_budget_bytes(),
             max_output_bytes: default_max_output_bytes(),
             search_response_budget_bytes: default_search_response_budget_bytes(),
+            templates: TemplatesConfig::default(),
         }
     }
 }
@@ -563,5 +641,43 @@ search_response_budget_bytes: 11
             ..CoderConfig::default()
         };
         assert_ne!(a.jail_signature(), b.jail_signature());
+    }
+
+    #[test]
+    fn templates_block_defaults_and_yaml_overrides() {
+        let cfg: CoderConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(
+            cfg.templates,
+            TemplatesConfig {
+                dir: None,
+                url: "https://github.com/iii-hq/templates.git".into(),
+                git_ref: "main".into(),
+                cache_dir: "data/shell/templates".into(),
+                refresh_secs: 600,
+            }
+        );
+        let yaml = "templates:\n  dir: /src/templates\n  ref: dev\n  refresh_secs: 5\n";
+        let cfg: CoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.templates.dir.as_deref(), Some("/src/templates"));
+        assert_eq!(cfg.templates.git_ref, "dev");
+        assert_eq!(cfg.templates.refresh_secs, 5);
+        assert_eq!(cfg.templates.url, TemplatesConfig::default().url);
+    }
+
+    #[test]
+    fn templates_env_values_override_only_when_non_empty() {
+        let base = TemplatesConfig::default();
+        let over = base.clone().with_overrides(
+            Some("/local/templates".into()),
+            Some("file:///mirror/templates.git".into()),
+        );
+        assert_eq!(over.dir.as_deref(), Some("/local/templates"));
+        assert_eq!(over.url, "file:///mirror/templates.git");
+        assert_eq!(
+            base.clone()
+                .with_overrides(Some(String::new()), Some(String::new())),
+            base
+        );
+        assert_eq!(base.clone().with_overrides(None, None), base);
     }
 }

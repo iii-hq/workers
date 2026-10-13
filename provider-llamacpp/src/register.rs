@@ -1,6 +1,6 @@
 //! Boot wiring: function surface, the router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
-use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
+use crate::config::DEFAULT_MAX_TOKENS;
 use crate::discovery::{make_refresh_models, refresh_models};
 use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
@@ -22,13 +22,29 @@ use std::time::Duration;
 /// Env var the router (and, as a fallback, this provider) reads for the key.
 pub const CREDENTIAL_ENV_VAR: &str = "LLAMACPP_API_KEY";
 
+/// Shown by consoles under a context-overflow failure on a llama.cpp model.
+pub const CONTEXT_OVERFLOW_HINT: &str = "llama.cpp serves each model with the context size it was started with (--ctx-size) and rejects anything larger, so compacting cannot fix this. Raise it on the server or in the per-model configuration options in the desktop app (see the llama.cpp server docs: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md), then restart the llama.cpp provider so it picks up the new size: run `iii trigger compose::restart --json '{\"worker\":\"provider-llamacpp\"}'`, or restart it from the Workers page.";
+
 pub fn declaration() -> ProviderDeclaration {
+    declaration_with(None)
+}
+
+/// The boot declaration plus the default-model list discovery ranked
+/// (loaded first, then largest; see `discovery::rank_default_models`).
+pub fn declaration_with_defaults(default_models: Vec<String>) -> ProviderDeclaration {
+    declaration_with(Some(default_models))
+}
+
+fn declaration_with(default_models: Option<Vec<String>>) -> ProviderDeclaration {
     ProviderDeclaration {
         id: PROVIDER_ID.into(),
         display_name: Some("llama.cpp".into()),
         credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
         defaults: Some(ProviderDefaults {
-            api_url: Some(DEFAULT_API_URL.into()),
+            // Unset on purpose: the router returns `defaults.api_url` as the
+            // resolved url, which would stop discovery from probing both
+            // local ports (config::DEFAULT_API_URL_CANDIDATES).
+            api_url: None,
             max_tokens: Some(DEFAULT_MAX_TOKENS),
             extra: BTreeMap::new(),
         }),
@@ -38,6 +54,17 @@ pub fn declaration() -> ProviderDeclaration {
         // refresh-on-config-change call, which must fire so the catalog
         // appears the moment an operator points api_url at a running server.
         supports_model_listing: Some(true),
+        // Local, user-supplied models: nothing to recommend at boot. After
+        // each discovery the provider re-declares with the served models
+        // ranked, loaded first then largest (redeclare_with_defaults).
+        default_models,
+        default_thinking_level: None,
+        // The server rejects any prompt over its --ctx-size, so compacting
+        // in a console cannot fix an overflow against a small window.
+        context_overflow_hint: Some(CONTEXT_OVERFLOW_HINT.into()),
+        // llama-server asks for a key only when started with --api-key, so
+        // the router reports llama.cpp configured without one.
+        credential_optional: Some(true),
         // No static slice: refresh_models discovers the catalog live from
         // the resolved server's `/v1/models` + `/props` right after
         // registration (see declare_and_refresh) — no credential required.
@@ -55,8 +82,47 @@ pub fn declaration() -> ProviderDeclaration {
 /// One registration attempt: declare (with the persisted token when present)
 /// and persist the token the router returns.
 pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
+    declare_payload(iii, current_declaration()).await
+}
+
+/// The last default list sent, so a refresh that finds the same listing
+/// does not re-register for nothing.
+static DECLARED_DEFAULTS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+fn remember_defaults(preferred: Vec<String>) {
+    if let Ok(mut last) = DECLARED_DEFAULTS.lock() {
+        *last = Some(preferred);
+    }
+}
+
+/// The boot declaration plus whatever discovery ranked so far: a
+/// router::ready rebind re-declares through here, so it never erases the
+/// default list from the router's record (which the unchanged-check in
+/// `redeclare_with_defaults` would then not restore).
+fn current_declaration() -> ProviderDeclaration {
+    declaration_with(DECLARED_DEFAULTS.lock().ok().and_then(|last| last.clone()))
+}
+
+/// Re-register with discovery's ranked default list when it changed.
+pub async fn redeclare_with_defaults(iii: &IIIClient, preferred: Vec<String>) -> Result<(), Error> {
+    if preferred.is_empty() {
+        return Ok(());
+    }
+    let unchanged = DECLARED_DEFAULTS
+        .lock()
+        .map(|last| last.as_ref() == Some(&preferred))
+        .unwrap_or(false);
+    if unchanged {
+        return Ok(());
+    }
+    declare_payload(iii, declaration_with_defaults(preferred.clone())).await?;
+    remember_defaults(preferred);
+    Ok(())
+}
+
+async fn declare_payload(iii: &IIIClient, declaration: ProviderDeclaration) -> Result<(), Error> {
     let token = state::load_token(iii).await;
-    let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
+    let mut payload = serde_json::to_value(declaration).expect("serializable declaration");
     if let Some(t) = &token {
         payload["token"] = json!(t);
     }
@@ -222,7 +288,44 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::declaration;
+    use super::{current_declaration, declaration, declaration_with_defaults, remember_defaults};
+
+    #[test]
+    fn declaration_leaves_api_url_unset_so_discovery_probes() {
+        // The router hands `defaults.api_url` back as the resolved url, and
+        // discovery only probes both local ports when it is unset.
+        assert_eq!(declaration().defaults.and_then(|d| d.api_url), None);
+    }
+
+    #[test]
+    fn the_key_is_optional() {
+        // llama-server needs a key only when started with --api-key; the
+        // router then reports the provider configured without one.
+        assert_eq!(declaration().credential_optional, Some(true));
+    }
+
+    #[test]
+    fn discovered_defaults_ride_the_redeclaration() {
+        assert_eq!(declaration().default_models, None);
+        let decl = declaration_with_defaults(vec!["a-27B".into(), "b-7B".into()]);
+        assert_eq!(
+            decl.default_models,
+            Some(vec!["a-27B".to_string(), "b-7B".to_string()])
+        );
+        assert_eq!(decl.id, declaration().id);
+    }
+
+    #[test]
+    fn rebind_redeclares_with_the_last_discovered_defaults() {
+        // router::ready re-runs declare_once after discovery already sent a
+        // ranked list; the plain boot declaration would wipe it from the
+        // router's record and the unchanged-check would then skip the fix.
+        remember_defaults(vec!["served-27B".into(), "served-7B".into()]);
+        assert_eq!(
+            current_declaration().default_models,
+            Some(vec!["served-27B".to_string(), "served-7B".to_string()])
+        );
+    }
 
     #[test]
     fn declaration_uses_credential_env_var_const() {

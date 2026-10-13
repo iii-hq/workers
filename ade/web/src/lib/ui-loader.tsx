@@ -7,7 +7,8 @@
  * (the subscription IS the seed) and follows with incremental `set`/`delete`
  * pushes. The loader diffs every event against loaded state — new/changed
  * hash ⇒ cache-busted import + `setup(host)` + atomic swap; missing path ⇒
- * dispose. Styles are `<link>` swaps; scripts are ES modules.
+ * dispose. Styles are `<link>` swaps; scripts are ES modules; modules are
+ * only recorded, and imported when a script calls `host.importModule`.
  */
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
@@ -35,6 +36,7 @@ import {
   registerExtComposerAction,
   registerExtComposerControl,
   registerExtConfigForm,
+  registerExtMentionRenderer,
   registerExtOverlay,
   registerExtPage,
   registerExtProviderConfigForm,
@@ -143,6 +145,7 @@ function makeHost(
   conversationAdapter: ConversationAdapter,
   path: string,
   entry: LoadedScript,
+  importModule: (path: string) => Promise<unknown>,
 ): Host {
   const scope = path.split('/')[0]
   const { cleanups } = entry
@@ -156,6 +159,9 @@ function makeHost(
     useTheme: api.useTheme,
     uiClasses: api.uiClasses,
     path,
+    importModule<T>(modulePath: string) {
+      return importModule(modulePath) as Promise<T>
+    },
     pages: {
       register(page) {
         const Body = page.render
@@ -313,6 +319,27 @@ function makeHost(
         )
       },
     },
+    mentions: {
+      registerRenderer(renderer) {
+        if (
+          !renderer ||
+          typeof renderer.provider !== 'string' ||
+          !renderer.Preview
+        ) {
+          throw new Error(
+            'mentions.registerRenderer: provider and Preview are required',
+          )
+        }
+        return track(
+          registerExtMentionRenderer({
+            provider: renderer.provider,
+            Preview: renderer.Preview,
+            scope,
+            path,
+          }),
+        )
+      },
+    },
     chat: {
       openDraft(draft) {
         conversationAdapter.openDraft(draft)
@@ -415,6 +442,8 @@ export function startUiLoader(
   options: UiLoaderOptions = {},
 ): () => void {
   const loaded = new Map<string, Loaded>()
+  /** `console:module` hashes by path; never imported at mount. */
+  const modules = new Map<string, string>()
   let active = true
   let receivedInitialSync = false
   setUiAssetsStatus('loading')
@@ -453,6 +482,7 @@ export function startUiLoader(
   }
 
   function dispose(path: string) {
+    modules.delete(path)
     const entry = loaded.get(path)
     if (!entry) return
     loaded.delete(path)
@@ -461,6 +491,17 @@ export function startUiLoader(
 
   function assetUrl(path: string, hash: string): string {
     return new URL(`ui/${path}?v=${hash}`, base).href
+  }
+
+  /** A module whose push has not arrived yet still resolves unversioned;
+   *  the server 404s an unregistered path, so the import rejects. */
+  function importAsset(path: string): Promise<unknown> {
+    const hash = modules.get(path)
+    return importModule(
+      hash === undefined
+        ? new URL(`ui/${path}`, base).href
+        : assetUrl(path, hash),
+    )
   }
 
   async function applyScript(path: string, hash: string) {
@@ -478,7 +519,7 @@ export function startUiLoader(
       if (typeof mod.default !== 'function') {
         throw new Error('no default setup() export')
       }
-      const host = makeHost(api, conversationAdapter, path, entry)
+      const host = makeHost(api, conversationAdapter, path, entry, importAsset)
       const teardown = await mod.default(host)
       if (typeof teardown === 'function') cleanups.push(teardown)
       loaded.set(path, entry)
@@ -514,6 +555,14 @@ export function startUiLoader(
   }
 
   async function applySet(path: string, kind: UiAssetKind, hash: string) {
+    // A path that changes kind (script ⇄ module) gets only a `set`: drop
+    // what it was first.
+    if (kind === 'module') {
+      dispose(path)
+      modules.set(path, hash)
+      return
+    }
+    modules.delete(path)
     const current = loaded.get(path)
     if (current?.hash === hash) return // dedupe (replay, reconnect sync)
     if (kind === 'style') {
@@ -525,13 +574,17 @@ export function startUiLoader(
 
   async function applySync(assets: UiAssetRef[]) {
     const advertised = new Set(assets.map((a) => a.path))
-    for (const path of [...loaded.keys()]) {
+    for (const path of [...loaded.keys(), ...modules.keys()]) {
       if (!advertised.has(path)) dispose(path)
     }
-    // Styles before scripts, so a script's first paint has its sheet.
-    const ordered = [...assets].sort((a, b) =>
-      a.kind === b.kind ? 0 : a.kind === 'style' ? -1 : 1,
-    )
+    // Modules first, so a script's setup can import them; styles before
+    // scripts, so a script's first paint has its sheet.
+    const order: Record<UiAssetKind, number> = {
+      module: 0,
+      style: 1,
+      script: 2,
+    }
+    const ordered = [...assets].sort((a, b) => order[a.kind] - order[b.kind])
     for (const asset of ordered) {
       await applySet(asset.path, asset.kind, asset.hash)
     }

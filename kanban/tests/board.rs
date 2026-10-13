@@ -892,7 +892,7 @@ fn matches_ticket_treats_an_empty_reference_as_no_filter() {
 #[test]
 fn the_catalog_names_every_function_once_with_typed_object_schemas() {
     let ids = functions::FUNCTION_IDS;
-    assert_eq!(ids.len(), 13);
+    assert_eq!(ids.len(), 15);
     let mut unique = ids.to_vec();
     unique.sort();
     unique.dedup();

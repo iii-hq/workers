@@ -11,3 +11,6 @@ description: One front door + provider protocol in front of every LLM provider.
 dependencies:
   state: "latest"
   configuration: "latest"
+  # Provider keys are referenced as secret://NAME (encrypted) or env://NAME
+  # (the project's .env) and resolved through it.
+  secrets: "latest"

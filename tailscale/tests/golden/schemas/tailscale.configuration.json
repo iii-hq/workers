@@ -72,7 +72,7 @@
         "type": "integer"
       },
       "console_url": {
-        "description": "Local Console URL the Console share routes proxy to.",
+        "description": "Local Console URL the Console share routes proxy to; empty asks this project's ADE (`console::status`) at share time.",
         "type": "string"
       },
       "default_https_port": {

@@ -15,6 +15,7 @@ mod exec_dispatch;
 mod filesystem_access;
 mod fs;
 mod functions;
+mod git_events;
 mod job_events;
 mod jobs;
 mod path;
@@ -23,6 +24,7 @@ mod scode;
 mod target;
 mod telemetry;
 mod triggers;
+mod turn_events;
 mod turn_observe;
 mod turn_snapshot;
 mod turns;
@@ -429,6 +431,12 @@ async fn main() -> Result<()> {
     // shell::changed trigger type — subscribers name the directory in their
     // binding config.
     events::register_changed_trigger(&iii, watch_resolver.clone());
+
+    // The repository state feed: HEAD, index, refs and worktrees of the
+    // repository a bound directory sits in — what shell::changed leaves out
+    // (.git), so the branch chip and the Git window never re-read on a timer
+    // or on focus.
+    git_events::register_git_changed_trigger(&iii, watch_resolver.clone());
 
     // The background-job completion feed: subscribers name a job_id in their
     // binding config and are woken once, instead of polling shell::status.

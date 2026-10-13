@@ -24,8 +24,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::{
-    ids, ErrorSourceV1, GroupCountsV1, GroupState, GroupStatusV1, IgnoreBaselineV1, IgnoreRuleV1,
-    SentinelError,
+    ids, ErrorSourceV1, GroupCountsV1, GroupState, GroupStatusV1, GroupTriageV1, IgnoreBaselineV1,
+    IgnoreRuleV1, SentinelError,
 };
 
 /// One statement and its bound parameters.
@@ -42,6 +42,43 @@ impl Statement {
             params,
         }
     }
+}
+
+/// `?` placeholders numbered `$1`, `$2`, … for Postgres, which takes no
+/// other kind. The statements here are written once, in the `?` form SQLite
+/// reads; a `?` inside a quoted literal or identifier, or in a `--` comment,
+/// is left alone.
+pub fn numbered_placeholders(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len() + 16);
+    let mut number = 0;
+    let mut quote = None;
+    let mut comment = false;
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, comment, c) {
+            (None, false, '?') => {
+                number += 1;
+                out.push_str(&format!("${number}"));
+                continue;
+            }
+            (None, false, '\'' | '"') => quote = Some(c),
+            // A doubled quote is an escape: it closes and reopens.
+            (Some(open), _, _) if c == open => quote = None,
+            (None, false, '-') if chars.peek() == Some(&'-') => comment = true,
+            (_, true, '\n') => comment = false,
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether a write failed because a unique constraint refused it: another
+/// writer got there first. SQLite says so in words; through the `database`
+/// worker Postgres only says "db error" beside its SQLSTATE, 23505.
+fn is_conflict(error: &SentinelError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("unique") || message.contains("constraint") || message.contains("23505")
 }
 
 /// A row keyed by column name, as `database::query` returns it.
@@ -322,7 +359,7 @@ impl<D: Db> Store<D> {
                     Ok(group_id) => return Ok(RecordOutcome::Created { group_id }),
                     // Another writer created the same fingerprint first;
                     // fall through and count against theirs.
-                    Err(SentinelError::Dependency(_)) => continue,
+                    Err(error) if is_conflict(&error) => continue,
                     Err(error) => return Err(error),
                 }
             };
@@ -379,7 +416,7 @@ impl<D: Db> Store<D> {
             self.insert_occurrence(&occurrence_id, &group_id, write),
             Statement::new(
                 "INSERT INTO sentinel_buckets (group_id, hour_ms, count) VALUES (?, ?, 1) \
-                 ON CONFLICT (group_id, hour_ms) DO UPDATE SET count = count + 1",
+                 ON CONFLICT (group_id, hour_ms) DO UPDATE SET count = sentinel_buckets.count + 1",
                 vec![json!(group_id), json!(bucket)],
             ),
         ];
@@ -410,13 +447,15 @@ impl<D: Db> Store<D> {
         let moved = transition.moved(existing.state.status);
         let mut statements = vec![Statement::new(
             "UPDATE sentinel_groups SET occurrence_count = occurrence_count + 1, \
-             last_seen_ms = MAX(last_seen_ms, ?), last_version = COALESCE(?, last_version), \
+             last_seen_ms = CASE WHEN last_seen_ms > ? THEN last_seen_ms ELSE ? END, \
+             last_version = COALESCE(?, last_version), \
              status = ?, previous_status = CASE WHEN ? THEN status ELSE previous_status END, \
              regressed_at_ms = CASE WHEN ? THEN ? ELSE regressed_at_ms END, \
              ignore_rule = CASE WHEN ? THEN NULL ELSE ignore_rule END, \
              ignore_baseline = CASE WHEN ? THEN NULL ELSE ignore_baseline END, \
              updated_ms = ? WHERE id = ? AND updated_ms = ? RETURNING id",
             vec![
+                json!(write.at_ms),
                 json!(write.at_ms),
                 json!(write.worker_version),
                 json!(transition.status.as_str()),
@@ -433,7 +472,7 @@ impl<D: Db> Store<D> {
         statements.push(self.insert_occurrence(&occurrence_id, &existing.id, write));
         statements.push(Statement::new(
             "INSERT INTO sentinel_buckets (group_id, hour_ms, count) VALUES (?, ?, 1) \
-             ON CONFLICT (group_id, hour_ms) DO UPDATE SET count = count + 1",
+             ON CONFLICT (group_id, hour_ms) DO UPDATE SET count = sentinel_buckets.count + 1",
             vec![json!(existing.id), json!(bucket)],
         ));
         statements.extend(self.session_statement(&existing.id, write));
@@ -493,7 +532,7 @@ impl<D: Db> Store<D> {
                 json!(write.message),
                 json!(write.evidence),
                 json!(write.evidence.as_ref().map(String::len).unwrap_or(0)),
-                json!(write.namespace_ambiguous),
+                json!(i64::from(write.namespace_ambiguous)),
             ],
         )
     }
@@ -505,7 +544,8 @@ impl<D: Db> Store<D> {
         Some(Statement::new(
             "INSERT INTO sentinel_group_sessions (group_id, session_id, first_ms, last_ms) \
              VALUES (?, ?, ?, ?) ON CONFLICT (group_id, session_id) \
-             DO UPDATE SET last_ms = MAX(last_ms, excluded.last_ms)",
+             DO UPDATE SET last_ms = CASE WHEN excluded.last_ms > sentinel_group_sessions.last_ms \
+             THEN excluded.last_ms ELSE sentinel_group_sessions.last_ms END",
             vec![
                 json!(group_id),
                 json!(session_id),
@@ -556,7 +596,7 @@ impl<D: Db> Store<D> {
                     json!(pending.evidence),
                     json!(pending.evidence.as_ref().map(String::len).unwrap_or(0)),
                     json!(pending.join_deadline_ms),
-                    json!(pending.session_unknown),
+                    json!(i64::from(pending.session_unknown)),
                 ],
             )])
             .await?;
@@ -615,7 +655,7 @@ impl<D: Db> Store<D> {
         Ok(rows
             .first()
             .and_then(|row| row.get("total"))
-            .and_then(Value::as_i64)
+            .and_then(integer)
             .unwrap_or(0) as u64)
     }
 
@@ -670,12 +710,77 @@ impl<D: Db> Store<D> {
         self.db
             .execute(
                 "UPDATE sentinel_occurrences SET evidence = ?, evidence_bytes = ?, \
-                 settled = MAX(settled, ?) WHERE id = ?",
+                 settled = CASE WHEN ? = 1 THEN 1 ELSE settled END WHERE id = ?",
                 vec![
                     json!(evidence),
                     json!(evidence.len()),
-                    json!(settled),
+                    json!(i64::from(settled)),
                     json!(occurrence_id),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Groups first seen before `seen_before_ms` that nobody has triaged
+    /// yet, oldest first, skipping the first `offset`. Status does not
+    /// matter: an ignored group still shows when it comes back, and its kind
+    /// is the same either way.
+    pub async fn untriaged_groups(
+        &self,
+        seen_before_ms: i64,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<UntriagedGroup>, SentinelError> {
+        let rows = self
+            .db
+            .query(
+                "SELECT g.id, g.namespace, g.service_name, g.function_id, g.exception_type, \
+                 g.message_sample, g.source, g.occurrence_count, g.first_seen_ms, g.last_seen_ms, \
+                 (SELECT COUNT(*) FROM sentinel_group_sessions s WHERE s.group_id = g.id) \
+                 AS sessions_affected \
+                 FROM sentinel_groups g \
+                 WHERE g.triage IS NULL AND g.archived = 0 AND g.first_seen_ms <= ? \
+                 ORDER BY g.first_seen_ms, g.id LIMIT ? OFFSET ?",
+                vec![
+                    json!(seen_before_ms),
+                    json!(limit as i64),
+                    json!(offset as i64),
+                ],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| UntriagedGroup {
+                id: text(row, "id").unwrap_or_default(),
+                namespace: text(row, "namespace").unwrap_or_default(),
+                service_name: text(row, "service_name").unwrap_or_default(),
+                function_id: text(row, "function_id"),
+                exception_type: text(row, "exception_type"),
+                message_sample: text(row, "message_sample").unwrap_or_default(),
+                source: text(row, "source").unwrap_or_default(),
+                occurrence_count: number(row, "occurrence_count").unwrap_or(0).max(0) as u64,
+                sessions_affected: number(row, "sessions_affected").unwrap_or(0).max(0) as u64,
+                first_seen_ms: number(row, "first_seen_ms").unwrap_or(0),
+                last_seen_ms: number(row, "last_seen_ms").unwrap_or(0),
+            })
+            .collect())
+    }
+
+    /// Record a group's triage once. Not compare-and-set on `updated_ms`:
+    /// triage is a hint beside the state, so it neither waits for nor
+    /// disturbs a transition landing at the same moment.
+    pub async fn set_triage(
+        &self,
+        group_id: &str,
+        triage: &GroupTriageV1,
+    ) -> Result<(), SentinelError> {
+        self.db
+            .execute(
+                "UPDATE sentinel_groups SET triage = ? WHERE id = ? AND triage IS NULL",
+                vec![
+                    json!(serde_json::to_string(triage).unwrap_or_default()),
+                    json!(group_id),
                 ],
             )
             .await?;
@@ -694,8 +799,8 @@ impl<D: Db> Store<D> {
             .await?;
         let mut counts = GroupCountsV1::default();
         for row in rows {
-            let total = row.get("total").and_then(Value::as_i64).unwrap_or(0) as u64;
-            let last = row.get("last").and_then(Value::as_i64);
+            let total = row.get("total").and_then(integer).unwrap_or(0) as u64;
+            let last = row.get("last").and_then(integer);
             counts.last_seen_ms = counts.last_seen_ms.max(last);
             match row.get("status").and_then(Value::as_str) {
                 Some("regressed") => {
@@ -710,6 +815,22 @@ impl<D: Db> Store<D> {
         }
         Ok(counts)
     }
+}
+
+/// What triage reads about a group.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UntriagedGroup {
+    pub id: String,
+    pub namespace: String,
+    pub service_name: String,
+    pub function_id: Option<String>,
+    pub exception_type: Option<String>,
+    pub message_sample: String,
+    pub source: String,
+    pub occurrence_count: u64,
+    pub sessions_affected: u64,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
 }
 
 /// An ERROR log waiting for the span of its own trace.
@@ -802,8 +923,15 @@ fn text(row: &NamedRow, column: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn number(row: &NamedRow, column: &str) -> Option<i64> {
-    row.get(column).and_then(Value::as_i64)
+/// An integer cell. The `database` worker hands a Postgres `BIGINT` over as
+/// a decimal string, so a JavaScript reader cannot round it; SQLite's comes
+/// as a number.
+pub fn integer(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+}
+
+pub(crate) fn number(row: &NamedRow, column: &str) -> Option<i64> {
+    row.get(column).and_then(integer)
 }
 
 /// SQLite has no boolean: an integer column reads back as 0 or 1, and a
@@ -818,4 +946,20 @@ fn flag(row: &NamedRow, column: &str) -> bool {
 
 fn malformed(column: &str) -> SentinelError {
     SentinelError::dependency(format!("group row is missing `{column}`"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::numbered_placeholders;
+
+    #[test]
+    fn placeholders_are_numbered_outside_quotes_and_comments() {
+        assert_eq!(
+            numbered_placeholders(
+                "SELECT '?', \"a?\" FROM t -- why?\nWHERE a = ? AND b = 'it''s?' AND c IN (?, ?)"
+            ),
+            "SELECT '?', \"a?\" FROM t -- why?\nWHERE a = $1 AND b = 'it''s?' AND c IN ($2, $3)"
+        );
+        assert_eq!(numbered_placeholders("SELECT 1"), "SELECT 1");
+    }
 }

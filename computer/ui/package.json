@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
+    "test": "node --test \"src/**/*.test.ts\"",
     "watch": "node build.mjs --watch"
   },
   "dependencies": {

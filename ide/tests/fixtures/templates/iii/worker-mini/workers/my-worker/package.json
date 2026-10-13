@@ -1,0 +1,5 @@
+{
+  "name": "my-worker",
+  "private": true,
+  "scripts": { "dev": "sh scripts/dev.sh" }
+}

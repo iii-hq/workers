@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-queue"
-version = "0.21.17"
+version = "0.21.20"
 edition = "2021"
 description = "Durable queue worker for iii - durable:subscriber trigger type and queue service functions"
 license = "Apache-2.0"
@@ -48,6 +48,10 @@ lapin = { version = "3", optional = true }
 
 [dev-dependencies]
 serial_test = "3"
+# Paused-clock tests (`start_paused`) prove consumers wake on events, not on
+# a timer: under a paused clock any periodic re-check would have to advance
+# virtual time to make progress.
+tokio = { version = "1", features = ["test-util"] }
 # Self-dependency trick: turns on `test-adapters` for this crate's own test
 # targets (the `memory` adapter the config hot-swap tests swap to) without
 # enabling it for a normal build. Mirrors `engine/Cargo.toml:168-171`.

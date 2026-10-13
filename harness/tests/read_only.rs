@@ -292,9 +292,10 @@ async fn imported_session_start_requires_explicit_runtime_options() {
     }
 
     assert_eq!(ensures.load(Ordering::SeqCst), 3);
-    // 7 metadata reads for the read-only and runtime-option checks, plus the ones the
-    // session-tree deletion guard makes when a send addresses an existing session.
-    assert_eq!(reads.load(Ordering::SeqCst), 16);
+    // 7 metadata reads for the read-only and runtime-option checks, plus one
+    // session-tree deletion guard walk per distinct session: later sends reuse
+    // its memoized "live" answer (see `harness::liveness`).
+    assert_eq!(reads.load(Ordering::SeqCst), 11);
 
     iii.shutdown();
     sessions.shutdown();

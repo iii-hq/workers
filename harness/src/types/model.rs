@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
+    /// No reasoning at all; honoured only where the model advertises
+    /// `supports_thinking_off` (elsewhere the provider falls back to its own
+    /// lowest setting, or omits the parameter, and warns).
+    Off,
     Minimal,
     Low,
     Medium,
@@ -53,6 +57,10 @@ pub struct Model {
     pub supports_thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supports_xhigh: Option<bool>,
+    /// Whether `thinking_level: off` can switch the model's reasoning off
+    /// (`None`: the provider does not know).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_thinking_off: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_efforts: Option<Vec<ReasoningEffort>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,6 +75,18 @@ pub struct Model {
     pub thinking_budgets: Option<BTreeMap<ThinkingLevel, u64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pricing: Option<Pricing>,
+}
+
+/// A provider's declared starting point, from `router::provider::list`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDefaults {
+    /// The model to start on when a send names none; already checked
+    /// against the provider's live catalog by the router.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// The level to pair with it when a send names no reasoning field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<ThinkingLevel>,
 }
 
 /// Function invocation schema — one provider `tools` array entry. The

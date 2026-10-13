@@ -5,8 +5,13 @@ import { cn } from '@/lib/utils'
 
 interface WordmarkProps {
   className?: string
-  /** A recessed, low-contrast treatment for large decorative placements. */
-  appearance?: 'default' | 'inset' | 'loading'
+  /**
+   * `inset` is a recessed, low-contrast treatment for large decorative
+   * placements; `loading` pulses the columns; `assemble` builds the mark once
+   * — stems rise, then the dots land — for a moment worth marking, such as
+   * finishing setup.
+   */
+  appearance?: 'default' | 'inset' | 'loading' | 'assemble'
   /**
    * `auto` swaps ink/white with `[data-theme]` (default). `ink` and `inverse`
    * pin a variant for panels that don't follow the page theme.
@@ -17,11 +22,24 @@ interface WordmarkProps {
 const IMG_CLASS = 'h-[32px] mx-[6px] w-auto shrink-0'
 const WORDMARK_COLUMNS = [0, 403.4, 806.81] as const
 
+const ASSEMBLE_STEM_DELAY = [
+  '',
+  '[animation-delay:90ms]',
+  '[animation-delay:180ms]',
+]
+const ASSEMBLE_DOT_DELAY = [
+  '[animation-delay:300ms]',
+  '[animation-delay:390ms]',
+  '[animation-delay:480ms]',
+]
+
 function WordmarkGlyphs({
   animated = false,
+  assemble = false,
   trademark = true,
 }: {
   animated?: boolean
+  assemble?: boolean
   trademark?: boolean
 }) {
   return (
@@ -35,8 +53,26 @@ function WordmarkGlyphs({
             animated && index === 2 && '[animation-delay:240ms]',
           )}
         >
-          <rect x={x} y="403.45" width="268.94" height="672.24" />
-          <rect x={x} y=".05" width="268.94" height="268.94" />
+          <rect
+            x={x}
+            y="403.45"
+            width="268.94"
+            height="672.24"
+            className={cn(
+              assemble && 'wordmark-assemble-stem',
+              assemble && ASSEMBLE_STEM_DELAY[index],
+            )}
+          />
+          <rect
+            x={x}
+            y=".05"
+            width="268.94"
+            height="268.94"
+            className={cn(
+              assemble && 'wordmark-assemble-dot',
+              assemble && ASSEMBLE_DOT_DELAY[index],
+            )}
+          />
         </g>
       ))}
       {trademark ? (
@@ -64,6 +100,19 @@ export function Wordmark({
         className={cn('size-6 shrink-0 fill-ink', className)}
       >
         <WordmarkGlyphs animated trademark={false} />
+      </svg>
+    )
+  }
+
+  if (appearance === 'assemble') {
+    return (
+      <svg
+        viewBox="0 0 1075.74 1075.74"
+        role="img"
+        aria-label="iii"
+        className={cn('size-12 shrink-0 fill-ink', className)}
+      >
+        <WordmarkGlyphs assemble trademark={false} />
       </svg>
     )
   }
