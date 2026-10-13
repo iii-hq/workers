@@ -35,7 +35,7 @@ func newTunnelFixture(t *testing.T) (*DevelopmentTunnel, *fakeTunnelRPC) {
 	cfg.Cloud.AppSecret = "secret-sentinel"
 	cfg.Cloud.VerifyToken = "verify-sentinel"
 	fake := &fakeTunnelRPC{now: time.Now().UTC(), status: "ready", url: "https://first-valid.trycloudflare.com", cloudflared: true, listener: map[string]any{"host": "127.0.0.1", "port": 3129}, calls: map[string]int{}}
-	service := newDevelopmentTunnel(func() Config { return cfg }, fake.call)
+	service := newDevelopmentTunnel(context.Background(), func(context.Context) (Config, error) { return cfg, nil }, fake.call)
 	service.now = func() time.Time { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.now }
 	return service, fake
 }
@@ -184,7 +184,7 @@ func TestDevelopmentTunnelLostAcquireReplyAndRestartRecovery(t *testing.T) {
 	fake.loseAcquireReply = true
 	got, err := service.Start(context.Background())
 	tunnelResult(t, got, err, "ready")
-	recovered := newDevelopmentTunnel(service.config, fake.call)
+	recovered := newDevelopmentTunnel(context.Background(), service.config, fake.call)
 	recovered.now = service.now
 	if recovered.state.PublicURL != nil || recovered.state.Status != "starting" {
 		t.Fatal("restart trusted cached readiness")
@@ -205,7 +205,7 @@ func TestDevelopmentTunnelLostAcquireReplyAndRestartRecovery(t *testing.T) {
 	if err != nil || json.Unmarshal(raw, &persisted) != nil || !persisted.Enabled || persisted.LeaseID != "" {
 		t.Fatalf("shutdown lost requested intent: %s %v", raw, err)
 	}
-	resumed := newDevelopmentTunnel(service.config, fake.call)
+	resumed := newDevelopmentTunnel(context.Background(), service.config, fake.call)
 	resumed.now = service.now
 	resumed.Run(context.Background())
 	deadline := time.After(2 * time.Second)
@@ -236,7 +236,7 @@ func TestDevelopmentTunnelStopRecoversUnknownLeaseAndRetriesAfterRestart(t *test
 	if got.Enabled {
 		t.Fatal("failed release retained enabled intent")
 	}
-	restarted := newDevelopmentTunnel(service.config, fake.call)
+	restarted := newDevelopmentTunnel(context.Background(), service.config, fake.call)
 	restarted.now = service.now
 	fake.failRelease = false
 	got, err = restarted.Status(context.Background())
@@ -251,14 +251,14 @@ func TestDevelopmentTunnelPreflightAndURLValidation(t *testing.T) {
 		update func(*DevelopmentTunnel, *fakeTunnelRPC)
 	}{
 		{"cloud disabled", func(s *DevelopmentTunnel, _ *fakeTunnelRPC) {
-			c := s.config()
+			c, _ := s.config(context.Background())
 			c.Cloud.Enabled = false
-			s.config = func() Config { return c }
+			s.config = func(context.Context) (Config, error) { return c, nil }
 		}},
 		{"missing verify token", func(s *DevelopmentTunnel, _ *fakeTunnelRPC) {
-			c := s.config()
+			c, _ := s.config(context.Background())
 			c.Cloud.VerifyToken = ""
-			s.config = func() Config { return c }
+			s.config = func(context.Context) (Config, error) { return c, nil }
 		}},
 		{"listener disabled", func(_ *DevelopmentTunnel, f *fakeTunnelRPC) { f.listener = nil }},
 		{"public listener", func(_ *DevelopmentTunnel, f *fakeTunnelRPC) {
@@ -313,7 +313,7 @@ func TestDevelopmentTunnelPersistenceIsPrivateAndCannotReleaseForeignLease(t *te
 	if err = os.Symlink(foreign, service.path); err != nil {
 		t.Fatal(err)
 	}
-	unsafe := newDevelopmentTunnel(service.config, fake.call)
+	unsafe := newDevelopmentTunnel(context.Background(), service.config, fake.call)
 	got, err = unsafe.Start(context.Background())
 	tunnelResult(t, got, err, "unavailable")
 	if fake.calls["quick-tunnel::acquire"] != 0 {

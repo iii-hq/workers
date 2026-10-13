@@ -158,7 +158,7 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
         <SearchField aria-label="Search groups by name or identifier" value={search} onChange={setSearch} placeholder="Search groups" />
         <span className="wa-ui-note">{groups ? `${visibleGroups.length.toLocaleString('en-US')} ${visibleGroups.length === 1 ? 'group' : 'groups'}` : 'Your account’s groups'}</span>
         {!connected && !selected && disconnected}
-        {listError && <StatusPanel variant="alert" headline="Could not refresh groups" detail={listError} action={<Button variant="ghost" onClick={() => void refreshGroups()} disabled={!connected || listLoading}>Try again</Button>} />}
+        {listError && <StatusPanel role="alert" variant="alert" headline="Could not refresh groups" detail={listError} action={<Button variant="ghost" onClick={() => void refreshGroups()} disabled={!connected || listLoading}>Try again</Button>} />}
       </div>
       <div className="wa-ui-list" aria-busy={listLoading}>
         {listLoading && groups === null ? <Skeleton className="wa-ui-loading" /> : groups === null ? <EmptyState compact icon={Users} title={connected ? 'Groups unavailable' : 'Connect your account'} description={connected ? 'Refresh groups to try again.' : 'Groups are available while the account is connected.'} /> : visibleGroups.length === 0 ? <EmptyState compact icon={Users} title={query ? 'No groups found' : 'No groups available'} description={query ? 'Try another name or identifier.' : 'This account did not return any groups.'} /> : <List aria-label="Groups this account belongs to">{visibleGroups.map((item) => <ListItem key={item.id} className="wa-ui-chat-item" ref={(element) => { if (element) rowRefs.current.set(item.id, element); else rowRefs.current.delete(item.id) }} selected={selected === item.id}
@@ -168,10 +168,10 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
           onClick={() => select(item.id)} />)}</List>}
       </div>
     </PageSidebar>}
-    {(!narrow || selected) && <PageMain className="wa-ui-reader">
+    {(!narrow || selected) && <PageMain className="wa-ui-reader wa-ui-group-reader">
       {selected ? <>
         <header className="wa-ui-detail-header wa-ui-compact-header">
-          {narrow && <IconButton ref={backRef} label="Back to groups" onClick={() => select(null)}><ArrowLeft size={16} /></IconButton>}
+          {narrow && <IconButton ref={backRef} tooltip={false} label="Back to groups" onClick={() => select(null)}><ArrowLeft size={16} /></IconButton>}
           <span className="wa-ui-avatar wa-ui-avatar-header" data-group aria-hidden="true"><Users size={16} /></span>
           <div className="wa-ui-heading-copy">
             <h2 className="wa-ui-title">{group ? groupName(group) : 'Group'}</h2>
@@ -184,12 +184,13 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
         </header>
         <div className="wa-ui-detail-body" aria-busy={detailLoading}>
           {!connected && disconnected}
-          {detailError && <StatusPanel variant="alert" headline="Could not refresh group details" detail={detailError} action={<Button variant="ghost" onClick={() => void refreshDetail()} disabled={!connected || detailLoading}>Try again</Button>} />}
+          {detailError && <StatusPanel role="alert" variant="alert" headline="Could not refresh group details" detail={detailError} action={<Button variant="ghost" onClick={() => void refreshDetail()} disabled={!connected || detailLoading}>Try again</Button>} />}
           {detailLoading && !detail ? <Skeleton className="wa-ui-loading" /> : detail ? <div key={selected} className="wa-ui-group-sections">
             <details className="wa-ui-group-section">
               <summary><Info size={16} aria-hidden="true" /><span>About this group</span><ChevronDown size={16} aria-hidden="true" /></summary>
               <div className="wa-ui-group-section-content">
                 {detail.announcement && <Badge>Only admins can send</Badge>}
+                <p className="wa-ui-group-name">{groupName(detail)}</p>
                 <p className="wa-ui-group-description">{detail.description?.trim() || 'This group has no description.'}</p>
                 <p className="wa-ui-note wa-ui-mono wa-ui-identity">{selected}</p>
               </div>
@@ -202,7 +203,7 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
                   const name = participant.username?.trim()
                   const identity = participantIdentity(participant)
                   const administrator = participant.participant_type === 'admin' || participant.participant_type === 'superadmin'
-                  return <ListItem as="div" role="listitem" key={participant.jid} className="wa-ui-member-item" leading={<span className="wa-ui-avatar" aria-hidden="true">{name ? Array.from(name).slice(0, 1).join('').toLocaleUpperCase('en-US') : <UserRound size={16} />}</span>} label={<span className="wa-ui-chat-title" title={participant.jid}>{name || identity}</span>} description={name && name !== identity ? <span className="wa-ui-participant-meta wa-ui-mono" title={identity}>{identity}</span> : undefined} trailing={administrator ? <Badge>{participantRole(participant)}</Badge> : undefined} />
+                  return <ListItem as="div" role="listitem" key={participant.jid} className="wa-ui-member-item" leading={<span className="wa-ui-avatar" aria-hidden="true">{name ? Array.from(name).slice(0, 1).join('').toLocaleUpperCase('en-US') : <UserRound size={16} />}</span>} label={<span className="wa-ui-chat-title" title={name || identity}>{name || identity}</span>} description={name && name !== identity ? <span className="wa-ui-participant-meta wa-ui-mono" title={identity}>{identity}</span> : undefined} trailing={administrator ? <Badge>{participantRole(participant)}</Badge> : undefined} />
                 })}</List> : <EmptyState compact title={peopleQuery ? 'No members found' : 'Member list unavailable'} description={peopleQuery ? 'Try another name, phone number or identifier.' : 'WhatsApp did not return members for this group.'} />}
               </div>
             </details>

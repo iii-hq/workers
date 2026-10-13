@@ -6,13 +6,16 @@ import (
 )
 
 var cloudEnvironment = map[string]string{
-	"enabled":             "WHATSAPP_CLOUD_ENABLED",
-	"api_version":         "WHATSAPP_CLOUD_API_VERSION",
-	"business_account_id": "WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID",
-	"phone_number_id":     "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
-	"access_token":        "WHATSAPP_CLOUD_ACCESS_TOKEN",
-	"app_secret":          "WHATSAPP_META_APP_SECRET",
-	"verify_token":        "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+	"enabled":                "WHATSAPP_CLOUD_ENABLED",
+	"api_version":            "WHATSAPP_CLOUD_API_VERSION",
+	"business_account_id":    "WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID",
+	"phone_number_id":        "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+	"access_token":           "WHATSAPP_CLOUD_ACCESS_TOKEN",
+	"app_secret":             "WHATSAPP_META_APP_SECRET",
+	"verify_token":           "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+	"flow_private_key":       "WHATSAPP_FLOW_PRIVATE_KEY",
+	"flow_handler_function":  "WHATSAPP_FLOW_HANDLER_FUNCTION",
+	"flow_handler_namespace": "WHATSAPP_FLOW_HANDLER_NAMESPACE",
 }
 
 // Process overrides are runtime-only: keep the original Config for seeding the
@@ -38,6 +41,9 @@ func runtimeConfig(c Config) (Config, error) {
 		{"access_token", &c.Cloud.AccessToken},
 		{"app_secret", &c.Cloud.AppSecret},
 		{"verify_token", &c.Cloud.VerifyToken},
+		{"flow_private_key", &c.Cloud.FlowPrivateKey},
+		{"flow_handler_function", &c.Cloud.FlowHandlerFunction},
+		{"flow_handler_namespace", &c.Cloud.FlowHandlerNamespace},
 	} {
 		if value, set := os.LookupEnv(cloudEnvironment[field.name]); set {
 			*field.target = value

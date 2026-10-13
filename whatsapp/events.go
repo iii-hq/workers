@@ -69,14 +69,21 @@ func (m *Manager) emit(s *Session, kind string, data any) error {
 	return nil
 }
 func (m *Manager) Poll(id string, after uint64, limit int) (EventPage, error) {
-	s, err := m.session(id)
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.PollContext(ctx, id, after, limit)
+}
+func (m *Manager) PollContext(ctx context.Context, id string, after uint64, limit int) (EventPage, error) {
+	s, err := m.sessionContext(ctx, id)
 	if err != nil {
 		return EventPage{}, err
 	}
 	if limit < 1 || limit > 1000 {
 		return EventPage{}, errors.New("limit must be 1..1000")
 	}
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		return EventPage{}, err
+	}
 	defer s.mu.Unlock()
 	p := EventPage{Events: []Event{}, NextSequence: after}
 	p.Truncated = s.nextSequence > 0 && after < s.nextSequence-1
@@ -502,7 +509,10 @@ func (r *EventRouter) UnregisterTrigger(_ context.Context, b iii.TriggerConfig) 
 }
 func registerEvents(ctx context.Context, client *iii.Client, m *Manager) error {
 	r := &EventRouter{bindings: map[string]eventBinding{}}
-	if err := client.RegisterTriggerType("whatsapp::events", "Native WhatsApp session, message, receipt and group events", r); err != nil {
+	if err := client.RegisterTriggerType("whatsapp::events", "Native WhatsApp session, message, receipt and group events", r, iii.RegisterTriggerTypeOptions{
+		TriggerRequestFormat: nativeEventFilterSchema,
+		CallRequestFormat:    nativeEventPayloadSchema,
+	}); err != nil {
 		return err
 	}
 	go func() {

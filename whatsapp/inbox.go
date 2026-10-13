@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,8 +14,6 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
-
-	_ "modernc.org/sqlite"
 )
 
 type MessageView struct {
@@ -89,63 +86,47 @@ CREATE INDEX IF NOT EXISTS inbox_expiration ON inbox_messages(expires_at_ms) WHE
 CREATE TABLE IF NOT EXISTS inbox_external_receipts(message_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,status TEXT NOT NULL,rank INTEGER NOT NULL,received_at_ms BIGINT NOT NULL,sent_at_ms BIGINT);
 CREATE TABLE IF NOT EXISTS inbox_cloud_event_markers(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_key TEXT UNIQUE NOT NULL);`
 
-func NewInbox(dir string, limit int) (*Inbox, error) {
+func newInbox(ctx context.Context, storage storageBackend, dir string, limit int) (*Inbox, error) {
 	if limit < 1 || limit > 100000 {
 		return nil, errors.New("max_inbox_messages must be 1..100000")
 	}
-	if err := privateInboxDirectory(dir); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dir, "inbox.db")
-	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
-		p := path + suffix
-		info, err := os.Lstat(p)
-		if err == nil {
-			if !info.Mode().IsRegular() {
-				return nil, errors.New("inbox files must be regular files")
-			}
-			if err = os.Chmod(p, 0600); err != nil {
-				return nil, err
-			}
-		} else if !os.IsNotExist(err) {
-			return nil, err
-		}
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err == nil {
-		_ = f.Close()
-	} else if !os.IsExist(err) {
-		return nil, err
-	}
-	absolutePath, err := filepath.Abs(path)
+	db, err := storage.Open(ctx, dir, "inbox")
 	if err != nil {
 		return nil, err
 	}
-	uri := url.URL{Scheme: "file", Path: absolutePath}
-	uri.RawQuery = url.Values{"_pragma": {"busy_timeout(5000)", "secure_delete(ON)", "journal_mode(DELETE)"}}.Encode()
-	db, err := sql.Open("sqlite", uri.String())
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err = db.Exec(inboxSchema); err != nil {
+	return initializeInboxContext(ctx, db, limit)
+}
+
+const inboxBackgroundTimeout = 30 * time.Second
+
+// Compatibility callers have a single budget for the entire archive operation.
+// Request handlers use the Context methods with their invocation deadline.
+func initializeInbox(db *sql.DB, limit int) (*Inbox, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return initializeInboxContext(ctx, db, limit)
+}
+
+func initializeInboxContext(ctx context.Context, db *sql.DB, limit int) (*Inbox, error) {
+	var err error
+	if _, err = db.ExecContext(ctx, inboxSchema); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	var hasSentTime bool
-	if err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('inbox_external_receipts') WHERE name='sent_at_ms')").Scan(&hasSentTime); err == nil && !hasSentTime {
-		_, err = db.Exec("ALTER TABLE inbox_external_receipts ADD COLUMN sent_at_ms BIGINT")
+	if err = db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('inbox_external_receipts') WHERE name='sent_at_ms')").Scan(&hasSentTime); err == nil && !hasSentTime {
+		_, err = db.ExecContext(ctx, "ALTER TABLE inbox_external_receipts ADD COLUMN sent_at_ms BIGINT")
 	}
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	if _, err = db.Exec("INSERT OR IGNORE INTO inbox_meta(id,capture_started_at_ms) VALUES(1,?)", time.Now().UnixMilli()); err != nil {
+	if _, err = db.ExecContext(ctx, "INSERT OR IGNORE INTO inbox_meta(id,capture_started_at_ms) VALUES(1,?)", time.Now().UnixMilli()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	i := &Inbox{db: db, limit: limit}
-	if err = i.SetLimit(limit); err != nil {
+	if err = i.SetLimitContext(ctx, limit); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -177,7 +158,7 @@ func privateInboxDirectory(dir string) error {
 
 func canonicalInboxChat(raw string) (string, error) {
 	if strings.HasPrefix(raw, "cloud:") {
-		id, err := normalizeCloudChatID(strings.TrimPrefix(raw, "cloud:"))
+		id, err := normalizeCloudConversationID(strings.TrimPrefix(raw, "cloud:"))
 		if err != nil {
 			return "", err
 		}
@@ -224,6 +205,21 @@ func (i *Inbox) Capture() *InboxCapture {
 	defer i.mu.Unlock()
 	return &InboxCapture{i, i.generation}
 }
+func (i *Inbox) CaptureContext(ctx context.Context) (*InboxCapture, error) {
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return nil, err
+	}
+	defer i.mu.Unlock()
+	return &InboxCapture{i, i.generation}, nil
+}
+func (i *Inbox) InvalidateContext(ctx context.Context) error {
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
+	defer i.mu.Unlock()
+	i.generation++
+	return nil
+}
 func (i *Inbox) Invalidate() { i.mu.Lock(); defer i.mu.Unlock(); i.generation++ }
 func (i *Inbox) Close() error {
 	i.mu.Lock()
@@ -236,11 +232,11 @@ func (i *Inbox) Close() error {
 	i.db = nil
 	return err
 }
-func (i *Inbox) transaction(fn func(*sql.Tx) error) error {
+func (i *Inbox) transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 	if err := i.active(); err != nil {
 		return err
 	}
-	tx, err := i.db.BeginTx(context.Background(), nil)
+	tx, err := i.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -250,77 +246,85 @@ func (i *Inbox) transaction(fn func(*sql.Tx) error) error {
 	}
 	return tx.Commit()
 }
-func (i *Inbox) SetLimit(limit int) error {
-	i.mu.Lock()
+func (i *Inbox) SetLimitContext(ctx context.Context, limit int) error {
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
 	defer i.mu.Unlock()
 	if limit < 1 || limit > 100000 {
 		return errors.New("max_inbox_messages must be 1..100000")
 	}
-	if err := i.transaction(func(tx *sql.Tx) error { return trimInbox(tx, limit) }); err != nil {
+	if err := i.transaction(ctx, func(tx *sql.Tx) error { return trimInbox(ctx, tx, limit) }); err != nil {
 		return err
 	}
 	i.limit = limit
 	return nil
 }
-func clearInbox(tx *sql.Tx) error {
-	if _, err := tx.Exec("DELETE FROM inbox_messages; DELETE FROM inbox_chats; DELETE FROM inbox_external_receipts; DELETE FROM inbox_cloud_event_markers;"); err != nil {
+func clearInbox(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM inbox_messages; DELETE FROM inbox_chats; DELETE FROM inbox_external_receipts; DELETE FROM inbox_cloud_event_markers;"); err != nil {
 		return err
 	}
-	_, err := tx.Exec("UPDATE inbox_meta SET capture_started_at_ms=?,last_history_sync_at_ms=NULL,last_history_sync_progress=NULL,retention_truncated=0,account=NULL WHERE id=1", time.Now().UnixMilli())
+	_, err := tx.ExecContext(ctx, "UPDATE inbox_meta SET capture_started_at_ms=?,last_history_sync_at_ms=NULL,last_history_sync_progress=NULL,retention_truncated=0,account=NULL WHERE id=1", time.Now().UnixMilli())
 	return err
 }
-func (i *Inbox) Clear() error {
-	i.mu.Lock()
+func (i *Inbox) ClearContext(ctx context.Context) error {
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
 	defer i.mu.Unlock()
 	i.generation++
-	return i.transaction(clearInbox)
+	return i.transaction(ctx, func(tx *sql.Tx) error { return clearInbox(ctx, tx) })
 }
-func (i *Inbox) SetAccount(account string) error {
-	i.mu.Lock()
+func (i *Inbox) SetAccountContext(ctx context.Context, account string) error {
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
 	defer i.mu.Unlock()
-	return i.transaction(func(tx *sql.Tx) error {
+	return i.transaction(ctx, func(tx *sql.Tx) error {
 		var prior sql.NullString
-		if err := tx.QueryRow("SELECT account FROM inbox_meta WHERE id=1").Scan(&prior); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT account FROM inbox_meta WHERE id=1").Scan(&prior); err != nil {
 			return err
 		}
 		if prior.Valid && prior.String != account {
 			i.generation++
-			if err := clearInbox(tx); err != nil {
+			if err := clearInbox(ctx, tx); err != nil {
 				return err
 			}
 		}
-		_, err := tx.Exec("UPDATE inbox_meta SET account=? WHERE id=1", account)
-		return err
+		if _, err := tx.ExecContext(ctx, "UPDATE inbox_meta SET account=? WHERE id=1", account); err != nil {
+			return err
+		}
+		return trimInbox(ctx, tx, i.limit)
 	})
 }
 
-func expireInbox(exec interface {
-	Exec(string, ...any) (sql.Result, error)
+func expireInbox(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }) error {
-	_, err := exec.Exec("UPDATE inbox_messages SET text='',kind='expired' WHERE expires_at_ms<=? AND kind!='expired'", time.Now().UnixMilli())
+	_, err := exec.ExecContext(ctx, "UPDATE inbox_messages SET text='',kind='expired' WHERE expires_at_ms<=? AND kind!='expired'", time.Now().UnixMilli())
 	return err
 }
-func trimInbox(tx *sql.Tx, limit int) error {
-	if err := expireInbox(tx); err != nil {
+func trimInbox(ctx context.Context, tx *sql.Tx, limit int) error {
+	if err := expireInbox(ctx, tx); err != nil {
 		return err
 	}
-	result, err := tx.Exec("DELETE FROM inbox_messages WHERE row_id IN (SELECT row_id FROM inbox_messages ORDER BY timestamp_ms DESC,row_id DESC LIMIT -1 OFFSET ?)", limit)
+	result, err := tx.ExecContext(ctx, "DELETE FROM inbox_messages WHERE row_id IN (SELECT row_id FROM inbox_messages ORDER BY timestamp_ms DESC,row_id DESC LIMIT -1 OFFSET ?)", limit)
 	if err != nil {
 		return err
 	}
 	removed, _ := result.RowsAffected()
 	if removed > 0 {
-		if _, err = tx.Exec("UPDATE inbox_meta SET retention_truncated=1 WHERE id=1"); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE inbox_meta SET retention_truncated=1 WHERE id=1"); err != nil {
 			return err
 		}
 	}
-	if _, err = tx.Exec("DELETE FROM inbox_chats WHERE chat_id NOT IN (SELECT chat_id FROM inbox_messages) AND chat_id IN (SELECT chat_id FROM inbox_chats ORDER BY chat_id LIMIT -1 OFFSET ?)", limit); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM inbox_chats WHERE chat_id NOT IN (SELECT chat_id FROM inbox_messages) AND chat_id IN (SELECT chat_id FROM inbox_chats ORDER BY chat_id LIMIT -1 OFFSET ?)", limit); err != nil {
 		return err
 	}
-	if _, err = tx.Exec("DELETE FROM inbox_external_receipts WHERE message_id IN (SELECT message_id FROM inbox_external_receipts ORDER BY received_at_ms DESC,message_id DESC LIMIT -1 OFFSET ?)", limit); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM inbox_external_receipts WHERE message_id IN (SELECT message_id FROM inbox_external_receipts ORDER BY received_at_ms DESC,message_id DESC LIMIT -1 OFFSET ?)", limit); err != nil {
 		return err
 	}
-	_, err = tx.Exec("DELETE FROM inbox_cloud_event_markers WHERE sequence IN (SELECT sequence FROM inbox_cloud_event_markers ORDER BY sequence DESC LIMIT -1 OFFSET ?)", 5*limit)
+	_, err = tx.ExecContext(ctx, "DELETE FROM inbox_cloud_event_markers WHERE sequence IN (SELECT sequence FROM inbox_cloud_event_markers ORDER BY sequence DESC LIMIT -1 OFFSET ?)", 5*limit)
 	return err
 }
 func validateInboxMessages(messages []MessageView) ([]MessageView, error) {
@@ -350,29 +354,32 @@ func validateInboxMessages(messages []MessageView) ([]MessageView, error) {
 	}
 	return out, nil
 }
-func commitInbox(tx *sql.Tx, messages []MessageView, titles map[string]string) error {
+func inboxGroupChat(chat string) bool {
+	return strings.HasSuffix(chat, "@g.us") || strings.HasPrefix(chat, "cloud:group:")
+}
+func commitInbox(ctx context.Context, tx *sql.Tx, messages []MessageView, titles map[string]string) error {
 	for id, title := range titles {
 		chat, err := canonicalInboxChat(id)
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec("INSERT INTO inbox_chats(chat_id,title,is_group) VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET title=CASE WHEN excluded.title!='' THEN excluded.title ELSE inbox_chats.title END", chat, clipInboxText(title, 512), strings.HasSuffix(chat, "@g.us")); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO inbox_chats(chat_id,title,is_group) VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET title=CASE WHEN excluded.title!='' THEN excluded.title ELSE inbox_chats.title END", chat, clipInboxText(title, 512), inboxGroupChat(chat)); err != nil {
 			return err
 		}
 	}
 	for _, m := range messages {
 		title := m.ChatID
-		if !m.FromMe && !strings.HasSuffix(m.ChatID, "@g.us") && m.SenderName != nil {
+		if !m.FromMe && !inboxGroupChat(m.ChatID) && m.SenderName != nil {
 			title = *m.SenderName
 		}
-		if _, err := tx.Exec("INSERT INTO inbox_chats(chat_id,title,is_group) VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET title=CASE WHEN inbox_chats.title=inbox_chats.chat_id THEN excluded.title ELSE inbox_chats.title END", m.ChatID, title, strings.HasSuffix(m.ChatID, "@g.us")); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO inbox_chats(chat_id,title,is_group) VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET title=CASE WHEN inbox_chats.title=inbox_chats.chat_id THEN excluded.title ELSE inbox_chats.title END", m.ChatID, title, inboxGroupChat(m.ChatID)); err != nil {
 			return err
 		}
 		senderKey := m.SenderID
 		if m.FromMe {
 			senderKey = "me"
 		}
-		_, err := tx.Exec(`INSERT INTO inbox_messages(chat_id,sender_key,message_id,sender_id,sender_name,from_me,timestamp_ms,kind,text,source,status,expires_at_ms,edited) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		_, err := tx.ExecContext(ctx, `INSERT INTO inbox_messages(chat_id,sender_key,message_id,sender_id,sender_name,from_me,timestamp_ms,kind,text,source,status,expires_at_ms,edited) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(chat_id,sender_key,message_id) DO UPDATE SET
 sender_name=COALESCE(excluded.sender_name,inbox_messages.sender_name),
 kind=CASE WHEN inbox_messages.kind IN ('view_once','expired','deleted') THEN inbox_messages.kind WHEN inbox_messages.edited=1 AND excluded.edited=0 AND excluded.kind!='deleted' THEN inbox_messages.kind ELSE excluded.kind END,
@@ -384,36 +391,40 @@ expires_at_ms=COALESCE(inbox_messages.expires_at_ms,excluded.expires_at_ms),edit
 	}
 	return nil
 }
-func (i *Inbox) Record(messages []MessageView) error {
+func (i *Inbox) RecordContext(ctx context.Context, messages []MessageView) error {
 	prepared, err := validateInboxMessages(messages)
 	if err != nil {
 		return err
 	}
-	i.mu.Lock()
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
 	defer i.mu.Unlock()
-	return i.transaction(func(tx *sql.Tx) error {
-		if err := commitInbox(tx, prepared, nil); err != nil {
+	return i.transaction(ctx, func(tx *sql.Tx) error {
+		if err := commitInbox(ctx, tx, prepared, nil); err != nil {
 			return err
 		}
-		return trimInbox(tx, i.limit)
+		return trimInbox(ctx, tx, i.limit)
 	})
 }
-func (c *InboxCapture) Record(messages []MessageView) error {
-	return c.RecordHistory(messages, nil, nil)
+func (c *InboxCapture) RecordContext(ctx context.Context, messages []MessageView) error {
+	return c.RecordHistoryContext(ctx, messages, nil, nil)
 }
-func (c *InboxCapture) RecordHistory(messages []MessageView, titles map[string]string, progress *int) error {
+func (c *InboxCapture) RecordHistoryContext(ctx context.Context, messages []MessageView, titles map[string]string, progress *int) error {
 	prepared, err := validateInboxMessages(messages)
 	if err != nil {
 		return err
 	}
 	i := c.inbox
-	i.mu.Lock()
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
 	defer i.mu.Unlock()
 	if i.generation != c.generation {
 		return errors.New("inbox capture was invalidated")
 	}
-	return i.transaction(func(tx *sql.Tx) error {
-		if err := commitInbox(tx, prepared, titles); err != nil {
+	return i.transaction(ctx, func(tx *sql.Tx) error {
+		if err := commitInbox(ctx, tx, prepared, titles); err != nil {
 			return err
 		}
 		if titles != nil || progress != nil {
@@ -421,30 +432,34 @@ func (c *InboxCapture) RecordHistory(messages []MessageView, titles map[string]s
 				p := max(0, min(100, *progress))
 				progress = &p
 			}
-			if _, err := tx.Exec("UPDATE inbox_meta SET last_history_sync_at_ms=?,last_history_sync_progress=? WHERE id=1", time.Now().UnixMilli(), progress); err != nil {
+			if _, err := tx.ExecContext(ctx, "UPDATE inbox_meta SET last_history_sync_at_ms=?,last_history_sync_progress=? WHERE id=1", time.Now().UnixMilli(), progress); err != nil {
 				return err
 			}
 		}
-		return trimInbox(tx, i.limit)
+		return trimInbox(ctx, tx, i.limit)
 	})
 }
-func (i *Inbox) RecordReceipt(chatID string, ids []string, status string) error {
-	i.mu.Lock()
+func (i *Inbox) RecordReceiptContext(ctx context.Context, chatID string, ids []string, status string) error {
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
 	defer i.mu.Unlock()
-	return i.recordReceipt(chatID, ids, status)
+	return i.recordReceipt(ctx, chatID, ids, status)
 }
-func (c *InboxCapture) RecordReceipt(chatID string, ids []string, status string) error {
+func (c *InboxCapture) RecordReceiptContext(ctx context.Context, chatID string, ids []string, status string) error {
 	i := c.inbox
-	i.mu.Lock()
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return err
+	}
 	defer i.mu.Unlock()
 	if i.generation != c.generation {
 		return errors.New("inbox capture was invalidated")
 	}
-	return i.recordReceipt(chatID, ids, status)
+	return i.recordReceipt(ctx, chatID, ids, status)
 }
 
 // Caller holds the inbox mutex, including generation validation for captures.
-func (i *Inbox) recordReceipt(chatID string, ids []string, status string) error {
+func (i *Inbox) recordReceipt(ctx context.Context, chatID string, ids []string, status string) error {
 	chat, err := canonicalInboxChat(chatID)
 	if err != nil {
 		return err
@@ -456,20 +471,20 @@ func (i *Inbox) recordReceipt(chatID string, ids []string, status string) error 
 	if rank == 0 {
 		return errors.New("invalid delivery status")
 	}
-	return i.transaction(func(tx *sql.Tx) error {
+	return i.transaction(ctx, func(tx *sql.Tx) error {
 		for _, id := range ids {
-			if _, err := tx.Exec("UPDATE inbox_messages SET status=? WHERE chat_id=? AND message_id=? AND from_me=1 AND CASE status WHEN 'played' THEN 4 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END<?", status, chat, id, rank); err != nil {
+			if _, err := tx.ExecContext(ctx, "UPDATE inbox_messages SET status=? WHERE chat_id=? AND message_id=? AND from_me=1 AND CASE status WHEN 'played' THEN 4 WHEN 'read' THEN 3 WHEN 'delivered' THEN 2 ELSE 1 END<?", status, chat, id, rank); err != nil {
 				return err
 			}
 		}
-		return nil
+		return trimInbox(ctx, tx, i.limit)
 	})
 }
 func externalStatusRank(status string) int {
 	return map[string]int{"sent": 1, "failed": 2, "delivered": 3, "read": 4}[status]
 }
-func (i *Inbox) RecordExternal(messages []MessageView, receipts []ExternalReceipt) (int, error) {
-	if _, err := i.recordExternal(messages, receipts, nil); err != nil {
+func (i *Inbox) RecordExternalContext(ctx context.Context, messages []MessageView, receipts []ExternalReceipt) (int, error) {
+	if _, err := i.recordExternal(ctx, messages, receipts, nil); err != nil {
 		return 0, err
 	}
 	return len(messages) + len(receipts), nil
@@ -477,11 +492,11 @@ func (i *Inbox) RecordExternal(messages []MessageView, receipts []ExternalReceip
 
 // RecordCloudDelivery atomically archives a webhook and claims its unseen events.
 // Markers suppress retries across restarts; they do not guarantee trigger delivery.
-func (i *Inbox) RecordCloudDelivery(messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
-	return i.recordExternal(messages, receipts, events)
+func (i *Inbox) RecordCloudDeliveryContext(ctx context.Context, messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
+	return i.recordExternal(ctx, messages, receipts, events)
 }
 
-func (i *Inbox) recordExternal(messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
+func (i *Inbox) recordExternal(ctx context.Context, messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
 	if len(messages)+len(receipts) > 1000 {
 		return nil, errors.New("Cloud API update batch exceeds 1000 items")
 	}
@@ -512,15 +527,17 @@ func (i *Inbox) recordExternal(messages []MessageView, receipts []ExternalReceip
 			return nil, errors.New("invalid Cloud API sent timestamp")
 		}
 	}
-	i.mu.Lock()
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return nil, err
+	}
 	defer i.mu.Unlock()
 	fresh := []CloudEvent{}
-	err = i.transaction(func(tx *sql.Tx) error {
-		if err := commitInbox(tx, prepared, nil); err != nil {
+	err = i.transaction(ctx, func(tx *sql.Tx) error {
+		if err := commitInbox(ctx, tx, prepared, nil); err != nil {
 			return err
 		}
 		for _, r := range receipts {
-			if _, err := tx.Exec(`INSERT INTO inbox_external_receipts(message_id,chat_id,status,rank,received_at_ms,sent_at_ms) VALUES(?,?,?,?,?,?)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO inbox_external_receipts(message_id,chat_id,status,rank,received_at_ms,sent_at_ms) VALUES(?,?,?,?,?,?)
 ON CONFLICT(message_id) DO UPDATE SET
 status=CASE WHEN excluded.rank>inbox_external_receipts.rank THEN excluded.status ELSE inbox_external_receipts.status END,
 received_at_ms=CASE WHEN excluded.rank>inbox_external_receipts.rank THEN excluded.received_at_ms ELSE inbox_external_receipts.received_at_ms END,
@@ -529,15 +546,23 @@ sent_at_ms=COALESCE(inbox_external_receipts.sent_at_ms,excluded.sent_at_ms)`, r.
 				return err
 			}
 		}
-		if _, err := tx.Exec("UPDATE inbox_messages SET status=(SELECT status FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id) WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id AND r.rank>CASE inbox_messages.status WHEN 'sent' THEN 1 WHEN 'failed' THEN 2 WHEN 'delivered' THEN 3 WHEN 'read' THEN 4 ELSE 0 END)"); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE inbox_messages SET status=(SELECT status FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id) WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id AND r.rank>CASE inbox_messages.status WHEN 'sent' THEN 1 WHEN 'failed' THEN 2 WHEN 'delivered' THEN 3 WHEN 'read' THEN 4 ELSE 0 END)"); err != nil {
 			return err
 		}
-		if _, err := tx.Exec("UPDATE inbox_messages SET timestamp_ms=(SELECT sent_at_ms FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id) WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id AND r.sent_at_ms IS NOT NULL AND r.sent_at_ms!=inbox_messages.timestamp_ms)"); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE inbox_messages SET timestamp_ms=(SELECT sent_at_ms FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id) WHERE from_me=1 AND EXISTS(SELECT 1 FROM inbox_external_receipts r WHERE r.message_id=inbox_messages.message_id AND r.sent_at_ms IS NOT NULL AND r.sent_at_ms!=inbox_messages.timestamp_ms)"); err != nil {
 			return err
 		}
 		for _, event := range events {
-			key, _ := json.Marshal([]string{event.BusinessAccountID, event.PhoneNumberID, event.Kind, event.MessageID, event.Status})
-			result, err := tx.Exec("INSERT OR IGNORE INTO inbox_cloud_event_markers(event_key) VALUES(?)", string(key))
+			identity := event.MessageID
+			if event.Kind == "webhook.received" {
+				identity = event.EventID
+			}
+			parts := []string{event.BusinessAccountID, event.PhoneNumberID, event.Kind, identity, event.Status}
+			if event.ParticipantID != "" {
+				parts = append(parts, event.ParticipantID)
+			}
+			key, _ := json.Marshal(parts)
+			result, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO inbox_cloud_event_markers(event_key) VALUES(?)", string(key))
 			if err != nil {
 				return err
 			}
@@ -549,7 +574,7 @@ sent_at_ms=COALESCE(inbox_external_receipts.sent_at_ms,excluded.sent_at_ms)`, r.
 				fresh = append(fresh, event)
 			}
 		}
-		return trimInbox(tx, i.limit)
+		return trimInbox(ctx, tx, i.limit)
 	})
 	if err != nil {
 		return nil, err
@@ -582,10 +607,10 @@ func encodeInboxCursor(scope, query string, timestamp int64, key string) *string
 	encoded := base64.RawURLEncoding.EncodeToString(raw)
 	return &encoded
 }
-func (i *Inbox) coverage() (Coverage, error) {
+func (i *Inbox) coverage(ctx context.Context) (Coverage, error) {
 	c := Coverage{MessageLimit: i.limit}
 	var syncTime, progress sql.NullInt64
-	err := i.db.QueryRow("SELECT capture_started_at_ms,last_history_sync_at_ms,last_history_sync_progress,retention_truncated FROM inbox_meta WHERE id=1").Scan(&c.CaptureStartedAtMS, &syncTime, &progress, &c.RetentionTruncated)
+	err := i.db.QueryRowContext(ctx, "SELECT capture_started_at_ms,last_history_sync_at_ms,last_history_sync_progress,retention_truncated FROM inbox_meta WHERE id=1").Scan(&c.CaptureStartedAtMS, &syncTime, &progress, &c.RetentionTruncated)
 	if syncTime.Valid {
 		c.LastHistorySyncAtMS = &syncTime.Int64
 	}
@@ -605,7 +630,7 @@ func scanInboxMessage(row interface{ Scan(...any) error }) (MessageView, int64, 
 	m.Sequence = id
 	return m, id, err
 }
-func (i *Inbox) ListMessages(chatID, cursor string, limit int) (MessagePage, error) {
+func (i *Inbox) ListMessagesContext(ctx context.Context, chatID, cursor string, limit int) (MessagePage, error) {
 	page := MessagePage{Messages: []MessageView{}}
 	if limit < 1 || limit > 200 {
 		return page, errors.New("limit must be 1..200")
@@ -625,15 +650,17 @@ func (i *Inbox) ListMessages(chatID, cursor string, limit int) (MessagePage, err
 			return page, errors.New("invalid cursor")
 		}
 	}
-	i.mu.Lock()
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return page, err
+	}
 	defer i.mu.Unlock()
 	if err = i.active(); err != nil {
 		return page, err
 	}
-	if err = expireInbox(i.db); err != nil {
+	if err = expireInbox(ctx, i.db); err != nil {
 		return page, err
 	}
-	rows, err := i.db.Query("SELECT "+inboxMessageColumns+" FROM inbox_messages WHERE chat_id=? AND (timestamp_ms<? OR (timestamp_ms=? AND row_id<?)) ORDER BY timestamp_ms DESC,row_id DESC LIMIT ?", chat, c.TimestampMS, c.TimestampMS, beforeID, limit+1)
+	rows, err := i.db.QueryContext(ctx, "SELECT "+inboxMessageColumns+" FROM inbox_messages WHERE chat_id=? AND (timestamp_ms<? OR (timestamp_ms=? AND row_id<?)) ORDER BY timestamp_ms DESC,row_id DESC LIMIT ?", chat, c.TimestampMS, c.TimestampMS, beforeID, limit+1)
 	if err != nil {
 		return page, err
 	}
@@ -661,10 +688,10 @@ func (i *Inbox) ListMessages(chatID, cursor string, limit int) (MessagePage, err
 		last := page.Messages[len(page.Messages)-1]
 		page.NextCursor = encodeInboxCursor(chat, "", last.TimestampMS, strconv.FormatInt(lastID, 10))
 	}
-	page.Coverage, err = i.coverage()
+	page.Coverage, err = i.coverage(ctx)
 	return page, err
 }
-func (i *Inbox) ListChats(query, cursor string, limit int) (ChatPage, error) {
+func (i *Inbox) ListChatsContext(ctx context.Context, query, cursor string, limit int) (ChatPage, error) {
 	page := ChatPage{Chats: []ChatView{}}
 	query = strings.TrimSpace(query)
 	if limit < 1 || limit > 200 {
@@ -677,15 +704,17 @@ func (i *Inbox) ListChats(query, cursor string, limit int) (ChatPage, error) {
 	if err != nil {
 		return page, err
 	}
-	i.mu.Lock()
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return page, err
+	}
 	defer i.mu.Unlock()
 	if err = i.active(); err != nil {
 		return page, err
 	}
-	if err = expireInbox(i.db); err != nil {
+	if err = expireInbox(ctx, i.db); err != nil {
 		return page, err
 	}
-	rows, err := i.db.Query(`SELECT c.chat_id,c.title,c.is_group,COALESCE(MAX(m.timestamp_ms),0),COUNT(m.row_id) FROM inbox_chats c LEFT JOIN inbox_messages m ON m.chat_id=c.chat_id
+	rows, err := i.db.QueryContext(ctx, `SELECT c.chat_id,c.title,c.is_group,COALESCE(MAX(m.timestamp_ms),0),COUNT(m.row_id) FROM inbox_chats c LEFT JOIN inbox_messages m ON m.chat_id=c.chat_id
 WHERE (?='' OR instr(lower(c.title),lower(?))>0 OR instr(c.chat_id,?)>0 OR EXISTS(SELECT 1 FROM inbox_messages search WHERE search.chat_id=c.chat_id AND instr(lower(search.text),lower(?))>0))
 GROUP BY c.chat_id HAVING COALESCE(MAX(m.timestamp_ms),0)<? OR (COALESCE(MAX(m.timestamp_ms),0)=? AND c.chat_id<?) ORDER BY COALESCE(MAX(m.timestamp_ms),0) DESC,c.chat_id DESC LIMIT ?`, query, query, query, query, c.TimestampMS, c.TimestampMS, c.Key, limit+1)
 	if err != nil {
@@ -716,32 +745,112 @@ GROUP BY c.chat_id HAVING COALESCE(MAX(m.timestamp_ms),0)<? OR (COALESCE(MAX(m.t
 		page.NextCursor = encodeInboxCursor("chats", query, lastTime, page.Chats[len(page.Chats)-1].ChatID)
 	}
 	for n := range page.Chats {
-		m, _, e := scanInboxMessage(i.db.QueryRow("SELECT "+inboxMessageColumns+" FROM inbox_messages WHERE chat_id=? ORDER BY timestamp_ms DESC,row_id DESC LIMIT 1", page.Chats[n].ChatID))
+		m, _, e := scanInboxMessage(i.db.QueryRowContext(ctx, "SELECT "+inboxMessageColumns+" FROM inbox_messages WHERE chat_id=? ORDER BY timestamp_ms DESC,row_id DESC LIMIT 1", page.Chats[n].ChatID))
 		if e == nil {
 			page.Chats[n].LastMessage = &m
 		} else if !errors.Is(e, sql.ErrNoRows) {
 			return page, e
 		}
 	}
-	page.Coverage, err = i.coverage()
+	page.Coverage, err = i.coverage(ctx)
 	return page, err
 }
-func (i *Inbox) Oldest(chatID string) (MessageView, error) {
+func (i *Inbox) OldestContext(ctx context.Context, chatID string) (MessageView, error) {
 	chat, err := canonicalInboxChat(chatID)
 	if err != nil {
 		return MessageView{}, err
 	}
-	i.mu.Lock()
+	if err := lockSessionContext(ctx, &i.mu); err != nil {
+		return MessageView{}, err
+	}
 	defer i.mu.Unlock()
 	if err = i.active(); err != nil {
 		return MessageView{}, err
 	}
-	if err = expireInbox(i.db); err != nil {
+	if err = expireInbox(ctx, i.db); err != nil {
 		return MessageView{}, err
 	}
-	m, _, err := scanInboxMessage(i.db.QueryRow("SELECT "+inboxMessageColumns+" FROM inbox_messages WHERE chat_id=? AND timestamp_ms>0 ORDER BY timestamp_ms,row_id LIMIT 1", chat))
+	m, _, err := scanInboxMessage(i.db.QueryRowContext(ctx, "SELECT "+inboxMessageColumns+" FROM inbox_messages WHERE chat_id=? AND timestamp_ms>0 ORDER BY timestamp_ms,row_id LIMIT 1", chat))
 	if errors.Is(err, sql.ErrNoRows) {
 		return m, errors.New("history requires a known message in this chat; wait for a message or received sync")
 	}
 	return m, err
+}
+
+func (i *Inbox) SetLimit(limit int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.SetLimitContext(ctx, limit)
+}
+
+func (i *Inbox) Clear() error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.ClearContext(ctx)
+}
+
+func (i *Inbox) SetAccount(account string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.SetAccountContext(ctx, account)
+}
+
+func (i *Inbox) Record(messages []MessageView) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.RecordContext(ctx, messages)
+}
+
+func (c *InboxCapture) Record(messages []MessageView) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return c.RecordContext(ctx, messages)
+}
+
+func (c *InboxCapture) RecordHistory(messages []MessageView, titles map[string]string, progress *int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return c.RecordHistoryContext(ctx, messages, titles, progress)
+}
+
+func (i *Inbox) RecordReceipt(chatID string, ids []string, status string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.RecordReceiptContext(ctx, chatID, ids, status)
+}
+
+func (c *InboxCapture) RecordReceipt(chatID string, ids []string, status string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return c.RecordReceiptContext(ctx, chatID, ids, status)
+}
+
+func (i *Inbox) RecordExternal(messages []MessageView, receipts []ExternalReceipt) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.RecordExternalContext(ctx, messages, receipts)
+}
+
+func (i *Inbox) RecordCloudDelivery(messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.RecordCloudDeliveryContext(ctx, messages, receipts, events)
+}
+
+func (i *Inbox) ListMessages(chatID, cursor string, limit int) (MessagePage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.ListMessagesContext(ctx, chatID, cursor, limit)
+}
+
+func (i *Inbox) ListChats(query, cursor string, limit int) (ChatPage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.ListChatsContext(ctx, query, cursor, limit)
+}
+
+func (i *Inbox) Oldest(chatID string) (MessageView, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return i.OldestContext(ctx, chatID)
 }

@@ -15,6 +15,7 @@ func clearCloudEnvironment(t *testing.T) {
 		"WHATSAPP_CLOUD_ENABLED", "WHATSAPP_CLOUD_API_VERSION",
 		"WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID", "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
 		"WHATSAPP_CLOUD_ACCESS_TOKEN", "WHATSAPP_META_APP_SECRET", "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+		"WHATSAPP_FLOW_PRIVATE_KEY", "WHATSAPP_FLOW_HANDLER_FUNCTION", "WHATSAPP_FLOW_HANDLER_NAMESPACE",
 	} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
@@ -83,6 +84,9 @@ func TestCloudEnvironmentValidationDoesNotExposeValues(t *testing.T) {
 		{"WHATSAPP_CLOUD_ACCESS_TOKEN", "private-sentinel\n"},
 		{"WHATSAPP_META_APP_SECRET", "private-sentinel\r"},
 		{"WHATSAPP_WEBHOOK_VERIFY_TOKEN", strings.Repeat("private-sentinel", 2000)},
+		{"WHATSAPP_FLOW_PRIVATE_KEY", "private-sentinel"},
+		{"WHATSAPP_FLOW_HANDLER_FUNCTION", "private-sentinel\n"},
+		{"WHATSAPP_FLOW_HANDLER_NAMESPACE", "private-sentinel namespace"},
 	} {
 		t.Run(tc.name+"/"+strconv.Itoa(len(tc.value)), func(t *testing.T) {
 			clearCloudEnvironment(t)
@@ -127,5 +131,31 @@ func TestCentralCloudValuesAreNotExpandedAgain(t *testing.T) {
 	c, err := parseConfigJSON([]byte(`{"cloud":{"access_token":"${LITERAL_SECRET}"}}`))
 	if err != nil || c.Cloud.AccessToken != "${LITERAL_SECRET}" {
 		t.Fatal("already resolved central values must remain literal")
+	}
+}
+
+func TestCloudFlowEnvironmentKeyIsRuntimeOnly(t *testing.T) {
+	clearCloudEnvironment(t)
+	_, privateKey := flowTestKey(t)
+	t.Setenv("WHATSAPP_FLOW_PRIVATE_KEY", privateKey)
+	t.Setenv("WHATSAPP_FLOW_HANDLER_FUNCTION", "reports::flow")
+	t.Setenv("WHATSAPP_FLOW_HANDLER_NAMESPACE", "reports")
+	seed, err := parseConfigYAML([]byte("cloud:\n  enabled: false\n"))
+	if err != nil || seed.Cloud.FlowPrivateKey != "" || seed.Cloud.FlowHandlerFunction != "" {
+		t.Fatal("Flow runtime credentials must not enter the central configuration seed")
+	}
+	raw, _ := json.Marshal(seed)
+	effective, err := parseConfigJSON(raw)
+	if err != nil || effective.Cloud.FlowPrivateKey != privateKey || effective.Cloud.FlowHandlerFunction != "reports::flow" || effective.Cloud.FlowHandlerNamespace != "reports" {
+		t.Fatal("Flow environment overrides were not preserved")
+	}
+	redacted, _ := json.Marshal(effective.Redacted())
+	if strings.Contains(string(redacted), "PRIVATE KEY") {
+		t.Fatal("Flow private key leaked into public config status")
+	}
+	t.Setenv("WHATSAPP_FLOW_PRIVATE_KEY", "")
+	effective, err = runtimeConfig(effective)
+	if err != nil || effective.Cloud.FlowPrivateKey != "" {
+		t.Fatal("An explicit empty Flow key override must clear the stored key")
 	}
 }

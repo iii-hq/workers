@@ -120,7 +120,7 @@ Meta validates their availability and the configured account's access.
 
 The functions, complete request/response examples, and distinction between
 Cloud and linked-device transport are documented in the
-[worker README](../README.md#upload-and-send-documents).
+[Cloud setup guide](cloud-setup.md#upload-and-send-documents).
 
 ## Structured worker errors
 
@@ -167,6 +167,6 @@ transport; the full Go suite covers native behavior and webhook processing.
 
 The optional engine smoke test discovers both document schemas from an
 isolated engine and checks the structured Markdown rejection through the SDK.
-Run the [README validation commands](../README.md#validation) with temporary
+Run the [development validation commands](development.md#validation) with temporary
 engine/worker binaries. These checks do not pair an account, call Meta, send a
 real message, or update the live worker.

@@ -198,7 +198,7 @@ export function Select<T extends string>({
   }
 
   function handleMobileValueChange(next: string) {
-    handleValueChange(next)
+    if (next !== rootValue) handleValueChange(next)
     closeMobilePicker(embeddedInSheet)
   }
 
@@ -493,6 +493,13 @@ function SelectSheetPanel<T extends string>({
     return (
       <label
         key={option.value}
+        onClick={(event) => {
+          if (!selected || disabled || option.disabled) return
+          // Checked radios do not emit change. Dismiss on activation while
+          // preventing the label from forwarding another click to its input.
+          event.preventDefault()
+          onChange(option.value)
+        }}
         className={cn(
           'relative flex min-h-14 w-full min-w-0 cursor-pointer items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-rule-focus',
           (disabled || option.disabled) &&

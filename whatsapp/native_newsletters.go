@@ -82,7 +82,7 @@ func nativeNewsletterMessage(v *types.NewsletterMessage) (map[string]any, error)
 
 func registerNativeNewsletters(r *Registry) {
 	r.Add("whatsapp::newsletters::list", func(ctx context.Context, args map[string]any) (any, error) {
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +104,7 @@ func registerNativeNewsletters(r *Registry) {
 		if err := nativeText(description, "description", 2048, true); err != nil {
 			return nil, err
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +119,7 @@ func registerNativeNewsletters(r *Registry) {
 		if err := nativeText(code, "invite_code", 256, false); err != nil {
 			return nil, err
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +135,7 @@ func registerNativeNewsletters(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			client, err := r.Manager.Client(stringArg(args, "session_id"))
+			client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}

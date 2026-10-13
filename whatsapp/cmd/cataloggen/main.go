@@ -1,7 +1,9 @@
-// Command cataloggen emits SDK schema adapters from the worker API contracts.
+// Command cataloggen emits SDK schema adapters and the compressed API catalog.
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"go/format"
@@ -10,14 +12,14 @@ import (
 )
 
 func main() {
-	b, err := os.ReadFile("catalog.json")
+	catalog, err := os.ReadFile("catalog.json")
 	if err != nil {
 		panic(err)
 	}
 	var entries []struct {
 		ID string `json:"id"`
 	}
-	if err = json.Unmarshal(b, &entries); err != nil {
+	if err = json.Unmarshal(catalog, &entries); err != nil {
 		panic(err)
 	}
 	var out strings.Builder
@@ -30,11 +32,26 @@ func main() {
 		fmt.Fprintf(&out, "%q:installOperation[operation%d],\n", e.ID, i)
 	}
 	out.WriteString("}\n")
-	b, err = format.Source([]byte(out.String()))
+	b, err := format.Source([]byte(out.String()))
 	if err != nil {
 		panic(err)
 	}
 	if err = os.WriteFile("catalog_generated.go", b, 0644); err != nil {
+		panic(err)
+	}
+	var compressed bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&compressed, gzip.BestCompression)
+	if err != nil {
+		panic(err)
+	}
+	// Leave the header timestamp/name unset so regeneration is deterministic.
+	if _, err = writer.Write(catalog); err != nil {
+		panic(err)
+	}
+	if err = writer.Close(); err != nil {
+		panic(err)
+	}
+	if err = os.WriteFile("catalog.json.gz", compressed.Bytes(), 0644); err != nil {
 		panic(err)
 	}
 }

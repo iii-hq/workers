@@ -238,7 +238,7 @@ func registerGroups(r *Registry) {
 			prefix = "whatsapp::communities::"
 		}
 		r.Add(prefix+"list", func(ctx context.Context, args map[string]any) (any, error) {
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -259,7 +259,7 @@ func registerGroups(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -282,7 +282,7 @@ func registerGroups(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -364,7 +364,7 @@ func registerGroups(r *Registry) {
 			if strings.TrimSpace(code) == "" || len(code) > 256 {
 				return nil, errors.New("invite code must contain 1 to 256 bytes")
 			}
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -424,7 +424,11 @@ func registerGroups(r *Registry) {
 			var data []byte
 			var err error
 			if !remove {
-				data, err = groupJPEG(stringArg(args, "jpeg_base64"), r.Manager.Config().MaxMediaBytes)
+				config, configErr := r.Manager.ConfigContext(ctx)
+				if configErr != nil {
+					return nil, configErr
+				}
+				data, err = groupJPEG(stringArg(args, "jpeg_base64"), config.MaxMediaBytes)
 				if err != nil {
 					return nil, err
 				}
@@ -450,7 +454,7 @@ func registerGroups(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -514,7 +518,7 @@ func registerGroupContacts(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -535,7 +539,7 @@ func registerGroupContacts(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -557,7 +561,7 @@ func registerGroupContacts(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -589,7 +593,7 @@ func registerGroupContacts(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -609,14 +613,14 @@ func registerGroupContacts(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
 		return nil, cli.SendAppState(ctx, patch)
 	})
 	r.Add("whatsapp::contacts::blocked", func(ctx context.Context, args map[string]any) (any, error) {
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -636,7 +640,7 @@ func registerGroupContacts(r *Registry) {
 			return nil, err
 		}
 		jid = jid.ToNonAD()
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -672,7 +676,7 @@ func registerGroupContacts(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -753,7 +757,7 @@ func registerGroupProfile(r *Registry) {
 		if strings.TrimSpace(name) == "" || len(name) > 256 {
 			return nil, errors.New("profile name must contain 1 to 256 bytes")
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -764,7 +768,7 @@ func registerGroupProfile(r *Registry) {
 		if len(text) > 4096 {
 			return nil, errors.New("about exceeds 4096 bytes")
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -779,12 +783,16 @@ func registerGroupProfile(r *Registry) {
 			var data []byte
 			var err error
 			if !remove {
-				data, err = groupJPEG(stringArg(args, "jpeg_base64"), r.Manager.Config().MaxMediaBytes)
+				config, configErr := r.Manager.ConfigContext(ctx)
+				if configErr != nil {
+					return nil, configErr
+				}
+				data, err = groupJPEG(stringArg(args, "jpeg_base64"), config.MaxMediaBytes)
 				if err != nil {
 					return nil, err
 				}
 			}
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -799,7 +807,7 @@ func registerGroupProfile(r *Registry) {
 		})
 	}
 	r.Add("whatsapp::privacy::get", func(ctx context.Context, args map[string]any) (any, error) {
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -814,7 +822,7 @@ func registerGroupProfile(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -829,7 +837,7 @@ func registerGroupProfile(r *Registry) {
 		if seconds < 0 || uint64(seconds) > uint64(^uint32(0)) {
 			return nil, errors.New("invalid expiration_seconds")
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -890,7 +898,7 @@ func registerCommunities(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			cli, err := r.Manager.Client(stringArg(args, "session_id"))
+			cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -902,7 +910,7 @@ func registerCommunities(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		cli, err := r.Manager.Client(stringArg(args, "session_id"))
+		cli, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}

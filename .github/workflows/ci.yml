@@ -51,6 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.bucket.outputs.rust }}
+      go: ${{ steps.bucket.outputs.go }}
+      binary: ${{ steps.bucket.outputs.binary }}
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
       crates: ${{ steps.bucket.outputs.crates }}
@@ -685,7 +687,7 @@ jobs:
           }
 
   # ──────────────────────────────────────────────────────────────
-  # Interface boot smoke: build each changed Rust worker from source,
+  # Interface boot smoke: build each changed binary worker from source,
   # boot it against a live engine exactly as the registry-publish flow
   # does, and assert its interface is collectable & non-empty. This is
   # the PR-time guard for the class of failure that broke publish in
@@ -693,14 +695,14 @@ jobs:
   # liveness check but then crashed building its SQLite pool because
   # the default `sqlite:./data/iii.db` parent dir was missing — so
   # `Collect worker interface` timed out at release time, never on PRs.
-  # Scoped to Rust workers (the binary-deploy bucket where this lives);
+  # Scoped to Rust and Go workers (the binary-deploy bucket);
   # building from source means a clean checkout with no `data/` dir,
   # which is precisely the condition that triggered the crash.
   # ──────────────────────────────────────────────────────────────
   interface-smoke:
     name: "${{ matrix.worker }}: interface boot smoke"
     needs: discover
-    if: github.event_name == 'pull_request' && needs.discover.outputs.rust != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.binary != '[]'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -708,7 +710,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        worker: ${{ fromJSON(needs.discover.outputs.rust) }}
+        worker: ${{ fromJSON(needs.discover.outputs.binary) }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -732,6 +734,7 @@ jobs:
           set -euo pipefail
           skip=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("true" if m.validation.get("interface") == "skipped" else "false")')
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("kind=" + m.artifact_kind); print("go_version=" + str(m.artifact.get("toolchain", {}).get("version", "")))' >> "$GITHUB_OUTPUT"
           if [[ "$skip" == "true" ]]; then
             echo "::notice::$WORKER has no static Registry interface (iii.worker.yaml registry_interface: false)"
           fi
@@ -741,28 +744,34 @@ jobs:
         run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        if: steps.optout.outputs.skip != 'true'
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
         with:
           toolchain: 1.97.1
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        if: steps.optout.outputs.skip != 'true'
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
         with:
           shared-key: worker-${{ matrix.worker }}
           save-if: false
           workspaces: ${{ matrix.worker }} -> target
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'go-binary'
+        with:
+          go-version: ${{ steps.optout.outputs.go_version }}
+          cache-dependency-path: ${{ matrix.worker }}/go.sum
 
       # Workers that embed a Vite SPA into the binary (e.g. console) have a
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
       # short-circuits it — mirrors the `rust` job above. provider-opencode-go
       # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         # Version comes from the repo-root package.json packageManager field.
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
@@ -772,7 +781,7 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         run: |
           set -euo pipefail
           for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
@@ -805,9 +814,14 @@ jobs:
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (the release build uses default features).
       - name: Build worker binary
-        if: steps.optout.outputs.skip != 'true'
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'rust-binary'
         working-directory: ${{ matrix.worker }}
         run: cargo build --locked
+
+      - name: Build Go worker binary
+        if: steps.optout.outputs.skip != 'true' && steps.optout.outputs.kind == 'go-binary'
+        working-directory: ${{ matrix.worker }}
+        run: make build
 
       - name: Install iii CLI + engine
         if: steps.optout.outputs.skip != 'true'
@@ -861,9 +875,10 @@ jobs:
         if: steps.optout.outputs.skip != 'true'
         env:
           WORKER: ${{ matrix.worker }}
+          KIND: ${{ steps.optout.outputs.kind }}
         run: |
           set -euo pipefail
-          # Resolve the cargo binary from the canonical catalog.
+          # Resolve the executable from the canonical catalog.
           bin=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print(m.binary or m.catalog_id)')
 
           worker_log="worker-$WORKER.log"
@@ -880,6 +895,11 @@ jobs:
             echo "Using interface-collection config: $WORKER/config.collect.yaml"
             collect_args+=(--config ./config.collect.yaml)
           fi
+          executable="./target/debug/$bin"
+          if [[ "$KIND" == go-binary ]]; then
+            executable="./bin/$bin"
+            collect_args+=(--local-config --collect-interface)
+          fi
           # The llama.cpp workers register their functions only once a model
           # loads: boot them on their committed tiny fixtures instead of
           # downloading gigabytes.
@@ -894,8 +914,8 @@ jobs:
           # default db path (sqlite:./data/iii.db) resolve against a clean
           # checkout with no data/ dir, reproducing the publish boot exactly.
           pushd "$WORKER" >/dev/null
-          echo "Starting local worker: (cd $WORKER && ./target/debug/$bin ${collect_args[*]})"
-          "./target/debug/$bin" "${collect_args[@]}" > "../$worker_log" 2>&1 &
+          echo "Starting local worker: (cd $WORKER && $executable ${collect_args[*]})"
+          "$executable" "${collect_args[@]}" > "../$worker_log" 2>&1 &
           echo "$!" > ../worker.pid
           popd >/dev/null
 
@@ -1013,6 +1033,43 @@ jobs:
         run: |
           echo "::warning::Harness E2E: ${SUMMARY:-no verdict}"
           exit 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Go per-worker formatting, vet, tests, and the release build.
+  # ──────────────────────────────────────────────────────────────
+  go:
+    name: "${{ matrix.worker }}: go lint + test"
+    needs: discover
+    if: needs.discover.outputs.go != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.discover.outputs.go) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.worker }}
+    env:
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: ${{ matrix.worker }}/go.mod
+          cache-dependency-path: ${{ matrix.worker }}/go.sum
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Run tests
+        run: go test ./...
+      - name: Build release binary
+        run: make build
 
   # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test

@@ -1,0 +1,7 @@
+3:    config_env_engine_test.go:100: Cloud environment configuration did not become ready
+5:        2026/10/06 15:14:13 database worker request failed; details suppressed to protect stored data
+4220:--- FAIL: TestCloudEnvironmentEngine (47.06s)
+4221:    --- FAIL: TestCloudEnvironmentEngine/seed (45.04s)
+4222:FAIL
+4223:FAIL	github.com/iii-hq/workers/whatsapp	47.085s
+4224:FAIL

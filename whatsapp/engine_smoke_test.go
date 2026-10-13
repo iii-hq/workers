@@ -97,8 +97,9 @@ func smokeWait(t *testing.T, label string, probe func() bool) {
 // Every process, configuration file and account uses an isolated temporary root.
 func TestEngineSmoke(t *testing.T) {
 	engine, worker := os.Getenv("III_BINARY"), os.Getenv("WHATSAPP_BINARY")
-	if engine == "" || worker == "" {
-		t.Skip("set III_BINARY and WHATSAPP_BINARY for isolated loopback integration")
+	database := os.Getenv("DATABASE_BINARY")
+	if engine == "" || worker == "" || database == "" {
+		t.Skip("set III_BINARY, WHATSAPP_BINARY and DATABASE_BINARY for isolated loopback integration")
 	}
 	clearCloudEnvironment(t)
 	dir := t.TempDir()
@@ -116,6 +117,15 @@ func TestEngineSmoke(t *testing.T) {
 	smokeProcess(t, dir, "engine", engine, []string{"--config", engineConfig, "--no-update-check"}, "III_NAMESPACE=default")
 	smokeWait(t, "engine", func() bool {
 		_, err := smokeValue(engine, engineURL, "default", "engine::workers::list", map[string]any{})
+		return err == nil
+	})
+	databaseSeed := filepath.Join(dir, "database.yaml")
+	if err = os.WriteFile(databaseSeed, []byte("databases:\n  whatsapp:\n    url: sqlite:"+filepath.Join(dir, "whatsapp.db")+"\n    pool:\n      max: 1\nhistory_max_entries: 0\nhistory_max_bytes: 0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	smokeProcess(t, dir, "database", database, []string{"--url", engineURL, "--config", databaseSeed}, "III_NAMESPACE="+smokeNamespace, "III_CONFIG_NAME=whatsapp-go-smoke-database", "III_DISABLE_TRACE_PAYLOADS=1")
+	smokeWait(t, "database worker", func() bool {
+		_, err := smokeValue(engine, engineURL, smokeNamespace, "database::listDatabases", map[string]any{})
 		return err == nil
 	})
 	webhookPort := 0
@@ -178,7 +188,8 @@ func TestEngineSmoke(t *testing.T) {
 			t.Fatalf("empty asset: %s", path)
 		}
 	}
-	for _, id := range []string{"whatsapp::sessions::create", "whatsapp::messages::list", "whatsapp::cloud::messages::send_text", "whatsapp::cloud::messages::send_template", "whatsapp::cloud::media::upload_document", "whatsapp::cloud::messages::send_document"} {
+	for _, entry := range NewRegistry(nil).Catalog() {
+		id := entry.ID
 		info, err := smokeTrigger(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": id, "namespace": smokeNamespace})
 		if err != nil {
 			t.Fatal(err)
@@ -187,6 +198,10 @@ func TestEngineSmoke(t *testing.T) {
 		if !reflect.DeepEqual(info["request_schema"], expected.RequestFormat) || !reflect.DeepEqual(info["response_schema"], expected.ResponseFormat) {
 			t.Fatalf("SDK schema adapter changed %s: %+v", id, info)
 		}
+	}
+	flowStatus, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::cloud::flows::endpoint::status", map[string]any{})
+	if err != nil || flowStatus["configured"] != false {
+		t.Fatalf("unexpected unconfigured Flow endpoint: %v %v", flowStatus, err)
 	}
 	if _, err = smokeValue(engine, engineURL, "default", "whatsapp::sessions::list", map[string]any{}); err == nil {
 		t.Fatal("worker functions escaped their namespace")
@@ -244,6 +259,18 @@ func TestEngineSmoke(t *testing.T) {
 		}
 	}
 	if webhookPort > 0 {
+		t.Run("cloud_flow_endpoint_inactive", func(t *testing.T) {
+			endpoint := fmt.Sprintf("http://127.0.0.1:%d/webhooks/whatsapp-flows/%s", webhookPort, smokeNamespace)
+			client := &http.Client{Timeout: 5 * time.Second}
+			response, err := client.Post(endpoint, "application/json", strings.NewReader(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("unconfigured Flow endpoint returned HTTP %d", response.StatusCode)
+			}
+		})
 		t.Run("cloud_document_contract", func(t *testing.T) {
 			// Reject unsupported Markdown through the installed typed function;
 			// validation must finish before any external request can be made.
@@ -358,7 +385,7 @@ func smokeEventNamespace(t *testing.T, engineURL string) {
 	}
 	config := DefaultConfig()
 	config.DataDir = t.TempDir()
-	manager, err := NewManager(config)
+	manager, err := newTestManager(config)
 	if err != nil {
 		t.Fatal(err)
 	}

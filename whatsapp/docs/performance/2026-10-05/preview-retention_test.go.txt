@@ -1,0 +1,65 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"runtime"
+	"runtime/pprof"
+	"strings"
+	"testing"
+)
+
+func retainedCloudPreviews(t *testing.T) []CloudEvent {
+	t.Helper()
+	events := make([]CloudEvent, 0, 16)
+	for n := 0; n < 16; n++ {
+		message := cloudTestMessage(fmt.Sprintf("synthetic-%d", n))
+		message["text"] = map[string]any{"body": strings.Repeat("x", 1<<20)}
+		raw, err := json.Marshal(cloudTestPayload(cloudTestChange(message)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch, err := parseCloudDelivery(cloudTestConfig().Cloud, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(batch.events) != 1 || len(batch.events[0].Text) != 8192 {
+			t.Fatal("unexpected event preview")
+		}
+		events = append(events, batch.events[0])
+	}
+	return events
+}
+func TestPerformanceCloudPreviewRetention(t *testing.T) {
+	runtime.GC()
+	runtime.GC()
+	var baseline, retained, cloned runtime.MemStats
+	runtime.ReadMemStats(&baseline)
+	events := retainedCloudPreviews(t)
+	runtime.GC()
+	runtime.GC()
+	runtime.ReadMemStats(&retained)
+	save := func(name string) {
+		f, err := os.Create("/tmp/whatsapp-performance-20261005/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = pprof.WriteHeapProfile(f); err != nil {
+			t.Fatal(err)
+		}
+		if err = f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("preview-retained.mem")
+	for n := range events {
+		events[n].Text = strings.Clone(events[n].Text)
+	}
+	runtime.GC()
+	runtime.GC()
+	runtime.ReadMemStats(&cloned)
+	save("preview-cloned.mem")
+	t.Logf("16 parsed Cloud previews: current heap delta=%d bytes; clone-only experiment delta=%d bytes; serialized preview text total=%d bytes", int64(retained.HeapAlloc)-int64(baseline.HeapAlloc), int64(cloned.HeapAlloc)-int64(baseline.HeapAlloc), 16*8192)
+	runtime.KeepAlive(events)
+}

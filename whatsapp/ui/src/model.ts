@@ -47,8 +47,8 @@ export function normalizeRecipient(raw: string): string {
   const input = raw.trim()
   if (!input || input.length > 128) throw new Error('Enter a valid international phone number or JID.')
   if (!input.includes('@')) {
-    const phone = input.replace(/^\+/, '')
-    if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Use 7 to 15 digits, including the country code, without spaces. Example: +5511999999999.')
+    const phone = input.replace(/[ ()-]/g, '').replace(/^\+/, '')
+    if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Use 7 to 15 digits, including the country code. Example: +5511999999999.')
     return `${phone}@s.whatsapp.net`
   }
   const [user, server, extra] = input.split('@')
@@ -65,8 +65,8 @@ export function normalizeRecipient(raw: string): string {
 }
 
 export function pairingPhone(raw: string): string {
-  const phone = raw.trim().replace(/^\+/, '')
-  if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Enter the account phone number with its country code and 7 to 15 digits, without spaces.')
+  const phone = raw.trim().replace(/[ ()-]/g, '').replace(/^\+/, '')
+  if (!/^[0-9]{7,15}$/.test(phone)) throw new Error('Enter the account phone number with its country code and 7 to 15 digits.')
   return phone
 }
 
@@ -162,4 +162,12 @@ export function configNumber(raw: string): number | undefined {
   if (!raw.trim()) return undefined
   const value = Number(raw)
   return Number.isFinite(value) ? value : undefined
+}
+
+export function withDatabaseField(value: JsonValue, key: 'name' | 'namespace', next: string | undefined): JsonValue {
+  if (!isObject(value) || (value.database !== undefined && !isObject(value.database))) return value
+  const database = { ...(isObject(value.database) ? value.database : {}) }
+  if (next === undefined) delete database[key]
+  else database[key] = next
+  return { ...value, database }
 }

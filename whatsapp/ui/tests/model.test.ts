@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ACTIVITY_LIMIT, DEFAULTS, EMPTY_FEED, configNumber, eventDetail, feedForSession, isOpaqueField,
   mergeEvents, normalizeRecipient, pairingIsCurrent, pairingPhone, requestScope, validateMessage,
-  withConfigField, type Session, type WorkerEvent,
+  withConfigField, withDatabaseField, type Session, type WorkerEvent,
 } from '../src/model'
 
 const event = (sequence: number, overrides: Partial<WorkerEvent> = {}): WorkerEvent => ({
@@ -14,7 +14,13 @@ describe('recipient addressing matches the native worker contract', () => {
   it.each([
     ['+5511999999999', '5511999999999@s.whatsapp.net'],
     ['5511999999999', '5511999999999@s.whatsapp.net'],
+    ['+1 (555) 123-4567', '15551234567@s.whatsapp.net'],
+    [' +55 (11) 99999-9999 ', '5511999999999@s.whatsapp.net'],
+    ['0 123-456', '0123456@s.whatsapp.net'],
+    ['+123 456 789 012 345', '123456789012345@s.whatsapp.net'],
     [' 5511999999999@c.us ', '5511999999999@s.whatsapp.net'],
+    ['123456789:2@c.us', '123456789:2@s.whatsapp.net'],
+    ['0001:0@lid', '0001:0@lid'],
     ['123456789:2@lid', '123456789:2@lid'],
     ['123456789:65535@s.whatsapp.net', '123456789:65535@s.whatsapp.net'],
     ['120363000000000000@g.us', '120363000000000000@g.us'],
@@ -25,12 +31,20 @@ describe('recipient addressing matches the native worker contract', () => {
   ])('normalizes %s without changing an opaque identity', (input, expected) => {
     expect(normalizeRecipient(input)).toBe(expected)
   })
-  it.each(['', '123456', '+1234567890123456', '+55 (11) 99999-9999', '123@unknown', 'a@lid', '@g.us', '1--2@g.us', '12@lid@evil', '1:65536@lid', '1:-1@lid', '1:2:3@lid', 'status@s.whatsapp.net'])('rejects %s before sending', (input) => {
+  it.each(['', '123456', '+1234567890123456', '+12 (34) 56', '+123 456 789 012 3456', '+1 (555) 123-4567 ext 9', '+1.555.123.4567', '++15551234567', '1+5551234567', '1555/1234567', '123@unknown', 'a@lid', '@g.us', '1--2@g.us', '12@lid@evil', '1:65536@lid', '1:-1@lid', '1:2:3@lid', 'status@s.whatsapp.net', '+1 (555) 123-4567@s.whatsapp.net', '1234 - 5678@g.us'])('rejects %s before sending', (input) => {
     expect(() => normalizeRecipient(input)).toThrow()
   })
-  it('keeps phone pairing separate from recipient JIDs', () => {
-    expect(pairingPhone('+5511999999999')).toBe('5511999999999')
-    expect(() => pairingPhone('5511999999999@s.whatsapp.net')).toThrow()
+  it.each([
+    ['+5511999999999', '5511999999999'],
+    ['+1 (555) 123-4567', '15551234567'],
+    [' +55 (11) 99999-9999 ', '5511999999999'],
+    ['0 123-456', '0123456'],
+    ['+123 456 789 012 345', '123456789012345'],
+  ])('normalizes phone pairing %s to account digits', (input, expected) => {
+    expect(pairingPhone(input)).toBe(expected)
+  })
+  it.each(['', '+12 (34) 56', '+123 456 789 012 3456', '+1 (555) 123-4567 ext 9', '+1.555.123.4567', '++15551234567', '1+5551234567', '1555/1234567', '5511999999999@s.whatsapp.net', '123456789:2@c.us', '0001:0@lid', '1234-5678@g.us', '123456789@newsletter', 'status@broadcast'])('rejects invalid phone pairing or recipient JID %s', (input) => {
+    expect(() => pairingPhone(input)).toThrow()
   })
   it('measures text limits in UTF-8 bytes and rejects a blank message', () => {
     expect(validateMessage('  \n ')).toBeTruthy()
@@ -87,6 +101,16 @@ describe('activity presentation', () => {
 })
 
 describe('configuration drafts remain host owned', () => {
+  it('edits the database without dropping Cloud credentials or nested templates', () => {
+    const draft = { cloud: { access_token: '${WHATSAPP_CLOUD_ACCESS_TOKEN}' }, database: { name: '${DB_NAME:whatsapp}', namespace: 'one', future: true } }
+    expect(withDatabaseField(draft, 'namespace', 'two')).toEqual({ ...draft, database: { ...draft.database, namespace: 'two' } })
+    expect(draft.database.namespace).toBe('one')
+    expect(withDatabaseField(draft, 'namespace', undefined)).toEqual({ ...draft, database: { name: '${DB_NAME:whatsapp}', future: true } })
+  })
+  it('preserves an opaque database setting until explicitly replaced', () => {
+    const draft = { database: '${DATABASE_CONFIG}' }
+    expect(withDatabaseField(draft, 'name', 'other')).toBe(draft)
+  })
   it('updates one field without dropping templates or unknown siblings', () => {
     const draft = { max_sessions: '${MAX_SESSIONS}', data_dir: '${DATA_DIR}/wa', future: { enabled: true } }
     const next = withConfigField(draft, 'operation_timeout_secs', 90)

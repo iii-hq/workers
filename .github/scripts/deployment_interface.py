@@ -175,7 +175,7 @@ def stage(args: argparse.Namespace) -> int:
         config_argument = ["--config", str(config_path.resolve())]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     if policy == "required":
-        if kind == "rust-binary":
+        if kind in {"rust-binary", "go-binary"}:
             target = "x86_64-unknown-linux-gnu"
             units = [
                 unit
@@ -194,7 +194,8 @@ def stage(args: argparse.Namespace) -> int:
             if not executable.is_file() or executable.is_symlink():
                 raise SystemExit(f"prepared runtime executable is missing: {executable}")
             executable.chmod(0o755)
-            result.update(cwd=str(stage_dir), command=[str(executable), *command[1:], *config_argument])
+            capture_arguments = ["--local-config", "--collect-interface"] if kind == "go-binary" else []
+            result.update(cwd=str(stage_dir), command=[str(executable), *command[1:], *config_argument, *capture_arguments])
         elif kind in {"javascript-bundle", "python-bundle"}:
             selected = _single_artifact(artifacts, "bundle")
             stage_dir = (args.out.parent / "runtime").resolve()

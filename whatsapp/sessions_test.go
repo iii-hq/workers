@@ -16,7 +16,7 @@ func testSessionManager(t *testing.T) (*Manager, *Session) {
 	t.Helper()
 	cfg := DefaultConfig()
 	cfg.DataDir = filepath.Join(t.TempDir(), "sessions")
-	m, err := NewManager(cfg)
+	m, err := newTestManager(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestShutdownDeadlineRetainsWorkerLockUntilDrained(t *testing.T) {
 		s.operations.RUnlock()
 		t.Fatalf("shutdown: %v", err)
 	}
-	if second, err := NewManager(cfg); err == nil {
+	if second, err := newTestManager(cfg); err == nil {
 		s.operations.RUnlock()
 		second.Shutdown(context.Background())
 		t.Fatal("worker lock released before active operations drained")
@@ -205,7 +205,7 @@ func TestShutdownDeadlineRetainsWorkerLockUntilDrained(t *testing.T) {
 	if err = m.Shutdown(ctx2); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewManager(cfg)
+	reopened, err := newTestManager(cfg)
 	if err != nil {
 		t.Fatal("lock retained after complete shutdown", err)
 	}
@@ -228,7 +228,7 @@ func TestSessionStartupRetainsAccountsAboveLoweredLimit(t *testing.T) {
 	if err := m.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewManager(cfg)
+	reopened, err := newTestManager(cfg)
 	if err != nil {
 		t.Fatal("existing accounts prevented startup", err)
 	}

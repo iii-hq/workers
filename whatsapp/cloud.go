@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -21,13 +20,16 @@ import (
 )
 
 type CloudConfig struct {
-	Enabled           bool   `json:"enabled" yaml:"enabled"`
-	APIVersion        string `json:"api_version" yaml:"api_version"`
-	BusinessAccountID string `json:"business_account_id" yaml:"business_account_id"`
-	PhoneNumberID     string `json:"phone_number_id" yaml:"phone_number_id"`
-	AccessToken       string `json:"access_token" yaml:"access_token"`
-	AppSecret         string `json:"app_secret" yaml:"app_secret"`
-	VerifyToken       string `json:"verify_token" yaml:"verify_token"`
+	Enabled              bool   `json:"enabled" yaml:"enabled"`
+	APIVersion           string `json:"api_version" yaml:"api_version"`
+	BusinessAccountID    string `json:"business_account_id" yaml:"business_account_id"`
+	PhoneNumberID        string `json:"phone_number_id" yaml:"phone_number_id"`
+	AccessToken          string `json:"access_token" yaml:"access_token"`
+	AppSecret            string `json:"app_secret" yaml:"app_secret"`
+	VerifyToken          string `json:"verify_token" yaml:"verify_token"`
+	FlowPrivateKey       string `json:"flow_private_key,omitempty" yaml:"flow_private_key,omitempty"`
+	FlowHandlerFunction  string `json:"flow_handler_function,omitempty" yaml:"flow_handler_function,omitempty"`
+	FlowHandlerNamespace string `json:"flow_handler_namespace,omitempty" yaml:"flow_handler_namespace,omitempty"`
 }
 
 func DefaultCloudConfig() CloudConfig { return CloudConfig{APIVersion: "v26.0"} }
@@ -35,6 +37,7 @@ func (c CloudConfig) Redacted() CloudConfig {
 	c.AccessToken = ""
 	c.AppSecret = ""
 	c.VerifyToken = ""
+	c.FlowPrivateKey = ""
 	return c
 }
 func (c CloudConfig) String() string {
@@ -47,6 +50,19 @@ var cloudMetaIDPattern = regexp.MustCompile(`^[0-9]{1,32}$`)
 var cloudBSUIDPattern = regexp.MustCompile(`^[A-Z]{2}\.(ENT\.)?[A-Za-z0-9]{1,128}$`)
 
 func (c CloudConfig) Validate() error {
+	if c.FlowPrivateKey != "" {
+		if _, err := cloudFlowPrivateKey(c.FlowPrivateKey); err != nil {
+			return err
+		}
+	}
+	for _, value := range []string{c.FlowHandlerFunction, c.FlowHandlerNamespace} {
+		if len(value) > 256 || strings.IndexFunc(value, unicode.IsSpace) >= 0 || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return errors.New("Cloud Flow handler identifiers must contain at most 256 bytes without whitespace or control characters")
+		}
+	}
+	if c.FlowHandlerFunction == "whatsapp::cloud::flows::endpoint" {
+		return errors.New("Flow handler cannot reference its own HTTP endpoint")
+	}
 	if !cloudVersionPattern.MatchString(c.APIVersion) {
 		return errors.New("cloud.api_version must use a version such as v26.0")
 	}
@@ -94,7 +110,7 @@ func normalizeCloudChatID(raw string) (string, error) {
 	return "+" + digits, nil
 }
 func cloudStorageChatID(raw string) (string, error) {
-	id, err := normalizeCloudChatID(raw)
+	id, err := normalizeCloudConversationID(raw)
 	if err != nil {
 		return "", err
 	}
@@ -170,7 +186,7 @@ func cloudError(code, message string) *iii.InvocationError {
 // POST failures after dispatch cannot establish whether Meta accepted a message
 // or uploaded media. Never replay a request, including unreadable acknowledgements.
 func cloudResponseError(method, message string) error {
-	if method == http.MethodPost {
+	if method != http.MethodGet && method != http.MethodHead {
 		return cloudError("cloud_outcome_unknown", message+"; Meta may have completed the operation. No automatic retry was made; check messages before retrying a send")
 	}
 	return cloudError("cloud_invalid_response", message)
@@ -232,7 +248,7 @@ func (c *cloudClient) requestBody(ctx context.Context, config Config, method, pa
 	}
 	var value map[string]any
 	decodeErr := json.Unmarshal(raw, &value)
-	if method == http.MethodPost && response.StatusCode >= 500 {
+	if method != http.MethodGet && method != http.MethodHead && response.StatusCode >= 500 {
 		remote, _ := value["error"].(map[string]any)
 		code, validCode := remote["code"].(float64)
 		if decodeErr != nil || !validCode || code <= 0 {
@@ -380,15 +396,19 @@ type CloudTemplatesRequest struct {
 	After string `json:"after"`
 }
 type CloudTextRequest struct {
-	ChatID     string `json:"chat_id"`
-	Text       string `json:"text"`
-	PreviewURL bool   `json:"preview_url"`
+	ChatID                   string `json:"chat_id"`
+	Text                     string `json:"text"`
+	PreviewURL               bool   `json:"preview_url"`
+	ReplyToMessageID         string `json:"reply_to_message_id,omitempty"`
+	RecipientIdentityKeyHash string `json:"recipient_identity_key_hash,omitempty"`
 }
 type CloudTemplateRequest struct {
-	ChatID     string           `json:"chat_id"`
-	Name       string           `json:"name"`
-	Language   string           `json:"language"`
-	Components []map[string]any `json:"components"`
+	ChatID                   string           `json:"chat_id"`
+	Name                     string           `json:"name"`
+	Language                 string           `json:"language"`
+	Components               []map[string]any `json:"components"`
+	ReplyToMessageID         string           `json:"reply_to_message_id,omitempty"`
+	RecipientIdentityKeyHash string           `json:"recipient_identity_key_hash,omitempty"`
 }
 type CloudSentMessage struct {
 	MessageID     string  `json:"message_id"`
@@ -420,6 +440,12 @@ func cloudTextPayload(req CloudTextRequest) (map[string]any, error) {
 	}
 	body["type"] = "text"
 	body["text"] = map[string]any{"body": req.Text, "preview_url": req.PreviewURL}
+	if err := cloudApplyReply(body, req.ReplyToMessageID); err != nil {
+		return nil, err
+	}
+	if err := cloudApplyIdentity(body, req.RecipientIdentityKeyHash); err != nil {
+		return nil, err
+	}
 	return body, nil
 }
 
@@ -451,11 +477,20 @@ func cloudTemplatePayload(req CloudTemplateRequest) (map[string]any, error) {
 	}
 	body["type"] = "template"
 	body["template"] = map[string]any{"name": req.Name, "language": map[string]any{"code": req.Language}, "components": req.Components}
+	if err := cloudApplyReply(body, req.ReplyToMessageID); err != nil {
+		return nil, err
+	}
+	if err := cloudApplyIdentity(body, req.RecipientIdentityKeyHash); err != nil {
+		return nil, err
+	}
 	return body, nil
 }
 func (c *cloudClient) send(ctx context.Context, config Config, chat string, body map[string]any) (CloudSentMessage, error) {
+	return c.sendAt(ctx, config, chat, "messages", body)
+}
+func (c *cloudClient) sendAt(ctx context.Context, config Config, chat, endpoint string, body map[string]any) (CloudSentMessage, error) {
 	result := CloudSentMessage{}
-	response, err := c.request(ctx, config, http.MethodPost, config.Cloud.PhoneNumberID+"/messages", nil, body)
+	response, err := c.request(ctx, config, http.MethodPost, config.Cloud.PhoneNumberID+"/"+endpoint, nil, body)
 	if err != nil {
 		return result, err
 	}
@@ -469,7 +504,7 @@ func (c *cloudClient) send(ctx context.Context, config Config, chat string, body
 		return result, cloudResponseError(http.MethodPost, "Cloud API returned no valid message ID")
 	}
 	result.MessageID = id
-	result.ChatID, _ = normalizeCloudChatID(chat)
+	result.ChatID, _ = normalizeCloudConversationID(chat)
 	result.Status = "accepted"
 	if status, ok := message["message_status"].(string); ok && !cloudEchoesSecret(config, status) {
 		result.MessageStatus = &status
@@ -478,10 +513,11 @@ func (c *cloudClient) send(ctx context.Context, config Config, chat string, body
 }
 
 // Opaque IDs can contain a short, user-chosen verify token by coincidence.
-// Reject a complete credential echo, never an incidental substring of an ID.
+// Reject complete echoes and embedded long credentials (including common
+// encodings), while preserving those incidental short substrings.
 func cloudEchoesSecret(config Config, value string) bool {
-	for _, secret := range []string{config.Cloud.AccessToken, config.Cloud.AppSecret, config.Cloud.VerifyToken} {
-		if secret != "" && value == secret {
+	for _, secret := range cloudCredentialVariants(config) {
+		if value == secret || len(secret) >= 8 && strings.Contains(value, secret) {
 			return true
 		}
 	}
@@ -510,10 +546,15 @@ func outwardCloudMessage(m *MessageView) {
 	m.SenderID = strings.TrimPrefix(m.SenderID, "cloud:")
 }
 func retainCloudSend(inbox *Inbox, sent CloudSentMessage, kind, text string, requestedAt time.Time) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return retainCloudSendContext(ctx, inbox, sent, kind, text, requestedAt)
+}
+func retainCloudSendContext(ctx context.Context, inbox *Inbox, sent CloudSentMessage, kind, text string, requestedAt time.Time) error {
 	chat, _ := cloudStorageChatID(sent.ChatID)
 	status := "submitted"
 	// Provisional until the sent webhook supplies Meta's timestamp.
-	_, err := inbox.RecordExternal([]MessageView{{MessageID: sent.MessageID, ChatID: chat, SenderID: "me", FromMe: true, TimestampMS: requestedAt.UnixMilli(), Kind: kind, Text: text, Source: "sent", Status: &status}}, nil)
+	_, err := inbox.RecordExternalContext(ctx, []MessageView{{MessageID: sent.MessageID, ChatID: chat, SenderID: "me", FromMe: true, TimestampMS: requestedAt.UnixMilli(), Kind: kind, Text: text, Source: "sent", Status: &status}}, nil)
 	if err != nil {
 		return errors.New("Cloud API accepted the message, but local archival failed; do not resend blindly")
 	}
@@ -522,36 +563,47 @@ func retainCloudSend(inbox *Inbox, sent CloudSentMessage, kind, text string, req
 func registerCloud(r *Registry) {
 	client := newCloudClient()
 	registerCloudDocuments(r, client)
+	registerCloudMedia(r, client)
+	registerCloudActions(r, client)
+	registerCloudInteractive(r, client)
+	registerCloudManagement(r, client)
+	registerCloudFlows(r, client)
+	registerCloudCommerce(r, client)
+	registerCloudMarketing(r, client)
+	registerCloudGroups(r, client)
+	registerCloudCalls(r, client)
 	r.Add("whatsapp::cloud::status", func(ctx context.Context, input map[string]any) (any, error) {
 		var req struct{}
 		if err := decodeCloudRequest(input, &req); err != nil {
 			return nil, err
 		}
-		return cloudStatus(r.Manager.Config()), nil
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		return cloudStatus(config), nil
 	})
 	r.Add("whatsapp::cloud::check_connection", func(ctx context.Context, input map[string]any) (any, error) {
 		var req struct{}
 		if err := decodeCloudRequest(input, &req); err != nil {
 			return nil, err
 		}
-		return client.checkConnection(ctx, r.Manager.Config())
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		return client.checkConnection(ctx, config)
 	})
 	r.Add("whatsapp::cloud::templates::list", func(ctx context.Context, input map[string]any) (any, error) {
-		req := CloudTemplatesRequest{Limit: 50}
-		if err := decodeCloudRequest(input, &req); err != nil {
+		query, err := cloudPageQuery(input, 50)
+		if err != nil {
 			return nil, err
 		}
-		if req.Limit < 1 || req.Limit > 100 {
-			return nil, errors.New("limit must be 1..100")
-		}
-		if err := cloudCursor(req.After); err != nil {
+		query.Set("fields", "id,name,language,status,category,components,parameter_format")
+		config, err := r.Manager.ConfigContext(ctx)
+		if err != nil {
 			return nil, err
 		}
-		query := url.Values{"fields": {"id,name,language,status,category,components,parameter_format"}, "limit": {strconv.Itoa(req.Limit)}}
-		if req.After != "" {
-			query.Set("after", req.After)
-		}
-		config := r.Manager.Config()
 		page, err := client.request(ctx, config, http.MethodGet, config.Cloud.BusinessAccountID+"/message_templates", query, nil)
 		if err != nil {
 			return nil, err
@@ -593,8 +645,11 @@ func registerCloud(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		config := r.Manager.Config()
-		inbox, err := r.Manager.CloudInbox(config)
+		config, err := r.Manager.ConfigContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		inbox, err := r.Manager.CloudInboxContext(ctx, config)
 		if err != nil {
 			return nil, err
 		}
@@ -603,7 +658,7 @@ func registerCloud(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		if err = retainCloudSend(inbox, sent, "text", req.Text, requestedAt); err != nil {
+		if err = retainCloudSendContext(ctx, inbox, sent, "text", req.Text, requestedAt); err != nil {
 			return nil, err
 		}
 		return sent, nil
@@ -617,8 +672,11 @@ func registerCloud(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		config := r.Manager.Config()
-		inbox, err := r.Manager.CloudInbox(config)
+		config, err := r.Manager.ConfigContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		inbox, err := r.Manager.CloudInboxContext(ctx, config)
 		if err != nil {
 			return nil, err
 		}
@@ -627,7 +685,7 @@ func registerCloud(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		if err = retainCloudSend(inbox, sent, "template", fmt.Sprintf("[Template: %s (%s)]", req.Name, req.Language), requestedAt); err != nil {
+		if err = retainCloudSendContext(ctx, inbox, sent, "template", fmt.Sprintf("[Template: %s (%s)]", req.Name, req.Language), requestedAt); err != nil {
 			return nil, err
 		}
 		return sent, nil
@@ -641,11 +699,15 @@ func registerCloud(r *Registry) {
 		if err := decodeCloudRequest(input, &req); err != nil {
 			return nil, err
 		}
-		inbox, err := r.Manager.CloudInbox(r.Manager.Config())
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		inbox, err := r.Manager.CloudInboxContext(ctx, config)
 		if err != nil {
 			return nil, err
 		}
-		page, err := inbox.ListChats(req.Query, req.Cursor, req.Limit)
+		page, err := inbox.ListChatsContext(ctx, req.Query, req.Cursor, req.Limit)
 		for n := range page.Chats {
 			chat := &page.Chats[n]
 			if chat.Title == chat.ChatID {
@@ -671,11 +733,15 @@ func registerCloud(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		inbox, err := r.Manager.CloudInbox(r.Manager.Config())
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		inbox, err := r.Manager.CloudInboxContext(ctx, config)
 		if err != nil {
 			return nil, err
 		}
-		page, err := inbox.ListMessages(chat, req.Cursor, req.Limit)
+		page, err := inbox.ListMessagesContext(ctx, chat, req.Cursor, req.Limit)
 		for n := range page.Messages {
 			outwardCloudMessage(&page.Messages[n])
 		}

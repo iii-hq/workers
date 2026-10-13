@@ -1,0 +1,6 @@
+=== RUN   TestEngineSmoke
+=== RUN   TestEngineSmoke/event_namespace
+--- PASS: TestEngineSmoke (5.20s)
+    --- PASS: TestEngineSmoke/event_namespace (0.14s)
+PASS
+ok  	github.com/iii-hq/workers/whatsapp	6.333s

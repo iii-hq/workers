@@ -1,750 +1,182 @@
-# WhatsApp
+# whatsapp
 
-A Go iii worker supporting both [whatsmeow](https://github.com/tulir/whatsmeow)
-linked devices and the official Meta WhatsApp Cloud API. The native WhatsApp
-client, Cloud API client, encryption and SQLite storage are embedded in the executable.
-There is no Node, Chromium, sidecar process or sandbox requirement. The worker
-connects to an existing iii engine; normal configuration uses the configuration worker.
+Send and receive WhatsApp messages through iii functions using linked phones or the official Meta WhatsApp Cloud API. Pair accounts, inspect conversations and groups, send attachments and templates, and subscribe to filtered events. An ADE page helps you configure and test each transport separately. The worker runs as a Go binary without Node.js or Chromium.
 
-The dependency is pinned to
-`8b41cfe6d9c4` (`v0.0.0-20260929112325-8b41cfe6d9c4`). The iii Go SDK is pinned
-to merged commit `a075c6e40389` (`v0.24.6-rc.1.0.20261002194513-a075c6e40389`),
-which includes the trigger schema API. A local SDK workspace is optional for SDK
-development.
-This is a native function API, not an HTTP-compatible deployment of OpenWA.
-[openwa-rust-coverage.json](openwa-rust-coverage.json) is the historical Rust/OpenWA
-comparison, not a declaration of Go support. Use `--catalog` for the supported Go API.
+## Install
 
-## Build and run
+Install the worker into your existing iii Compose project:
 
-Use Go 1.27.1 on Linux. SQLite uses the pure-Go `modernc.org/sqlite` driver;
-the binary builds with `CGO_ENABLED=0` and requires no C toolchain. ADE bundles
-are checked in under `assets/`, so a fresh Go build needs neither Node nor pnpm.
-Use `GOWORK=off` to build with the dependencies pinned in `go.mod`, regardless
-of any local Go workspace.
-
-```sh
-cd whatsapp
-GOWORK=off make build
-./bin/whatsapp --manifest
-./bin/whatsapp --catalog
-./bin/whatsapp --url ws://127.0.0.1:49134
+```bash
+iii trigger compose::add worker=whatsapp
 ```
 
-The first two inspection commands use neither the network nor session storage.
-For frontend changes, install dependencies from the repository root using its
-Node and pnpm versions, then rebuild and copy the embedded bundles:
+Compose resolves the declared `database`, `configuration`, `http`, and `quick-tunnel` dependencies, updates `worker-compose.yaml`, and starts the project. Dependency installation does not create the dedicated WhatsApp database or configure a Meta account. Configure storage before the worker's first successful start, as described under [Configuration](#configuration).
 
-```sh
-pnpm install --frozen-lockfile
-make -C whatsapp ui
-GOWORK=off make -C whatsapp build
-```
+Release binaries support Linux and macOS on x64 and arm64. Windows is not supported. Cloudflared is needed only when you start a development webhook tunnel; linked phones do not need it.
 
-For isolated development without the configuration worker:
+## Quickstart
 
-```sh
-./bin/whatsapp --local-config --config config.example.yaml --url ws://127.0.0.1:49134
-```
+Choose the transport that matches your account:
 
-Use `--config file.yaml` for a YAML seed. In normal mode, the central entry
-`whatsapp` is authoritative; `III_CONFIG_NAME` selects another entry for a
-second instance. `III_URL` supplies the engine address. Resource limits and
-timeouts apply live; `data_dir` and `max_events` require a worker restart.
-[iii.worker.yaml](iii.worker.yaml) contains defaults.
-Give each process its own `data_dir`; sharing live credential databases between
-worker processes is unsupported.
-
-This branch supports local Go builds. The repository release pipeline has no
-Go binary recipe yet, so WhatsApp is excluded from `.deploy/workers.yaml` until
-that recipe exists. No cross-platform release artifact is declared here.
-
-### Compatibility with the Rust worker
-
-Use the default `data/whatsapp-go` or another fresh directory. whatsmeow has its
-own credential schema, and this worker rejects Rust session metadata. Stop the
-old process before reusing its engine identity, then create and explicitly pair
-a new Go session. Do not point this executable at the old `data/whatsapp` tree.
-The old credentials and archive stay available to the Rust executable; no
-automatic credential, archive, event-page or Cloud database migration is provided.
-The Go CLI does not implement the Rust `--import-events` command.
-
-An existing central configuration may still select the old directory. Update
-that entry to the new directory before starting this worker, or use a separate
-`III_CONFIG_NAME` for an isolated instance. Native operation coverage differs
-from the Rust version; unsupported calls are omitted from registration.
-
-## ADE interface
-
-The running worker injects a **WhatsApp** page and configuration form into ADE.
-Open `#/worker/whatsapp` on your ADE host (normally
-`http://127.0.0.1:3113/#/worker/whatsapp`). The page has session creation and
-selection and four tabs: **Messages**, **Groups**, **Connection** and **Cloud API**. Search
-conversations, read stored messages, open participating groups and inspect
-their participants and administrators. The conversation composer sends to the
-selected chat only after an explicit action. Connection controls include
-connect/stop, local QR rendering, phone-code pairing and recent activity.
-Opening the page never starts a session or marks messages as read.
-
-Each session keeps a separate private `inbox.db` with normalized text and media
-labels from received messages, available WhatsApp history sync, and text/replies
-sent through this worker. Media is not downloaded by the inbox. The archive
-does not preserve view-once content or media keys and scrubs expired temporary
-message bodies on archive reads and writes. `max_inbox_messages` bounds retention (default 10,000 per session);
-lowering it applies immediately and removes the oldest retained messages.
-Stored conversations can be read while disconnected. Participating groups and
-their current membership require a connected session.
-
-The archive starts when this worker version captures messages; it is not a
-complete copy of the phone's history. **Request older messages** requests older
-messages from the linked phone using an existing message as its anchor. Results
-arrive asynchronously, depend on WhatsApp availability, and remain subject to
-the retention limit. An empty conversation has no anchor to request history.
-
-Use the page's settings action to edit the actual entry for this worker
-instance. `whatsapp::configuration-id` resolves that ID in the worker's
-namespace; the ADE host saves to the configuration service in `default`.
-Environment templates are preserved by the form. Configuration changes are
-re-fetched from the authoritative service; malformed reloads keep the last
-valid settings and appear in `whatsapp::config-status`.
-
-Session/media limits and both timeouts apply to subsequent operations. A lower
-session limit prevents additional creation without deleting existing accounts.
-Changing `data_dir` requires restart because native clients own live SQLite
-credential stores; credentials are not migrated automatically. `max_events`
-requires restart because it sizes the native and Cloud event queues and native
-session event rings. The page reports pending restart fields. Compose `config_override`
-values remain authoritative on startup; remove an override if ADE should own
-that setting. `--local-config` ignores central edits and reports local mode.
-
-Keep all application copy, commands, accessibility labels and formatted dates
-in English. User messages, group names and descriptions retain their original
-content. The layout adapts to the pane width; archive details and group metadata
-expand on demand. Pairing appears before recent activity, with optional connection
-help at the end. The configuration form groups storage, capacity and time limits
-in a single column while ADE owns saving and resetting the draft. Only settings
-that require a worker restart carry a restart marker.
-
-The page optionally loads [Cabinet Grotesk from Fontshare](https://www.fontshare.com/fonts/cabinet-grotesk),
-falling back to local system fonts when offline. The font is requested directly
-from Fontshare's CDN; it is not redistributed in the worker. Motion is limited
-to control feedback and respects reduced-motion preferences. Content does not
-animate during scrolling or message updates. QR images are generated locally.
-
-Pairing data stays in page memory, expires, and is cleared on session change.
-The activity feed is bounded; the inbox is a separate persistent archive. The send
-result identifies the protocol message; receipts establish later delivery.
-After a send timeout, check activity before sending again.
-
-After editing the UI, run `make ui build` from this directory and restart the
-development worker. Assets remain embedded; no frontend server is needed.
-
-## Official Meta Cloud API
-
-The **Cloud API** tab works without a linked-device session. It supports an
-existing WhatsApp Business Platform account: local readiness, an explicit
-read-only connection check, existing templates, text/template sending, and a
-webhook-backed message archive with delivery status. It does not register or
-migrate a number, create templates, or subscribe an app automatically.
-
-In ADE, open **Configure worker** and find **Meta Cloud API**. Enter the existing
-WhatsApp Business Account ID and Phone Number ID, then the access token, Meta
-App Secret, and a verify token of your choice. Enable Cloud API and save.
-Saved Cloud settings apply live unless overridden by the worker environment.
-Secret inputs are masked; worker status and debug output omit their values.
-
-### Worker environment configuration
-
-Set the following variables in the WhatsApp worker's environment. They work
-with both central ADE configuration and `--local-config`:
-
-| Environment variable | Configuration field | Accepted value |
+| Transport | Connect with | Use it for |
 | --- | --- | --- |
-| `WHATSAPP_CLOUD_ENABLED` | `cloud.enabled` | Exactly `true` or `false` |
-| `WHATSAPP_CLOUD_API_VERSION` | `cloud.api_version` | A Graph API version, such as `v26.0` |
-| `WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID` | `cloud.business_account_id` | Numeric WABA ID |
-| `WHATSAPP_CLOUD_PHONE_NUMBER_ID` | `cloud.phone_number_id` | Numeric Meta phone number ID |
-| `WHATSAPP_CLOUD_ACCESS_TOKEN` | `cloud.access_token` | Token authorized for the WABA |
-| `WHATSAPP_META_APP_SECRET` | `cloud.app_secret` | Meta app secret for webhook signatures |
-| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | `cloud.verify_token` | Token you also enter in Meta's webhook settings |
+| Linked phone | A QR code or phone pairing code | Named sessions, phone conversations, participating groups, and native events |
+| Meta Cloud API | An existing WhatsApp Business Platform account | Official business messaging, approved templates, attachments, and webhook events |
 
-For iii Compose, add an uncommitted environment file to the WhatsApp container:
+Examples use the `default` namespace. Add `--namespace your_namespace` when the worker runs elsewhere. Replace the example recipient with a phone you control before sending.
 
-```yaml
-containers:
-  whatsapp:
-    worker: path://../whatsapp
-    env_file:
-      - ./whatsapp.env
+### Linked phone
+
+Create a session named `support`, start it, and link your phone. In ADE, open **WhatsApp → Linked phone → Connection** and scan the QR code from WhatsApp's **Linked devices** screen. Without ADE, follow the [pairing function walkthrough](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#pair-and-send).
+
+Once the session reports `connected`, send a text message:
+
+```bash
+iii trigger whatsapp::messages::send_text --json '{
+  "session_id": "support",
+  "chat_id": "+15551234567",
+  "text": "Hello from iii."
+}'
 ```
 
-Example `whatsapp.env` (replace the example IDs and credentials):
-
-```dotenv
-WHATSAPP_CLOUD_ENABLED=true
-WHATSAPP_CLOUD_API_VERSION=v26.0
-WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID=123456789012345
-WHATSAPP_CLOUD_PHONE_NUMBER_ID=987654321098765
-WHATSAPP_CLOUD_ACCESS_TOKEN=your-access-token
-WHATSAPP_META_APP_SECRET=your-app-secret
-WHATSAPP_WEBHOOK_VERIFY_TOKEN=your-webhook-verify-token
-```
-
-Keep the file outside version control and restrict access, for example with
-`chmod 600 whatsapp.env`. Compose's `environment` mapping or exported process
-variables can supply the same names. Restart the WhatsApp worker after changing
-its deployment environment.
-
-A defined variable overrides its corresponding saved or local field. An unset
-variable preserves that field's configured value or default. An empty value is
-an explicit override, not a fallback; normal validation still applies. For
-example, an empty enable flag is invalid, and an enabled Cloud API needs IDs
-and an access token. Values are used as supplied, without recursive `${...}`
-expansion; numeric IDs remain exact strings.
-
-Environment values are applied only at runtime and are never written back by
-the worker to central configuration or its YAML seed. Existing saved secrets
-are not automatically removed. ADE and `whatsapp::config-status` show which
-fields are overridden and their variable names, without exposing secret values.
-Saved edits to those fields take effect only after removing the corresponding
-environment override and restarting the worker.
-
-### Central environment references and local files
-
-ADE also preserves `${VAR}` and `${VAR:default}` references in stored
-configuration. These are expanded by the configuration service using the
-**engine process environment**, not the WhatsApp container's `env_file`.
-Standalone references can be coerced into YAML scalar types: a numeric ID may
-become a number and fail the required string schema. Prefer the direct worker
-variables above for Cloud IDs and credentials.
-
-When moving variables from the engine environment to the worker environment,
-remove unused central references: central configuration must load successfully
-before worker overrides can apply. Local YAML files continue to accept literal
-configuration values; `${...}` interpolation is not performed on local files.
-Protect any local files containing credentials.
-
-Use a token authorized for the existing account: messaging requires
-`whatsapp_business_messaging`; account, template and subscription inspection
-also needs `whatsapp_business_management`. Follow Meta's
-[getting started guide](https://developers.facebook.com/documentation/business-messaging/whatsapp/get-started)
-for account permissions and production token setup.
-
-Select **Check connection** to inspect the number, WABA membership and subscribed
-apps. This is a read-only check. Readiness only describes local settings; it
-does not prove the token works or the public webhook is reachable.
-
-The worker depends on the iii HTTP worker for its callback. Use a version whose
-HTTP trigger supports `public_webhook` and raw `request_body` streams (verified
-with package 0.22.1). Forward a public HTTPS callback to the HTTP worker's
-restricted webhook listener. The worker registers GET and POST at:
-
-```text
-/webhooks/whatsapp-cloud/<URL-encoded configuration ID>
-```
-
-Copy the exact callback path from the Cloud API tab, prefix your public HTTPS
-origin, and configure it in your Meta app with the same verify token. Subscribe
-the app to the WABA and enable the `messages` webhook field in the Meta dashboard.
-See Meta's [webhook endpoint guide](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/create-webhook-endpoint)
-and [WABA subscriptions API](https://developers.facebook.com/documentation/business-messaging/whatsapp/reference/whatsapp-business-account/subscribed-apps-api).
-The worker answers the plaintext verification challenge and validates
-`X-Hub-Signature-256` against the exact request bytes before parsing. It accepts
-only the configured WABA/phone and acknowledges matching messages after local
-persistence. Repeated deliveries are deduplicated; receipts may arrive before
-the send response. Missing webhook secrets or disabled Cloud API return 503.
-
-### Development webhook URL
-
-In **Cloud API**, select **Start development tunnel** to obtain a complete
-HTTPS callback URL, then **Copy webhook URL** and paste it into the Meta app's
-webhook configuration. Use the same verify token saved in **Configure worker**,
-or supplied through `WHATSAPP_WEBHOOK_VERIFY_TOKEN` when that override is set.
-Enable the `messages` field and subscribe the app to the WABA. Starting a
-tunnel does not register or change the callback in Meta.
-
-The `quick-tunnel` worker must run in the WhatsApp worker's namespace, with
-`cloudflared` installed and its `webhooks` target pointing to the HTTP worker's
-restricted webhook listener (normally `http://127.0.0.1:3112`). Only routes
-explicitly marked `public_webhook` are exposed there. The generated URL is:
-
-```text
-https://<host>.trycloudflare.com/webhooks/whatsapp-cloud/<configuration ID>
-```
-
-The worker owns a separate renewable tunnel lease, so **Stop tunnel** releases
-only WhatsApp's reservation. GitHub and other consumers can keep using the
-same tunnel. The enabled preference is saved privately under `data_dir` and
-resumes after a worker restart. Shutdown releases WhatsApp's lease; unexpected
-termination leaves a bounded lease that expires unless renewed.
-
-The page displays a callback URL only while the tunnel is ready. A recreated
-Quick Tunnel can have a different hostname: copy the new URL into Meta and
-verify it again. Development tunnels are temporary; use a stable HTTPS origin
-for a production callback. Linked-device sessions do not need this tunnel.
-
-The same controls are available as functions; use your deployment namespace:
-
-```sh
-iii trigger whatsapp::cloud::tunnel::start --namespace my-project --json '{}'
-iii trigger whatsapp::cloud::tunnel::status --namespace my-project --json '{}'
-iii trigger whatsapp::cloud::tunnel::stop --namespace my-project --json '{}'
-```
-
-Sending is always explicit. Text messages require an open 24-hour customer
-service window and allow up to 4096 characters. Outside that window, choose an
-approved template and supply its required components. Selecting **Approved template**
-loads existing templates; text parameters have labeled fields, with **Advanced JSON**
-for other components. Destinations use international phone numbers with a
-leading `+`, or supported business-scoped user IDs; native JIDs are rejected.
-See [text messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/text-messages),
-[templates](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview)
-and [business-scoped user IDs](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids).
-
-```sh
-iii trigger whatsapp::cloud::status --json '{}'
-iii trigger whatsapp::cloud::check_connection --json '{}'
-iii trigger whatsapp::cloud::templates::list --json '{"limit":50}'
-iii trigger whatsapp::cloud::messages::send_text --json '{"chat_id":"+15550000001","text":"Hello"}'
-iii trigger whatsapp::cloud::messages::send_template --json '{"chat_id":"+15550000001","name":"hello_world","language":"en_US"}'
-iii trigger whatsapp::cloud::chats::list --json '{}'
-iii trigger whatsapp::cloud::messages::list --json '{"chat_id":"+15550000001"}'
-```
-
-Sends make one request without automatic retry. An `accepted` result means Meta
-accepted submission; later webhooks establish delivery or failure. A timed-out
-send has an uncertain outcome: inspect the archive before repeating it.
-
-### Upload and send documents
-
-Documents use two separate Cloud functions. Upload once, save the returned
-`media_id`, and reuse it for subsequent explicit sends while it remains valid.
-Neither function needs a linked-device session or invokes native media sending.
-These functions are available after building and starting this worker version;
-editing source does not update an already running process.
-
-| Function ID | Required request fields | Optional request fields |
-| --- | --- | --- |
-| `whatsapp::cloud::media::upload_document` | `data_base64`, `mimetype`, `file_name` | None |
-| `whatsapp::cloud::messages::send_document` | `chat_id`, `media_id`, `file_name` | `caption` |
-
-Upload uses standard base64 containing only the selected file's bytes. It
-accepts no host path, URL, token, or native session ID. The calling engine or
-agent must authorize each upload/send under its existing function permissions.
-Do not add these functions to an automatic approval list just to test them.
-
-Markdown `.md` / `text/markdown` is **not an officially supported Meta document
-format** and is rejected. Choose `.txt` or PDF explicitly and supply that
-document; the worker never renames or converts it. Meta's supported formats,
-100 MB published limit, media lifetimes, and the worker's stricter limits are
-listed with sources in [the document reference](docs/meta-cloud-documents.md).
-
-The following example assumes the user explicitly selected a plain-text
-attachment named `report.txt` whose bytes are `Report` followed by a newline.
-Use your actual worker namespace. The first command uploads only; the second
-sends a message and should only run after confirming its recipient and file.
-
-```sh
-iii trigger whatsapp::cloud::media::upload_document --namespace my-project \
-  --json '{"data_base64":"UmVwb3J0Cg==","mimetype":"text/plain","file_name":"report.txt"}'
-```
-
-Example upload result:
+Example result, with an illustrative message ID:
 
 ```json
 {
-  "media_id": "1376223850470843",
-  "mimetype": "text/plain",
-  "file_name": "report.txt",
-  "file_length": 7
+  "chat_id": "15551234567@s.whatsapp.net",
+  "message_id": "3EB0EXAMPLE",
+  "recipient_fanout": null
 }
 ```
 
-Replace the example ID below with the **returned** `media_id`, and replace the
-example phone number with the explicitly confirmed recipient. `chat_id` uses
-the same Cloud recipient rules as text messages; native JIDs are rejected.
+Stopping a session preserves its credentials. Starting the worker does not automatically connect saved sessions. Native group operations require a connected session.
 
-```sh
-iii trigger whatsapp::cloud::messages::send_document --namespace my-project \
-  --json '{"chat_id":"+15550000001","media_id":"1376223850470843","file_name":"report.txt","caption":"Your requested report"}'
+### Meta Cloud API
+
+Configure your business account and webhook using the [Cloud setup guide](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md). Send a message from your test phone to the business number to open the customer service window, then reply through the official transport:
+
+```bash
+iii trigger whatsapp::cloud::messages::send_text --json '{
+  "chat_id": "+15551234567",
+  "text": "Hello from iii Cloud API."
+}'
 ```
 
-Example send result:
+Example result, with an illustrative message ID:
 
 ```json
 {
+  "chat_id": "+15551234567",
   "message_id": "wamid.example",
-  "chat_id": "+15550000001",
   "status": "accepted",
   "message_status": null
 }
 ```
 
-`accepted` confirms submission only. Follow the returned `message_id` in the
-Cloud archive or filtered `message.status` webhook events for delivery/read
-status or failure. Free-form documents require an open customer service
-window; a closed-window response never triggers an automatic template send.
-Upload and send each make one HTTP attempt. If the result is unknown after a
-timeout, do not retry automatically or assume that no upload/message exists.
+`accepted` means Meta accepted the request. Delivery and read status arrive later through webhooks. Outside the customer service window, explicitly choose an approved template. Sends are attempted once; a timeout can leave the outcome unknown, so inspect the conversation before sending again.
 
-Errors preserve the iii `code` and `message` envelope. Use the stable code for
-decisions: `cloud_window_closed` requires an explicit template choice or a new
-customer message/call; `cloud_outcome_unknown` forbids assuming the operation
-failed; `cloud_archive_failed` means Meta already accepted the message and its
-ID is included in the error message. Meta's free-form error text is discarded
-to avoid credential exposure. See the complete
-[error contract](docs/meta-cloud-documents.md#structured-worker-errors).
+## Configuration
 
-### Cloud message archive
+Edit **WhatsApp → Configure worker** in ADE, or edit the worker's entry in the `configuration` service. The default entry ID is `whatsapp`; `III_CONFIG_NAME` selects a different one. Persisted entries use the configuration service's storage adapter, normally `data/configuration/<entry_id>.yaml`. In normal mode, the worker does not maintain a separate live configuration file.
 
-Cloud archives live under `data_dir/.cloud/<phone_number_id>/inbox.db`, separate
-from every native session. They retain webhook messages and worker-submitted
-messages under `max_inbox_messages`; changing the phone ID selects a separate
-archive. They contain message previews and media labels, without media downloads
-or historical backfill. Reading them sends no read receipt. Subscribe to
-`whatsapp::cloud::events` for filtered webhook notifications and reconcile with
-the archive; native `whatsapp::events` subscriptions remain separate.
-The **Groups** tab continues to use the linked-device integration; this Cloud
-integration does not implement Meta's separate Groups API.
+### Configure storage first
+
+Add a dedicated connection named `whatsapp` to the database worker's existing `databases` map. Keep unrelated entries intact:
+
+```yaml
+databases:
+  whatsapp:
+    url: sqlite:./data/whatsapp.db  # Path on the database worker's host
+    pool:
+      max: 1                     # Required by the WhatsApp storage adapter
+```
+
+The adapter requires SQLite 3.41 or later; PostgreSQL and MySQL are not supported. Ensure the parent directory exists and restrict access to the database: it contains linked-device keys and message archives. Restart WhatsApp after the database becomes available. Follow the [storage and migration guide](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/database-storage.md) for deployment permissions, backups, and existing data.
+
+Set these fields on the WhatsApp worker:
+
+```yaml
+database:
+  name: whatsapp                 # Connection in the database worker
+  namespace: ''                  # Empty uses the WhatsApp namespace
+data_dir: data/whatsapp-go        # Private session metadata directory
+max_inbox_messages: 10000         # Retained messages per archive
+max_media_bytes: 16777216         # 16 MiB worker transfer limit
+operation_timeout_secs: 30        # Deadline for subsequent operations
+cloud:
+  enabled: false                 # Linked phones need no Meta credentials
+```
+
+Native keys and both transports' archives persist through the database worker. Give each WhatsApp process a distinct `data_dir` and configuration identity; keep that identity and its namespace stable across upgrades. Limits and timeouts apply live; `database`, `data_dir`, and `max_events` require a restart. Invalid reloads keep the last valid settings; `whatsapp::config-status` reports the outcome and pending restart fields. Changing the database target does not migrate existing data.
+
+Other fields and defaults are documented in the [configuration schema](https://github.com/iii-hq/workers/blob/main/whatsapp/config.schema.json).
+
+### Configure Meta credentials
+
+Under **Meta Cloud API**, enable the integration and enter the WhatsApp Business Account (WABA) ID, Phone Number ID, access token, app secret, and a verify token you choose. The verify token must match Meta's webhook settings. Phone Number ID is a Meta identifier, not the phone's digits.
+
+You can supply these fields through the WhatsApp process environment instead:
+
+```dotenv
+WHATSAPP_CLOUD_ENABLED=true
+WHATSAPP_CLOUD_BUSINESS_ACCOUNT_ID=123456789012345
+WHATSAPP_CLOUD_PHONE_NUMBER_ID=123456789012346
+WHATSAPP_CLOUD_ACCESS_TOKEN=your_access_token_here
+WHATSAPP_META_APP_SECRET=your_app_secret_here
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=your_webhook_verify_token_here
+```
+
+Set actual credentials in your deployment environment or a private, uncommitted `env_file`. Defined variables override saved fields at runtime, including explicit empty values; values are never written back. Restart after changing the process environment. ADE shows overridden fields without revealing their values. See [environment configuration](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#worker-environment-configuration) for precedence, Graph API version, and central environment references.
+
+## Official Meta Cloud API
+
+Use **Meta Cloud API** in ADE to check the connection, test text or templates, send attachments, and inspect the local Cloud archive. Configure a public HTTPS callback and subscribe the Meta app to the WABA and `messages` field. Local readiness does not prove remote authentication or webhook reachability.
+
+For development, **Webhook setup → Start development tunnel** creates a callback URL through `quick-tunnel`. Enable the HTTP worker's restricted webhook listener, install cloudflared on the tunnel worker's host, and point its `webhooks` target at that listener. Copy the URL into Meta with the matching verify token; starting a tunnel does not register it with Meta. Temporary URLs can change after a tunnel restart. See the [webhook walkthrough](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#development-webhook-url).
+
+### Upload and send documents
+
+Upload with `whatsapp::cloud::media::upload_document`, then reuse the returned `media_id` with `whatsapp::cloud::messages::send_document`. Markdown (`.md` or `text/markdown`) is rejected; explicitly choose a supported TXT or PDF file. The worker does not rename or convert it. Follow the [document upload and send examples](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#upload-and-send-documents).
+
+See [Cloud API coverage and contracts](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-api.md) for media, interactive messages, account management, Flows, and eligible group, calling, and commerce operations. Meta controls account eligibility and permissions. Cloud groups use their own IDs and functions, separate from native linked-phone groups.
+
+## Custom trigger types
+
+Bind a registered callback function to the transport you want to monitor:
+
+| Trigger type | Fires when | Callback context |
+| --- | --- | --- |
+| `whatsapp::events` | Native session events, filtered by `session_id` and `kinds` | `session_id`, `sequence`, `kind`, `timestamp_ms`, and `data` |
+| `whatsapp::cloud::events` | Verified Cloud webhook events after persistence, filtered by contact, group, type, status, or account | `kind`, account IDs, `timestamp_ms`, and event-specific fields |
+
+Native event polling can reconcile a bounded in-memory event history. Read the [native event contract](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#functions-and-events) before registering a callback.
 
 ### Filtered Cloud webhook events
 
-Read the running worker's registration guide with `engine::triggers::info`:
+Cloud subscriptions receive incoming messages by default. Delivery receipts and administrative events require explicit opt-in. Filters combine with AND; values within a list combine with OR. Read the [registration walkthrough](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#filtered-cloud-webhook-events) and [complete filters and payloads](https://github.com/iii-hq/workers/blob/main/whatsapp/cloud_events.md).
 
-```json
-{"id":"whatsapp::cloud::events","namespace":"messaging"}
-```
-
-Replace `messaging` with the WhatsApp worker's namespace. The returned
-`description` explains registration, filters and payloads. `configuration_schema`
-describes the accepted filters and `request_schema` describes each callback event.
-Runtime filter validation still applies.
-
-Trigger type `whatsapp::cloud::events` delivers one flat event per accepted
-incoming message or delivery-status object after its archive transaction commits:
-
-```json
-{
-  "kind": "message.received",
-  "business_account_id": "123",
-  "phone_number_id": "456",
-  "message_id": "wamid.example",
-  "chat_id": "+15550000001",
-  "sender_id": "+15550000001",
-  "message_type": "text",
-  "text": "Hello",
-  "timestamp_ms": 1700000000000,
-  "data": {
-    "id": "wamid.example",
-    "from": "15550000001",
-    "timestamp": "1700000000",
-    "type": "text",
-    "text": {"body": "Hello"}
-  }
-}
-```
-
-`kind` is `message.received` or `message.status`. Every event includes the account
-IDs, message ID, canonical chat ID and Meta's timestamp in milliseconds.
-`sender_id`, `message_type`, preview `text` and `status` are present when applicable.
-`message_type` retains Meta's raw type, such as `text`, `image` or `interactive`.
-`data` is the original single message/status object, not the entire webhook body.
-Previews normally contain at most 16 KiB. Event envelopes are capped at 64 KiB;
-oversized content uses `data: {"content_omitted":true}` and a preview clipped to
-8 KiB so the JSON-encoded envelope stays bounded. Handle message bodies as private data.
-
-The strict filter accepts these fields; unknown fields are rejected:
-
-| Field | Match |
-|---|---|
-| `kinds` | Event kinds; omitted or empty means only `message.received`. Set `message.status` explicitly to receive receipts. |
-| `chat_ids` | Canonical international phone numbers or business-scoped user IDs. |
-| `sender_ids` | Canonical sender IDs; events without a matching sender are excluded. |
-| `message_types` | Exact raw Meta message types. |
-| `statuses` | Exact values on `message.status` events: `sent`, `delivered`, `read` or `failed`. |
-| `business_account_id` | Exact WABA ID. |
-| `phone_number_id` | Exact Phone Number ID. |
-
-List entries are alternatives (OR); populated fields combine with AND. An empty
-list imposes no restriction, except for the received-only default of `kinds`.
-Each list accepts at most 128 values; the complete filter is limited to 64 KiB.
-Message type names use 1–64 lowercase letters, digits or underscores and start
-with a letter. Account IDs are numeric strings of at most 32 digits.
-Use a leading `+` for contact phone numbers and preserve business-scoped IDs such as
-`BR.ENT.Abc123`. Native JIDs are not valid Cloud filters. A status event usually
-has no sender or message type, so leave those filters empty for receipt subscriptions.
-
-#### Register through an engine function
-
-Call `engine::register_trigger` from a connection in the callback function's
-namespace. For a callback `support::on-cloud-message` registered in `support`
-and a WhatsApp worker in `messaging`, use a connection in `support` and this input:
-
-```json
-{
-  "trigger_type": "whatsapp::cloud::events",
-  "function_id": "support::on-cloud-message",
-  "trigger_namespace": "messaging",
-  "config": {
-    "chat_ids": ["+15550000001"],
-    "message_types": ["text"]
-  },
-  "metadata": {"workflow": "customer-support"}
-}
-```
-
-`trigger_type` and `function_id` identify the trigger and callback. Supply the
-Cloud filter as `config`, using `{}` for the received-only default. `metadata`
-is optional and travels separately from the event payload. `trigger_namespace`
-selects the trigger **provider**; the callback resolves in the **calling
-connection's namespace**. When `trigger_namespace` is omitted, provider lookup
-tries that connection's namespace and then `default`.
-
-A newly connected Go SDK client must wait until `engine::workers::list` shows
-its name in the intended namespace before calling this function. `Connect`
-can return before worker metadata is announced; an early call can bind the
-callback in `default`.
-
-The function returns `{"id":"<generated-id>"}`. Save that ID and call
-`engine::registered-triggers::info` with `{"id":"<generated-id>"}` to check
-`status: "active"`, the expected `function_id`, and the returned function detail.
-A `pending` registration is waiting for its trigger provider. Registration alone
-does not establish that the callback function is available.
-
-This engine-owned binding survives the caller's disconnection. Remove it with
-`engine::unregister_trigger` and `{"id":"<generated-id>"}`. Removal is idempotent;
-the response's `removed` field reports whether a binding existed.
-
-#### Register through the Go SDK
-
-With connected Go SDK clients, register the binding from the WhatsApp worker's
-namespace and specify the callback's namespace explicitly. In this example,
-`subscriptions` is connected in that worker's namespace and `automation` in
-`support`; both clients remain connected for the subscription's lifetime:
-
-```go
-if err := automation.RegisterFunction("support::on-cloud-message", func(ctx context.Context, raw json.RawMessage) (any, error) {
-    var event struct {
-        Kind      string `json:"kind"`
-        MessageID string `json:"message_id"`
-    }
-    if err := json.Unmarshal(raw, &event); err != nil {
-        return nil, err
-    }
-    metadata, _ := iii.MetadataFromContext(ctx)
-    return map[string]any{"message_id": event.MessageID, "metadata": metadata}, nil
-}); err != nil {
-    return err
-}
-filter := json.RawMessage(`{"chat_ids":["+15550000001"],"message_types":["text"]}`)
-metadata := json.RawMessage(`{"workflow":"customer-support"}`)
-if err := subscriptions.RegisterTriggerNamespaced(
-    "support-cloud-messages", "whatsapp::cloud::events",
-    "support::on-cloud-message", "support", filter, metadata,
-); err != nil {
-    return err
-}
-```
-
-The callback receives binding metadata through `iii.MetadataFromContext`,
-separately from the event payload. Callback results do not send WhatsApp messages;
-outbound actions still require an explicit call to a Cloud send function.
-
-Webhook deduplication is persistent in the Cloud archive's SQLite database and
-commits with the message/receipt changes before publication. The latest
-`5 * max_inbox_messages` deduplication entries are retained and cleared with the
-archive. Within that retained history, repeated messages and repeated status
-states publish once. A distinct late status still publishes once even if it
-has a lower rank than the status already shown in the archive. Local sends do
-not emit `message.received`; their subsequent Meta webhook receipts can emit
-`message.status`.
-
-Delivery is best effort through a separate Cloud queue bounded by `max_events`.
-Queue overflow, process shutdown or callback failure can lose a notification;
-there is no outbox, callback retry or Cloud event polling endpoint. Deduplication
-does not guarantee callback delivery. Reconcile application state with
-`cloud::chats::list` and `cloud::messages::list`; the archive records current
-retained state rather than every historical receipt transition. Cloud configuration
-changes invalidate queued events from the previous configuration.
-
-## Pair and send
-
-With the worker registered in a running engine:
-
-```sh
-iii trigger whatsapp::sessions::create --json '{"session_id":"work"}'
-iii trigger whatsapp::sessions::start --json '{"session_id":"work"}'
-iii trigger whatsapp::sessions::qr --json '{"session_id":"work"}'
-iii trigger whatsapp::sessions::get --json '{"session_id":"work"}'
-```
-
-Render the returned QR `code` as a QR image and scan it from WhatsApp's linked
-devices screen, or request `sessions::pair_code` with `phone_number`.
-Pairing material expires and is returned only by these dedicated functions.
-A null QR means none is currently available. Wait for the `connected` state
-before sending.
-
-```sh
-iii trigger whatsapp::messages::send_text --json '{"session_id":"work","chat_id":"+15550000001","text":"Hello"}'
-iii trigger whatsapp::sessions::stop --json '{"session_id":"work"}'
-```
-
-Send only to an intended, authorized recipient. Phone numbers normalize to
-`@s.whatsapp.net`; legacy OpenWA `@c.us` also normalizes. LIDs remain opaque
-`@lid` addresses. Group and newsletter functions validate their specific JID
-types.
-
-Sessions persist under `data_dir/<session_id>/` with private file permissions
-on Unix. Opening or restarting the worker never starts account connections:
-call `sessions::start` explicitly. Stop preserves credentials. Logout requests
-remote unlink and removes local credentials after the native client closes;
-remote unlink is best effort. Delete removes one local session without claiming
-remote unlink. SIGINT/SIGTERM attempt a graceful stop and native state flush
-within the shutdown deadline. A timeout can abort before flushing completes;
-local credential files are preserved.
-
-## Functions and events
-
-`--catalog` emits the authoritative function list with JSON schemas. Families
-cover sessions, messages, media, chats, groups, contacts, profile, privacy,
-communities, newsletters, labels, call rejection and the official Cloud API.
-Inputs are strict: unknown fields fail. WhatsApp feature operations require a
-connected session; connection and pairing use the session lifecycle functions.
-Server/app-state errors are returned, including participant
-errors within otherwise successful group responses.
-
-Trigger type `whatsapp::events` accepts:
-
-```json
-{"session_id":"work","kinds":["message.received","session.connected"]}
-```
-
-Omit `session_id` for all sessions; an empty `kinds` list accepts all event kinds.
-Payloads contain `session_id`, `sequence`, `kind`, `timestamp_ms`, and `data`.
-Callbacks preserve the binding's namespace and metadata. QR/pairing events
-announce availability/expiry and do not contain the pairing secret.
-
-Delivery is best effort, with a bounded broadcast queue and per-session event
-ring. Reconcile with `whatsapp::events::poll` using `after_sequence` and
-`limit`; use `whatsapp::chats::list` and `whatsapp::messages::list` for the local
-message archive. `whatsapp::messages::request_history` requests an older batch
-from the linked phone. Sequence reservations
-survive restart, but event payloads do not. `truncated` reports unavailable
-history; oversized event data is replaced by `{"content_omitted":true}`.
-Default retention is 1000 events per session. Individual event envelopes are
-capped at 64 KiB. Callback failures are not retried automatically.
-Only worker-owned diagnostics are logged; native protocol logs are suppressed
-because they can contain pairing secrets.
-The executable also disables SDK trace payload capture before starting its
-runtime. Timing and error spans remain available without recording function
-inputs/outputs such as pairing codes and message bodies.
+Callbacks are best effort and are not retried automatically. Cloud deduplication is persistent, but notifications can still be lost; reconcile through the Cloud chats and messages archive. Callback return values do not send replies.
 
 ## Limits and differences from OpenWA
 
-- Media uses base64 with a configurable maximum, 16 MiB by default. Downloads
-  accept WhatsApp CDN paths and checked cryptographic metadata, stream with a
-  hard byte cap, and do not fetch arbitrary caller URLs.
-- Files must already use the desired encoding. There is no voice/video
-  transcoding, thumbnail generation, conversion queue or external codec process.
-- Status publishing is excluded: whatsmeow uses account-wide privacy settings
-  and cannot preserve the original API's explicit per-send recipient list.
-- Send results contain protocol message IDs, not a delivery guarantee. Remote
-  mutation timeouts can have an unknown outcome; inspect state before retrying.
-- OpenWA plugins, automation rules, API-key management, webhooks administration,
-  infrastructure endpoints and persisted message/chat/contact queries require
-  additional application functionality. They are not advertised as working functions.
-- Call rejection sends signaling only and requires `peer` and `call_creator`
-  to identify the same person. Call termination, call links and audio/video
-  call transport are not exposed.
-- The native library is an unofficial protocol client. Its behavior and feature
-  availability depend on the WhatsApp service. Offline tests do not establish
-  live account interoperability or full OpenWA parity.
+Use this worker's typed functions and inspect their contracts with `iii worker info whatsapp`. It is not an HTTP-compatible OpenWA deployment. The [native API boundaries](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#limits-and-differences-from-openwa) list unsupported operations and nullable metadata.
 
-The following original native IDs are intentionally not registered. Each uses
-the `whatsapp::` prefix:
+Archives contain captured messages, not a complete remote history. Media transfers use bounded bytes; arbitrary host paths and download URLs are not accepted. The worker does not transcode files, host call audio, or settle payments. Native protocol support depends on the unofficial whatsmeow client; Cloud support depends on Meta's account permissions and feature availability.
 
-- `status::audience`, `status::send_text`, `status::send_media`, `status::revoke`;
-  `calls::terminate`; `chats::unsubscribe_presence`.
-- `newsletters::remove_picture`, `newsletters::delete`, `newsletters::update`,
-  `newsletters::set_picture`, `newsletters::change_owner`, `newsletters::demote_admin`,
-  `newsletters::admin_info`, `newsletters::followers`,
-  `newsletters::mute_follower_activity`, `newsletters::vote_poll`, `newsletters::my_addons`.
-- `groups::remove_linked_participants`, `groups::cancel_requests`,
-  `groups::revoke_request_codes`, `groups::set_history`,
-  `groups::set_forwarding_restriction`, `groups::set_admin_reports`,
-  `groups::set_limit_sharing`, `groups::set_member_link_mode`, `groups::set_member_history_mode`.
-- `contacts::remove`, `privacy::update_disallowed`, `communities::deactivate`,
-  `communities::join_subgroup`, `communities::remove_participants`.
+## Migration notes
 
-Unavailable group/contact/newsletter metadata is returned as `null`, with
-matching response schemas, rather than guessed values. Native send results
-have `recipient_fanout: null` because whatsmeow does not expose those counters.
+Rust credentials are incompatible with whatsmeow. Use a fresh `data/whatsapp-go` directory and explicitly pair a new session; keep the old data for the Rust worker. Existing Go SQLite stores require an explicit migration to the database worker. Follow the [storage migration guide](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/database-storage.md#migrate-existing-go-storage) before upgrading an existing account.
 
-## Validation
+## Further documentation
 
-```sh
-GOWORK=off make test
-GOWORK=off go vet ./...
-GOWORK=off go test -race ./...
-pnpm --dir ui test
-GOWORK=off make ui build
-```
+Find task-specific details in these guides:
 
-Tests cover storage/lifecycle, event bounds and projections, message construction,
-addressing, media bounds, strict requests, offline registration and function
-schemas. They do not pair an account or send a real WhatsApp message.
-`make catalog` prints the registered schemas. After changing `catalog.json`, run
-`make generate` to refresh the SDK schema adapters and rerun tests.
+- [ADE setup, test results, archives, and draft behavior](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/ade.md)
+- [Cloud credentials, webhooks, documents, and trigger registration](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md)
+- [Linked-phone pairing, functions, and events](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md)
+- [Database storage and migration](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/database-storage.md)
+- [Build from source, offline validation, and local SDK development](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/development.md)
 
-[Functions and events](#functions-and-events) defines the native subscription
-contract. [Filtered Cloud webhook events](#filtered-cloud-webhook-events) defines
-the Cloud contract, also exposed as structured schemas through trigger discovery.
+## License
 
-### Link the local Go SDK (optional)
-
-To test SDK changes before updating the pinned dependency, link a local checkout
-with a temporary Go workspace. From this worker's directory, using the Go version
-declared in `go.mod`:
-
-```sh
-WHATSAPP_MODULE_DIR="$PWD"
-III_GO_SDK_DIR=/path/to/iii-worktree/sdk/packages/go/iii
-WHATSAPP_WORKSPACE_DIR="$(mktemp -d)"
-(
-  cd "$WHATSAPP_WORKSPACE_DIR"
-  GOWORK=off go work init "$WHATSAPP_MODULE_DIR" "$III_GO_SDK_DIR"
-)
-export GOWORK="$WHATSAPP_WORKSPACE_DIR/go.work"
-go list -m -json github.com/iii-hq/iii/sdk/packages/go/iii
-go test -race ./...
-make build
-```
-
-The reported `Dir` must point at the local SDK checkout. This leaves `go.mod`
-and `go.sum` unchanged; no absolute local paths are committed. Use `GOWORK=off`
-again to build or test the pinned dependency.
-
-### Isolated engine smoke test
-
-The optional engine smoke test starts an isolated engine and worker on loopback
-with temporary configuration and storage. Point it at existing local binaries:
-
-```sh
-GOWORK=off go build -o /tmp/whatsapp-go-smoke .
-III_BINARY=/path/to/iii \
-WHATSAPP_BINARY=/tmp/whatsapp-go-smoke \
-HTTP_BINARY=/path/to/http \
-GOWORK=off go test -run '^(TestEngineSmoke|TestCloudEnvironmentEngine)$' -count=1 -v .
-```
-
-This checks central configuration reloads, runtime schemas, ADE assets, offline
-session lifecycle and event delivery across namespaces. `HTTP_BINARY` is optional;
-when supplied, it also checks webhook verification, raw-body signatures, account
-isolation, duplicate message persistence, filtered Cloud callbacks, callback
-namespace/metadata and archive visibility before callback delivery using synthetic
-credentials and data.
-A synthetic quick-tunnel provider checks the development controls, shared lease
-isolation, namespace routing and callback changes through the real engine; it
-does not launch cloudflared or expose the test server publicly.
-The test does not pair an account or call Meta. Without `III_BINARY` and
-`WHATSAPP_BINARY`, it is skipped.
+Apache-2.0. See the [repository license](https://github.com/iii-hq/workers/blob/main/LICENSE).

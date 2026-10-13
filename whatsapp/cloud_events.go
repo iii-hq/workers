@@ -32,7 +32,7 @@ func cloudEventDescription(namespace string) string {
 	return strings.ReplaceAll(cloudEventGuide, `"<provider-namespace>"`, string(encoded))
 }
 
-// CloudEvent contains one verified Meta message or status, not the whole webhook.
+// CloudEvent contains one verified Meta message, status or administrative event.
 // Chat and sender IDs use the same public format as cloud::chats::list.
 type CloudEvent struct {
 	Kind              string          `json:"kind"`
@@ -46,6 +46,11 @@ type CloudEvent struct {
 	Status            string          `json:"status,omitempty"`
 	TimestampMS       int64           `json:"timestamp_ms"`
 	Data              json.RawMessage `json:"data"`
+	EventID           string          `json:"event_id,omitempty"`
+	Field             string          `json:"field,omitempty"`
+	Event             string          `json:"event,omitempty"`
+	GroupID           string          `json:"group_id,omitempty"`
+	ParticipantID     string          `json:"participant_id,omitempty"`
 	epoch             uint64
 }
 
@@ -57,6 +62,10 @@ type CloudEventFilter struct {
 	Statuses          []string `json:"statuses"`
 	BusinessAccountID string   `json:"business_account_id"`
 	PhoneNumberID     string   `json:"phone_number_id"`
+	Fields            []string `json:"fields"`
+	Events            []string `json:"events"`
+	GroupIDs          []string `json:"group_ids"`
+	ParticipantIDs    []string `json:"participant_ids"`
 }
 
 type cloudEventBinding struct {
@@ -97,6 +106,8 @@ func parseCloudEventFilter(raw json.RawMessage) (CloudEventFilter, error) {
 	}{
 		{"kinds", filter.Kinds}, {"chat_ids", filter.ChatIDs}, {"sender_ids", filter.SenderIDs},
 		{"message_types", filter.MessageTypes}, {"statuses", filter.Statuses},
+		{"fields", filter.Fields}, {"events", filter.Events},
+		{"group_ids", filter.GroupIDs}, {"participant_ids", filter.ParticipantIDs},
 	} {
 		if len(list.values) > 128 {
 			return filter, fmt.Errorf("%s must contain at most 128 values", list.name)
@@ -106,25 +117,43 @@ func parseCloudEventFilter(raw json.RawMessage) (CloudEventFilter, error) {
 		filter.Kinds = []string{"message.received"}
 	}
 	for _, kind := range filter.Kinds {
-		if kind != "message.received" && kind != "message.status" {
-			return filter, errors.New("kinds must contain only message.received or message.status")
+		if kind != "message.received" && kind != "message.status" && kind != "webhook.received" {
+			return filter, errors.New("kinds must contain only message.received, message.status or webhook.received")
 		}
 	}
 	for _, identities := range []struct {
 		name   string
 		values []string
-	}{{"chat_ids", filter.ChatIDs}, {"sender_ids", filter.SenderIDs}} {
+	}{{"chat_ids", filter.ChatIDs}, {"sender_ids", filter.SenderIDs}, {"participant_ids", filter.ParticipantIDs}} {
 		for i, raw := range identities.values {
 			id, err := normalizeCloudChatID(raw)
+			if identities.name == "chat_ids" {
+				id, err = normalizeCloudConversationID(raw)
+			}
 			if err != nil {
 				return filter, fmt.Errorf("invalid %s[%d]: %w", identities.name, i, err)
 			}
 			identities.values[i] = id
 		}
 	}
+	for _, id := range filter.GroupIDs {
+		if !cloudGroupIDPattern.MatchString(id) {
+			return filter, errors.New("group_ids must contain raw Cloud group IDs, without native JID or group: prefixes")
+		}
+	}
 	for _, kind := range filter.MessageTypes {
 		if !cloudMessageTypePattern.MatchString(kind) {
 			return filter, errors.New("message_types must contain raw Meta type names of 1..64 lowercase letters, digits or underscores, starting with a letter")
+		}
+	}
+	for _, field := range filter.Fields {
+		if !cloudMessageTypePattern.MatchString(field) {
+			return filter, errors.New("fields must contain raw Meta webhook field names")
+		}
+	}
+	for _, event := range filter.Events {
+		if len(event) == 0 || len(event) > 128 || strings.TrimSpace(event) != event {
+			return filter, errors.New("events must contain event names of 1..128 bytes without surrounding whitespace")
 		}
 	}
 	for _, status := range filter.Statuses {
@@ -148,6 +177,10 @@ func (filter CloudEventFilter) matches(event CloudEvent) bool {
 		(len(filter.SenderIDs) == 0 || slices.Contains(filter.SenderIDs, event.SenderID)) &&
 		(len(filter.MessageTypes) == 0 || slices.Contains(filter.MessageTypes, event.MessageType)) &&
 		(len(filter.Statuses) == 0 || slices.Contains(filter.Statuses, event.Status)) &&
+		(len(filter.Fields) == 0 || slices.Contains(filter.Fields, event.Field)) &&
+		(len(filter.Events) == 0 || slices.Contains(filter.Events, event.Event)) &&
+		(len(filter.GroupIDs) == 0 || slices.Contains(filter.GroupIDs, event.GroupID)) &&
+		(len(filter.ParticipantIDs) == 0 || slices.Contains(filter.ParticipantIDs, event.ParticipantID)) &&
 		(filter.BusinessAccountID == "" || filter.BusinessAccountID == event.BusinessAccountID) &&
 		(filter.PhoneNumberID == "" || filter.PhoneNumberID == event.PhoneNumberID)
 }

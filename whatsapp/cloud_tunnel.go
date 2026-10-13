@@ -60,7 +60,7 @@ type tunnelRPC func(context.Context, string, any) (json.RawMessage, error)
 // the current tunnel URL.
 type DevelopmentTunnel struct {
 	mu         sync.Mutex
-	config     func() Config
+	config     func(context.Context) (Config, error)
 	rpc        tunnelRPC
 	now        func() time.Time
 	path       string
@@ -77,10 +77,17 @@ func tunnelConsumerID(namespace, configID string) string {
 	sum := sha256.Sum256([]byte(namespace + "\x00" + configID))
 	return "whatsapp-" + hex.EncodeToString(sum[:])
 }
-func newDevelopmentTunnel(config func() Config, rpc tunnelRPC) *DevelopmentTunnel {
-	t := &DevelopmentTunnel{config: config, rpc: rpc, now: time.Now, path: filepath.Join(config().DataDir, ".development-tunnel.json"), wake: make(chan struct{}, 1)}
+func newDevelopmentTunnel(ctx context.Context, config func(context.Context) (Config, error), rpc tunnelRPC) *DevelopmentTunnel {
+	t := &DevelopmentTunnel{config: config, rpc: rpc, now: time.Now, wake: make(chan struct{}, 1)}
 	t.intent.ConsumerID = tunnelConsumerID(Namespace(), ConfigID())
 	t.state = DevelopmentTunnelStatus{Status: "stopped", TunnelID: "webhooks", WebhookPath: cloudWebhookPath()}
+	current, err := config(ctx)
+	if err != nil {
+		t.storageErr = errors.New("development tunnel configuration is unavailable")
+		t.fail("unavailable", "Development tunnel configuration is unavailable")
+		return t
+	}
+	t.path = filepath.Join(current.DataDir, ".development-tunnel.json")
 	t.storageErr = t.load()
 	if t.storageErr != nil {
 		t.fail("unavailable", "Development tunnel state is invalid or inaccessible; repair .development-tunnel.json in the worker data directory")
@@ -198,7 +205,12 @@ func (t *DevelopmentTunnel) ownLease(snapshot tunnelSnapshot) *tunnelLease {
 	return nil
 }
 func (t *DevelopmentTunnel) preflight(ctx context.Context) bool {
-	if !cloudStatus(t.config()).WebhookReady {
+	config, err := t.config(ctx)
+	if err != nil {
+		t.fail("unavailable", "Development tunnel configuration is unavailable")
+		return false
+	}
+	if !cloudStatus(config).WebhookReady {
 		t.fail("unavailable", "Enable Meta Cloud API and configure App secret and Webhook verify token before starting the development tunnel")
 		return false
 	}
@@ -337,7 +349,7 @@ func (t *DevelopmentTunnel) Status(ctx context.Context) (DevelopmentTunnelStatus
 	}
 	defer t.mu.Unlock()
 	t.reconcile(ctx, false)
-	return t.state, nil
+	return t.state, ctx.Err()
 }
 func (t *DevelopmentTunnel) Start(ctx context.Context) (DevelopmentTunnelStatus, error) {
 	if err := lockSessionContext(ctx, &t.mu); err != nil {
@@ -351,7 +363,7 @@ func (t *DevelopmentTunnel) Start(ctx context.Context) (DevelopmentTunnelStatus,
 		return t.state, nil
 	}
 	if !t.preflight(ctx) {
-		return t.state, nil
+		return t.state, ctx.Err()
 	}
 	t.intent.Enabled = true
 	if !t.persist() {
@@ -443,17 +455,27 @@ func (t *DevelopmentTunnel) Close(ctx context.Context) error {
 	return err
 }
 func registerDevelopmentTunnel(ctx context.Context, client *iii.Client, manager *Manager) error {
-	t := newDevelopmentTunnel(manager.Config, func(ctx context.Context, id string, input any) (json.RawMessage, error) {
+	rpc := func(ctx context.Context, id string, input any) (json.RawMessage, error) {
 		body, err := json.Marshal(input)
 		if err != nil {
 			return nil, err
 		}
 		return client.Trigger(ctx, iii.TriggerRequest{FunctionID: id, Namespace: Namespace(), Data: body, Timeout: 10 * time.Second})
-	})
+	}
+	var t *DevelopmentTunnel
+	if manager.interfaceOnly {
+		t = &DevelopmentTunnel{config: manager.ConfigContext, wake: make(chan struct{}, 1)}
+		t.intent.ConsumerID = tunnelConsumerID(Namespace(), ConfigID())
+	} else {
+		t = newDevelopmentTunnel(ctx, manager.ConfigContext, rpc)
+	}
 	manager.tunnel = t
-	if err := client.RegisterFunction("whatsapp::cloud::tunnel::changed", func(context.Context, json.RawMessage) (any, error) {
+	if err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::tunnel::changed", func(context.Context, callbackRequest[callbackNotification]) (callbackAccepted, error) {
+		if manager.interfaceOnly {
+			return callbackAccepted{}, interfaceCallbackError()
+		}
 		t.Notify()
-		return map[string]bool{"accepted": true}, nil
+		return callbackAccepted{Accepted: true}, nil
 	}, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}); err != nil {
 		return err
 	}
@@ -461,7 +483,9 @@ func registerDevelopmentTunnel(ctx context.Context, client *iii.Client, manager 
 	if err := client.RegisterTriggerNamespaced(t.intent.ConsumerID+"-changed", "quick-tunnel::changed", "whatsapp::cloud::tunnel::changed", Namespace(), config); err != nil {
 		return err
 	}
-	t.Run(ctx)
+	if !manager.interfaceOnly {
+		t.Run(ctx)
+	}
 	return nil
 }
 func registerTunnelOperations(r *Registry) {

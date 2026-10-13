@@ -38,6 +38,26 @@
           "format": "password",
           "type": "string",
           "writeOnly": true
+        },
+        "flow_private_key": {
+          "type": "string",
+          "default": "",
+          "format": "password",
+          "writeOnly": true,
+          "maxLength": 16384,
+          "description": "Optional unencrypted PEM RSA-2048 private key for the Flow data exchange endpoint. Prefer WHATSAPP_FLOW_PRIVATE_KEY."
+        },
+        "flow_handler_function": {
+          "type": "string",
+          "default": "",
+          "maxLength": 256,
+          "description": "iii function that receives decrypted Flow data and returns screen and data."
+        },
+        "flow_handler_namespace": {
+          "type": "string",
+          "default": "",
+          "maxLength": 256,
+          "description": "Namespace of the Flow handler. Empty uses this worker namespace."
         }
       },
       "type": "object"
@@ -59,7 +79,11 @@
     "max_media_bytes": 16777216,
     "max_sessions": 32,
     "operation_timeout_secs": 30,
-    "shutdown_timeout_secs": 15
+    "shutdown_timeout_secs": 15,
+    "database": {
+      "name": "whatsapp",
+      "namespace": ""
+    }
   },
   "properties": {
     "cloud": {
@@ -81,7 +105,7 @@
     },
     "data_dir": {
       "default": "data/whatsapp-go",
-      "description": "Persistent native session storage. Changing this requires a worker restart.",
+      "description": "Private local session metadata and immutable legacy database backups. Message archives and native keys are stored through the database worker.",
       "minLength": 1,
       "type": "string"
     },
@@ -129,6 +153,28 @@
       "maximum": 120,
       "minimum": 1,
       "type": "integer"
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Dedicated database worker SQLite pool. Changes require a restart. Empty namespace uses the WhatsApp namespace.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "default": "whatsapp"
+        },
+        "namespace": {
+          "type": "string",
+          "maxLength": 256,
+          "default": ""
+        }
+      },
+      "default": {
+        "name": "whatsapp",
+        "namespace": ""
+      }
     }
   },
   "title": "Config",

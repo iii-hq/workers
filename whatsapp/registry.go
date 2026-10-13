@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,9 +21,12 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
+// Generated with the schema adapters so the readable source stays authoritative.
+// Compressing this static catalog saves about 470 KB in the release binary.
+//
 //go:generate go run ./cmd/cataloggen
-//go:embed catalog.json
-var catalogJSON []byte
+//go:embed catalog.json.gz
+var compressedCatalog []byte
 
 type CatalogEntry struct {
 	ID             string         `json:"id"`
@@ -30,8 +36,20 @@ type CatalogEntry struct {
 }
 
 var catalogEntries = func() map[string]CatalogEntry {
+	reader, err := gzip.NewReader(bytes.NewReader(compressedCatalog))
+	if err != nil {
+		panic(err)
+	}
+	raw, err := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if err != nil {
+		panic(err)
+	}
+	if closeErr != nil {
+		panic(closeErr)
+	}
 	var entries []CatalogEntry
-	if err := json.Unmarshal(catalogJSON, &entries); err != nil {
+	if err := json.Unmarshal(raw, &entries); err != nil {
 		panic(err)
 	}
 	result := make(map[string]CatalogEntry, len(entries))
@@ -101,17 +119,26 @@ func (r *Registry) Invoke(ctx context.Context, id string, input map[string]any) 
 	if r.Manager == nil {
 		return nil, errors.New("worker is not initialized")
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.Manager.Config().OperationTimeoutSecs)*time.Second)
+	started := time.Now()
+	configCtx, configCancel := context.WithTimeout(ctx, time.Duration(DefaultConfig().OperationTimeoutSecs)*time.Second)
+	config, err := r.Manager.ConfigContext(configCtx)
+	configCancel()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithDeadline(ctx, started.Add(time.Duration(config.OperationTimeoutSecs)*time.Second))
 	defer cancel()
 	// A lifecycle transition drains active operations before closing their stores.
 	if !strings.HasPrefix(id, "whatsapp::sessions::") && stringArg(clean, "session_id") != "" {
-		s, err := r.Manager.session(stringArg(clean, "session_id"))
+		s, err := r.Manager.sessionContext(ctx, stringArg(clean, "session_id"))
 		if err != nil {
 			return nil, err
 		}
-		s.operations.RLock()
+		if err := lockSessionContext(ctx, contextReadMutex{&s.operations}); err != nil {
+			return nil, err
+		}
 		defer s.operations.RUnlock()
-		current, err := r.Manager.session(stringArg(clean, "session_id"))
+		current, err := r.Manager.sessionContext(ctx, stringArg(clean, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +188,7 @@ func (wireResponse[T]) JSONSchema() *reflectschema.Schema {
 }
 func installOperation[T operation](client *iii.Client, r *Registry) error {
 	var t T
-	metadata, _ := json.Marshal(map[string]any{"description": catalogEntries[t.ID()].Description, "trace_hidden": true})
+	metadata, _ := json.Marshal(map[string]any{"description": catalogEntries[t.ID()].Description})
 	return iii.RegisterFunctionTyped[wireRequest[T], wireResponse[T]](client, t.ID(), func(ctx context.Context, input wireRequest[T]) (wireResponse[T], error) {
 		result, err := r.Invoke(ctx, t.ID(), map[string]any(input))
 		return wireResponse[T]{result}, err

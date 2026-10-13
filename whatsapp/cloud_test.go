@@ -272,7 +272,7 @@ func TestCloudWebhookSignatureChallengeAndAccountIsolation(t *testing.T) {
 func TestCloudWebhookRawSDKChannelAndDuplicatePersistence(t *testing.T) {
 	config := cloudTestConfig()
 	config.DataDir = t.TempDir()
-	manager, err := NewManager(config)
+	manager, err := newTestManager(config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -37,21 +38,30 @@ var compiledConfigSchema = func() *validate.Schema {
 	return s
 }()
 
+type DatabaseConfig struct {
+	Name      string `json:"name" yaml:"name"`
+	Namespace string `json:"namespace" yaml:"namespace"`
+}
+
 type Config struct {
-	DataDir              string      `json:"data_dir" yaml:"data_dir"`
-	MaxSessions          int         `json:"max_sessions" yaml:"max_sessions"`
-	MaxMediaBytes        int         `json:"max_media_bytes" yaml:"max_media_bytes"`
-	MaxEvents            int         `json:"max_events" yaml:"max_events"`
-	MaxInboxMessages     int         `json:"max_inbox_messages" yaml:"max_inbox_messages"`
-	OperationTimeoutSecs int         `json:"operation_timeout_secs" yaml:"operation_timeout_secs"`
-	ShutdownTimeoutSecs  int         `json:"shutdown_timeout_secs" yaml:"shutdown_timeout_secs"`
-	Cloud                CloudConfig `json:"cloud" yaml:"cloud"`
+	Database             DatabaseConfig `json:"database" yaml:"database"`
+	DataDir              string         `json:"data_dir" yaml:"data_dir"`
+	MaxSessions          int            `json:"max_sessions" yaml:"max_sessions"`
+	MaxMediaBytes        int            `json:"max_media_bytes" yaml:"max_media_bytes"`
+	MaxEvents            int            `json:"max_events" yaml:"max_events"`
+	MaxInboxMessages     int            `json:"max_inbox_messages" yaml:"max_inbox_messages"`
+	OperationTimeoutSecs int            `json:"operation_timeout_secs" yaml:"operation_timeout_secs"`
+	ShutdownTimeoutSecs  int            `json:"shutdown_timeout_secs" yaml:"shutdown_timeout_secs"`
+	Cloud                CloudConfig    `json:"cloud" yaml:"cloud"`
 }
 
 func DefaultConfig() Config {
-	return Config{"data/whatsapp-go", 32, 16 * 1024 * 1024, 1000, 10000, 30, 15, DefaultCloudConfig()}
+	return Config{DataDir: "data/whatsapp-go", MaxSessions: 32, MaxMediaBytes: 16 * 1024 * 1024, MaxEvents: 1000, MaxInboxMessages: 10000, OperationTimeoutSecs: 30, ShutdownTimeoutSecs: 15, Cloud: DefaultCloudConfig(), Database: DatabaseConfig{Name: "whatsapp"}}
 }
 func (c Config) Validate() error {
+	if strings.TrimSpace(c.Database.Name) == "" || len(c.Database.Name) > 128 || len(c.Database.Namespace) > 256 {
+		return errors.New("database.name is required (max 128 characters); database.namespace must be at most 256 characters")
+	}
 	if strings.TrimSpace(c.DataDir) == "" {
 		return errors.New("data_dir must not be empty")
 	}
@@ -162,17 +172,16 @@ func ensureConfig(ctx context.Context, client *iii.Client, seed Config) (Config,
 		if !errors.As(err, &remote) || remote.Code != "function_not_found" {
 			return Config{}, errors.New("unable to initialize WhatsApp configuration")
 		}
+		warnLegacyConfigOnce(ConfigID())
 		// Older configuration workers have no atomic ensure operation. Never replace
 		// an existing value, including unresolved secret templates, with seed data.
 		b, getErr := controlCall(ctx, client, "configuration::get", map[string]any{"id": ConfigID(), "raw": true})
-		var current struct {
-			Value json.RawMessage `json:"value"`
-		}
+		var current map[string]json.RawMessage
 		if getErr == nil {
-			if json.Unmarshal(b, &current) != nil {
+			if json.Unmarshal(b, &current) != nil || len(current["value"]) == 0 {
 				return Config{}, errors.New("invalid configuration response")
 			}
-			if len(current.Value) > 0 && !bytes.Equal(bytes.TrimSpace(current.Value), []byte("null")) {
+			if !bytes.Equal(bytes.TrimSpace(current["value"]), []byte("null")) {
 				delete(payload, "initial_value")
 			}
 		} else if !errors.As(getErr, &remote) || remote.Code != "NOT_FOUND" {
@@ -185,47 +194,70 @@ func ensureConfig(ctx context.Context, client *iii.Client, seed Config) (Config,
 	return fetchConfig(ctx, client)
 }
 
+var legacyConfigWarnings sync.Map
+
+func warnLegacyConfigOnce(id string) {
+	if _, warned := legacyConfigWarnings.LoadOrStore(id, struct{}{}); !warned {
+		log.Printf("configuration entry %q: engine lacks configuration::ensure; using non-atomic legacy initialization; upgrade to >=0.24.1 for concurrent-write safety", id)
+	}
+}
+
 type ConfigStatus struct {
 	ID                    string            `json:"id"`
 	Source                string            `json:"source"`
 	LastOutcome           string            `json:"last_outcome"`
-	LastError             *string           `json:"last_error"`
+	LastError             *string           `json:"last_error" jsonschema:"nullable"`
 	RejectedReloads       uint64            `json:"rejected_reloads"`
-	RestartRequiredFields []string          `json:"restart_required_fields"`
+	RestartRequiredFields []string          `json:"restart_required_fields" jsonschema:"nullable"`
 	EnvironmentOverrides  map[string]string `json:"environment_overrides"`
 	Active                Config            `json:"active"`
 }
 
 func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, local bool) error {
+	active, err := m.ConfigContext(ctx)
+	if err != nil {
+		return err
+	}
 	var mu sync.Mutex
-	status := ConfigStatus{ID: ConfigID(), Source: "central", LastOutcome: "applied", RestartRequiredFields: []string{}, EnvironmentOverrides: cloudEnvironmentOverrides(), Active: m.Config().Redacted()}
+	status := ConfigStatus{ID: ConfigID(), Source: "central", LastOutcome: "applied", RestartRequiredFields: []string{}, EnvironmentOverrides: cloudEnvironmentOverrides(), Active: active.Redacted()}
 	if local {
 		status.Source = "local"
 	}
 	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if err := client.RegisterFunction("whatsapp::configuration-id", func(context.Context, json.RawMessage) (any, error) { return map[string]string{"id": ConfigID()}, nil }, internal); err != nil {
+	if err := iii.RegisterFunctionTyped(client, "whatsapp::configuration-id", func(context.Context, callbackRequest[callbackNotification]) (callbackConfigurationID, error) {
+		return callbackConfigurationID{ID: ConfigID()}, nil
+	}, internal); err != nil {
 		return err
 	}
-	if err := client.RegisterFunction("whatsapp::config-status", func(context.Context, json.RawMessage) (any, error) { mu.Lock(); defer mu.Unlock(); return status, nil }, internal); err != nil {
+	if err := iii.RegisterFunctionTyped(client, "whatsapp::config-status", func(ctx context.Context, _ callbackRequest[callbackNotification]) (ConfigStatus, error) {
+		if err := lockSessionContext(ctx, &mu); err != nil {
+			return ConfigStatus{}, err
+		}
+		defer mu.Unlock()
+		return status, nil
+	}, internal); err != nil {
 		return err
 	}
 	if local {
 		return nil
 	}
-	reload := func(ctx context.Context) {
-		mu.Lock()
+	reload := func(ctx context.Context) error {
+		if err := lockSessionContext(ctx, &mu); err != nil {
+			return err
+		}
 		defer mu.Unlock()
 		cfg, err := fetchConfig(ctx, client)
+		var accepted Config
 		var pending []string
 		if err == nil {
-			pending, err = m.ApplyConfig(cfg)
+			accepted, pending, err = m.applyConfigSnapshotContext(ctx, cfg)
 		}
 		if err != nil {
 			message := "WhatsApp configuration reload rejected; active settings retained"
 			status.LastError = &message
 			status.LastOutcome = "rejected"
 			status.RejectedReloads++
-			return
+			return nil
 		}
 		status.LastError = nil
 		status.LastOutcome = "applied"
@@ -234,11 +266,17 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 		}
 		status.RestartRequiredFields = pending
 		status.EnvironmentOverrides = cloudEnvironmentOverrides()
-		status.Active = m.Config().Redacted()
+		status.Active = accepted.Redacted()
+		return nil
 	}
-	if err := client.RegisterFunction("whatsapp::on-config-change", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		reload(ctx)
-		return map[string]bool{"ok": true}, nil
+	if err := iii.RegisterFunctionTyped(client, "whatsapp::on-config-change", func(ctx context.Context, _ callbackRequest[callbackNotification]) (callbackOK, error) {
+		if m.interfaceOnly {
+			return callbackOK{}, interfaceCallbackError()
+		}
+		if err := reload(ctx); err != nil {
+			return callbackOK{}, err
+		}
+		return callbackOK{OK: true}, nil
 	}, internal); err != nil {
 		return err
 	}
@@ -246,6 +284,8 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 	if err := client.RegisterTriggerNamespaced("whatsapp:configuration:"+ConfigID(), "configuration", "whatsapp::on-config-change", Namespace(), b); err != nil {
 		return err
 	}
-	reload(ctx)
+	if !m.interfaceOnly {
+		return reload(ctx)
+	}
 	return nil
 }

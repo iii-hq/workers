@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -14,6 +15,26 @@ import (
 type schemaTestTag struct{}
 
 func (schemaTestTag) ID() string { return "whatsapp::messages::list" }
+
+func TestEmbeddedCatalogMatchesSource(t *testing.T) {
+	raw, err := os.ReadFile("catalog.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source []CatalogEntry
+	if err := json.Unmarshal(raw, &source); err != nil {
+		t.Fatal(err)
+	}
+	if len(source) != len(catalogEntries) {
+		t.Fatal("embedded catalog differs from source; run make generate")
+	}
+	for _, entry := range source {
+		if !reflect.DeepEqual(entry, catalogEntries[entry.ID]) {
+			t.Fatalf("embedded contract %s differs from source; run make generate", entry.ID)
+		}
+	}
+}
+
 func TestSDKSchemaAdaptersPreserveContracts(t *testing.T) {
 	request, err := iii.InferSchema[wireRequest[schemaTestTag]]()
 	if err != nil {
@@ -51,7 +72,7 @@ func TestSDKSchemaAdaptersPreserveContracts(t *testing.T) {
 func TestRegistryStrictRequestsAndTransportMetadata(t *testing.T) {
 	c := DefaultConfig()
 	c.DataDir = filepath.Join(t.TempDir(), "sessions")
-	m, err := NewManager(c)
+	m, err := newTestManager(c)
 	if err != nil {
 		t.Fatal(err)
 	}

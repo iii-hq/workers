@@ -15,7 +15,7 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-var version = "0.1.0-go"
+var version = "0.1.0"
 
 const whatsmeowRevision = "8b41cfe6d9c4"
 
@@ -38,6 +38,7 @@ func run() error {
 	local := flag.Bool("local-config", false, "Use local configuration only")
 	manifest := flag.Bool("manifest", false, "Print package information without connections or storage access")
 	catalog := flag.Bool("catalog", false, "Print supported function schemas without connections or storage access")
+	collect := flag.Bool("collect-interface", false, "Register interface metadata without backend calls, account storage, or business execution")
 	showVersion := flag.Bool("version", false, "Print worker version")
 	flag.Parse()
 	if flag.NArg() != 0 {
@@ -63,7 +64,7 @@ func run() error {
 			seed, err = parseConfigYAML(b)
 		}
 		if err != nil {
-			if *local {
+			if *local || *collect {
 				return errors.New("unable to read valid local WhatsApp configuration")
 			}
 			log.Print("Optional configuration seed unavailable; using central configuration or defaults")
@@ -81,7 +82,7 @@ func run() error {
 		return errors.New("unable to connect to iii engine")
 	}
 	config := seed
-	if *local {
+	if *local || *collect {
 		config, err = runtimeConfig(seed)
 	} else {
 		config, err = ensureConfig(ctx, client, seed)
@@ -89,7 +90,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	manager, err := NewManager(config)
+	if *collect {
+		manager, err := newInterfaceManager(config)
+		if err != nil {
+			return err
+		}
+		if err := registerWorkerInterface(ctx, client, manager, *url, false); err != nil {
+			return err
+		}
+		log.Print("WhatsApp interface registered; collection mode does not execute operations")
+		<-ctx.Done()
+		return nil
+	}
+	storage, err := newDatabaseStorage(ctx, client, config)
+	if err != nil {
+		return err
+	}
+	manager, err := NewManager(config, storage)
 	if err != nil {
 		return err
 	}
@@ -100,32 +117,17 @@ func run() error {
 			log.Print("WhatsApp shutdown did not finish cleanly")
 		}
 	}()
-	if err = registerEvents(ctx, client, manager); err != nil {
-		return err
-	}
-	if err = registerCloudEvents(ctx, client, manager); err != nil {
-		return err
-	}
-	if err = registerCloudWebhooks(client, manager, *url); err != nil {
-		return err
-	}
-	if err = registerDevelopmentTunnel(ctx, client, manager); err != nil {
-		return err
-	}
 	defer func() {
+		if manager.tunnel == nil {
+			return
+		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer shutdownCancel()
 		if manager.tunnel.Close(shutdownCtx) != nil {
 			log.Print("Development tunnel shutdown did not finish cleanly; its lease will expire automatically")
 		}
 	}()
-	if err = NewRegistry(manager).Install(client); err != nil {
-		return err
-	}
-	if err = registerUI(client); err != nil {
-		return err
-	}
-	if err = registerConfiguration(ctx, client, manager, *local); err != nil {
+	if err = registerWorkerInterface(ctx, client, manager, *url, *local); err != nil {
 		return err
 	}
 	log.Print("WhatsApp Go worker registered; sessions start only on explicit request")

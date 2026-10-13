@@ -7,6 +7,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -18,9 +19,9 @@ from pathlib import Path
 import deployment_targets
 import validate_oci_dockerfile
 
-def run(*command: str, cwd: Path | None = None) -> None:
+def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print("+", " ".join(command))
-    subprocess.run(command, cwd=cwd, check=True)
+    subprocess.run(command, cwd=cwd, check=True, env=env)
 
 
 def sha256(path: Path) -> str:
@@ -317,13 +318,14 @@ def build_metadata(args: argparse.Namespace) -> int:
         "toolchain_name": "",
         "toolchain_version": "",
     }
-    if kind == "rust-binary":
+    if kind in {"rust-binary", "go-binary"}:
         toolchain = artifact.get("toolchain")
         if not isinstance(toolchain, dict) or set(toolchain) != {"name", "version"}:
-            raise SystemExit("rust artifact toolchain differs from compiler contract")
-        if toolchain["name"] != "rust" or not isinstance(toolchain["version"], str) or not toolchain["version"]:
-            raise SystemExit("rust build requires an explicit Rust toolchain")
-        metadata.update(toolchain_name="rust", toolchain_version=toolchain["version"])
+            raise SystemExit("binary artifact toolchain differs from compiler contract")
+        language = "go" if kind == "go-binary" else "rust"
+        if toolchain["name"] != language or not isinstance(toolchain["version"], str) or not toolchain["version"]:
+            raise SystemExit(f"{kind} build requires an explicit {language} toolchain")
+        metadata.update(toolchain_name=language, toolchain_version=toolchain["version"])
     elif kind in {"javascript-bundle", "python-bundle"}:
         required = {
             "kind", "workspace_root", "runtime", "package_manager", "lockfile",
@@ -462,7 +464,7 @@ def matrix(args: argparse.Namespace) -> int:
             raise SystemExit("build unit must be an object")
         kind = str(unit.get("kind"))
         target = str(unit.get("target") or unit.get("platform") or "none")
-        if kind == "rust-binary":
+        if kind in {"rust-binary", "go-binary"}:
             runner = deployment_targets.TARGET_LARGER_RUNNERS.get(target)
             if runner is None:
                 raise SystemExit(f"no runner configured for target {target}")
@@ -489,35 +491,44 @@ def build(args: argparse.Namespace) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     kind = str(artifact["kind"])
 
-    if kind == "rust-binary":
+    if kind in {"rust-binary", "go-binary"}:
         target = str(unit.get("target") or "")
-        manifest = source_dir / str(source["package_manifest"])
-        command = ["cargo", "build", "--release", "--target", target, "--manifest-path", str(manifest)]
-        if (source_dir / "Cargo.lock").is_file():
-            command.append("--locked")
-        run(*command)
         binary = str(artifact["binary"])
         is_windows = target.endswith("-pc-windows-msvc")
         binary_filename = f"{binary}.exe" if is_windows else binary
-        binary_path = source_dir / "target" / target / "release" / binary_filename
-        if not binary_path.is_file():
-            raise SystemExit(f"built binary not found at {binary_path}")
-        # Companions ship beside the binary as plain (non-executable) files, so
-        # the installer still picks the binary as the archive's program. A
-        # pattern may match nothing on targets that link statically; symlinks
-        # (unversioned library names left by the build) are never shipped.
-        entries = [(binary_path, binary_filename)]
-        for pattern in artifact.get("companions") or []:
-            for path in sorted(binary_path.parent.glob(str(pattern))):
-                if path.is_file() and not path.is_symlink() and path != binary_path:
-                    if all(path.name != name for _, name in entries):
-                        entries.append((path, path.name))
-        if is_windows:
-            archive = args.out / f"{binary}-{target}.zip"
-            normalized_zip(entries, archive, executables={binary_filename})
-        else:
-            archive = args.out / f"{binary}-{target}.tar.gz"
-            normalized_tar(entries, archive, executables={binary})
+        with tempfile.TemporaryDirectory(prefix="release-binary-") as temporary:
+            if kind == "go-binary":
+                binary_path = Path(temporary) / binary_filename
+                environment = os.environ.copy()
+                environment.update(deployment_targets.go_target_env(target))
+                environment.update(CGO_ENABLED="0", GOWORK="off", GOTOOLCHAIN="local")
+                run(
+                    "go", "build", "-mod=readonly", "-trimpath", "-ldflags",
+                    f"-s -w -X main.version={descriptor['package_manifest_version']}",
+                    "-o", str(binary_path), ".", cwd=source_dir, env=environment,
+                )
+            else:
+                manifest = source_dir / str(source["package_manifest"])
+                command = ["cargo", "build", "--release", "--target", target, "--manifest-path", str(manifest)]
+                if (source_dir / "Cargo.lock").is_file():
+                    command.append("--locked")
+                run(*command)
+                binary_path = source_dir / "target" / target / "release" / binary_filename
+            if not binary_path.is_file():
+                raise SystemExit(f"built binary not found at {binary_path}")
+            # Runtime-loaded companions ship beside the executable.
+            entries = [(binary_path, binary_filename)]
+            for pattern in artifact.get("companions") or []:
+                for path in sorted(binary_path.parent.glob(str(pattern))):
+                    if path.is_file() and not path.is_symlink() and path != binary_path:
+                        if all(path.name != name for _, name in entries):
+                            entries.append((path, path.name))
+            if is_windows:
+                archive = args.out / f"{binary}-{target}.zip"
+                normalized_zip(entries, archive, executables={binary_filename})
+            else:
+                archive = args.out / f"{binary}-{target}.tar.gz"
+                normalized_tar(entries, archive, executables={binary})
         role = "binary"
     elif kind in {"javascript-bundle", "python-bundle"}:
         workspace_root = Path(str(artifact["workspace_root"]))

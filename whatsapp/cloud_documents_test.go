@@ -123,14 +123,7 @@ func TestCloudDocumentMultipartAndReusableMediaID(t *testing.T) {
 		}
 	})
 	config := cloudTestConfig()
-	config.DataDir = t.TempDir()
-	manager, err := NewManager(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
-	registry := &Registry{Manager: manager, handlers: map[string]operationHandler{}}
-	registerCloudDocuments(registry, client)
+	registry := cloudTestRegistry(t, client, config, registerCloudDocuments)
 	uploaded, err := registry.Invoke(context.Background(), "whatsapp::cloud::media::upload_document", map[string]any{
 		"data_base64": base64.StdEncoding.EncodeToString(data), "mimetype": "text/plain", "file_name": fileName, "_caller_worker_id": "authorized-test-caller",
 	})
@@ -156,7 +149,7 @@ func TestCloudDocumentMultipartAndReusableMediaID(t *testing.T) {
 	if uploads.Load() != 1 || sends.Load() != 2 {
 		t.Fatalf("media was not reused: uploads=%d sends=%d", uploads.Load(), sends.Load())
 	}
-	inbox, err := manager.CloudInbox(config)
+	inbox, err := registry.Manager.CloudInbox(config)
 	if err != nil {
 		t.Fatal(err)
 	}

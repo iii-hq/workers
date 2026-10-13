@@ -5,13 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"io"
-	"mime/multipart"
-	"net/http"
-	"net/textproto"
 	"path"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -30,10 +25,12 @@ type CloudUploadedDocument struct {
 }
 
 type CloudDocumentRequest struct {
-	ChatID   string  `json:"chat_id"`
-	MediaID  string  `json:"media_id"`
-	FileName string  `json:"file_name"`
-	Caption  *string `json:"caption"`
+	ChatID                   string  `json:"chat_id"`
+	MediaID                  string  `json:"media_id"`
+	FileName                 string  `json:"file_name"`
+	Caption                  *string `json:"caption"`
+	ReplyToMessageID         string  `json:"reply_to_message_id,omitempty"`
+	RecipientIdentityKeyHash string  `json:"recipient_identity_key_hash,omitempty"`
 }
 
 // Meta lists a 100 MB document limit. This conservative decimal ceiling also
@@ -108,26 +105,14 @@ func cloudDocumentContent(data []byte, filename, mimetype string) error {
 }
 
 func cloudDocumentPayload(req CloudDocumentRequest) (map[string]any, error) {
-	if !cloudDocumentMediaID(req.MediaID) {
-		return nil, cloudError("invalid_request", "media_id must contain 1..128 digits and refer to a document uploaded to this Cloud API account")
-	}
 	if _, err := cloudDocumentFilename(req.FileName); err != nil {
 		return nil, err
 	}
-	if req.Caption != nil && (!utf8.ValidString(*req.Caption) || strings.ContainsRune(*req.Caption, 0) || utf8.RuneCountInString(*req.Caption) > 1024) {
-		return nil, cloudError("invalid_request", "caption must be valid UTF-8, at most 1024 characters, without NUL")
+	body, err := cloudMediaMessagePayload("document", CloudMediaMessageRequest{req.ChatID, req.MediaID, req.Caption, req.ReplyToMessageID, req.RecipientIdentityKeyHash})
+	if err == nil {
+		body["document"].(map[string]any)["filename"] = req.FileName
 	}
-	body, err := cloudRecipient(req.ChatID)
-	if err != nil {
-		return nil, cloudError("invalid_request", "chat_id must be a Cloud API recipient; linked-device native JIDs are not supported")
-	}
-	document := map[string]any{"id": req.MediaID, "filename": req.FileName}
-	if req.Caption != nil {
-		document["caption"] = *req.Caption
-	}
-	body["type"] = "document"
-	body["document"] = document
-	return body, nil
+	return body, err
 }
 
 func (c *cloudClient) uploadDocument(ctx context.Context, config Config, req CloudDocumentUploadRequest) (CloudUploadedDocument, error) {
@@ -170,36 +155,9 @@ func (c *cloudClient) uploadDocument(ctx context.Context, config Config, req Clo
 	if err := cloudDocumentContent(data, req.FileName, mimetype); err != nil {
 		return result, err
 	}
-	var envelope bytes.Buffer
-	writer := multipart.NewWriter(&envelope)
-	if err = writer.WriteField("messaging_product", "whatsapp"); err != nil {
-		return result, cloudError("invalid_request", "Could not prepare document upload")
-	}
-	if err = writer.WriteField("type", mimetype); err != nil {
-		return result, cloudError("invalid_request", "Could not prepare document upload")
-	}
-	header := textproto.MIMEHeader{}
-	// RFC 7578 form-data uses filename, not filename*. Preserve UTF-8 as
-	// multipart.Writer.CreateFormFile does; filename validation excludes slashes
-	// and controls, leaving only quotes to escape in this header parameter.
-	header.Set("Content-Disposition", `form-data; name="file"; filename="`+strings.ReplaceAll(req.FileName, `"`, `\"`)+`"`)
-	header.Set("Content-Type", mimetype)
-	if _, err = writer.CreatePart(header); err != nil {
-		return result, cloudError("invalid_request", "Could not prepare document upload")
-	}
-	headerLength := envelope.Len()
-	if err = writer.Close(); err != nil {
-		return result, cloudError("invalid_request", "Could not prepare document upload")
-	}
-	// Keep only the envelope in the buffer; do not copy the document again.
-	body := io.MultiReader(bytes.NewReader(envelope.Bytes()[:headerLength]), bytes.NewReader(data), bytes.NewReader(envelope.Bytes()[headerLength:]))
-	response, err := c.requestBody(ctx, config, http.MethodPost, config.Cloud.PhoneNumberID+"/media", nil, body, writer.FormDataContentType())
+	id, err := c.postCloudMedia(ctx, config, req.FileName, mimetype, data)
 	if err != nil {
 		return result, err
-	}
-	id, _ := response["id"].(string)
-	if !cloudDocumentMediaID(id) || cloudEchoesSecret(config, id) {
-		return result, cloudError("cloud_outcome_unknown", "Cloud API returned no valid media ID; the upload may have completed. The worker does not retry automatically")
 	}
 	return CloudUploadedDocument{MediaID: id, Mimetype: mimetype, FileName: req.FileName, FileLength: len(data)}, nil
 }
@@ -210,7 +168,11 @@ func registerCloudDocuments(r *Registry, client *cloudClient) {
 		if err := decodeCloudRequest(input, &req); err != nil {
 			return nil, cloudError("invalid_request", "Invalid document upload request")
 		}
-		return client.uploadDocument(ctx, r.Manager.Config(), req)
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		return client.uploadDocument(ctx, config, req)
 	})
 	r.Add("whatsapp::cloud::messages::send_document", func(ctx context.Context, input map[string]any) (any, error) {
 		var req CloudDocumentRequest
@@ -221,26 +183,10 @@ func registerCloudDocuments(r *Registry, client *cloudClient) {
 		if err != nil {
 			return nil, err
 		}
-		config := r.Manager.Config()
-		if err := cloudRequestConfig(config); err != nil {
-			return nil, err
-		}
-		inbox, err := r.Manager.CloudInbox(config)
-		if err != nil {
-			return nil, cloudError("cloud_storage_error", "Could not prepare Cloud API message archive; check the worker state and storage")
-		}
-		requestedAt := time.Now()
-		sent, err := client.send(ctx, config, req.ChatID, body)
-		if err != nil {
-			return nil, err
-		}
 		text := req.FileName
 		if req.Caption != nil && *req.Caption != "" {
 			text = *req.Caption
 		}
-		if err = retainCloudSend(inbox, sent, "document", text, requestedAt); err != nil {
-			return nil, cloudError("cloud_archive_failed", "Cloud API accepted document message "+sent.MessageID+", but local archival failed; do not resend automatically")
-		}
-		return sent, nil
+		return cloudSendAndRetain(ctx, r, client, req.ChatID, body, "document", text)
 	})
 }

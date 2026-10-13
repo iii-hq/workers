@@ -227,7 +227,7 @@ func TestEventsBoundedSequenceAndRestartReservation(t *testing.T) {
 	if err = m.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := NewManager(cfg)
+	reopened, err := newTestManager(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

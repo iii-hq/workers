@@ -51,7 +51,7 @@ func TestCloudDeliveryOmitsOversizedDataWithoutLosingRoutingFields(t *testing.T)
 func TestCloudDeliveryQueuesOnlyCommittedCurrentAccountEvents(t *testing.T) {
 	config := cloudTestConfig()
 	config.DataDir = t.TempDir()
-	manager, err := NewManager(config)
+	manager, err := newTestManager(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestCloudDeliveryFullQueueKeepsArchiveAvailable(t *testing.T) {
 	config := cloudTestConfig()
 	config.DataDir = t.TempDir()
 	config.MaxEvents = 1
-	manager, err := NewManager(config)
+	manager, err := newTestManager(config)
 	if err != nil {
 		t.Fatal(err)
 	}

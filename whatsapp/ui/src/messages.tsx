@@ -1,7 +1,8 @@
-import { Button, CodeEditor, EmptyState, IconButton, Input, List, ListItem, LiveRegion, PageBody, PageMain, PageSidebar, SearchField, Skeleton, StatusPanel, type Host, type LiveAnnouncement } from '@iii-dev/console-ui'
+import { useDraftRegistration, useDraftScope, useDraftState, usePageState } from './drafts'
+import { Button, EmptyState, IconButton, Input, List, ListItem, LiveRegion, PageBody, PageMain, PageSidebar, SearchField, Skeleton, StatusPanel, type Host, type LiveAnnouncement } from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useDebounce } from '@iii-dev/console-ui/hooks'
-import { ArrowLeft, Check, ChevronDown, History, Info, MessageCircle, MessageSquarePlus, Paperclip, RefreshCw, Send, UserRound, Users, WifiOff } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronUp, History, Info, MessageCircle, MessageSquarePlus, Paperclip, PencilLine, RefreshCw, Send, UserRound, Users, WifiOff } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { coverageText, identityLabel, isMediaMessage, mergeChats, mergeMessages, messageKey, messageLabel, messageStatus, type ChatPage, type ChatTarget, type Coverage, type MessagePage, type MessageView } from './inbox-model'
 import { normalizeRecipient, requestScope, validateMessage, type SentMessage } from './model'
@@ -54,21 +55,22 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
   }
 
   return <PageBody side={panelSide} className="wa-ui-browser">
-    {(!narrow || !selected) && <PageSidebar label="Conversations" side={panelSide} narrow={narrow} defaultWidth={320} minWidth={240} maxWidth={400} header={<div className="wa-ui-sidebar-heading"><span>Conversations</span><div className="wa-ui-header-actions"><IconButton label={newChat ? 'Close new conversation' : 'New conversation'} aria-expanded={newChat} onClick={() => setNewChat((value) => !value)}><MessageSquarePlus size={16} /></IconButton><IconButton label="Refresh conversations" onClick={list.refresh} disabled={list.loading}><RefreshCw size={16} /></IconButton></div></div>}>
+    {(!narrow || !selected) && <PageSidebar label="Conversations" side={panelSide} narrow={narrow} defaultWidth={288} minWidth={240} maxWidth={400} header={<div className="wa-ui-sidebar-heading"><span>Stored conversations</span><div className="wa-ui-header-actions"><IconButton label={newChat ? 'Close new conversation' : 'New conversation'} aria-expanded={newChat} onClick={() => setNewChat((value) => !value)}><MessageSquarePlus size={16} /></IconButton><IconButton label="Refresh conversations" onClick={list.refresh} disabled={list.loading}><RefreshCw size={16} /></IconButton></div></div>}>
       <div className="wa-ui-list-tools">
         <SearchField aria-label="Search conversations" placeholder="Search conversations" value={query} onChange={setQuery} />
         <span className="wa-ui-note">{list.items.length.toLocaleString('en-US')} {list.items.length === 1 ? 'conversation' : 'conversations'}</span>
+        {!connected && <div className="wa-ui-archive-offline"><p className="wa-ui-note">Offline · stored history</p><Button variant="ghost" onClick={onGoConnection}>Connect</Button></div>}
         {newChat && <form onSubmit={openRecipient} className="wa-ui-stack">
-          <Input autoFocus aria-label="New conversation recipient" value={recipient} onChange={(value) => { setRecipient(value); setRecipientError(null) }} placeholder="Phone number or JID" autoComplete="off" />
-          {recipientError && <StatusPanel variant="alert" headline={recipientError} />}
+          <Input autoFocus className="wa-ui-mono" aria-label="New conversation recipient" value={recipient} onChange={(value) => { setRecipient(value); setRecipientError(null) }} placeholder="Phone number or group ID" autoComplete="off" />
+          {recipientError && <StatusPanel role="alert" variant="alert" headline={recipientError} />}
           <Button type="submit" disabled={!recipient.trim()}>Open conversation</Button>
         </form>}
       </div>
-      {list.error && <div className="wa-ui-list-tools"><StatusPanel variant="alert" headline="Could not load conversations" detail={list.error} action={<Button variant="ghost" onClick={list.refresh}>Try again</Button>} /></div>}
+      {list.error && <div className="wa-ui-list-tools"><StatusPanel role="alert" variant="alert" headline="Could not load conversations" detail={list.error} action={<Button variant="ghost" onClick={list.refresh}>Try again</Button>} /></div>}
       <div className="wa-ui-list">
         {list.loading ? <><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></> : list.items.length === 0 ? <EmptyState compact icon={MessageCircle} title={query ? 'No conversations found' : 'No conversations yet'} description={query ? 'Try another name or identifier.' : 'Received messages and available WhatsApp history will appear here.'} /> : <List aria-label="Available conversations">{list.items.map((chat) => <ListItem key={chat.chat_id} className="wa-ui-chat-item" selected={selected?.chat_id === chat.chat_id}
           leading={<ChatIdentity chat={chat} />}
-          label={<span className="wa-ui-chat-heading"><span className="wa-ui-chat-title" title={chat.title || identityLabel(chat.chat_id)}>{chat.title || identityLabel(chat.chat_id)}</span>{chat.last_message && <time className="wa-ui-chat-meta" dateTime={new Date(chat.last_message.timestamp_ms).toISOString()} title={new Date(chat.last_message.timestamp_ms).toLocaleString('en-US')}>{formatRelative(chat.last_message.timestamp_ms)}</time>}</span>}
+          label={<span className="wa-ui-chat-heading"><span className={`wa-ui-chat-title${!chat.title || chat.title === chat.chat_id || chat.title === identityLabel(chat.chat_id) || /^\+?[\d\s()-]+$/.test(chat.title) ? ' wa-ui-mono' : ''}`} title={chat.title || identityLabel(chat.chat_id)}>{chat.title || identityLabel(chat.chat_id)}</span>{chat.last_message && <time className="wa-ui-chat-meta" dateTime={new Date(chat.last_message.timestamp_ms).toISOString()} title={new Date(chat.last_message.timestamp_ms).toLocaleString('en-US')}>{formatRelative(chat.last_message.timestamp_ms)}</time>}</span>}
           description={<span className="wa-ui-preview">{chat.last_message ? `${chat.last_message.from_me ? 'You: ' : ''}${messageLabel(chat.last_message)}` : 'No message preview'}</span>}
           onClick={() => onSelect(chat)} />)}</List>}
         {list.nextCursor && <div className="wa-ui-list-tools"><Button variant="ghost" onClick={list.more} disabled={list.loadingMore}>{list.loadingMore ? 'Loading…' : 'Load more conversations'}</Button></div>}
@@ -76,7 +78,7 @@ export function MessageBrowser({ host, sessionId, connected, narrow, panelSide, 
       {list.coverage && <ArchiveCoverage coverage={list.coverage} />}
     </PageSidebar>}
     {(!narrow || selected) && <PageMain className="wa-ui-reader">
-      {selected ? <MessageReader key={`${sessionId}:${selected.chat_id}`} host={host} sessionId={sessionId} chat={selected} connected={connected} narrow={narrow} onBack={() => onSelect(null)} onDirty={onDirty} onGoConnection={onGoConnection} refreshChats={list.refresh} /> : <EmptyState icon={MessageCircle} title="Select a conversation" description="Choose a chat to read and reply, or explore your account’s groups." />}
+      {selected ? <MessageReader key={`${sessionId}:${selected.chat_id}`} host={host} sessionId={sessionId} chat={selected} connected={connected} narrow={narrow} onBack={() => onSelect(null)} onDirty={onDirty} onGoConnection={onGoConnection} refreshChats={list.refresh} /> : <EmptyState icon={connected ? MessageCircle : WifiOff} title={connected ? 'Stored conversations' : 'Session is offline'} description={connected ? 'Select a conversation to inspect messages and delivery updates.' : 'These are stored messages. Connect the session before testing live sends and replies.'} action={{ label: 'Test connection', onClick: onGoConnection }} />}
     </PageMain>}
   </PageBody>
 }
@@ -85,7 +87,7 @@ export function MessageRow({ message, group }: { message: MessageView; group: bo
   const status = messageStatus(message.status)
   return <article className="wa-ui-message-row" data-outgoing={message.from_me || undefined} aria-label={`${message.from_me ? 'You' : message.sender_name || identityLabel(message.sender_id)}, ${timeLabel(message.timestamp_ms)}`}>
     <div className="wa-ui-message-bubble">
-      {group && !message.from_me && <span className="wa-ui-message-sender">{message.sender_name || identityLabel(message.sender_id)}</span>}
+      {group && !message.from_me && <span className={`wa-ui-message-sender${!message.sender_name || message.sender_name === message.sender_id || message.sender_name === identityLabel(message.sender_id) ? ' wa-ui-mono' : ''}`}>{message.sender_name || identityLabel(message.sender_id)}</span>}
       <p className="wa-ui-message-text">{messageLabel(message)}</p>
       {isMediaMessage(message) && <span className="wa-ui-media-note"><Paperclip size={16} aria-hidden="true" />Media not downloaded</span>}
       <footer className="wa-ui-message-meta"><time dateTime={new Date(message.timestamp_ms).toISOString()} title={new Date(message.timestamp_ms).toLocaleString('en-US')}>{timeLabel(message.timestamp_ms)}</time>{message.source === 'history' && <span>History</span>}{message.from_me && status && <span className="wa-ui-message-delivery"><Check size={16} aria-hidden="true" />{status}</span>}</footer>
@@ -105,10 +107,15 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     },
     merge: (previous, incoming) => mergeMessages(previous, incoming, chat.chat_id),
   })
-  const [draft, setDraft] = useState('')
+  const draftKey = `${useDraftScope() || `native:${sessionId}`}:conversation:${chat.chat_id}`
+  const [compose, setCompose, clearDraft] = useDraftState(draftKey, { text: '' }, (value) => !!value.text.trim())
+  const [attempt, setAttempt] = usePageState(`${draftKey}:send-error`, { error: null as string | null, uncertain: false })
+  const draft = compose.text, sendError = attempt.error
+  const setDraft = (text: string) => setCompose((previous) => ({ ...previous, text }))
+  const setSendError = (error: string | null, uncertain = false) => setAttempt({ error, uncertain })
+  const [offlineDraftOpen, setOfflineDraftOpen] = useState(false)
   const [sending, setSending] = useState(false)
   const [requesting, setRequesting] = useState(false)
-  const [sendError, setSendError] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [historyNotice, setHistoryNotice] = useState<string | null>(null)
   const [sent, setSent] = useState<SentMessage | null>(null)
@@ -122,7 +129,10 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
   const olderAnchor = useRef<{ height: number; top: number } | null>(null)
   const readingAnchor = useRef<{ element: HTMLElement; offset: number } | null>(null)
   const readerSize = useRef<{ width: number; height: number } | null>(null)
+  const composer = useRef<HTMLTextAreaElement>(null)
   const instance = useId()
+  useDraftRegistration(draftKey, { dirty: !!draft.trim(), busy: sending, clear: clearDraft })
+  const draftVisible = connected || offlineDraftOpen || !!draft || sending || !!sendError
 
   const rememberPosition = () => {
     const node = scroll.current
@@ -137,6 +147,7 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
   }
 
   useEffect(() => () => { scope.current.invalidate(); historyScope.current.invalidate() }, [])
+  useEffect(() => { if (offlineDraftOpen) composer.current?.focus() }, [offlineDraftOpen])
   useEffect(() => { onDirty(!!draft.trim() || sending); return () => onDirty(false) }, [draft, sending, onDirty])
   useLayoutEffect(() => {
     const node = scroll.current
@@ -178,14 +189,14 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     try {
       const result = await host.iii.trigger<SentMessage>('whatsapp::messages::send_text', { session_id: sessionId, chat_id: chat.chat_id, text: draft }, { timeoutMs: 610000 })
       if (!current()) return
-      setDraft('')
+      clearDraft()
       setSent(result)
       followLatest.current = true
       archive.refresh()
       refreshChats()
       setAnnouncement({ seq: Date.now(), text: 'Message submitted.', urgency: 'polite' })
     } catch (cause) {
-      if (current()) setSendError(`${errorMessage(cause)} Check the conversation before retrying; this message will not be sent again automatically.`)
+      if (current()) setSendError(`${errorMessage(cause)} Check the conversation before sending again. Sending again may duplicate the previous message; it will not be repeated automatically.`, true)
     } finally { if (current()) { sendBusy.current = false; setSending(false) } }
   }
   const requestHistory = async () => {
@@ -206,20 +217,21 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
     if (scroll.current) olderAnchor.current = { height: scroll.current.scrollHeight, top: scroll.current.scrollTop }
     archive.more()
   }
+  const sendAction = <Button type="button" variant={attempt.uncertain ? 'ghost' : undefined} onClick={() => void send()} disabled={!connected || sending || requesting || !draft.trim()}><Send size={16} aria-hidden="true" />{sending ? 'Sending…' : attempt.uncertain ? 'Send again' : 'Send'}</Button>
 
   return <>
     <header className="wa-ui-detail-header wa-ui-compact-header">
       {narrow && <IconButton label="Back to conversations" onClick={onBack}><ArrowLeft size={16} /></IconButton>}
       <ChatIdentity chat={chat} header />
-      <div className="wa-ui-heading-copy"><h2 className="wa-ui-title" title={chat.title || identityLabel(chat.chat_id)}>{chat.title || identityLabel(chat.chat_id)}</h2><span className="wa-ui-note wa-ui-identity" title={chat.chat_id}>{chat.is_group ? 'Group · ' : ''}{identityLabel(chat.chat_id)}</span></div>
+      <div className="wa-ui-heading-copy"><h2 className={`wa-ui-title${!chat.title || chat.title === chat.chat_id || chat.title === identityLabel(chat.chat_id) || /^\+?[\d\s()-]+$/.test(chat.title) ? ' wa-ui-mono' : ''}`} title={chat.title || identityLabel(chat.chat_id)}>{chat.title || identityLabel(chat.chat_id)}</h2><span className="wa-ui-note wa-ui-identity" title={chat.chat_id}>{chat.is_group ? 'Group · ' : ''}<span className="wa-ui-mono">{identityLabel(chat.chat_id)}</span></span></div>
       <div className="wa-ui-header-actions">
         <IconButton label="Refresh messages" onClick={archive.refresh} disabled={archive.loading}><RefreshCw size={16} /></IconButton>
         <IconButton label={requesting ? 'Requesting older messages' : 'Request older messages'} tooltip={!connected ? 'Connect this account to request older messages.' : archive.items.length === 0 ? 'A stored message is needed before requesting older history.' : 'Request up to 50 older messages from your phone.'} onClick={() => void requestHistory()} disabled={!connected || requesting || sending || archive.items.length === 0} aria-busy={requesting}><History size={16} /></IconButton>
       </div>
     </header>
-    {archive.error && <div className="wa-ui-reader-notice"><StatusPanel variant="alert" headline="Could not refresh messages" detail={archive.error} action={<Button variant="ghost" onClick={archive.refresh}>Try again</Button>} /></div>}
-    {historyError && <div className="wa-ui-reader-notice"><StatusPanel variant="alert" headline="Could not request history" detail={historyError} action={<Button variant="ghost" onClick={() => setHistoryError(null)}>Dismiss</Button>} /></div>}
-    {historyNotice && <div className="wa-ui-reader-notice"><StatusPanel variant="info" headline="History requested" detail={historyNotice} action={<Button variant="ghost" onClick={() => setHistoryNotice(null)}>Dismiss</Button>} /></div>}
+    {archive.error && <div className="wa-ui-reader-notice"><StatusPanel role="alert" variant="alert" headline="Could not refresh messages" detail={archive.error} action={<Button variant="ghost" onClick={archive.refresh}>Try again</Button>} /></div>}
+    {historyError && <div className="wa-ui-reader-notice"><StatusPanel role="alert" variant="alert" headline="Could not request history" detail={historyError} action={<Button variant="ghost" onClick={() => setHistoryError(null)}>Dismiss</Button>} /></div>}
+    {historyNotice && <div className="wa-ui-reader-notice"><StatusPanel role="status" variant="info" headline="History requested" detail={historyNotice} action={<Button variant="ghost" onClick={() => setHistoryNotice(null)}>Dismiss</Button>} /></div>}
     <div ref={scroll} className="wa-ui-messages" onScroll={rememberPosition}>
       {archive.loading ? <><Skeleton className="wa-ui-loading" /><Skeleton className="wa-ui-loading" /></> : archive.items.length === 0 ? <EmptyState compact icon={MessageCircle} title="No messages stored yet" description="Messages captured here and received WhatsApp history will appear in this conversation." /> : <>
         {archive.nextCursor && <div className="wa-ui-load-older"><Button variant="ghost" onClick={older} disabled={archive.loadingMore}>{archive.loadingMore ? 'Loading…' : 'Load older messages'}</Button></div>}
@@ -228,16 +240,23 @@ function MessageReader({ host, sessionId, chat, connected, narrow, onBack, onDir
           <MessageRow message={message} group={chat.is_group} />
         </div>)}</div>
       </>}
+      {narrow && archive.coverage && <ArchiveCoverage coverage={archive.coverage} count={archive.items.length} />}
     </div>
-    {archive.coverage && <ArchiveCoverage coverage={archive.coverage} count={archive.items.length} />}
-    <section className="wa-ui-composer" aria-label="Write a message">
-      {!connected && <div className="wa-ui-inline-status" data-tone="warn" role="status"><WifiOff size={16} aria-hidden="true" /><span>Offline · stored messages are available</span><Button variant="ghost" onClick={onGoConnection}>Connect</Button></div>}
-      {sendError && <StatusPanel variant="alert" headline="Message not confirmed" detail={sendError} action={<Button variant="ghost" onClick={() => setSendError(null)}>Dismiss</Button>} />}
-      <div className="wa-ui-composer-surface">
-        <div className="wa-ui-composer-heading"><label htmlFor={`${instance}-composer`} className="wa-ui-composer-label">Message</label><span className="wa-ui-note">{sent ? 'Submitted. Delivery updates in the conversation.' : 'Text message'}</span></div>
-        <div className="wa-ui-composer-input">
-          <CodeEditor id={`${instance}-composer`} language="plaintext" value={draft} onChange={(value) => { setDraft(value); setSendError(null); setSent(null) }} disabled={sending} aria-label={`Message to ${chat.title || identityLabel(chat.chat_id)}`} className="wa-ui-compose-editor" placeholder="Write a message…" />
-          <Button onClick={() => void send()} disabled={!connected || sending || requesting || !draft.trim()}><Send size={16} aria-hidden="true" />{sending ? 'Sending…' : 'Send'}</Button>
+    {!narrow && archive.coverage && <ArchiveCoverage coverage={archive.coverage} count={archive.items.length} />}
+    <section className="wa-ui-composer" data-offline={!connected || undefined} aria-label="Write a message">
+      {!connected && <div className="wa-ui-inline-status wa-ui-offline-band" data-tone="warn" role="status"><WifiOff size={16} aria-hidden="true" /><span>{draft ? 'Offline · draft kept' : 'Offline · stored history'}</span><Button variant="ghost" onClick={onGoConnection}>Connect</Button>{!draft && !sending && !sendError && <IconButton label={offlineDraftOpen ? 'Hide draft editor' : 'Write a draft'} aria-expanded={draftVisible} aria-controls={`${instance}-draft`} onClick={() => setOfflineDraftOpen((value) => !value)}>{offlineDraftOpen ? <ChevronUp size={16} /> : <PencilLine size={16} />}</IconButton>}</div>}
+      {sendError && <StatusPanel className="wa-ui-feedback" role="alert" variant="alert" headline={attempt.uncertain ? 'Message not confirmed' : 'Message not sent'} detail={sendError} action={!attempt.uncertain ? <Button variant="ghost" onClick={() => setSendError(null)}>Dismiss</Button> : undefined} />}
+      <div id={`${instance}-draft`} className="wa-ui-composer-surface" hidden={!draftVisible}>
+        <div className="wa-ui-composer-heading"><label htmlFor={`${instance}-composer`} className="wa-ui-composer-label">Message</label><span id={`${instance}-shortcut`} className="wa-ui-note">{sent ? 'Submitted. Delivery updates in the conversation.' : attempt.uncertain ? 'Check the conversation before sending again.' : <>Text message<span className="wa-ui-cloud-send-shortcut"> · Ctrl/Cmd+Enter to send</span></>}</span></div>
+        <div className="wa-ui-composer-input" data-uncertain={attempt.uncertain || undefined}>
+          <textarea ref={composer} id={`${instance}-composer`} value={draft} onChange={(event) => { setDraft(event.target.value); if (!attempt.uncertain) setSendError(null); setSent(null) }} disabled={sending} aria-label={`Message to ${chat.title || identityLabel(chat.chat_id)}`} aria-describedby={`${instance}-shortcut`} className="wa-ui-cloud-textarea wa-ui-compose-editor" placeholder="Write a message…" rows={2} onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing && event.keyCode !== 229 && !event.repeat && connected && !sending && !requesting && !attempt.uncertain && !!draft.trim()) {
+              event.preventDefault()
+              void send()
+            }
+          }} />
+          {attempt.uncertain && <Button type="button" onClick={archive.refresh} disabled={archive.loading || sending || requesting}><RefreshCw size={16} aria-hidden="true" />Check this conversation</Button>}
+          {sendAction}
         </div>
       </div>
     </section>

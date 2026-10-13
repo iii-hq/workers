@@ -76,7 +76,7 @@ export function CloudTunnel({ host, webhookReady }: { host: Host; webhookReady: 
         : !fresh || live.error ? 'Refresh the tunnel status to check its current callback URL.'
         : 'Start a development tunnel to generate the full callback URL.'}
     </p>}
-    {problem && <StatusPanel variant="alert" headline="Development tunnel needs attention" detail={problem} action={<Button variant="ghost" disabled={!!pending} onClick={() => { setActionError(null); live.refresh() }}>Refresh status</Button>} />}
+    {problem && <StatusPanel role="alert" variant="alert" headline="Development tunnel needs attention" detail={problem} action={<Button variant="ghost" disabled={!!pending} onClick={() => { setActionError(null); live.refresh() }}>Refresh status</Button>} />}
     <div className="wa-ui-cloud-tunnel-actions">
       {(!known?.enabled || retry) && <Button variant="ghost" disabled={!canStart} onClick={() => void change('start')}>{pending === 'start' ? 'Starting…' : retry ? 'Retry development tunnel' : 'Start development tunnel'}</Button>}
       {known?.enabled && <Button variant="ghost" disabled={!!pending} onClick={() => void change('stop')}>{pending === 'stop' ? 'Stopping…' : 'Stop tunnel'}</Button>}

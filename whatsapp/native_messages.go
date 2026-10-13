@@ -92,6 +92,11 @@ func nativeSent(response whatsmeow.SendResponse, chat types.JID) map[string]any 
 }
 
 func nativeRecordSent(m *Manager, session string, client *whatsmeow.Client, response whatsmeow.SendResponse, chat types.JID, text, kind string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return nativeRecordSentContext(ctx, m, session, client, response, chat, text, kind)
+}
+func nativeRecordSentContext(ctx context.Context, m *Manager, session string, client *whatsmeow.Client, response whatsmeow.SendResponse, chat types.JID, text, kind string) error {
 	sender := response.Sender
 	if sender.IsEmpty() && client.Store.ID != nil {
 		sender = *client.Store.ID
@@ -100,7 +105,7 @@ func nativeRecordSent(m *Manager, session string, client *whatsmeow.Client, resp
 		chat = response.Chat
 	}
 	status := "submitted"
-	err := m.RecordSent(session, MessageView{MessageID: response.ID, ChatID: chat.String(), SenderID: sender.String(), FromMe: true, TimestampMS: response.Timestamp.UnixMilli(), Kind: kind, Text: text, Source: "sent", Status: &status})
+	err := m.RecordSentContext(ctx, session, MessageView{MessageID: response.ID, ChatID: chat.String(), SenderID: sender.String(), FromMe: true, TimestampMS: response.Timestamp.UnixMilli(), Kind: kind, Text: text, Source: "sent", Status: &status})
 	if err != nil {
 		return fmt.Errorf("message %s was accepted but could not be saved locally; do not resend automatically", response.ID)
 	}
@@ -213,7 +218,7 @@ func registerMessaging(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			client, err := r.Manager.Client(stringArg(args, "session_id"))
+			client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 			if err != nil {
 				return nil, err
 			}
@@ -226,7 +231,7 @@ func registerMessaging(r *Registry) {
 				return nil, err
 			}
 			if action == "send_text" || action == "reply" {
-				if err = nativeRecordSent(r.Manager, stringArg(args, "session_id"), client, result, chat, stringArg(args, "text"), "text"); err != nil {
+				if err = nativeRecordSentContext(ctx, r.Manager, stringArg(args, "session_id"), client, result, chat, stringArg(args, "text"), "text"); err != nil {
 					return nil, err
 				}
 			}
@@ -251,7 +256,7 @@ func registerMessaging(r *Registry) {
 		if err = nativeText(emoji, "emoji", 64, true); err != nil {
 			return nil, err
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -280,7 +285,7 @@ func registerMessaging(r *Registry) {
 		if !nativeChat(chat) {
 			return nil, errors.New("polls require a person or group")
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -318,7 +323,7 @@ func registerMessaging(r *Registry) {
 		if err != nil || len(secret) != 32 {
 			return nil, errors.New("message_secret_base64 must encode 32 bytes")
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -361,7 +366,7 @@ func registerMessaging(r *Registry) {
 		if !nativePerson(peer) || !nativePerson(creator) || peer.ToNonAD() != creator.ToNonAD() {
 			return nil, errors.New("call rejection requires peer and call_creator to identify the same person")
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}

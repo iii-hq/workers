@@ -2498,6 +2498,23 @@ workers:
         outputs:
         - dist
     publish: true
+  whatsapp:
+    source:
+      path: whatsapp
+      package_manifest: package.json
+    artifact:
+      kind: go-binary
+      toolchain:
+        name: go
+        version: 1.27.1
+      binary: whatsapp
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      windows_exception: session and inbox locking use POSIX flock and O_NOFOLLOW; Windows builds are unsupported
+    publish: true
   workflow:
     source:
       path: workflow

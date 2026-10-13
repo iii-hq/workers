@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,18 +55,21 @@ type Session struct {
 	eventEpoch                  uint64
 }
 type Manager struct {
-	tunnel          *DevelopmentTunnel
-	mu              sync.RWMutex
-	config          Config
-	sessions        map[string]*Session
-	cloud           map[string]*Inbox
-	closed          bool
-	shutdownDone    chan struct{}
-	shutdownErr     error
-	lock            *os.File
-	EventQueue      chan Event
-	CloudEventQueue chan CloudEvent
-	cloudEpoch      uint64
+	interfaceOnly      bool
+	cloudDeliverySlots chan struct{}
+	storage            storageBackend
+	tunnel             *DevelopmentTunnel
+	mu                 sync.RWMutex
+	config             Config
+	sessions           map[string]*Session
+	cloud              map[string]*Inbox
+	closed             bool
+	shutdownDone       chan struct{}
+	shutdownErr        error
+	lock               *os.File
+	EventQueue         chan Event
+	CloudEventQueue    chan CloudEvent
+	cloudEpoch         uint64
 }
 
 var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -79,7 +80,10 @@ func validSessionID(id string) error {
 	}
 	return nil
 }
-func NewManager(config Config) (*Manager, error) {
+func NewManager(config Config, storage storageBackend) (*Manager, error) {
+	if storage == nil {
+		return nil, errors.New("database worker storage is required")
+	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -102,7 +106,7 @@ func NewManager(config Config) (*Manager, error) {
 		lock.Close()
 		return nil, err
 	}
-	m := &Manager{config: config, sessions: map[string]*Session{}, cloud: map[string]*Inbox{}, lock: lock, EventQueue: make(chan Event, config.MaxEvents), CloudEventQueue: make(chan CloudEvent, config.MaxEvents)}
+	m := &Manager{cloudDeliverySlots: make(chan struct{}, cloudWebhookMaxConcurrentDeliveries), storage: storage, config: config, sessions: map[string]*Session{}, cloud: map[string]*Inbox{}, lock: lock, EventQueue: make(chan Event, config.MaxEvents), CloudEventQueue: make(chan CloudEvent, config.MaxEvents)}
 	entries, err := os.ReadDir(config.DataDir)
 	if err != nil {
 		m.Shutdown(context.Background())
@@ -128,7 +132,7 @@ func NewManager(config Config) (*Manager, error) {
 			m.Shutdown(context.Background())
 			return nil, errors.New("incompatible session storage; whatsmeow requires a new data_dir and pairing")
 		}
-		inbox, openErr := NewInbox(dir, config.MaxInboxMessages)
+		inbox, openErr := newInbox(context.Background(), m.storage, dir, config.MaxInboxMessages)
 		if openErr != nil {
 			m.Shutdown(context.Background())
 			return nil, openErr
@@ -179,11 +183,32 @@ func writeMetadata(dir string, meta sessionMetadata) error {
 	return d.Sync()
 }
 func (m *Manager) Config() Config { m.mu.RLock(); defer m.mu.RUnlock(); return m.config }
+
+type contextReadMutex struct{ *sync.RWMutex }
+
+func (mutex contextReadMutex) TryLock() bool { return mutex.TryRLock() }
+
+func (m *Manager) ConfigContext(ctx context.Context) (Config, error) {
+	if err := lockSessionContext(ctx, contextReadMutex{&m.mu}); err != nil {
+		return Config{}, err
+	}
+	defer m.mu.RUnlock()
+	return m.config, nil
+}
+
 func (m *Manager) session(id string) (*Session, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.sessionContext(ctx, id)
+}
+
+func (m *Manager) sessionContext(ctx context.Context, id string) (*Session, error) {
 	if err := validSessionID(id); err != nil {
 		return nil, err
 	}
-	m.mu.RLock()
+	if err := lockSessionContext(ctx, contextReadMutex{&m.mu}); err != nil {
+		return nil, err
+	}
 	defer m.mu.RUnlock()
 	if m.closed {
 		return nil, errors.New("worker is shutting down")
@@ -197,7 +222,15 @@ func (m *Manager) session(id string) (*Session, error) {
 
 // A lookup before acquiring a lifecycle lock may refer to a deleted incarnation.
 func (m *Manager) currentSession(s *Session) error {
-	m.mu.RLock()
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.currentSessionContext(ctx, s)
+}
+
+func (m *Manager) currentSessionContext(ctx context.Context, s *Session) error {
+	if err := lockSessionContext(ctx, contextReadMutex{&m.mu}); err != nil {
+		return err
+	}
 	defer m.mu.RUnlock()
 	if m.closed {
 		return errors.New("worker is shutting down")
@@ -243,7 +276,7 @@ func (m *Manager) lockTransition(ctx context.Context, s *Session) (func(), error
 		return nil, err
 	}
 	unlock := func() { s.operations.Unlock(); s.lifecycle.Unlock() }
-	if err := m.currentSession(s); err != nil {
+	if err := m.currentSessionContext(ctx, s); err != nil {
 		unlock()
 		return nil, err
 	}
@@ -254,11 +287,32 @@ func (s *Session) summary() SessionSummary {
 	defer s.mu.Unlock()
 	return SessionSummary{s.meta.SessionID, s.status, s.meta.CreatedAtMS}
 }
+
+// A failed request must not wait again for session state to format its result.
+func (s *Session) operationResult(ctx context.Context, err error) (SessionSummary, error) {
+	if lockErr := lockSessionContext(ctx, &s.mu); lockErr != nil {
+		if err != nil {
+			return SessionSummary{}, err
+		}
+		return SessionSummary{}, lockErr
+	}
+	defer s.mu.Unlock()
+	return SessionSummary{s.meta.SessionID, s.status, s.meta.CreatedAtMS}, err
+}
+
 func (m *Manager) Create(id string) (SessionSummary, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.CreateContext(ctx, id)
+}
+
+func (m *Manager) CreateContext(ctx context.Context, id string) (SessionSummary, error) {
 	if err := validSessionID(id); err != nil {
 		return SessionSummary{}, err
 	}
-	m.mu.Lock()
+	if err := lockSessionContext(ctx, &m.mu); err != nil {
+		return SessionSummary{}, err
+	}
 	defer m.mu.Unlock()
 	if m.closed {
 		return SessionSummary{}, errors.New("worker is shutting down")
@@ -278,7 +332,7 @@ func (m *Manager) Create(id string) (SessionSummary, error) {
 		os.RemoveAll(dir)
 		return SessionSummary{}, err
 	}
-	inbox, err := NewInbox(dir, m.config.MaxInboxMessages)
+	inbox, err := newInbox(ctx, m.storage, dir, m.config.MaxInboxMessages)
 	if err != nil {
 		os.RemoveAll(dir)
 		return SessionSummary{}, err
@@ -288,11 +342,19 @@ func (m *Manager) Create(id string) (SessionSummary, error) {
 	return s.summary(), nil
 }
 func (m *Manager) Client(id string) (*whatsmeow.Client, error) {
-	s, err := m.session(id)
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.ClientContext(ctx, id)
+}
+
+func (m *Manager) ClientContext(ctx context.Context, id string) (*whatsmeow.Client, error) {
+	s, err := m.sessionContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		return nil, err
+	}
 	defer s.mu.Unlock()
 	if !s.acceptEvents || s.status != "connected" || s.client == nil || !s.client.IsLoggedIn() || !s.client.IsConnected() {
 		return nil, errors.New("session is not connected")
@@ -300,21 +362,41 @@ func (m *Manager) Client(id string) (*whatsmeow.Client, error) {
 	return s.client, nil
 }
 func (m *Manager) Inbox(id string) (*Inbox, error) {
-	s, err := m.session(id)
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.InboxContext(ctx, id)
+}
+
+func (m *Manager) InboxContext(ctx context.Context, id string) (*Inbox, error) {
+	s, err := m.sessionContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return s.inbox, nil
 }
 func (m *Manager) RecordSent(id string, msg MessageView) error {
-	inbox, err := m.Inbox(id)
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.RecordSentContext(ctx, id, msg)
+}
+
+func (m *Manager) RecordSentContext(ctx context.Context, id string, msg MessageView) error {
+	inbox, err := m.InboxContext(ctx, id)
 	if err != nil {
 		return err
 	}
-	return inbox.Record([]MessageView{msg})
+	return inbox.RecordContext(ctx, []MessageView{msg})
 }
 func (m *Manager) CloudInbox(config Config) (*Inbox, error) {
-	m.mu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.CloudInboxContext(ctx, config)
+}
+
+func (m *Manager) CloudInboxContext(ctx context.Context, config Config) (*Inbox, error) {
+	if err := lockSessionContext(ctx, &m.mu); err != nil {
+		return nil, err
+	}
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, errors.New("worker is shutting down")
@@ -332,7 +414,7 @@ func (m *Manager) CloudInbox(config Config) (*Inbox, error) {
 	if box := m.cloud[key]; box != nil {
 		return box, nil
 	}
-	box, err := NewInbox(filepath.Join(m.config.DataDir, ".cloud", key), m.config.MaxInboxMessages)
+	box, err := newInbox(ctx, m.storage, filepath.Join(m.config.DataDir, ".cloud", key), m.config.MaxInboxMessages)
 	if err != nil {
 		return nil, err
 	}
@@ -340,15 +422,34 @@ func (m *Manager) CloudInbox(config Config) (*Inbox, error) {
 	return box, nil
 }
 func (m *Manager) ApplyConfig(next Config) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), inboxBackgroundTimeout)
+	defer cancel()
+	return m.ApplyConfigContext(ctx, next)
+}
+
+func (m *Manager) ApplyConfigContext(ctx context.Context, next Config) ([]string, error) {
+	_, pending, err := m.applyConfigSnapshotContext(ctx, next)
+	return pending, err
+}
+
+// Return the accepted snapshot under the publication lock so callback results
+// never need to reacquire a manager lock after their request has completed.
+func (m *Manager) applyConfigSnapshotContext(ctx context.Context, next Config) (Config, []string, error) {
 	if err := next.Validate(); err != nil {
-		return nil, err
+		return Config{}, nil, err
 	}
-	m.mu.Lock()
+	if err := lockSessionContext(ctx, &m.mu); err != nil {
+		return Config{}, nil, err
+	}
 	defer m.mu.Unlock()
 	if m.closed {
-		return nil, errors.New("worker is shutting down")
+		return Config{}, nil, errors.New("worker is shutting down")
 	}
 	pending := []string{}
+	if next.Database != m.config.Database {
+		pending = append(pending, "database")
+		next.Database = m.config.Database
+	}
 	if next.DataDir != m.config.DataDir {
 		pending = append(pending, "data_dir")
 		next.DataDir = m.config.DataDir
@@ -357,52 +458,54 @@ func (m *Manager) ApplyConfig(next Config) ([]string, error) {
 		pending = append(pending, "max_events")
 		next.MaxEvents = m.config.MaxEvents
 	}
+	// Publish retention settings only after every inbox is validated. Purging
+	// multiple independent stores cannot be atomic; subsequent successful
+	// writes enforce this accepted limit in their own archive transaction.
+	boxes := make([]*Inbox, 0, len(m.sessions)+len(m.cloud))
 	for _, s := range m.sessions {
-		if err := s.inbox.SetLimit(next.MaxInboxMessages); err != nil {
-			return nil, errors.New("unable to apply inbox retention")
-		}
+		boxes = append(boxes, s.inbox)
 	}
 	for _, box := range m.cloud {
-		if err := box.SetLimit(next.MaxInboxMessages); err != nil {
-			return nil, errors.New("unable to apply Cloud inbox retention")
+		boxes = append(boxes, box)
+	}
+	locked := make([]*Inbox, 0, len(boxes))
+	defer func() {
+		for _, box := range locked {
+			box.mu.Unlock()
 		}
+	}()
+	seen := make(map[*Inbox]bool, len(boxes))
+	for _, box := range boxes {
+		if box == nil {
+			return Config{}, nil, errors.New("unable to apply inbox retention: inbox is unavailable")
+		}
+		if seen[box] {
+			continue
+		}
+		seen[box] = true
+		if err := lockSessionContext(ctx, &box.mu); err != nil {
+			return Config{}, nil, err
+		}
+		locked = append(locked, box)
+		if err := box.active(); err != nil {
+			return Config{}, nil, errors.New("unable to apply inbox retention: inbox is unavailable")
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Config{}, nil, err
+	}
+	for _, box := range locked {
+		box.limit = next.MaxInboxMessages
 	}
 	if next.Cloud != m.config.Cloud {
 		m.cloudEpoch++
 	}
 	m.config = next
-	return pending, nil
+	return next, pending, nil
 }
-func openDevice(ctx context.Context, dir string) (*sqlstore.Container, error) {
-	path := filepath.Join(dir, "device.db")
-	for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
-		p := path + suffix
-		if _, err := os.Lstat(p); err == nil {
-			if err = regularPrivateFile(p); err != nil {
-				return nil, err
-			}
-		} else if !os.IsNotExist(err) {
-			return nil, err
-		}
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+func openStoredDevice(ctx context.Context, dir string, storage storageBackend) (*sqlstore.Container, error) {
+	db, err := storage.Open(ctx, dir, "device")
 	if err != nil {
-		return nil, err
-	}
-	f.Close()
-	absolutePath, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
-	}
-	uri := url.URL{Scheme: "file", Path: absolutePath}
-	uri.RawQuery = url.Values{"_pragma": {"foreign_keys(ON)", "busy_timeout(5000)", "journal_mode(DELETE)", "secure_delete(ON)"}}.Encode()
-	db, err := sql.Open("sqlite", uri.String())
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err = db.ExecContext(ctx, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON"); err != nil {
-		db.Close()
 		return nil, err
 	}
 	container := sqlstore.NewWithDB(db, "sqlite3", waLog.Noop)
@@ -412,43 +515,53 @@ func openDevice(ctx context.Context, dir string) (*sqlstore.Container, error) {
 	}
 	return container, nil
 }
+
 func (m *Manager) Start(ctx context.Context, id string) (SessionSummary, error) {
-	s, err := m.session(id)
+	s, err := m.sessionContext(ctx, id)
 	if err != nil {
 		return SessionSummary{}, err
 	}
 	unlock, err := m.lockTransition(ctx, s)
 	if err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
 	defer unlock()
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		return s.operationResult(ctx, err)
+	}
 	active := s.client != nil && s.acceptEvents && s.status != "failed" && s.status != "logged_out"
 	s.mu.Unlock()
 	if active {
-		return s.summary(), nil
+		return s.operationResult(ctx, nil)
 	}
 	if err = m.stopSession(ctx, s, false); err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
-	container, err := openDevice(ctx, s.dir)
+	container, err := openStoredDevice(ctx, s.dir, m.storage)
 	if err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
 	device, err := container.GetFirstDevice(ctx)
 	if err != nil {
 		container.Close()
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
-	capture := s.inbox.Capture()
+	capture, err := s.inbox.CaptureContext(ctx)
+	if err != nil {
+		container.Close()
+		return s.operationResult(ctx, err)
+	}
 	if device.ID != nil {
-		if err = refreshNativeAccount(s, capture, device.ID.ToNonAD().String()); err != nil {
+		if err = refreshNativeAccountContext(ctx, s, capture, device.ID.ToNonAD().String()); err != nil {
 			container.Close()
-			return s.summary(), err
+			return s.operationResult(ctx, err)
 		}
 	}
 	client := whatsmeow.NewClient(device, waLog.Noop)
-	configureNativeMediaHTTP(client, func() int { return m.Config().MaxMediaBytes })
+	configureNativeMediaHTTP(client, func(ctx context.Context) (int, error) {
+		config, err := m.ConfigContext(ctx)
+		return config.MaxMediaBytes, err
+	})
 	runtimeCtx, cancel := context.WithCancel(context.Background())
 	client.BackgroundEventCtx = runtimeCtx
 	client.InitialAutoReconnect = false
@@ -459,10 +572,14 @@ func (m *Manager) Start(ctx context.Context, id string) (SessionSummary, error) 
 		if err != nil {
 			cancel()
 			container.Close()
-			return s.summary(), err
+			return s.operationResult(ctx, err)
 		}
 	}
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		cancel()
+		container.Close()
+		return s.operationResult(ctx, err)
+	}
 	s.client = client
 	s.container = container
 	s.cancel = cancel
@@ -484,7 +601,27 @@ func (m *Manager) Start(ctx context.Context, id string) (SessionSummary, error) 
 			m.connectionFailed(s, client)
 		}
 	}()
-	return s.summary(), nil
+	return s.operationResult(ctx, nil)
+}
+
+func refreshNativeAccountContext(ctx context.Context, s *Session, capture *InboxCapture, account string) error {
+	if err := s.inbox.SetAccountContext(ctx, account); err != nil {
+		return err
+	}
+	next, err := s.inbox.CaptureContext(ctx)
+	if err != nil {
+		return err
+	}
+	if next.generation != capture.generation {
+		if err := lockSessionContext(ctx, &s.mu); err != nil {
+			return err
+		}
+		s.events = []Event{}
+		s.eventEpoch++
+		s.mu.Unlock()
+	}
+	*capture = *next
+	return nil
 }
 
 func (m *Manager) connectionFailed(s *Session, client *whatsmeow.Client) {
@@ -538,14 +675,23 @@ func (m *Manager) stopSession(ctx context.Context, s *Session, logout bool) erro
 	if err := lockSessionContext(ctx, &s.callbacks); err != nil {
 		return err
 	}
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		s.callbacks.Unlock()
+		return err
+	}
 	client, cancel, done, container := s.client, s.cancel, s.connectDone, s.container
+	// Invalidation can wait on an archive operation. Complete that fallible
+	// step before disabling callbacks on a still-connected account.
+	if err := s.inbox.InvalidateContext(ctx); err != nil {
+		s.mu.Unlock()
+		s.callbacks.Unlock()
+		return err
+	}
 	s.status = "stopping"
 	s.acceptEvents = false
 	s.qr, s.pairCode = nil, nil
 	s.pairPhone = ""
 	s.mu.Unlock()
-	s.inbox.Invalidate()
 	s.callbacks.Unlock()
 	var logoutErr error
 	if logout && client != nil && client.IsLoggedIn() {
@@ -570,24 +716,29 @@ func (m *Manager) stopSession(ctx context.Context, s *Session, logout bool) erro
 			return err
 		}
 	}
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		return err
+	}
 	s.client, s.container, s.cancel, s.connectDone = nil, nil, nil, nil
 	s.mu.Unlock()
 	if logout {
-		for _, suffix := range []string{"", "-journal", "-wal", "-shm"} {
-			if err := os.Remove(filepath.Join(s.dir, "device.db") + suffix); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-		}
-		if err := s.inbox.Clear(); err != nil {
+		if err := m.storage.ClearDevice(ctx, s.dir); err != nil {
 			return err
 		}
-		s.mu.Lock()
+
+		if err := s.inbox.ClearContext(ctx); err != nil {
+			return err
+		}
+		if err := lockSessionContext(ctx, &s.mu); err != nil {
+			return err
+		}
 		s.events = []Event{}
 		s.eventEpoch++
 		s.mu.Unlock()
 	}
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		return err
+	}
 	s.status = "stopped"
 	if logout {
 		s.status = "logged_out"
@@ -599,45 +750,61 @@ func (m *Manager) stopSession(ctx context.Context, s *Session, logout bool) erro
 	return nil
 }
 func (m *Manager) Stop(ctx context.Context, id string, logout bool) (SessionSummary, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(m.Config().ShutdownTimeoutSecs)*time.Second)
+	config, err := m.ConfigContext(ctx)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.ShutdownTimeoutSecs)*time.Second)
 	defer cancel()
-	s, err := m.session(id)
+	s, err := m.sessionContext(ctx, id)
 	if err != nil {
 		return SessionSummary{}, err
 	}
 	unlock, err := m.lockTransition(ctx, s)
 	if err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
 	defer unlock()
 	err = m.stopSession(ctx, s, logout)
-	return s.summary(), err
+	return s.operationResult(ctx, err)
 }
 func (m *Manager) Delete(ctx context.Context, id string) (SessionSummary, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(m.Config().ShutdownTimeoutSecs)*time.Second)
+	config, err := m.ConfigContext(ctx)
+	if err != nil {
+		return SessionSummary{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(config.ShutdownTimeoutSecs)*time.Second)
 	defer cancel()
-	s, err := m.session(id)
+	s, err := m.sessionContext(ctx, id)
 	if err != nil {
 		return SessionSummary{}, err
 	}
 	unlock, err := m.lockTransition(ctx, s)
 	if err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
 	defer unlock()
 	if err = m.stopSession(ctx, s, false); err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
-	m.mu.Lock()
+	if err := lockSessionContext(ctx, &m.mu); err != nil {
+		return s.operationResult(ctx, err)
+	}
 	defer m.mu.Unlock()
+	if err = m.storage.ClearDevice(ctx, s.dir); err != nil {
+		return s.operationResult(ctx, err)
+	}
+	if err = s.inbox.ClearContext(ctx); err != nil {
+		return s.operationResult(ctx, err)
+	}
 	if err = s.inbox.Close(); err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
 	if err = os.RemoveAll(s.dir); err != nil {
-		return s.summary(), err
+		return s.operationResult(ctx, err)
 	}
 	delete(m.sessions, id)
-	return s.summary(), nil
+	return s.operationResult(ctx, nil)
 }
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
@@ -689,7 +856,7 @@ func (m *Manager) PairCode(ctx context.Context, id, phone string) (PairingCode, 
 	if len(phone) < 7 || len(phone) > 15 || strings.Trim(phone, "0123456789") != "" {
 		return PairingCode{}, errors.New("phone_number must contain 7 to 15 digits including country code")
 	}
-	s, err := m.session(id)
+	s, err := m.sessionContext(ctx, id)
 	if err != nil {
 		return PairingCode{}, err
 	}
@@ -698,7 +865,9 @@ func (m *Manager) PairCode(ctx context.Context, id, phone string) (PairingCode, 
 		return PairingCode{}, err
 	}
 	defer unlock()
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		return PairingCode{}, err
+	}
 	client := s.client
 	cached, previous := s.pairCode, s.pairPhone
 	s.mu.Unlock()
@@ -716,7 +885,9 @@ func (m *Manager) PairCode(ctx context.Context, id, phone string) (PairingCode, 
 		return PairingCode{}, errors.New("unable to request pairing code")
 	}
 	result := PairingCode{code, time.Now().Add(160 * time.Second).UnixMilli()}
-	s.mu.Lock()
+	if err := lockSessionContext(ctx, &s.mu); err != nil {
+		return PairingCode{}, err
+	}
 	if s.client != client || !s.acceptEvents || s.status == "connected" {
 		s.mu.Unlock()
 		return PairingCode{}, errors.New("session changed while requesting pairing code")
@@ -728,23 +899,31 @@ func (m *Manager) PairCode(ctx context.Context, id, phone string) (PairingCode, 
 }
 func registerSessions(r *Registry) {
 	m := r.Manager
-	r.Add("whatsapp::sessions::create", func(_ context.Context, v map[string]any) (any, error) { return m.Create(stringArg(v, "session_id")) })
-	r.Add("whatsapp::sessions::list", func(context.Context, map[string]any) (any, error) {
-		m.mu.RLock()
+	r.Add("whatsapp::sessions::create", func(ctx context.Context, v map[string]any) (any, error) {
+		return m.CreateContext(ctx, stringArg(v, "session_id"))
+	})
+	r.Add("whatsapp::sessions::list", func(ctx context.Context, _ map[string]any) (any, error) {
+		if err := lockSessionContext(ctx, contextReadMutex{&m.mu}); err != nil {
+			return nil, err
+		}
 		defer m.mu.RUnlock()
 		out := make([]SessionSummary, 0, len(m.sessions))
 		for _, s := range m.sessions {
-			out = append(out, s.summary())
+			summary, err := s.operationResult(ctx, nil)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, summary)
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].SessionID < out[j].SessionID })
 		return out, nil
 	})
-	r.Add("whatsapp::sessions::get", func(_ context.Context, v map[string]any) (any, error) {
-		s, err := m.session(stringArg(v, "session_id"))
+	r.Add("whatsapp::sessions::get", func(ctx context.Context, v map[string]any) (any, error) {
+		s, err := m.sessionContext(ctx, stringArg(v, "session_id"))
 		if err != nil {
 			return nil, err
 		}
-		return s.summary(), nil
+		return s.operationResult(ctx, nil)
 	})
 	r.Add("whatsapp::sessions::start", func(ctx context.Context, v map[string]any) (any, error) {
 		return m.Start(ctx, stringArg(v, "session_id"))
@@ -758,12 +937,14 @@ func registerSessions(r *Registry) {
 	r.Add("whatsapp::sessions::delete", func(ctx context.Context, v map[string]any) (any, error) {
 		return m.Delete(ctx, stringArg(v, "session_id"))
 	})
-	r.Add("whatsapp::sessions::qr", func(_ context.Context, v map[string]any) (any, error) {
-		s, err := m.session(stringArg(v, "session_id"))
+	r.Add("whatsapp::sessions::qr", func(ctx context.Context, v map[string]any) (any, error) {
+		s, err := m.sessionContext(ctx, stringArg(v, "session_id"))
 		if err != nil {
 			return nil, err
 		}
-		s.mu.Lock()
+		if err := lockSessionContext(ctx, &s.mu); err != nil {
+			return nil, err
+		}
 		defer s.mu.Unlock()
 		if s.qr == nil || s.qr.ExpiresAtMS <= time.Now().UnixMilli() {
 			return nil, nil
@@ -773,30 +954,30 @@ func registerSessions(r *Registry) {
 	r.Add("whatsapp::sessions::pair_code", func(ctx context.Context, v map[string]any) (any, error) {
 		return m.PairCode(ctx, stringArg(v, "session_id"), stringArg(v, "phone_number"))
 	})
-	r.Add("whatsapp::events::poll", func(_ context.Context, v map[string]any) (any, error) {
-		return m.Poll(stringArg(v, "session_id"), uint64(intArg(v, "after_sequence", 0)), intArg(v, "limit", 100))
+	r.Add("whatsapp::events::poll", func(ctx context.Context, v map[string]any) (any, error) {
+		return m.PollContext(ctx, stringArg(v, "session_id"), uint64(intArg(v, "after_sequence", 0)), intArg(v, "limit", 100))
 	})
-	r.Add("whatsapp::chats::list", func(_ context.Context, v map[string]any) (any, error) {
-		box, err := m.Inbox(stringArg(v, "session_id"))
+	r.Add("whatsapp::chats::list", func(ctx context.Context, v map[string]any) (any, error) {
+		box, err := m.InboxContext(ctx, stringArg(v, "session_id"))
 		if err != nil {
 			return nil, err
 		}
-		return box.ListChats(stringArg(v, "query"), stringArg(v, "cursor"), intArg(v, "limit", 100))
+		return box.ListChatsContext(ctx, stringArg(v, "query"), stringArg(v, "cursor"), intArg(v, "limit", 100))
 	})
-	r.Add("whatsapp::messages::list", func(_ context.Context, v map[string]any) (any, error) {
-		box, err := m.Inbox(stringArg(v, "session_id"))
+	r.Add("whatsapp::messages::list", func(ctx context.Context, v map[string]any) (any, error) {
+		box, err := m.InboxContext(ctx, stringArg(v, "session_id"))
 		if err != nil {
 			return nil, err
 		}
-		return box.ListMessages(stringArg(v, "chat_id"), stringArg(v, "cursor"), intArg(v, "limit", 50))
+		return box.ListMessagesContext(ctx, stringArg(v, "chat_id"), stringArg(v, "cursor"), intArg(v, "limit", 50))
 	})
 	r.Add("whatsapp::messages::request_history", func(ctx context.Context, v map[string]any) (any, error) {
 		id := stringArg(v, "session_id")
-		client, err := m.Client(id)
+		client, err := m.ClientContext(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		box, err := m.Inbox(id)
+		box, err := m.InboxContext(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -808,7 +989,7 @@ func registerSessions(r *Registry) {
 		if count < 1 || count > 100 {
 			return nil, errors.New("count must be 1..100")
 		}
-		oldest, err := box.Oldest(chat.String())
+		oldest, err := box.OldestContext(ctx, chat.String())
 		if err != nil {
 			return nil, err
 		}

@@ -39,18 +39,15 @@ type cloudReceiveRequest struct {
 
 func registerCloudWebhooks(client *iii.Client, manager *Manager, engineURL string) error {
 	metadata := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if err := client.RegisterFunction("whatsapp::cloud::webhook::verify", func(ctx context.Context, raw json.RawMessage) (any, error) {
-		var req cloudVerifyRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
-			return cloudHTTPText(400, "Invalid verification request"), nil
-		}
-		return verifyCloudWebhook(manager.Config().Cloud, req.QueryParams), nil
-	}, metadata); err != nil {
+	if err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::verify", cloudVerificationHandler(manager), metadata); err != nil {
 		return err
 	}
-	if err := client.RegisterFunction("whatsapp::cloud::webhook::receive", func(ctx context.Context, raw json.RawMessage) (any, error) {
+	if err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::receive", func(ctx context.Context, input callbackRequest[cloudReceiveRequest]) (cloudHTTPResponse, error) {
+		if manager.interfaceOnly {
+			return cloudHTTPText(503, "Interface capture does not execute callbacks"), nil
+		}
 		var req cloudReceiveRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
+		if err := json.Unmarshal(input.Raw, &req); err != nil {
 			return cloudHTTPText(400, "Invalid webhook request"), nil
 		}
 		return receiveCloudWebhook(ctx, manager, engineURL, req), nil
@@ -101,8 +98,43 @@ func verifyCloudSignature(secret string, raw []byte, signature string) bool {
 	_, _ = mac.Write(raw)
 	return hmac.Equal(mac.Sum(nil), expected)
 }
+
+// readCloudChannel reads an HTTP trigger's original body up to limit bytes. A
+// non-zero status is 400 (no readable channel), 413 (too large) or 503 (read failed).
+func readCloudChannel(ctx context.Context, engineURL string, ref *iii.StreamChannelRef, limit int) ([]byte, int) {
+	if ref == nil || ref.Direction != iii.ChannelRead || ref.ChannelID == "" || ref.AccessKey == "" {
+		return nil, 400
+	}
+	reader := iii.OpenReader(engineURL, *ref)
+	defer reader.Close()
+	raw := []byte{}
+	for {
+		chunk, ok, err := reader.NextBinary(ctx)
+		if err != nil {
+			return nil, 503
+		}
+		if !ok {
+			return raw, 0
+		}
+		if len(chunk) > limit-len(raw) {
+			return nil, 413
+		}
+		raw = append(raw, chunk...)
+	}
+}
 func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL string, req cloudReceiveRequest) cloudHTTPResponse {
-	config := manager.Config()
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	defer cancel()
+	select {
+	case manager.cloudDeliverySlots <- struct{}{}:
+		defer func() { <-manager.cloudDeliverySlots }()
+	default:
+		return cloudHTTPText(503, "Webhook delivery is busy; retry later")
+	}
+	config, err := manager.ConfigContext(ctx)
+	if err != nil {
+		return cloudHTTPText(503, "Webhook delivery is unavailable; retry later")
+	}
 	if !config.Cloud.Enabled || strings.TrimSpace(config.Cloud.AppSecret) == "" {
 		return cloudHTTPText(503, "Webhook delivery is not configured")
 	}
@@ -113,27 +145,9 @@ func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL str
 	if size, err := strconv.ParseInt(cloudHeader(req.Headers, "content-length"), 10, 64); err == nil && size > cloudWebhookMaxBody {
 		return cloudHTTPText(413, "Payload too large")
 	}
-	ref := req.RequestBody
-	if ref == nil || ref.Direction != iii.ChannelRead || ref.ChannelID == "" || ref.AccessKey == "" {
-		return cloudHTTPText(400, "Original request body is required")
-	}
-	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
-	defer cancel()
-	reader := iii.OpenReader(engineURL, *ref)
-	defer reader.Close()
-	raw := []byte{}
-	for {
-		chunk, ok, err := reader.NextBinary(ctx)
-		if err != nil {
-			return cloudHTTPText(503, "Unable to read delivery; retry later")
-		}
-		if !ok {
-			break
-		}
-		if len(chunk) > cloudWebhookMaxBody-len(raw) {
-			return cloudHTTPText(413, "Payload too large")
-		}
-		raw = append(raw, chunk...)
+	raw, status := readCloudChannel(ctx, engineURL, req.RequestBody, cloudWebhookMaxBody)
+	if status != 0 {
+		return cloudHTTPText(status, map[int]string{400: "Original request body is required", 413: "Payload too large", 503: "Unable to read delivery; retry later"}[status])
 	}
 	if !verifyCloudSignature(config.Cloud.AppSecret, raw, signature) {
 		return cloudHTTPText(403, "Invalid signature")
@@ -142,22 +156,18 @@ func receiveCloudWebhook(parent context.Context, manager *Manager, engineURL str
 	if err != nil {
 		return cloudHTTPText(400, "Invalid webhook delivery")
 	}
-	if len(batch.messages)+len(batch.receipts) == 0 {
+	if len(batch.messages)+len(batch.receipts)+len(batch.events) == 0 {
 		return cloudHTTPText(200, "Accepted")
 	}
-	done := make(chan error, 1)
-	go func() {
-		done <- manager.storeCloudDelivery(config, batch)
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			return cloudHTTPText(503, "Unable to store delivery; retry later")
+	// Storage shares the delivery deadline. Synchronous processing leaves no
+	// archive goroutine waiting to write after a timeout response.
+	if err = manager.storeCloudDeliveryContext(ctx, config, batch); err != nil {
+		if ctx.Err() != nil {
+			return cloudHTTPText(503, "Delivery timed out; retry later")
 		}
-		return cloudHTTPText(200, "Accepted")
-	case <-ctx.Done():
-		return cloudHTTPText(503, "Delivery timed out; retry later")
+		return cloudHTTPText(503, "Unable to store delivery; retry later")
 	}
+	return cloudHTTPText(200, "Accepted")
 }
 
 type cloudDeliveryBatch struct {
@@ -248,6 +258,14 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 				return batch, err
 			}
 			if field != "messages" {
+				events, err := cloudAccountEvents(config, entry, change, field)
+				if err != nil {
+					return batch, err
+				}
+				batch.events = append(batch.events, events...)
+				if len(batch.events) > 1000 {
+					return batch, errors.New("delivery exceeds event limit")
+				}
 				continue
 			}
 			value, err := cloudObject(change["value"])
@@ -292,7 +310,7 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 					return batch, err
 				}
 				for _, rawMessage := range messages {
-					if len(batch.messages)+len(batch.receipts) >= 1000 {
+					if len(batch.events) >= 1000 {
 						return batch, errors.New("delivery exceeds item limit")
 					}
 					message, err := cloudObject(rawMessage)
@@ -318,7 +336,15 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 					if !cloudMessageTypePattern.MatchString(cloudString(message, "type")) {
 						return batch, errors.New("invalid message type")
 					}
-					chat, _ := cloudStorageChatID(sender)
+					conversation := sender
+					groupID := cloudString(message, "group_id")
+					if groupID != "" {
+						if !cloudGroupIDPattern.MatchString(groupID) {
+							return batch, errors.New("invalid group identifier")
+						}
+						conversation = "group:" + groupID
+					}
+					chat, _ := cloudStorageChatID(conversation)
 					view := MessageView{MessageID: id, ChatID: chat, SenderID: sender, TimestampMS: seconds * 1000, Kind: kind, Text: text, Source: "live"}
 					if name, ok := names[sender]; ok {
 						view.SenderName = &name
@@ -326,8 +352,8 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 					batch.messages = append(batch.messages, view)
 					data, _ := json.Marshal(message)
 					batch.events = append(batch.events, boundedCloudEvent(CloudEvent{
-						Kind: "message.received", BusinessAccountID: config.BusinessAccountID, PhoneNumberID: config.PhoneNumberID,
-						MessageID: id, ChatID: sender, SenderID: sender, MessageType: cloudString(message, "type"),
+						Kind: "message.received", Field: "messages", BusinessAccountID: config.BusinessAccountID, PhoneNumberID: config.PhoneNumberID,
+						MessageID: id, ChatID: conversation, GroupID: groupID, SenderID: sender, MessageType: cloudString(message, "type"),
 						TimestampMS: seconds * 1000, Text: text, Data: data,
 					}))
 				}
@@ -349,10 +375,25 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 					if externalStatusRank(state) == 0 {
 						continue
 					}
-					if len(batch.messages)+len(batch.receipts) >= 1000 {
+					if len(batch.events) >= 1000 {
 						return batch, errors.New("delivery exceeds item limit")
 					}
 					recipient, err := cloudExternalIdentity(status, "recipient_id", "recipient_user_id")
+					groupID, participant := "", ""
+					if cloudString(status, "recipient_type") == "group" {
+						groupID = cloudString(status, "recipient_id")
+						if !cloudGroupIDPattern.MatchString(groupID) {
+							return batch, errors.New("invalid group identifier")
+						}
+						recipient, err = "group:"+groupID, nil
+						participant = cloudString(status, "recipient_participant_id")
+						if participant == "" {
+							participant = cloudString(status, "participant_recipient_id")
+						}
+						if participant != "" {
+							participant, err = normalizeCloudChatID(participant)
+						}
+					}
 					if err != nil {
 						return batch, err
 					}
@@ -370,11 +411,14 @@ func parseCloudDelivery(config CloudConfig, raw []byte) (cloudDeliveryBatch, err
 						milliseconds := seconds * 1000
 						receipt.SentAtMS = &milliseconds
 					}
-					batch.receipts = append(batch.receipts, receipt)
+					// A participant read receipt is not a group-wide delivery/read acknowledgement.
+					if participant == "" {
+						batch.receipts = append(batch.receipts, receipt)
+					}
 					data, _ := json.Marshal(status)
 					batch.events = append(batch.events, boundedCloudEvent(CloudEvent{
-						Kind: "message.status", BusinessAccountID: config.BusinessAccountID, PhoneNumberID: config.PhoneNumberID,
-						MessageID: id, ChatID: recipient, Status: state, TimestampMS: seconds * 1000, Data: data,
+						Kind: "message.status", Field: "messages", BusinessAccountID: config.BusinessAccountID, PhoneNumberID: config.PhoneNumberID,
+						MessageID: id, ChatID: recipient, GroupID: groupID, ParticipantID: participant, Status: state, TimestampMS: seconds * 1000, Data: data,
 					}))
 				}
 			}

@@ -20,7 +20,7 @@ import (
 type nativeMediaLimitKey struct{}
 type nativeMediaTransport struct {
 	base     http.RoundTripper
-	maxBytes func() int
+	maxBytes func(context.Context) (int, error)
 }
 type nativeBoundedBody struct {
 	io.ReadCloser
@@ -62,16 +62,27 @@ func (t nativeMediaTransport) RoundTrip(request *http.Request) (*http.Response, 
 	if !nativeMediaURL(request.URL) {
 		return nil, errors.New("media requests require an HTTPS WhatsApp CDN host")
 	}
+	if err := request.Context().Err(); err != nil {
+		return nil, err
+	}
+	limit := int64(1024 * 1024)
+	if request.Method == http.MethodGet {
+		if requested, ok := request.Context().Value(nativeMediaLimitKey{}).(int64); ok {
+			limit = requested
+		} else {
+			maxBytes, err := t.maxBytes(request.Context())
+			if err != nil {
+				return nil, err
+			}
+			limit = int64(maxBytes) + 26
+		}
+	}
+	if limit < 1 {
+		return nil, errors.New("media response byte limit must be positive")
+	}
 	response, err := t.base.RoundTrip(request)
 	if err != nil {
 		return nil, err
-	}
-	limit := int64(t.maxBytes()) + 26
-	if request.Method != http.MethodGet {
-		limit = 1024 * 1024
-	}
-	if requested, ok := request.Context().Value(nativeMediaLimitKey{}).(int64); ok && requested < limit {
-		limit = requested
 	}
 	if response.ContentLength > limit {
 		response.Body.Close()
@@ -82,7 +93,7 @@ func (t nativeMediaTransport) RoundTrip(request *http.Request) (*http.Response, 
 }
 
 // Install once when the client is created. The limit callback supports config reloads.
-func configureNativeMediaHTTP(client *whatsmeow.Client, maxBytes func() int) {
+func configureNativeMediaHTTP(client *whatsmeow.Client, maxBytes func(context.Context) (int, error)) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	client.SetMediaHTTPClient(&http.Client{Transport: nativeMediaTransport{base: transport, maxBytes: maxBytes}, Timeout: 2 * time.Minute, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 || !nativeMediaURL(req.URL) {
@@ -226,11 +237,15 @@ func registerNativeMedia(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		data, err := decodeMedia(stringArg(args, "data_base64"), r.Manager.Config().MaxMediaBytes)
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		data, err := decodeMedia(stringArg(args, "data_base64"), config.MaxMediaBytes)
 		if err != nil {
 			return nil, err
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -249,12 +264,16 @@ func registerNativeMedia(r *Registry) {
 			return nil, errors.New("media sending requires a person or group")
 		}
 		media := nativeMap(args, "media")
-		data, thumb, err := nativeMediaContent(media, r.Manager.Config().MaxMediaBytes)
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		data, thumb, err := nativeMediaContent(media, config.MaxMediaBytes)
 		if err != nil {
 			return nil, err
 		}
 		mediaType, _, _ := nativeMediaType(stringArg(media, "media_type"))
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}
@@ -273,11 +292,15 @@ func registerNativeMedia(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		path, hash, key, enc, length, err := nativeDownloadArgs(args, r.Manager.Config().MaxMediaBytes)
+		config, configErr := r.Manager.ConfigContext(ctx)
+		if configErr != nil {
+			return nil, configErr
+		}
+		path, hash, key, enc, length, err := nativeDownloadArgs(args, config.MaxMediaBytes)
 		if err != nil {
 			return nil, err
 		}
-		client, err := r.Manager.Client(stringArg(args, "session_id"))
+		client, err := r.Manager.ClientContext(ctx, stringArg(args, "session_id"))
 		if err != nil {
 			return nil, err
 		}

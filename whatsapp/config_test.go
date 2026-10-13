@@ -39,10 +39,10 @@ func TestConfigDefaultsAndStrictSecretSafeParsing(t *testing.T) {
 		}
 	}
 }
-func TestConfigReloadKeepsStructuralValuesAndTrimsInbox(t *testing.T) {
+func TestConfigReloadKeepsStructuralValuesAndDefersInboxTrim(t *testing.T) {
 	c := DefaultConfig()
 	c.DataDir = filepath.Join(t.TempDir(), "sessions")
-	m, err := NewManager(c)
+	m, err := newTestManager(c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,13 +60,15 @@ func TestConfigReloadKeepsStructuralValuesAndTrimsInbox(t *testing.T) {
 	changed.MaxEvents = 23
 	changed.MaxInboxMessages = 2
 	changed.Cloud.AccessToken = "private-sentinel"
-	pending, err := m.ApplyConfig(changed)
+	got, pending, err := m.applyConfigSnapshotContext(context.Background(), changed)
 	if err != nil || !reflect.DeepEqual(pending, []string{"data_dir", "max_events"}) {
 		t.Fatalf("reload %v %v", pending, err)
 	}
-	got := m.Config()
 	if got.DataDir != c.DataDir || got.MaxEvents != c.MaxEvents || got.MaxInboxMessages != 2 || got.Cloud.AccessToken != "private-sentinel" {
 		t.Fatal("reload state mismatch")
+	}
+	if !reflect.DeepEqual(got, m.Config()) {
+		t.Fatal("accepted configuration snapshot differs from active settings")
 	}
 	b, _ := json.Marshal(got.Redacted())
 	if strings.Contains(string(b), "private-sentinel") {
@@ -74,6 +76,13 @@ func TestConfigReloadKeepsStructuralValuesAndTrimsInbox(t *testing.T) {
 	}
 	box, _ := m.Inbox("test")
 	page, err := box.ListMessages("1234567@s.whatsapp.net", "", 50)
+	if err != nil || len(page.Messages) != 3 || page.Coverage.RetentionTruncated {
+		t.Fatalf("reload must preserve inbox data until its next write: %#v %v", page, err)
+	}
+	if err = m.RecordSent("test", MessageView{MessageID: "four", ChatID: "1234567@s.whatsapp.net", SenderID: "1234567@s.whatsapp.net", TimestampMS: 4, Kind: "text", Text: "four", Source: "live"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err = box.ListMessages("1234567@s.whatsapp.net", "", 50)
 	if err != nil || len(page.Messages) != 2 || !page.Coverage.RetentionTruncated {
 		t.Fatalf("retention not applied: %#v %v", page, err)
 	}

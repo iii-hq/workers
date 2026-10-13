@@ -181,7 +181,7 @@ type nativeRoundTripFunc func(*http.Request) (*http.Response, error)
 func (f nativeRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func TestNativeCDNTransportBoundsUnknownLengthAndRejectsHosts(t *testing.T) {
 	calls := 0
-	transport := nativeMediaTransport{maxBytes: func() int { return 8 }, base: nativeRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	transport := nativeMediaTransport{maxBytes: func(context.Context) (int, error) { return 8, nil }, base: nativeRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls++
 		return &http.Response{StatusCode: 200, ContentLength: -1, Body: io.NopCloser(bytes.NewReader(make([]byte, 100)))}, nil
 	})}

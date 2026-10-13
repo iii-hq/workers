@@ -2,16 +2,20 @@ iii: v1
 name: whatsapp
 language: go
 deploy: binary
-manifest: go.mod
+manifest: package.json
 bin: whatsapp
 license: Apache-2.0
 description: Native whatsmeow sessions and official Meta Cloud API messaging in one Go worker; no Node or browser runtime.
 tags: [whatsapp, messaging, native, go, groups, cloud-api]
 dependencies:
+  database: latest
   configuration: latest
   http: latest
   quick-tunnel: latest
 config:
+  database:
+    name: whatsapp
+    namespace: ''
   data_dir: data/whatsapp-go
   max_sessions: 32
   max_media_bytes: 16777216
