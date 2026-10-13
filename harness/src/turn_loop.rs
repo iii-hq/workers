@@ -1714,6 +1714,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
+                    &mut record.noted_parses,
                 )
                 .await;
                 append_function_result(
@@ -1786,6 +1787,7 @@ async fn finish_step(
                             &mut deny_annotations,
                             &r.changes,
                             &call.function_id,
+                            &mut record.noted_parses,
                         );
                     }
                     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
@@ -1847,6 +1849,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
+                    &mut record.noted_parses,
                 )
                 .await;
                 append_function_result(
@@ -2030,6 +2033,7 @@ async fn finish_step(
                 reconciled.as_ref().map(|r| r.changes.as_slice()),
                 &call.function_id,
                 call_args,
+                &mut record.noted_parses,
             )
             .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);

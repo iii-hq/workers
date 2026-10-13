@@ -1741,6 +1741,7 @@ pub(crate) async fn seed_new(
         function_contract_ledger,
         // Per turn: a new message may have changed what failed before.
         failed_calls: Default::default(),
+        noted_parses: Default::default(),
         skill_ack,
         skills_started,
         context_snapshot: None,
@@ -2457,6 +2458,7 @@ mod tests {
             functions_acknowledged: Some(vec![generation as u32]),
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
+            noted_parses: Default::default(),
             skill_ack: Some(crate::types::turn::SkillAck {
                 generation,
                 fingerprint: Some(format!("sha256:{generation}")),

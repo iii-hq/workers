@@ -1129,6 +1129,7 @@ mod tests {
             functions_acknowledged: None,
             function_contract_ledger: Default::default(),
             failed_calls: Default::default(),
+            noted_parses: Default::default(),
             skill_ack: None,
             skills_started: false,
             context_snapshot: None,
