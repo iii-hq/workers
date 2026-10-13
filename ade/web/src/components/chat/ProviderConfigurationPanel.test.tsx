@@ -658,7 +658,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
     const pending = deferred<unknown>()
     transport.pendingSet = pending
     const view = mount('openai-codex')
-    await flush()
+    await waitForText('Provider settings')
     const input = view.querySelector<HTMLInputElement>('input[inputmode="url"]')
     expect(input).not.toBeNull()
     if (!input) return

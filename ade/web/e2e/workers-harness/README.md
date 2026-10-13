@@ -5,8 +5,10 @@ This preview imports the current Workers page and the console's real UI primitiv
 Run from the repository root:
 
 ```sh
-pnpm --dir ade/web exec playwright test --config e2e/workers-harness/playwright.config.ts
+pnpm --dir ade/web test:e2e:workers
 ```
+
+The Console Playwright CI job runs this suite in a separate step from `test:e2e`, using its dedicated configuration and retaining failure traces with the Console artifacts.
 
 Playwright starts the isolated Vite server on port 4180, reuses that specific harness when already running, and stops a server it started when the run finishes. For a persistent manual preview:
 

@@ -268,10 +268,7 @@ export function DeviceSignIn({
           aria-live="polite"
         >
           {phase === 'fetching' || (phase === 'waiting' && checking) ? (
-            <LoaderCircle
-              className="iii-ui-spin size-3.5 shrink-0"
-              aria-hidden
-            />
+            <LoaderCircle className="iii-ui-spin size-4 shrink-0" aria-hidden />
           ) : null}
           <span>
             {message ?? (phase === 'fetching' ? 'Getting a code…' : null)}

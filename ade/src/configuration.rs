@@ -552,13 +552,11 @@ pub struct ConfigChangeRequest {}
 
 /// `Ok(None)` when the entry does not exist or holds `null`.
 pub(crate) async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
-        .await
-    {
-        Ok(resp) => Ok(resp.get("value").filter(|v| !v.is_null()).cloned()),
-        Err(e) if is_not_found(&e) => Ok(None),
-        Err(e) => Err(e),
-    }
+    let stored = initialization::get_value_with(config_id(), |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await?;
+    Ok(stored.filter(|value| !value.is_null()))
 }
 
 /// Replace the stored `console` entry wholesale (`configuration::set`).
@@ -612,29 +610,6 @@ pub(crate) async fn trigger_configuration_with_retry(
     ))
 }
 
-/// `true` only when the error carries the configuration worker's standalone
-/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
-/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
-/// engine's lowercase missing-FUNCTION code `function_not_found` still
-/// propagates as a failure instead of being read as "nothing stored yet".
-fn is_not_found(error: &str) -> bool {
-    // Anchor on the SDK's own rendering instead of scanning the whole string:
-    // a remote failure prints as `remote error ({code}): {message}`, and this
-    // worker wraps a retried get as
-    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
-    // exactly that one wrapper (never a foreign one or a different attempt
-    // count) and then require the NOT_FOUND envelope at the very start, so a
-    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
-    // different wrapper stays a real failure and propagates.
-    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
-    const _: () = assert!(CONFIG_RETRIES == 3);
-    let raw = error.trim();
-    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
-    raw == "NOT_FOUND"
-        || raw == "remote error (NOT_FOUND):"
-        || raw.starts_with("remote error (NOT_FOUND): ")
-}
-
 #[cfg(test)]
 mod tests {
     include!(concat!(
@@ -642,12 +617,16 @@ mod tests {
         "/../crates/config-client/tests/support/is_not_found_cases.rs"
     ));
 
-    /// The missing-entry classifier only seeds on the configuration worker's
-    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
-    /// code propagates instead of clobbering a stored value with a default.
     #[test]
-    fn is_not_found_matches_only_the_envelope_code() {
-        assert_missing_entry_contract(super::is_not_found);
+    fn shared_reader_matches_only_the_missing_entry_envelope_code() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert_missing_entry_contract(|error| {
+            runtime
+                .block_on(initialization::get_value_with(config_id(), |_, _| {
+                    std::future::ready(Err(error.to_string()))
+                }))
+                .is_ok_and(|value| value.is_none())
+        });
     }
 
     use super::*;
