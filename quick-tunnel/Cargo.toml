@@ -14,7 +14,7 @@ name = "quick-tunnel"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6-rc.4"
+iii-sdk = "=0.24.5"
 iii-config-client = { path = "../crates/config-client" }
 anyhow = "1"
 async-trait = "0.1"

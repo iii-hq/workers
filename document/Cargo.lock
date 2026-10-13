@@ -1009,9 +1009,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.24.6-rc.4"
+version = "0.24.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31fcea00c220195c6e2bb837a3aa919c37b5467bd7e50e8c47f3fe4eb1e8f85a"
+checksum = "153d1efa91fc973adda221013d28bf1428f6c39d48c2b5c0ad83f23eac6a137f"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -1030,9 +1030,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.24.6-rc.4"
+version = "0.24.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ee9c4f5d9c9ad650e6cae28d5ad8b7b40898da8698b23126c57c58af6ff1fb2"
+checksum = "0c40db04bca94554b42a6dbd697e44555f51c44d68a3ba3a4702d913d8fce80c"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2113,7 +2113,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

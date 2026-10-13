@@ -41,7 +41,7 @@
     "@tanstack/react-virtual": "^3.13.24",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "iii-browser-sdk": "0.24.6-rc.4",
+    "iii-browser-sdk": "0.24.5",
     "lexical": "^0.44.0",
     "lucide-react": "^1.16.0",
     "mermaid": "^11.12.0",

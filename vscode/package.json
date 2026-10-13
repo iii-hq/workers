@@ -25,7 +25,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.24.6-rc.4",
+    "iii-sdk": "0.24.5",
     "yaml": "^2.6.0",
     "zod": "^4.0.0"
   },

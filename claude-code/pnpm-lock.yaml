@@ -15,8 +15,8 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
       iii-sdk:
-        specifier: 0.24.6-rc.4
-        version: 0.24.6-rc.4
+        specifier: 0.24.5
+        version: 0.24.5
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -633,8 +633,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@iii-dev/helpers@0.24.6-rc.4':
-    resolution: {integrity: sha512-SFo7/PyPDFSx4QUW8PgCgbYxtP428AimRJXIuL+BvjFWdI0QERouogXjOEGYEBIjgYwEoeyNZtFZ7oaB9bxztw==}
+  '@iii-dev/helpers@0.24.5':
+    resolution: {integrity: sha512-f2OA99/P7tbvpuhUu+c2vgfhrr1v4RXkr9GBPV1Bq98kjRgqZpCRtnLKlPr6aVSc6btUivKrTxzNBpXU2bzTTA==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1155,8 +1155,8 @@ packages:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
 
-  iii-sdk@0.24.6-rc.4:
-    resolution: {integrity: sha512-XizPCnzMQz2kC8Rc2jAZd9BpB8EF5XygryseofPIKE5z4QgaYU0vXtqbC/Vvvu1vfdt+j319LhElg3LKP6sHTA==}
+  iii-sdk@0.24.5:
+    resolution: {integrity: sha512-6/oqhrFrCbBfEBlsnmPJzbS3Wd9axA6RZdyq7T6h9os56CzHosPwsUSc7klesgr/eavIoQyq+bcJ15GnSZYqpA==}
 
   import-in-the-middle@3.5.2:
     resolution: {integrity: sha512-WseIA/4o56+GYO3RmlOPvejYi771OFeJEeK/ejROsr9bdjW+E5NXTOD1Di8TL40Qgg3JJX9aa97Hf8iiSVIKZw==}
@@ -1866,7 +1866,7 @@ snapshots:
     dependencies:
       hono: 4.12.25
 
-  '@iii-dev/helpers@0.24.6-rc.4':
+  '@iii-dev/helpers@0.24.5':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -2463,9 +2463,9 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  iii-sdk@0.24.6-rc.4:
+  iii-sdk@0.24.5:
     dependencies:
-      '@iii-dev/helpers': 0.24.6-rc.4
+      '@iii-dev/helpers': 0.24.5
       '@opentelemetry/api': 1.9.1
       ws: 8.21.0
     transitivePeerDependencies:

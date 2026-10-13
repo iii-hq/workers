@@ -14,7 +14,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6-rc.4"
+iii-sdk = "=0.24.5"
 iii-worker-paths = { path = "../crates/worker-paths" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util", "net", "fs"] }
 tokio-util = { version = "0.7", features = ["io"] }

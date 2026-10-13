@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       iii-sdk:
-        specifier: 0.24.6-rc.4
-        version: 0.24.6-rc.4
+        specifier: 0.24.5
+        version: 0.24.5
       zod:
         specifier: ^4.0.0
         version: 4.4.3
@@ -401,8 +401,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@iii-dev/helpers@0.24.6-rc.4':
-    resolution: {integrity: sha512-SFo7/PyPDFSx4QUW8PgCgbYxtP428AimRJXIuL+BvjFWdI0QERouogXjOEGYEBIjgYwEoeyNZtFZ7oaB9bxztw==}
+  '@iii-dev/helpers@0.24.5':
+    resolution: {integrity: sha512-f2OA99/P7tbvpuhUu+c2vgfhrr1v4RXkr9GBPV1Bq98kjRgqZpCRtnLKlPr6aVSc6btUivKrTxzNBpXU2bzTTA==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -744,8 +744,8 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  iii-sdk@0.24.6-rc.4:
-    resolution: {integrity: sha512-XizPCnzMQz2kC8Rc2jAZd9BpB8EF5XygryseofPIKE5z4QgaYU0vXtqbC/Vvvu1vfdt+j319LhElg3LKP6sHTA==}
+  iii-sdk@0.24.5:
+    resolution: {integrity: sha512-6/oqhrFrCbBfEBlsnmPJzbS3Wd9axA6RZdyq7T6h9os56CzHosPwsUSc7klesgr/eavIoQyq+bcJ15GnSZYqpA==}
 
   import-in-the-middle@3.5.2:
     resolution: {integrity: sha512-WseIA/4o56+GYO3RmlOPvejYi771OFeJEeK/ejROsr9bdjW+E5NXTOD1Di8TL40Qgg3JJX9aa97Hf8iiSVIKZw==}
@@ -1135,7 +1135,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@iii-dev/helpers@0.24.6-rc.4':
+  '@iii-dev/helpers@0.24.5':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -1488,9 +1488,9 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  iii-sdk@0.24.6-rc.4:
+  iii-sdk@0.24.5:
     dependencies:
-      '@iii-dev/helpers': 0.24.6-rc.4
+      '@iii-dev/helpers': 0.24.5
       '@opentelemetry/api': 1.9.1
       ws: 8.21.3
     transitivePeerDependencies:
