@@ -529,58 +529,15 @@ async fn generate_step(
         }
     }
 
-    // max_turns guard: cap runaway loops with a synthetic notice.
-    if record.turn_count >= record.options.max_turns {
-        let notice = format!(
-            "max_turns ({}) reached; ending the turn.",
-            record.options.max_turns
-        );
-        let _ = session
-            .append_custom(
-                &record.session_id,
-                "notice",
-                json!({ "reason": "max_turns", "message": notice }),
-                &format!("e_{}_max_turns", record.turn_id),
-                Some(&origin(&record.turn_id)),
-            )
-            .await;
-        let text = json!(notice);
-        // Readable from the lean `harness::status`: `completed` with no error
-        // and an unmet goal looked exactly like success to a live
-        // orchestrator polling its children (MOT-4718).
-        record.stop_reason = Some("max_turns".to_string());
-        // The cap ends the turn but must not BYPASS the post-turn gate: with
-        // no steps left to correct anything, a validator that rejects this
-        // residue FAILS the turn — a runaway must never complete as if
-        // validated (live-caught by the validation_chain e2e: a turn that
-        // burned its steps mid-loop finalized "completed" with the goal
-        // unmet).
-        return (match deps.hooks.run_post_turn(&record, record.step, &text).await {
-            Ok(()) => finalize_completed(deps, &session, &mut record, Some(text)).await,
-            Err(deny) => {
-                record.result = Some(text);
-                finalize_failed(
-                    deps,
-                    &session,
-                    &mut record,
-                    &format!(
-                        "max_turns reached with the post-turn gate unsatisfied: {}",
-                        deny.reason
-                    ),
-                    FailureInfo {
-                        code: "harness.output_contract_invalid",
-                        phase: "output_validation",
-                        retryable: false,
-                        kind: None,
-                        detail: None,
-                        provider: None,
-                        model: None,
-                    },
-                )
-                .await
-            }
-        })
-        .map(PreparedStep::Finished);
+    // max_turns guard: cap runaway loops with a synthetic notice. When this
+    // step's assembly may still give the last step back as context
+    // maintenance, the guard runs again after it instead.
+    if record.counted_turns() >= record.options.max_turns
+        && !maintenance_grant_possible(&record, payload.step)
+    {
+        return end_at_max_turns(deps, &session, &mut record)
+            .await
+            .map(PreparedStep::Finished);
     }
 
     let functions = deps.functions().await;
@@ -705,7 +662,6 @@ async fn generate_step(
     .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
     .collect();
     let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
-    record.functions_acknowledged = Some(current_surface);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -771,6 +727,8 @@ async fn generate_step(
         generation_input_tokens,
         generation_max_output_tokens,
         assembly_pruned,
+        maintenance_step,
+        snapshot,
     ) = loop {
         let assembled = match assemble_context(
             deps,
@@ -953,7 +911,6 @@ async fn generate_step(
                 final_request_tokens,
                 request_overhead_tokens,
             );
-            record.context_snapshot = Some(snapshot);
             break (
                 gen_system_prompt,
                 gen_annotations,
@@ -962,6 +919,8 @@ async fn generate_step(
                 final_request_tokens,
                 max_output_tokens,
                 assembled.pruned,
+                assembled.maintenance_step,
+                snapshot,
             );
         }
         if reassembled {
@@ -992,6 +951,21 @@ async fn generate_step(
             "post-assembly additions exceeded the usable budget; re-assembling with reserved headroom"
         );
     };
+
+    // Granted from the final assembly only, and persisted with the
+    // pre-generate write below (or the finalize the guard runs): a step
+    // redelivered before that write assembles and grants again, once.
+    grant_maintenance_step(&mut record, payload.step, maintenance_step);
+    if record.counted_turns() >= record.options.max_turns {
+        return end_at_max_turns(deps, &session, &mut record)
+            .await
+            .map(PreparedStep::Finished);
+    }
+    // Recorded only past the guard and the assembly failures above: a turn
+    // that ends there keeps the last generated snapshot, and leaves its unsent
+    // registry-change notice for the session's next step.
+    record.context_snapshot = Some(snapshot);
+    record.functions_acknowledged = Some(current_surface);
 
     // Persist what this step adds to the model-facing messages before the
     // request goes out, so every later step replays it in place.
@@ -1450,13 +1424,7 @@ async fn finish_step(
         // Recovery continues a partial response. Retrying a failed startup is
         // the router's responsibility; there is no response to resume here.
         if assistant_partial_result(&outcome.message).is_some()
-            && transient_resume_allowed(
-                failure.retryable.then_some(ErrorKind::Transient),
-                record.transient_resumes,
-                record.options.max_transient_resumes,
-                record.turn_count,
-                record.options.max_turns,
-            )
+            && transient_resume_allowed(failure.retryable.then_some(ErrorKind::Transient), &record)
         {
             let attempt = record.transient_resumes + 1;
             record_recovery_telemetry(&record, &detail, attempt);
@@ -2463,6 +2431,83 @@ async fn retry_or_giveup_with(
     }
 }
 
+/// End a turn that used up `max_turns`: a synthetic notice, then the
+/// post-turn gate decides between completed and failed.
+async fn end_at_max_turns(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+) -> Result<TurnStepResult, HarnessError> {
+    let notice = format!(
+        "max_turns ({}) reached; ending the turn.",
+        record.options.max_turns
+    );
+    let _ = session
+        .append_custom(
+            &record.session_id,
+            "notice",
+            json!({ "reason": "max_turns", "message": notice }),
+            &format!("e_{}_max_turns", record.turn_id),
+            Some(&origin(&record.turn_id)),
+        )
+        .await;
+    let text = json!(notice);
+    // Readable from the lean `harness::status`: `completed` with no error
+    // and an unmet goal looked exactly like success to a live
+    // orchestrator polling its children (MOT-4718).
+    record.stop_reason = Some("max_turns".to_string());
+    // The cap ends the turn but must not BYPASS the post-turn gate: with
+    // no steps left to correct anything, a validator that rejects this
+    // residue FAILS the turn — a runaway must never complete as if
+    // validated (live-caught by the validation_chain e2e: a turn that
+    // burned its steps mid-loop finalized "completed" with the goal
+    // unmet).
+    match deps.hooks.run_post_turn(record, record.step, &text).await {
+        Ok(()) => finalize_completed(deps, session, record, Some(text)).await,
+        Err(deny) => {
+            record.result = Some(text);
+            finalize_failed(
+                deps,
+                session,
+                record,
+                &format!(
+                    "max_turns reached with the post-turn gate unsatisfied: {}",
+                    deny.reason
+                ),
+                FailureInfo {
+                    code: "harness.output_contract_invalid",
+                    phase: "output_validation",
+                    retryable: false,
+                    kind: None,
+                    detail: None,
+                    provider: None,
+                    model: None,
+                },
+            )
+            .await
+        }
+    }
+}
+
+/// Whether `step`'s assembly may still grant a maintenance step: only with an
+/// effective strategy, once per step, and at most `max_turns / 2` per turn,
+/// so a strategy can never make a turn run forever.
+fn maintenance_grant_possible(record: &TurnRecord, step: u64) -> bool {
+    record.options.effective_context_strategy().is_some()
+        && record.maintenance_step_at != Some(step)
+        && record.maintenance_steps < record.options.max_turns / 2
+}
+
+/// Take back the step a strategy's `applied.maintenance_step` marked as its
+/// own upkeep: it stays in `turn_count` (ids derive from it) but no longer
+/// counts toward `max_turns`.
+fn grant_maintenance_step(record: &mut TurnRecord, step: u64, maintenance_step: bool) {
+    if maintenance_step && maintenance_grant_possible(record, step) {
+        record.maintenance_steps += 1;
+        record.maintenance_step_at = Some(step);
+    }
+}
+
 /// Persist the advanced step and re-enqueue the next `harness::turn`.
 async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult, HarnessError> {
     let cfg = deps.cfg().await;
@@ -3020,14 +3065,11 @@ fn preserve_assistant_partial(current: &mut Option<Value>, message: &AssistantMe
 
 fn transient_resume_allowed(
     error_kind: Option<crate::types::event::ErrorKind>,
-    resumes: u32,
-    max_resumes: u32,
-    turn_count: u32,
-    max_turns: u32,
+    record: &TurnRecord,
 ) -> bool {
     error_kind.is_some_and(|kind| kind.is_retryable())
-        && resumes < max_resumes
-        && turn_count < max_turns
+        && record.transient_resumes < record.options.max_transient_resumes
+        && record.counted_turns() < record.options.max_turns
 }
 
 pub(crate) async fn finalize_cancelled(
@@ -3587,6 +3629,7 @@ async fn assemble_context(
         summarized_head_tokens,
         breakdown: out.breakdown,
         pruned: out.applied.pruned,
+        maintenance_step: out.applied.maintenance_step,
     })
 }
 
@@ -3961,6 +4004,8 @@ struct Assembled {
     /// context-manager pruned or reduced function results to fit the budget
     /// this step, rewriting rows an earlier request may have sent.
     pruned: bool,
+    /// The strategy's `applied.maintenance_step` (see [`grant_maintenance_step`]).
+    maintenance_step: bool,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -4491,7 +4536,7 @@ mod tests {
     use super::{
         call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
         dispatch_unless_stopped, retryable_function_result_append_error, transient_resume_allowed,
-        turn_step_matches,
+        turn_step_matches, ContextStrategy, TurnRecord,
     };
 
     #[test]
@@ -5688,41 +5733,44 @@ mod tests {
 
     #[test]
     fn transient_resume_is_bounded_and_only_for_retryable_midstream_failures() {
+        // One step done of 16, no resume yet of the one allowed.
+        let record = crate::types::turn::tests::record();
         assert!(transient_resume_allowed(
             Some(ErrorKind::Transient),
-            0,
-            1,
-            1,
-            16
+            &record
         ));
         assert!(transient_resume_allowed(
             Some(ErrorKind::RateLimited),
-            0,
-            1,
-            1,
-            16
+            &record
         ));
         assert!(!transient_resume_allowed(
             Some(ErrorKind::Permanent),
-            0,
-            1,
-            1,
-            16
+            &record
         ));
+        let resumed = TurnRecord {
+            transient_resumes: 1,
+            ..record.clone()
+        };
         assert!(!transient_resume_allowed(
             Some(ErrorKind::Transient),
-            1,
-            1,
-            1,
-            16
+            &resumed
         ));
+        let spent = TurnRecord {
+            turn_count: 16,
+            ..record.clone()
+        };
         assert!(!transient_resume_allowed(
             Some(ErrorKind::Transient),
-            0,
-            1,
-            16,
-            16
+            &spent
         ));
+        let maintained = TurnRecord {
+            maintenance_steps: 1,
+            ..spent
+        };
+        assert!(
+            transient_resume_allowed(Some(ErrorKind::Transient), &maintained),
+            "the step budget is the counted steps, not turn_count"
+        );
     }
 
     #[test]
@@ -6274,5 +6322,106 @@ mod tests {
         let mut out = assembled(compacted);
         assert!(!super::ignore_strategy_compaction(&mut out, None));
         assert!(out.applied.compacted, "context-manager compactions stand");
+    }
+
+    /// A turn at `turn_count` of `max_turns`, under the strategy given.
+    fn turn_at(turn_count: u32, max_turns: u32, strategy: Option<ContextStrategy>) -> TurnRecord {
+        let mut record = crate::types::turn::tests::record();
+        record.turn_count = turn_count;
+        record.options.max_turns = max_turns;
+        record.options.context_strategy = strategy.map(Box::new);
+        record
+    }
+
+    #[test]
+    fn the_maintenance_flag_is_read_from_applied_and_defaults_off() {
+        let flagged = assembled(serde_json::json!({
+            "token_count": 1, "usable": 100, "effective_max_output_tokens": 10,
+            "applied": { "maintenance_step": true }
+        }));
+        assert!(flagged.applied.maintenance_step);
+        let plain = assembled(serde_json::json!({
+            "token_count": 1, "usable": 100, "effective_max_output_tokens": 10
+        }));
+        assert!(!plain.applied.maintenance_step);
+    }
+
+    #[test]
+    fn a_maintenance_step_is_granted_once_per_step_with_a_strategy_up_to_half_the_cap() {
+        let mut record = turn_at(2, 4, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut record, 2, false);
+        assert_eq!(record.maintenance_steps, 0, "an unflagged step counts");
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!(
+            (record.maintenance_steps, record.maintenance_step_at),
+            (1, Some(2))
+        );
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!(
+            record.maintenance_steps, 1,
+            "a step assembled twice or redelivered grants once"
+        );
+        super::grant_maintenance_step(&mut record, 3, true);
+        super::grant_maintenance_step(&mut record, 4, true);
+        assert_eq!(
+            (record.maintenance_steps, record.maintenance_step_at),
+            (2, Some(3)),
+            "never past max_turns / 2"
+        );
+
+        let mut default = turn_at(2, 4, None);
+        super::grant_maintenance_step(&mut default, 2, true);
+        assert_eq!(
+            default.maintenance_steps, 0,
+            "context::assemble cannot grant"
+        );
+        let mut skipped = turn_at(2, 4, Some(strategy("clm")));
+        skipped.options.context_strategy.as_mut().unwrap().effective = false;
+        super::grant_maintenance_step(&mut skipped, 2, true);
+        assert_eq!(
+            skipped.maintenance_steps, 0,
+            "a skipped strategy cannot grant"
+        );
+        let mut single = turn_at(0, 1, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut single, 1, true);
+        assert_eq!(single.maintenance_steps, 0, "max_turns 1 leaves no grant");
+    }
+
+    #[test]
+    fn the_max_turns_guard_reads_the_counted_steps_and_waits_for_a_boundary_grant() {
+        // The two checks generate_step runs: before assembly, then after the grant.
+        let before = |r: &TurnRecord, step| {
+            r.counted_turns() >= r.options.max_turns && !super::maintenance_grant_possible(r, step)
+        };
+        let after = |r: &TurnRecord| r.counted_turns() >= r.options.max_turns;
+
+        // Step 4 of a 4-step turn ingests a maintenance step 3: it gets the
+        // step back and generates.
+        let mut record = turn_at(4, 4, Some(strategy("clm")));
+        assert!(!before(&record, 4), "the guard waits for the assembly");
+        super::grant_maintenance_step(&mut record, 4, true);
+        assert!(!after(&record));
+        // Step 5 ingests ordinary work: the turn ends there.
+        record.turn_count = 5;
+        assert!(!before(&record, 5));
+        super::grant_maintenance_step(&mut record, 5, false);
+        assert!(after(&record));
+
+        // At the cap the guard ends the turn before assembling.
+        let mut capped = turn_at(6, 4, Some(strategy("clm")));
+        capped.maintenance_steps = 2;
+        assert!(before(&capped, 6));
+        // A step redelivered after its grant landed generates on that grant.
+        let mut redelivered = turn_at(4, 4, Some(strategy("clm")));
+        redelivered.maintenance_steps = 1;
+        redelivered.maintenance_step_at = Some(4);
+        assert!(!before(&redelivered, 4));
+        super::grant_maintenance_step(&mut redelivered, 4, true);
+        assert_eq!(redelivered.maintenance_steps, 1);
+        assert!(!after(&redelivered));
+
+        // Without a strategy the guard is turn_count against max_turns.
+        assert!(!before(&turn_at(3, 4, None), 3));
+        assert!(before(&turn_at(4, 4, None), 4));
     }
 }
