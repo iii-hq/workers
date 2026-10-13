@@ -64,6 +64,7 @@ where
 /// loop for the worker and everything depending on it. A raw probe tells the
 /// two apart: only a raw `null` is absent; a real value that fails validation
 /// stays an error so a broken operator edit is never read as "use defaults".
+#[allow(dead_code)]
 pub async fn get_value_with<F, Fut>(id: &str, mut call: F) -> Result<Option<Value>, String>
 where
     F: FnMut(&'static str, Value) -> Fut,

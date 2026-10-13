@@ -62,7 +62,7 @@ impl TestRunner for ShellExecRunner {
                 payload: json!({
                     "command": cmd,
                     "cwd": worktree_path,
-                    "fs_scope": { "root": worktree_path, "grants": [] },
+                    "fs_scope": { "root": worktree_path, "grants": [], "boundary": "workspace" },
                     "timeout_ms": timeout_ms,
                 }),
                 action: None,
