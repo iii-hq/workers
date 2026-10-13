@@ -495,11 +495,40 @@ fn run_step(
                 .is_some_and(|id| call_ids.iter().any(|c| c == id))
     });
     let exec = last_res.map(|i| exec_body(&fresh[i].result_text(), cfg.observation_max_chars));
-    let cmd_text = last_call
-        .and_then(|m| m.content.iter().find(|b| b.kind == "function_call"))
-        .and_then(|b| b.rest.get("arguments"))
-        .map(Value::to_string)
+    // The mirror edit may share its step with another call: receipts and the
+    // "free" flag follow the call that touched `.clm/`, not the batch's first
+    // call or last result.
+    let calls: Vec<(String, String)> = last_call
+        .map(|m| {
+            m.content
+                .iter()
+                .filter(|b| b.kind == "function_call")
+                .map(|b| {
+                    let id = b.rest.get("id").and_then(Value::as_str).unwrap_or_default();
+                    let args = b
+                        .rest
+                        .get("arguments")
+                        .map(Value::to_string)
+                        .unwrap_or_default();
+                    (id.to_owned(), args)
+                })
+                .collect()
+        })
         .unwrap_or_default();
+    let edit_call = calls.iter().find(|(_, args)| args.contains(".clm/"));
+    let cmd_text = edit_call
+        .or(calls.first())
+        .map(|(_, args)| args.clone())
+        .unwrap_or_default();
+    let edit_exec = edit_call
+        .and_then(|(id, _)| {
+            fresh
+                .iter()
+                .rev()
+                .find(|m| m.role == "function_result" && m.function_call_id() == Some(id.as_str()))
+        })
+        .map(|m| exec_body(&m.result_text(), cfg.observation_max_chars))
+        .or_else(|| exec.clone());
 
     // 3. Read back the model's edit of the mirror (from the previous root when it moved).
     let read_root = st.root.clone().unwrap_or_else(|| root.to_owned());
@@ -543,7 +572,7 @@ fn run_step(
                         "before": before,
                         "after": after,
                         "real": real_edit(before, after, prefix_tokens),
-                        "free": exec.as_ref().is_some_and(|e| e.silent && e.rc == Some(0)),
+                        "free": edit_exec.as_ref().is_some_and(|e| e.silent && e.rc == Some(0)),
                     });
                     st.edit_mark = cand.len();
                     st.proj = cand;
@@ -553,7 +582,7 @@ fn run_step(
             }
             MirrorChange::Same if cmd_text.contains(".clm/") => {
                 notes.push(
-                    match exec.as_ref().and_then(|e| e.rc).filter(|rc| *rc != 0) {
+                    match edit_exec.as_ref().and_then(|e| e.rc).filter(|rc| *rc != 0) {
                         Some(rc) => receipt_no_change_exit(rc, before),
                         None => receipt_no_change_matched(before),
                     },
@@ -1232,6 +1261,30 @@ mod tests {
     /// The system section a session keeps: the limit of its first CLM step.
     fn section(limit: u64) -> String {
         format!("BASE{}", clm_section(&mirror_rel(SID), limit))
+    }
+
+    #[tokio::test]
+    async fn a_mirror_edit_sharing_its_step_gets_its_own_receipt() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 0)).await.unwrap();
+        // One reply, two calls: a read, then a mirror edit that fails before changing anything.
+        let mut both = call("c1", "cat notes.txt");
+        let edit = json!({ "type": "function_call", "id": "c2", "function_id": "shell::exec",
+            "arguments": { "command": "bash", "args": ["-c", format!("python3 broken.py {}", mirror_rel(SID))] } });
+        both["content"].as_array_mut().unwrap().push(edit);
+        let failed = json!({ "exit_code": 1, "stdout": "", "stderr": "SyntaxError" }).to_string();
+        let mut r2 = result("c2", "");
+        r2["content"][0]["text"] = json!(failed);
+        raw.extend([both, result("c1", "notes"), r2]);
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        let sent = d.delegate.last().to_string();
+        // the receipt names the edit's exit code, whatever the other call did
+        assert!(sent.contains("The command exited with code 1"), "{sent}");
+        assert!(
+            !sent.contains("Nothing in the file matched your script"),
+            "{sent}"
+        );
     }
 
     #[tokio::test]

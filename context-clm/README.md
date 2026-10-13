@@ -133,4 +133,5 @@ Files per session: the mirror `<root>/.clm/<session>.ctx` (mode 0600, in a
 0700 `.clm/` that ignores itself through `.gitignore`), the state
 `<data_dir>/<session>.json` and the step log
 `<data_dir>/log/<session>.jsonl`. All three hold transcript text and are
-removed when the session is deleted.
+removed when the session is deleted. The mirror also leaves the workspace when each turn ends (and `.clm/` with it once no
+other session's mirror is in it); the next step writes it again from the saved state.
