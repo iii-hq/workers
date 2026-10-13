@@ -13,6 +13,7 @@ import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { onChatShownRequest } from '@/lib/chat-requests'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import {
@@ -145,6 +146,16 @@ export function ChatPanel({
   useEffect(() => {
     if (mobileViewport && displayedId) setNarrowView('chat')
   }, [displayedId, mobileViewport])
+
+  // An outside request to show a chat (a setup wizard example, a page that
+  // started a turn, a @session pill) also moves a narrow desktop pane off its
+  // list. A new active id alone does not: deleting the open chat from the list
+  // keeps the list, and so does a resize.
+  useEffect(
+    () =>
+      pinned ? undefined : onChatShownRequest(() => setNarrowView('chat')),
+    [pinned],
+  )
 
   const handleSelect = useCallback(
     (id: string) => {

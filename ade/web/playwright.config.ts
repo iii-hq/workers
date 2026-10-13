@@ -8,7 +8,8 @@ const artifactsRoot =
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: genericConsoleTestIgnore(),
+  // The Workers fixture starts its own Vite server via test:e2e:workers.
+  testIgnore: [...genericConsoleTestIgnore(), '**/workers-settings.spec.ts'],
   fullyParallel: false,
   workers: 1,
   retries: 0,

@@ -238,7 +238,7 @@ function ready(
       onboarding={controller(snapshot, activity)}
       judge={null}
       prompts={prompts}
-      agentNames={new Map([['ade-worker-builder', 'Create an app or tool']])}
+      agentNames={new Map([['ade-worker-builder', 'Onboarding']])}
       onPrompt={noop}
       onFinish={noop}
     />,
@@ -290,7 +290,7 @@ describe('ReadyStep', () => {
     expect(html).toContain('aria-label="Start a chat: Build a TODO app"')
     expect(html).toContain('A todo list with notes')
     // Each card names the agent profile it runs with, as the gallery does.
-    expect(html).toContain('Create an app or tool')
+    expect(html).toContain('Onboarding')
     expect(html).toContain('Default')
     expect(html).not.toContain('ade-worker-builder')
     expect(html).toContain('Finish')

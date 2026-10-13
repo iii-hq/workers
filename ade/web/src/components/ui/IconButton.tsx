@@ -27,6 +27,7 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
         type="button"
         variant={variant}
         size="icon"
+        data-icon-button=""
         aria-label={props['aria-label'] ?? label}
         {...props}
       >

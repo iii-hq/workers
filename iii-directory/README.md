@@ -1,9 +1,9 @@
 # iii-directory
 
 Workers registry HTTP proxy and filesystem-backed skills, system prompts,
-and agent profiles for the [iii engine](https://github.com/iii-hq/iii). Every
-public function sits under a single `directory::*` namespace, split
-into five surfaces (all MCP-agnostic):
+and agent profiles for the [iii engine](https://github.com/iii-hq/iii), plus
+kit install and update. Every public function sits under a single
+`directory::*` namespace, split into six surfaces (all MCP-agnostic):
 
 | Surface | What clients see | When to use it |
 |---|---|---|
@@ -11,6 +11,7 @@ into five surfaces (all MCP-agnostic):
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts listed by `list`, read by `get`, authored by `create`, edited by `update`, and removed by `delete`. The list response keeps its `prompts` field name. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
 | **Agent Profiles** (`directory::agents::*`) | Reusable session identities whose file body is the system prompt, with display `name`, emoji `logo`, preloaded `skills` and `functions` (bodies and contracts the harness freezes into every session's prompt), and optional `model` + `reasoning_effort` in required frontmatter. `list` rows carry the display/configuration metadata and `get` adds `system_prompt` and `unknown_skills`. Stored as direct `<agents_folder>/<id>.md` files. See [Agent profile storage](../docs/architecture/agent-profile-storage.md). | A named identity selected with `harness::send { options: { agent } }` |
 | **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. The response also carries `skills` (installed how-to documents) and `triggers` (registered bindings that already fire, schedule, or hook a function, minus ephemeral console listeners), ranked in the same mode as the functions; `search_mode` reports the mode that actually ranked. | "Which functions do I call for this task?" |
+| **Kits** (`directory::download-kit`, `directory::kits::*`) | Install, update and remove kits — agent profiles, skills and registry workers published together as `<author>/<kit>` — through plans a human reviews (ADE → Directory → Kits) before anything is written. `kits.lock` records what is installed. See [Kits](#kits). | "Install the kanban team kit", "what does 1.1.0 change?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
 Engine introspection (functions / triggers / registered triggers /
@@ -55,11 +56,12 @@ registry view also surfaces publication metadata (`type`, `config`,
 3. [Quickstart: download some skills](#quickstart-download-some-skills)
 4. [On-disk layout](#on-disk-layout)
 5. [Skill ids](#skill-ids)
-6. [Functions](#functions)
-7. [Function search & pre-generate hint](#function-search--pre-generate-hint)
-8. [Custom trigger types](#custom-trigger-types)
-9. [Local development & testing](#local-development--testing)
-10. [Migration from skills v0.2.x](#migration-from-skills-v02x)
+6. [Kits](#kits)
+7. [Functions](#functions)
+8. [Function search & pre-generate hint](#function-search--pre-generate-hint)
+9. [Custom trigger types](#custom-trigger-types)
+10. [Local development & testing](#local-development--testing)
+11. [Migration from skills v0.2.x](#migration-from-skills-v02x)
 
 ---
 
@@ -146,7 +148,8 @@ auto_download: true                   # subscribe to worker-add + run the boot r
 function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 
 # TUNABLE — hot-reload live on `configuration:updated`.
-registry_url: https://api.workers.iii.dev   # workers registry base URL
+registry_url: https://api.workers.iii.dev   # workers registry base URL (workers and kits)
+# registry_web_url: https://workers.iii.dev  # registry web app for "open in registry" links; default: registry_url without its leading `api.`
 download_timeout_ms: 60000                   # per git-clone / HTTP request timeout (ms)
 registry_cache_ttl_ms: 60000                 # in-process TTL for registry::workers::* responses
 filter_unregistered: true                    # hide skills whose namespace isn't an installed worker
@@ -230,10 +233,18 @@ iii trigger --function-id=directory::skills::download \
 ```
 
 The response is
-`{ namespace, skills_written, system_prompts_written, agents_written, source }`.
+`{ namespace, skills_written, system_prompts_written, agents_written, agents_skipped?, source }`.
 The three `*_written` fields list the files materialised in this run.
 Registry entries shaped exactly as `agents/<id>.md` land in
 `<agents_folder>/<id>.md`; repo downloads do not install agent profiles.
+A registry entry whose profile id an installed kit owns (`kits.lock`) is not
+written — kit profiles take precedence — and is reported in
+`agents_skipped: [{ id, owned_by }]`.
+
+A registry download (explicit or automatic) writes
+`<skills_folder>/<worker>/.iii-skill-complete` with the worker, the resolved
+`version` and, per agent profile it wrote, `agents: { <id>: <sha256> }`. That
+is how `directory::agents::list` attributes a profile to a worker.
 
 After every successful download the worker fires the
 `directory::skills::on-change`, `directory::system-prompts::on-change`,
@@ -407,6 +418,225 @@ served at `iii://directory/skills` is gone. Consumers that want a
 tree-shaped picker iterate `list` rows themselves and indent by
 `id.matches('/').count()`.
 
+## Kits
+
+A **kit** is a publishable bundle of agent profiles (`agents/<id>.md`), skills
+(`skills/**.md`) and registry workers declared by semver range, addressed as
+`<author-handle>/<kit-name>` and versioned in the registry
+(`registry_url`, endpoints under `/k`). Install one with
+
+```bash
+iii trigger directory::download-kit kit=acme/kanban-team          # latest
+iii trigger directory::download-kit kit=acme/kanban-team@1.3.0    # or a tag, or a range (@^1.3)
+```
+
+Nothing is written by that call: it builds a **plan** and answers with it.
+Review the plan in the ADE (**Directory → Kits**) or apply it from a script
+with `iii trigger directory::kits::apply plan_id=kp_…`. `apply=true` on
+`download-kit` applies at once only when the plan has no warnings, nothing
+blocking it and no file that needs a decision.
+
+### What lands where
+
+| Kit file | Installed at |
+|---|---|
+| `agents/<id>.md` | `<agents_folder>/<id>.md` (flat ids, like every profile) |
+| `skills/<path>.md` | `<skills_folder>/<handle>/<kit>/<path>.md` — skill id `<handle>/<kit>/<path>` (`SKILL.md` / `index.md` → `index`) |
+| `workers: { kanban: ^1.4 }` | `compose::add { workers: [{ worker: "kanban", version: "^1.4" }] }` — the compose file declares the kit's range |
+
+Kit skill namespaces have two segments. They pass `filter_unregistered`
+(they are not workers), and a kit's local override is
+`<local_skills_folder>/<handle>/<kit>/`, which shadows that kit only — never
+the author's other kits. A kit installed inside `local_skills_folder` (the
+default `skills/iii` with an author handle `iii`) is the kit itself, not an
+override.
+
+### `kits.lock`
+
+`kits.lock` sits next to the compose file and is meant to be committed. The
+compose file is `III_COMPOSE_FILE` when Compose started this worker;
+otherwise it is `worker-compose.yaml` in `III_COMPOSE_DIR`, or in the process
+working directory for a standalone worker.
+
+```yaml
+version: 1
+kits:
+  acme/kanban-team:
+    requested: ^1.3.0          # a tag, a range, or ^<version> for an exact install
+    version: 1.3.0
+    installed_at: 2026-10-08T14:02:11Z
+    workers:
+      kanban: ^1.4
+    files:
+      agents/product-manager.md:
+        sha256: 4be1…          # the content the kit installed: the merge base
+      agents/reviewer.md:
+        sha256: 77c0…
+        skipped: true          # you kept the file that was already there
+      skills/acme/kanban-team/tickets/flow.md:
+        sha256: 9a3e…
+    ignored_versions: [1.4.0]
+```
+
+Paths are install paths: `agents/…` under `agents_folder`, `skills/…` under
+`skills_folder`. A file's state is computed on demand — **intact** (on-disk
+sha = base), **edited**, **missing**, or **skipped**. Bases are fetched back
+from the registry (`GET /blobs/<sha256>`); no copies are kept. An exact
+version request installs that version and records its caret range
+(`1.3.0` → `^1.3.0`, as npm saves an exact install) so compatible releases
+are offered as updates; tags and ranges are recorded as given.
+
+Pending plans live in `.iii/directory/kit-plans/<plan_id>.json` next to the
+compose file (local state, not committed) and expire after 24 hours. The last
+update check is cached in `.iii/directory/kit-updates.json`.
+
+### Precedence and collisions
+
+Kit profiles take precedence over profiles workers ship, but an install or
+update never replaces an existing file silently. Every `agents/<id>.md` has an
+owner: a kit (`kits.lock`), a worker (its completion marker records the
+profiles it wrote, with their sha256), or the project itself (`local`).
+
+| The kit writes a path that… | Warning | Default |
+|---|---|---|
+| a worker's bundle wrote | `agent_overwrite` — "came from worker kanban 0.1.18 and will be replaced" | replace |
+| another kit owns | `agent_overwrite_kit`; replacing moves the file to this kit and marks it `skipped` in the other kit's lock | replace |
+| was created in this project | `agent_overwrite_local` (the strongest) | replace |
+| a user-global profile (`~/.iii/agents`) has | `agent_shadows_global` | replace |
+| is `default`, `iii` or `iii-minimal` | `builtin_override` — replaces a built-in profile project-wide | replace |
+| exists under the kit's skills folder but is not in the lock | `file_overwrite_local` | replace |
+
+Every collision can be answered **keep**: the kit's file is not written and
+the lock marks it `skipped`; later updates respect that until it is reverted.
+Identical content is no collision. Worker downloads skip profiles a kit owns
+and report them in `agents_skipped`. `directory::agents::list` / `get` carry
+`source: { kind: kit | worker | local | global | builtin, kit?, worker?,
+version?, modified? }`.
+
+### The plan
+
+The plan JSON is the contract between the functions, the Kits page and the
+chat cards:
+
+```jsonc
+{
+  "plan_id": "kp_…", "kind": "install | update | remove",
+  "kit": "acme/kanban-team", "from": "1.3.0", "to": "1.4.0", "requested": "^1.3.0",
+  "bump": "minor", "major": false,
+  "author": { "handle": "acme", "name": "Acme", "verified": true },
+  "registry_url": "<registry_web_url>/kits/acme/kanban-team", "notes": "…",
+  "workers": [
+    { "name": "github", "range": "^2.0", "installed": null, "action": "add", "to": "2.0.3", "type": "binary" },
+    { "name": "kanban", "range": "^1.6", "range_from": "^1.4", "installed": "1.5.2", "action": "update", "to": "1.6.1" }
+  ],
+  "files": [
+    { "path": "agents/reviewer.md", "source": "agents/reviewer.md", "kind": "agent", "id": "reviewer",
+      "change": "added", "local": "occupied",
+      "collision": { "owner": "worker", "worker": "kanban", "version": "1.6.1", "sha256": "…" },
+      "default": "overwrite", "options": ["overwrite", "keep"], "agent": { …frontmatter… } },
+    { "path": "skills/acme/kanban-team/tickets/flow.md", "kind": "skill", "change": "modified",
+      "local": "edited", "base": "…", "theirs": "…", "ours": "…",
+      "merge": "conflicts", "conflicts": 1, "default": null, "options": ["kit", "mine", "merged"] }
+  ],
+  "capabilities": { "workers_added": ["github"], "functions_added": [ … ], "models_changed": [ … ] },
+  "functions": [ { "id": "kanban::ticket::create", "used_by": ["planner"], "worker": "kanban", "status": "ok" } ],
+  "warnings": [ { "code": "agent_overwrite", "path": "agents/reviewer.md", "message": "…" } ],
+  "blocking": [ { "code": "compose_not_running", "message": "… `iii compose --up` …" } ],
+  "counts": { "agents": 3, "skills": 12, "workers": 2, "conflicts": 1, "decisions_required": 1, … },
+  "created_at": "…", "expires_at": "…"
+}
+```
+
+- `change`: `added`, `modified`, `removed`, or `kept` (a `skipped` file whose
+  kit version changed). `local`: `absent`, `intact`, `edited`, `missing`, or
+  `occupied` (someone else's file). File bodies are not in the plan;
+  `directory::kits::plan { plan_id, contents: true }` serves them.
+- An update merges a file you edited with the kit's change three ways
+  (`diffy`): `merge: clean` defaults to `merged`; `merge: conflicts` has no
+  default and needs `kit`, `mine`, or `merged` with the resolved text. Conflict
+  markers read `<<<<<<< yours` / `||||||| installed` / `>>>>>>> kit`. A file
+  you edited that the kit did not change is not in the plan. A removed file
+  you did not edit defaults to `remove`; one you edited defaults to `keep`
+  (it becomes an ordinary local file).
+- Workers: `add` (not declared), `update` (installed version outside the
+  range), `redeclare` (the compose file still declares the kit's previous
+  range, which the installed version already satisfies), `none`, and
+  `remove` for a worker the kit dropped — never removed unless named in
+  `remove_workers`. `path://` workers are never touched.
+- Warnings also cover `local_edits_merged`, `merge_conflict`, `major_update`
+  and, on removal, `edited_file_kept`. Blocking: `compose_not_running` (the
+  plan adds or moves workers and `compose::status` does not answer) and
+  `kit_deprecated`.
+
+### Apply
+
+`directory::kits::apply { plan_id, decisions?, remove_workers? }`, one apply at
+a time:
+
+1. **Re-validate**: the plan has not expired, `kits.lock` still holds the
+   version it was made against, and every local file it looked at is
+   unchanged. Otherwise nothing is applied and a fresh plan comes back with
+   `status: replanned`.
+2. **Download** `GET /k/<kit>/download?version=…&ci=…` — counts the download
+   (`ci=true` when `CI` is set) — and check every body against the sha the plan
+   reviewed.
+3. **Workers** through Compose: one `compose::add` with
+   `{ worker, version: <range> }` objects for every added, moved or
+   re-declared worker (an existing container's range is re-declared in place),
+   then `compose::remove` for the ticked `remove_workers`, each followed through
+   `compose::operation`. A failure stops here, before any file is written.
+4. **Files**, one atomic write or delete at a time, journaled in the plan so a
+   retried apply recognises what it already wrote (the apply is idempotent).
+5. **`kits.lock`**, last; then the plan is deleted and `on-change` fires.
+
+Workers added or moved get their own skills and profiles downloaded right after
+the apply (kit-owned profiles skipped), and the kit is checked for updates.
+Compose must be running (`iii compose --up`): the `compose::*` functions exist
+only while its daemon does.
+
+### Updates
+
+`directory::kits::check-updates` asks `POST /k/updates` for every installed kit
+(or one): the newest version satisfying `requested`, unless it is in
+`ignored_versions`. It runs 15 seconds after boot, every 6 hours, after every
+install or update, and on demand. `directory::kits::ignore { kit, version }`
+adds a version to `ignored_versions` (and retires a pending update plan for
+it); `ignore: false` takes it back.
+
+### In the ADE
+
+The Directory page has a **Kits** segment next to Skills and Agent Profiles;
+its badge counts plans waiting for review plus available updates.
+
+- **Kits** — pending reviews, an install box, and installed kits with their
+  update state; "Check for updates".
+- **An installed kit** — Overview (README), Profiles and Skills (the files on
+  disk, read-only, with "Edit in Directory"), Workers (as Compose has them),
+  Files (intact / edited / missing / kept, with "View my changes" for edited
+  ones), Remove, and a registry link.
+- **Install review** — the collisions on top (never collapsible) with
+  replace / keep and a split diff for each, the permissions the kit asks for
+  (workers and binaries it adds or moves, functions its profiles preload), the
+  contents in three columns with a preview that shows frontmatter as fields
+  and the prompt as markdown, and a button that says what will happen
+  ("Install and replace 2 profiles"). A blocked plan shows the block instead.
+  While it runs, the three steps (workers → files → kits.lock) report live; a
+  failure offers "Try again".
+- **Update review** — release notes, then the changes as a pull request:
+  new and changed profiles (a frontmatter summary, then the diff), workers and
+  ranges, new / changed / removed skills, and the permissions the update
+  grants. "Update" stays disabled while a conflict has no decision; "Ignore
+  <version>" skips the version. A file you edited opens the conflict view:
+  the kit's changes, yours, and an editable result that starts from the
+  automatic merge.
+- **Removal review** — the files to delete (edited ones unticked) and the
+  kit's workers (unticked, with a note when another kit uses one).
+
+Chat cards render `download-kit`, `plan-update` and `remove` (the plan summary
+and "Review install", which opens this segment on the plan), `apply` (live
+steps, the result, and the plan summary while a harness approval is pending),
+`check-updates` and `kits::list`.
+
 ---
 
 ## Functions
@@ -443,13 +673,35 @@ other adapter.
 
 | Function ID | Description |
 |---|---|
-| `directory::agents::list` | Metadata-only listing of every agent profile — fs-backed plus the bundled `default` / `iii` / `iii-minimal` profiles (`builtin: true` until a local file shadows one): `{ id, name, description, logo, skill_count, model, reasoning_effort, icon, color, extends, hidden, composer_placeholder, modified_at }` per row (`hidden` and `composer_placeholder` omitted when unset; `composer_placeholder` never inherits), `skill_count`/`model`/`reasoning_effort` resolved through `extends` (`skill_count: null` = every skill; `model: null` = the send decides). A row whose chain does not resolve carries `inheritance_error`. |
-| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (filter entries matching no visible skill — warnings), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `hidden`, the profile's own `composer_placeholder` (omitted when unset), `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile). Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
+| `directory::agents::list` | Metadata-only listing of every agent profile — fs-backed plus the bundled `default` / `iii` / `iii-minimal` profiles (`builtin: true` until a local file shadows one): `{ id, name, description, logo, skill_count, model, reasoning_effort, icon, color, extends, hidden, composer_placeholder, modified_at }` per row (`hidden` and `composer_placeholder` omitted when unset; `composer_placeholder` never inherits), `skill_count`/`model`/`reasoning_effort` resolved through `extends` (`skill_count: null` = every skill; `model: null` = the send decides). A row whose chain does not resolve carries `inheritance_error`. Every row carries `source: { kind: kit \| worker \| local \| global \| builtin, kit?, worker?, version?, modified? }` — see [Precedence and collisions](#precedence-and-collisions). |
+| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (filter entries matching no visible skill — warnings), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `hidden`, the profile's own `composer_placeholder` (omitted when unset), `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile), and the same `source` as `list`. Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
 | `directory::agents::update` | Overwrite one EXISTING agent profile file with new full-file content: `{ id, content }`. Same rules the scanner enforces (required frontmatter with non-empty `name`, emoji-only `logo`; the body — the system prompt — may be empty); the id stays the file stem. Updating a bundled profile creates the local file that shadows it. Atomic write; fans out `directory::agents::on-change` with `op: "update"`. |
 | `directory::agents::create` | Create a NEW agent profile at `<agents_folder>/<id>.md` from full-file content: `{ id, content }`. Refuses an `id` that already exists in the configured agent-profile root, and a target path that already exists on disk even if the scanner would skip it; creating a bundled id shadows the bundled copy. Atomic write; fans out `directory::agents::on-change` with `op: "create"`. Returns `{ id, name, description, logo, bytes, modified_at }`. |
 | `directory::agents::delete` | Permanently remove one EXISTING agent profile file by `{ id }`. Resolves against the same configured root as `list`/`get`, fans out `directory::agents::on-change` with `op: "delete"`, and returns `{ id }`. Deleting the local shadow of a bundled profile falls back to the bundled copy; a bundled profile with no local file has nothing to delete (`D414`). Sessions already using the profile are unaffected; profiles extending it stop resolving until fixed. |
 | `directory::agents::functions::add` | `{ id, functions: ["coder::tree", …] }` — append engine function ids to one EXISTING profile's OWN `functions:` list (its *preloaded* functions: the contracts the harness pre-loads into the system prompt of every new session running as the profile). Ids already present are kept once; only that frontmatter field is rewritten (block style), every other byte of the file is untouched; writes atomically, copy-on-writes a bundled profile's shadow, fans out `on-change` with `op: "update"`. Returns `{ id, functions, added, unchanged?, bytes, modified_at }` — `unchanged: true` means nothing was written. `D416` for a request with no valid ids (entries must be non-empty and whitespace-free). |
 | `directory::agents::functions::remove` | `{ id, functions }` — drop ids from one EXISTING profile's OWN `functions:` list (absent ids are ignored; the field disappears when the list empties). Same write semantics and `D416`; returns `{ id, functions, removed, unchanged?, bytes, modified_at }`. Neither verb touches ids inherited through `extends` — those stay in the resolved union and are removed on the parent that declares them. |
+
+### Kits — `directory::download-kit`, `directory::kits::*`
+
+| Function | Description |
+|---|---|
+| `directory::download-kit` | `{ kit: "<author>/<kit>[@version\|tag\|range]", apply? }` → `{ status: planned \| applied \| up_to_date, kit, message, plan?, report? }`. Builds an install plan (an update plan when the kit is installed; without `@…` an installed kit keeps its `requested`) and stores it; writes nothing unless `apply: true` and the plan has no warnings, blocks or pending decisions. |
+| `directory::kits::apply` | `{ plan_id, decisions?, remove_workers? }` → `{ status: applied \| replanned, report?, plan? }`. `decisions` maps install paths to `overwrite \| keep \| kit \| mine \| merged \| remove` or `{ choice: "merged", content }`; files left out take the plan's `default`. The `report` lists files written / merged / removed / kept, workers added / updated / removed, the steps, and the agent ids the kit now provides. |
+| `directory::kits::plan-update` | `{ kit, version? }` — plan an update (default target: the newest release matching `requested`). `up_to_date` when there is nothing newer. |
+| `directory::kits::remove` | `{ kit }` — plan a removal; apply it with `apply` (`remove_workers` to remove the kit's workers too). |
+| `directory::kits::check-updates` | `{ kit? }` → `{ checked_at, available, kits: [{ kit, current, available, latest, major, ignored?, deprecation? }], error? }`. |
+| `directory::kits::list` | Installed kits (`version`, `requested`, file-state counts, workers, `update`, pending plan ids) and pending plan summaries; `attention` = pending plans + available updates. |
+| `directory::kits::get` | `{ kit, registry? }` — one installed kit with every file's state and on-disk sha, its workers as Compose has them, and with `registry: true` the installed version's registry detail and README. |
+| `directory::kits::plan` | `{ plan_id, contents? }` — a pending plan, its apply progress, and with `contents: true` the bodies it refers to (`blobs` by sha256, `ours` and `merged` by install path). |
+| `directory::kits::discard` | `{ plan_id }` — drop a pending plan. |
+| `directory::kits::ignore` | `{ kit, version, ignore? }` — add a version to (or with `ignore: false` remove it from) `ignored_versions`. |
+| `directory::kits::diff` | `{ kit, path }` → `{ base, local, state }` — what the kit installed and what is on disk, for "view my changes". |
+
+Errors: `D510` unknown kit or version, `D511` malformed kit ref, `D512`
+expired or unknown plan, `D513` missing or invalid decisions, `D514` blocked
+plan (Compose not running, deprecated kit), `D515` Compose operation failed,
+`D516` the registry served different content than the plan reviewed, `D520`
+registry unreachable.
 
 ### Engine introspection (native, plus one wrapper)
 
@@ -742,6 +994,7 @@ Knobs (`inject_hint`, `hint_min_workers`, `registry_search`) live in the
 | `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, `create`, or `delete`, or external (file pasted/edited/deleted directly on disk — including under `agents_skills_folder`) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "namespace": "<ns>", "id": "<id>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
 | `directory::system-prompts::on-change` | After a `directory::skills::download` that wrote at least one system prompt markdown file, a `directory::system-prompts::update`, `create`, `delete`, or external file change | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external: `{ "op": "external" }` |
 | `directory::agents::on-change` | After a `directory::skills::download` that wrote at least one agent profile, a `directory::agents::update`, `create`, `delete`, or external file change | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<id>" }`; external: `{ "op": "external" }` |
+| `directory::kits::on-change` | A kit plan is created or discarded, an apply makes progress or lands, or an update check changes the set of available updates (also fires the skills / agents on-change when an apply wrote those files) | `{ "op": "plan", "kit", "plan_id", "kind" }`, `{ "op": "discard", "kit", "plan_id" }`, `{ "op": "progress", "plan_id", "kit", "steps": [{ id, label, state, detail? }], "error"? }`, `{ "op": "apply", "kit", "plan_id", "kind" }`, `{ "op": "updates", "kit"? }` |
 
 Dispatches are fire-and-forget (Void), so the write path doesn't
 block on downstream latency.

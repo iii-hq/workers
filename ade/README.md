@@ -211,7 +211,7 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 
 | Function | Input | Output |
 |---|---|---|
-| `console::status` | `{}` | `{ http_port, engine_url, version }` |
+| `console::status` | `{}` | `{ url, http_port, engine_url, version }` |
 | `console::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, sizes, active }], active_tab_id }` |
 | `console::workspace::open` | `{ screen, session_id?, relative_to?, direction?, sizes?, activate? }` | `{ tab_id, column, placement, screens, sizes, activated }` |
 | `console::workspace::close` | `{ screen, session_id? }` | `{ tab_ids }` |

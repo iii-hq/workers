@@ -9,7 +9,7 @@
 pub mod git;
 pub mod registry;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -31,6 +31,15 @@ pub fn build_http_client(timeout_ms: u64) -> Result<reqwest::Client, String> {
         .map_err(|e| format!("build http client: {e}"))
 }
 
+/// An agent profile a registry download did not write because a kit owns
+/// that id (`kits.lock`): kit profiles take precedence over worker ones.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+pub struct SkippedAgent {
+    pub id: String,
+    /// The owning kit, `<handle>/<name>`.
+    pub owned_by: String,
+}
+
 /// Outcome of a single `skills::download` invocation. The high-level
 /// function turns this into a JSON response and uses the counts to
 /// decide which `on-change` triggers to fan out.
@@ -40,6 +49,13 @@ pub struct DownloadResult {
     pub skills_written: Vec<String>,
     pub system_prompts_written: Vec<String>,
     pub agents_written: Vec<String>,
+    /// Registry agent entries left alone because a kit owns the id.
+    pub agents_skipped: Vec<SkippedAgent>,
+    /// sha256 of every agent profile written, by id — recorded in the
+    /// worker's completion marker so profile origins can be told apart.
+    pub agent_shas: BTreeMap<String, String>,
+    /// Version the registry answered with, when it said.
+    pub version: Option<String>,
 }
 
 impl DownloadResult {
@@ -49,6 +65,9 @@ impl DownloadResult {
             skills_written: Vec::new(),
             system_prompts_written: Vec::new(),
             agents_written: Vec::new(),
+            agents_skipped: Vec::new(),
+            agent_shas: BTreeMap::new(),
+            version: None,
         }
     }
 

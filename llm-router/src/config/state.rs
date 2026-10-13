@@ -12,6 +12,7 @@ use crate::settings::{parse_settings, RouterSettings};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigSnapshot {
+    revision: u64,
     value: Value,
     settings: RouterSettings,
 }
@@ -19,7 +20,15 @@ pub struct ConfigSnapshot {
 impl ConfigSnapshot {
     pub fn from_value(value: Value) -> Self {
         let settings = parse_settings(&value);
-        Self { value, settings }
+        Self {
+            revision: 0,
+            value,
+            settings,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn value(&self) -> &Value {
@@ -57,7 +66,13 @@ pub fn snapshot(cell: &ConfigCell) -> Arc<ConfigSnapshot> {
 }
 
 pub fn apply_config(cell: &ConfigCell, value: Value) {
-    *cell.write().unwrap() = Arc::new(ConfigSnapshot::from_value(value));
+    let mut current = cell.write().unwrap();
+    if current.value == value {
+        return;
+    }
+    let mut next = ConfigSnapshot::from_value(value);
+    next.revision = current.revision.wrapping_add(1);
+    *current = Arc::new(next);
 }
 
 #[cfg(test)]

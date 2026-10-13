@@ -915,13 +915,14 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide"
-version = "0.12.29"
+version = "0.12.30"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64",
  "clap",
  "cucumber",
+ "futures-util",
  "globset",
  "ignore",
  "iii-console-ui",
@@ -942,6 +943,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "url",

@@ -60,6 +60,24 @@ macro_rules! register_fn {
             .description($desc),
         );
     }};
+    // Handlers that call other functions also receive the engine client.
+    ($iii:expr, $config:expr, $id:expr, $desc:expr, $input:ty, $handler:path, engine) => {{
+        let shared = $config.clone();
+        let engine = $iii.clone();
+        $iii.register_function(
+            $id,
+            iii_sdk::RegisterFunction::new_async(move |input: $input| {
+                let cfg = shared.load_full();
+                let engine = engine.clone();
+                async move {
+                    $handler(&engine, &cfg, input)
+                        .await
+                        .map_err(iii_sdk::errors::Error::Handler)
+                }
+            })
+            .description($desc),
+        );
+    }};
 }
 pub(crate) use register_fn;
 

@@ -1525,7 +1525,9 @@ async fn installed_skill_docs(
     let global_root = cfg.resolved_skills_folder();
     let local_root = cfg.local_skills_folder();
     let agents_roots = cfg.resolved_agents_skills_roots();
-    let (merged, _skipped) = crate::fs_source::scan_skills_merged(&global_root, &local_root);
+    let kit_ns = crate::kits::service::kit_namespaces();
+    let (merged, _skipped) =
+        crate::fs_source::scan_skills_merged_with_kits(&global_root, &local_root, &kit_ns);
     // Same policy as `resolve_visible_skills`: a wired daemon that cannot be
     // reached (no cached set either) yields the unfiltered set; without a
     // daemon (tests, benchmarks) the catalog namespaces are the floor.
@@ -1546,7 +1548,7 @@ async fn installed_skill_docs(
                 .iter()
                 .flat_map(|root| crate::fs_source::agents_namespaces(root))
                 .collect();
-            crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns)
+            crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns, &kit_ns)
         }
         None => merged,
     };

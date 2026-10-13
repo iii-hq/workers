@@ -132,6 +132,9 @@ pub struct ProviderInfo {
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,
+    /// Last completed discovery, independent of configuration and availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryStatus>,
     /// The provider's mark as inline SVG, copied from its declaration. Absent
     /// when the provider declared none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -322,6 +325,9 @@ pub struct ProviderResolveOutput {
     pub resolved: ProviderResolveResponse,
     #[serde(flatten)]
     pub status: CredentialStatus,
+    /// Opaque lease returned only to a token-authenticated discovery caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_attempt: Option<String>,
 }
 
 /// Output of the `router::models::reconcile` iii function.
@@ -384,6 +390,81 @@ pub struct RefreshModelsRequest {}
 pub struct RefreshModelsResponse {
     pub ok: bool,
     pub count: usize,
+}
+
+/// Safe discovery categories. No upstream message, team id or URL is retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryOutcome {
+    Success,
+    Empty,
+    NotConfigured,
+    Billing,
+    Authentication,
+    Permission,
+    RateLimit,
+    Unavailable,
+    InvalidResponse,
+}
+
+impl DiscoveryOutcome {
+    pub fn is_success(self) -> bool {
+        matches!(self, Self::Success | Self::Empty)
+    }
+
+    pub fn preserves_catalog(self) -> bool {
+        !self.is_success() && self != Self::NotConfigured
+    }
+
+    pub fn blocks_catalog(self) -> bool {
+        matches!(
+            self,
+            Self::Billing | Self::Authentication | Self::Permission | Self::NotConfigured
+        )
+    }
+}
+
+/// Explicit allowlist: arbitrary error strings cannot cross the router boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiscoveryCode {
+    PermissionDenied,
+    InvalidApiKey,
+    InsufficientCredits,
+    SpendingLimitExceeded,
+    RateLimitExceeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryReport {
+    pub attempt: String,
+    pub outcome: DiscoveryOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<DiscoveryCode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryStatus {
+    pub outcome: DiscoveryOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<DiscoveryCode>,
+    /// A transient failure left a previous catalog in place.
+    pub stale: bool,
+    pub checked_at_ms: i64,
+}
+
+/// Extended refresh acknowledgement. The legacy {ok,count} stays unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DiscoveryRefreshResponse {
+    #[serde(flatten)]
+    pub refreshed: RefreshModelsResponse,
+    pub discovery: DiscoveryOutcome,
 }
 
 /// Input of a provider's `provider::<id>::abort`: actively cancel the
@@ -548,6 +629,9 @@ pub struct ProviderRegisterRequest {
 /// Input of `router::provider::resolve`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderResolveRequest {
+    /// Begin a latest-wins discovery attempt. Older providers omit this.
+    #[serde(default)]
+    pub begin_discovery: bool,
     /// Provider id to resolve credentials/config for.
     #[serde(default)]
     pub id: String,
@@ -579,6 +663,9 @@ pub struct UpdateCredentialResponse {
 /// Input of `router::models::reconcile` — the only catalog write path.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelsReconcileRequest {
+    /// Optional token-gated discovery completion. Failures preserve the slice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryReport>,
     /// Provider whose catalog slice is being replaced.
     #[serde(default)]
     pub provider: String,

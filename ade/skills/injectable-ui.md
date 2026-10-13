@@ -154,7 +154,7 @@ consoles: feature-detect them.
 | `host.overlays?` | `register({ id, render })` — a floating layer over the workspace (the browser's live preview). Fall back to the page when absent. |
 | `host.palette?` | `registerSource({ id, title, kind, prefix?, minQuery?, search })` adds live rows to the command palette; `open({ query? })`. |
 | `host.commands?` | `register(pageId, commands)` — palette rows for a page that may not be open yet (`run` usually calls `panels.open`). A mounted page contributes keys through `PageRenderProps.commands`. |
-| `host.iii` | The tab's bus client: `trigger(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `registerTrigger({ type, function_id, config })`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
+| `host.iii` | The tab's bus client: `trigger(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `registerTrigger({ type, function_id, config })`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. A link to the worker's public pages takes its port from `http::status` at runtime, never a fixed 3111. |
 | `host.importModule?` | `importModule<T>(path)` imports one of the worker's `console:module` assets on demand and resolves to its namespace (Lazy modules below); rejects when nothing is served at `/ui/<path>`. |
 | `host.components`, `host.path`, `host.useTheme`, `host.uiClasses`, `host.workspace?`, `host.screen?` | Runtime component record, the current asset path, theme, class recipes, recent directories, visible-screen lease. |
 
@@ -460,7 +460,7 @@ end.
 | Whole console restyled | unscoped rules reached the console — check `warnings` in the manifest |
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |
 
-Inspect `console::ui-manifest` (or `GET <console-host>:3113/ui`),
+Inspect `console::ui-manifest` (or `GET <url>/ui`, `url` from `console::status`),
 `/ui/<path>`, registered triggers, and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
 
@@ -484,7 +484,7 @@ Validate all four layers; a green build alone is not enough.
    non-interactive compact display, complete-detail lifecycle fidelity,
    action fallback, fail-closed redaction, and disable/disconnect fallback.
 
-**The page alone: `#/worker/<scope>[/<page-id>][?context=<json>]`.** The
+**The page alone: `<url>/#/worker/<scope>[/<page-id>][?context=<json>]`, with `url` from `console::status`.** The
 console renders that one page over the full viewport — no tab strip, chat or
 palette; the tab title is `iii - <scope>` — and never reads or writes the
 shared workspace layout, so a Playwright or `browser`-worker session can open

@@ -36,6 +36,7 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
 import { hasWorkingConversation } from '@/lib/chat-activity'
+import { requestChatShown } from '@/lib/chat-requests'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
 import { setMentionSessionOpener } from '@/lib/mentions/open-session'
@@ -43,6 +44,7 @@ import {
   type ProviderListEntry,
   preferredStartingModel,
   refreshProviderModels,
+  retryXaiModels,
 } from '@/lib/models-catalog'
 import { type ConversationAdapter, startUiLoader } from '@/lib/ui-loader'
 import type { ModelOption } from '@/types/chat'
@@ -68,7 +70,7 @@ interface ConversationsContextValue extends ConversationsApi {
    * upstream model list, then re-read the catalog so the picker reflects the
    * refreshed models.
    */
-  refreshModels: () => Promise<void>
+  refreshModels: (providerId?: string) => Promise<void>
   refreshingModels: boolean
   /**
    * Presence of the `harness` worker plus the in-app install lifecycle.
@@ -188,24 +190,28 @@ export function ConversationsProvider({
   )
 
   const [refreshingModels, setRefreshingModels] = useState(false)
-  const refreshModels = useCallback(async () => {
-    if (!harnessAvailable) return
-    setRefreshingModels(true)
-    try {
-      if (backend.id === 'real') {
-        // Refresh the present providers that can list models. With no present
-        // providers this is a no-op for discovery; the catalog re-read below
-        // still runs.
-        const ids = presentProviders
-          .filter((p) => p.supports_model_listing)
-          .map((p) => p.id)
-        await refreshProviderModels(ids)
+  const refreshModels = useCallback(
+    async (providerId?: string) => {
+      if (!harnessAvailable) return
+      setRefreshingModels(true)
+      try {
+        if (backend.id === 'real') {
+          // Refresh the present providers that can list models. With no present
+          // providers this is a no-op for discovery; the catalog re-read below
+          // still runs.
+          const ids = presentProviders
+            .filter((p) => p.supports_model_listing)
+            .map((p) => p.id)
+          if (providerId === 'xai') await retryXaiModels()
+          else await refreshProviderModels(providerId ? [providerId] : ids)
+        }
+        await refresh()
+      } finally {
+        setRefreshingModels(false)
       }
-      await refresh()
-    } finally {
-      setRefreshingModels(false)
-    }
-  }, [harnessAvailable, refresh, presentProviders])
+    },
+    [harnessAvailable, refresh, presentProviders],
+  )
 
   const selectConversationRef = useRef(api.select)
   selectConversationRef.current = api.select
@@ -229,6 +235,7 @@ export function ConversationsProvider({
     // Standalone/story renders have no workspace controller; retain the old
     // selectable-chat behavior as a graceful fallback.
     selectConversationRef.current(id)
+    requestChatShown(id)
     conversationRequestedRef.current?.(id)
   }, [])
   const conversationAdapterRef = useRef<ConversationAdapter | null>(null)
@@ -240,10 +247,12 @@ export function ConversationsProvider({
         selectConversationRef.current(id)
         // Selecting is only half of it: a page that started a turn wants the
         // operator to see it, and the chat pane may not be on screen at all.
+        requestChatShown(id)
         conversationRequestedRef.current?.(id)
       },
       openDraft(draft) {
         const id = createNewRef.current(draft)
+        requestChatShown(id)
         conversationRequestedRef.current?.(id)
         window.requestAnimationFrame(requestComposerFocus)
       },

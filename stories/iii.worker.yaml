@@ -17,7 +17,6 @@ scripts:
 
 config:
   data_path: data/stories
-  console_url: http://127.0.0.1:3113
   watch: true
   keep_lines: 12
   viewport:

@@ -26,7 +26,10 @@ import {
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
-import type { ProviderListEntry } from '@/lib/models-catalog'
+import {
+  discoveryBlocksModels,
+  type ProviderListEntry,
+} from '@/lib/models-catalog'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import {
@@ -46,6 +49,7 @@ import {
 import { ProviderConfigurationPanel } from './ProviderConfigurationPanel'
 import { ProviderIcon } from './ProviderIcon'
 import { ReasoningEffortSlider } from './ReasoningEffortSlider'
+import { XaiDiscoveryStatus } from './XaiDiscoveryStatus'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -809,11 +813,19 @@ export function ModelPickerPanel({
         (id) =>
           providerById.get(id)?.configured !== true ||
           providerById.get(id)?.credential_error !== undefined ||
+          (id === 'xai' && providerById.get(id)?.discovery !== undefined) ||
           modelless.has(id),
       )
       .map((id) => ({ label: id, options: [] })),
   ]
-    .filter((group) => filterWords.length === 0 || group.options.length > 0)
+    .filter(
+      (group) =>
+        filterWords.length === 0 ||
+        group.options.length > 0 ||
+        (group.label === 'xai' &&
+          providerById.get('xai')?.discovery !== undefined &&
+          filterWords.every((word) => 'xai'.includes(word))),
+    )
     .sort((a, b) => a.label.localeCompare(b.label))
   const groupsKey = groups.map((group) => group.label).join(' ')
   const visibleIds = groups.flatMap((group) =>
@@ -948,6 +960,8 @@ export function ModelPickerPanel({
 
   function selectModel(next: ModelId) {
     if (disabled || loading) return
+    const provider = providerById.get(providerForModel(next) ?? '')
+    if (provider?.available === false || discoveryBlocksModels(provider)) return
     const nextModel = optionsById.get(next)
     const nextEfforts = effortOptionsFor(nextModel)
     const remembered = effortByModel.current.get(next) ?? 'default'
@@ -1037,7 +1051,8 @@ export function ModelPickerPanel({
             groups.map((group) => {
               const provider = providerById.get(group.label)
               const providerLabel = providerDisplayName(provider, group.label)
-              const unavailable = provider?.available === false
+              const unavailable =
+                provider?.available === false || discoveryBlocksModels(provider)
               const hasModels = group.options.length > 0
               const configured = provider?.configured ?? hasModels
               // OAuth/companion-app providers can be authenticated even though
@@ -1073,6 +1088,13 @@ export function ModelPickerPanel({
                       </button>
                     ) : null}
                   </div>
+                  {group.label === 'xai' && provider?.discovery ? (
+                    <XaiDiscoveryStatus
+                      status={provider.discovery}
+                      onRetry={ctx ? () => ctx.refreshModels('xai') : undefined}
+                      unavailable={provider.available === false}
+                    />
+                  ) : null}
                   <div className="divide-y divide-edge overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge">
                     {!catalogIsUsable && !configured && onConfigureProvider ? (
                       <button
@@ -1132,7 +1154,7 @@ export function ModelPickerPanel({
                           </button>
                         )
                       })
-                    ) : (
+                    ) : group.label === 'xai' && provider?.discovery ? null : (
                       <div className="px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
                         {unavailable
                           ? 'Provider not loaded.'

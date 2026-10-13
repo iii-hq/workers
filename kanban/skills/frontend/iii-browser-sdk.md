@@ -30,7 +30,7 @@ pnpm add iii-browser-sdk
 ```ts
 import { registerWorker } from 'iii-browser-sdk'
 
-const iii = registerWorker(import.meta.env.VITE_III_WS_URL) // ws://localhost:3111
+const iii = registerWorker(import.meta.env.VITE_III_WS_URL) // the public RBAC listener, e.g. rbac-proxy: ws://localhost:49200 by default
 ```
 
 `registerWorker(address, options?)` is the sole top-level function; everything else hangs off
@@ -137,7 +137,8 @@ RBAC listener also constrains which types a browser session may register.
   are judged by the RBAC *auth function* on the upgrade request (`{ headers, query_params,
   ip_address }` in, `AuthResult` out, scoping namespaces, allowed/forbidden function ids, and
   allowed trigger types). The engine-owned listener must be a **public, RBAC-protected
-  instance** (e.g. `iii-worker-manager#browser`); the private listener must never face
+  instance** (e.g. `iii-worker-manager#browser`, or the `rbac-proxy` worker in front of the
+  private one); the private listener must never face
   untrusted browser clients.
 - **Never pin `workerName` across tabs.** The default `browser:<random>` is deliberate: the
   engine allows one live worker per name per namespace, so two tabs sharing a fixed name evict
@@ -213,10 +214,12 @@ Rules that keep this honest:
 ## Vite
 
 ```bash
-# .env.local
-VITE_III_WS_URL=ws://localhost:3111
+# .env.local: the public RBAC listener, e.g. rbac-proxy (the `port` rbac-proxy::status answers, 49200 by default)
+VITE_III_WS_URL=ws://localhost:<port rbac-proxy::status answers>
 ```
 
+- Never the `http` worker's port (3111 by default), which serves HTTP routes and no worker
+  protocol, nor the engine's private port (49134 by default; see auth above).
 - Only `VITE_`-prefixed variables are exposed; read them with `import.meta.env.*`.
 - The package is ESM with `exports` for `.`, `./helpers`, `./state`, and `./stream`;
   `import` and `require` both resolve, and no polyfill is needed on native `WebSocket`.

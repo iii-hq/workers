@@ -379,6 +379,10 @@ jobs:
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: pnpm test:e2e
 
+      - name: Run Workers settings Playwright scenarios
+        working-directory: ade/web
+        run: pnpm test:e2e:workers --output ../../target/console-e2e/workers-settings
+
       - name: Upload Playwright coverage profiles
         if: always() && inputs.coverage
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

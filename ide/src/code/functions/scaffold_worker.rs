@@ -54,8 +54,9 @@ pub struct ScaffoldWorkerInput {
     /// picks one when omitted.
     #[serde(default)]
     pub operation_id: Option<String>,
-    /// With start: containers the worker starts after (its compose entry's
-    /// start_after), e.g. the console's.
+    /// With start: containers the worker cannot run without (its compose
+    /// entry's start_after); compose stops it whenever one of them exits.
+    /// Never the console's: a worker's UI triggers wait for the console.
     #[serde(default)]
     pub start_after: Vec<String>,
     /// Internal harness filesystem scope; omitted from published schema.

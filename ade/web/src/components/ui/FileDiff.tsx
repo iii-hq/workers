@@ -1,8 +1,16 @@
-import { DEFAULT_THEMES } from '@pierre/diffs'
+import type { FileDiffOptions, PostRenderPhase } from '@pierre/diffs'
 import type { Editor, EditorOptions } from '@pierre/diffs/edit'
 import { EditProvider, MultiFileDiff } from '@pierre/diffs/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useTheme } from '@/hooks/use-theme'
+import { FILE_DIFF_THEME } from '@/lib/file-diff-theme'
 import { cn } from '@/lib/utils'
 
 type PierreEditorConstructor = new (
@@ -51,6 +59,8 @@ export interface FileDiffProps {
   onChange?(contents: string): void
   /** Reports whether the lazily loaded inline editor can accept input. */
   onEditStateChange?(state: FileDiffEditState): void
+  /** Existing review region to focus when an activated context action disappears. */
+  contextExpansionFocusFallback?: RefObject<HTMLElement | null>
   className?: string
 }
 
@@ -61,6 +71,132 @@ export interface FileDiffProps {
  */
 function keyedByText(file: FileDiffSide): FileDiffSide & { cacheKey: string } {
   return { ...file, cacheKey: `${file.name}\0${file.contents}` }
+}
+
+// Pierre 1.3 renders context expanders as unnamed divs. Its supported render
+// hook keeps one native button per hunk action after highlighting or updates.
+// The top-painted gutter stays semantic; copies retain their pointer attributes.
+function contextExpanderKey(control: HTMLElement): string | HTMLElement {
+  const hunk = control
+    .closest('[data-expand-index]')
+    ?.getAttribute('data-expand-index')
+  return hunk == null
+    ? control
+    : JSON.stringify([
+        hunk,
+        control.hasAttribute('data-expand-up')
+          ? 'up'
+          : control.hasAttribute('data-expand-down')
+            ? 'down'
+            : 'both',
+        control.hasAttribute('data-expand-all-button'),
+      ])
+}
+
+type ContextExpansionFocus = {
+  pending: { control: HTMLElement; key: string | HTMLElement } | null
+  captureClick(event: Event): void
+}
+const contextExpansionFocus = new WeakMap<HTMLElement, ContextExpansionFocus>()
+
+function makeContextExpandersAccessible(
+  container: HTMLElement,
+  phase: PostRenderPhase,
+  fallback?: RefObject<HTMLElement | null>,
+) {
+  const shadow = container.shadowRoot
+  if (!shadow) return
+  let focus = contextExpansionFocus.get(container)
+  if (phase === 'unmount') {
+    if (focus) shadow.removeEventListener('click', focus.captureClick, true)
+    contextExpansionFocus.delete(container)
+    return
+  }
+  if (!focus) {
+    const state: ContextExpansionFocus = {
+      pending: null,
+      captureClick(event) {
+        const control =
+          event.target instanceof Element
+            ? event.target.closest<HTMLElement>('button[data-expand-button]')
+            : null
+        state.pending =
+          control && shadow.activeElement === control
+            ? { control, key: contextExpanderKey(control) }
+            : null
+      },
+    }
+    shadow.addEventListener('click', state.captureClick, true)
+    contextExpansionFocus.set(container, state)
+    focus = state
+  }
+  const pending = focus.pending
+  focus.pending = null
+  const groups = new Map<string | HTMLElement, HTMLElement[]>()
+  for (const control of shadow.querySelectorAll<HTMLElement>(
+    '[data-expand-button]',
+  )) {
+    const key = contextExpanderKey(control)
+    const group = groups.get(key) ?? []
+    group.push(control)
+    groups.set(key, group)
+  }
+  let equivalent: HTMLElement | undefined
+  for (const [key, controls] of groups) {
+    const visible = controls.filter(
+      (control) => control.getClientRects().length,
+    )
+    const primary =
+      visible.find((control) => control.closest('[data-gutter]')) ??
+      visible[0] ??
+      controls.find((control) => control.closest('[data-gutter]')) ??
+      controls[0]
+    for (const control of controls) {
+      const tag = control === primary ? 'button' : 'div'
+      const target =
+        control.tagName.toLowerCase() === tag
+          ? control
+          : container.ownerDocument.createElement(tag)
+      if (target !== control) {
+        for (const { name, value } of control.attributes) {
+          target.setAttribute(name, value)
+        }
+        target.append(...control.childNodes)
+        control.replaceWith(target)
+      }
+      target.removeAttribute('role')
+      target.removeAttribute('tabindex')
+      if (control !== primary) {
+        target.removeAttribute('type')
+        target.removeAttribute('aria-label')
+        target.setAttribute('aria-hidden', 'true')
+        continue
+      }
+      target.removeAttribute('aria-hidden')
+      target.setAttribute('type', 'button')
+      if (pending?.key === key) equivalent = target
+      target.setAttribute(
+        'aria-label',
+        target.hasAttribute('data-expand-all-button')
+          ? 'Expand all unchanged lines'
+          : target.hasAttribute('data-expand-up')
+            ? 'Expand unchanged lines above'
+            : target.hasAttribute('data-expand-down')
+              ? 'Expand unchanged lines below'
+              : 'Expand unchanged lines above and below',
+      )
+    }
+  }
+  const active = container.ownerDocument.activeElement
+  if (
+    !pending ||
+    pending.control.isConnected ||
+    shadow.activeElement ||
+    (active && active !== container.ownerDocument.body && active !== container)
+  )
+    return
+  const target = equivalent ?? fallback?.current
+  if (target?.isConnected) target.focus({ preventScroll: true })
 }
 
 /**
@@ -84,6 +220,7 @@ export function FileDiff({
   edit = false,
   onChange,
   onEditStateChange,
+  contextExpansionFocusFallback,
   className,
 }: FileDiffProps) {
   const [theme] = useTheme()
@@ -157,21 +294,21 @@ export function FileDiff({
     () =>
       editing
         ? { name: oldFile.name, contents: oldFile.contents }
-        : keyedByText(oldFile),
+        : keyedByText({ name: oldFile.name, contents: oldFile.contents }),
     [oldFile.name, oldFile.contents, editing],
   )
   const stableNewFile = useMemo(
     () =>
       editing
         ? { name: newFile.name, contents: newFile.contents }
-        : keyedByText(newFile),
+        : keyedByText({ name: newFile.name, contents: newFile.contents }),
     [newFile.name, newFile.contents, editing],
   )
   const parseDiffOptions = useMemo(
     () => ({ ignoreWhitespace }),
     [ignoreWhitespace],
   )
-  const options = useMemo(
+  const options = useMemo<FileDiffOptions<undefined>>(
     () => ({
       diffStyle,
       overflow,
@@ -180,8 +317,57 @@ export function FileDiff({
       expandUnchanged,
       disableFileHeader,
       parseDiffOptions,
-      theme: DEFAULT_THEMES,
+      theme: FILE_DIFF_THEME,
       themeType: theme,
+      onPostRender(container, _instance, phase) {
+        makeContextExpandersAccessible(
+          container,
+          phase,
+          contextExpansionFocusFallback,
+        )
+      },
+      unsafeCSS: `
+        /* Keep semantic fills separate from Shiki's ANSI placeholders. */
+        :host {
+          --diffs-addition-color-override: var(--color-ok);
+          --diffs-deletion-color-override: var(--color-alert-strong);
+          --diffs-modified-color-override: var(--color-accent);
+        }
+        [data-gutter] [data-line-number-content] {
+          color: var(--diffs-fg-number);
+        }
+        button[data-expand-button] {
+          appearance: none;
+          border-block: 0;
+          border-left: 0;
+          padding: 0;
+        }
+        button[data-expand-button]:focus-visible {
+          outline: 2px solid var(--color-rule-focus);
+          outline-offset: -2px;
+        }
+        [data-separator-wrapper]:has([data-expand-all-button]) {
+          display: flex;
+        }
+        [data-expand-button][data-expand-all-button] {
+          display: flex;
+          min-width: max-content;
+          padding-inline: 12px;
+        }
+        @media (max-width: 639px) {
+          [data-separator="line-info"], [data-separator="line-info-basic"] {
+            height: 48px;
+          }
+          [data-expand-index] [data-separator-wrapper] {
+            display: flex;
+          }
+          [data-expand-button] {
+            box-sizing: border-box;
+            min-width: 48px;
+            min-height: 48px;
+          }
+        }
+      `,
     }),
     [
       diffStyle,
@@ -192,6 +378,7 @@ export function FileDiff({
       disableFileHeader,
       parseDiffOptions,
       theme,
+      contextExpansionFocusFallback,
     ],
   )
 

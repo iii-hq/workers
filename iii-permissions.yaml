@@ -256,6 +256,10 @@ rules:
   # port, local base URL) and its last reload error: read-only, so agents
   # build page URLs from it instead of assuming port 3111.
   - http::status
+  # console::status only reports where this project's ADE listens (port,
+  # local base URL), the engine URL it proxies and its version: read-only, so
+  # agents build ADE URLs from it instead of assuming port 3113.
+  - console::status
   # browser::chromium::status only reports which Chromium the worker would
   # launch (path, version, where it searched) and the latest install job:
   # read-only, never starts a browser. browser::chromium::install downloads

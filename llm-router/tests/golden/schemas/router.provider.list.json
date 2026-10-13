@@ -20,6 +20,72 @@
         ],
         "type": "string"
       },
+      "DiscoveryCode": {
+        "description": "Explicit allowlist: arbitrary error strings cannot cross the router boundary.",
+        "enum": [
+          "permission-denied",
+          "invalid-api-key",
+          "insufficient-credits",
+          "spending-limit-exceeded",
+          "rate-limit-exceeded"
+        ],
+        "type": "string"
+      },
+      "DiscoveryOutcome": {
+        "description": "Safe discovery categories. No upstream message, team id or URL is retained.",
+        "enum": [
+          "success",
+          "empty",
+          "not_configured",
+          "billing",
+          "authentication",
+          "permission",
+          "rate_limit",
+          "unavailable",
+          "invalid_response"
+        ],
+        "type": "string"
+      },
+      "DiscoveryStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiscoveryCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "http_status": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/definitions/DiscoveryOutcome"
+          },
+          "stale": {
+            "description": "A transient failure left a previous catalog in place.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checked_at_ms",
+          "outcome",
+          "stale"
+        ],
+        "type": "object"
+      },
       "ProviderInfo": {
         "description": "One `router::provider::list` entry.",
         "properties": {
@@ -85,6 +151,17 @@
               }
             ],
             "description": "The thinking level a consumer should start with when nothing else names one; copied from the declaration. Absent means omit the level and let the provider apply its own default."
+          },
+          "discovery": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiscoveryStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last completed discovery, independent of configuration and availability."
           },
           "display_name": {
             "type": "string"

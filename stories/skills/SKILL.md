@@ -41,9 +41,9 @@ locale and motion frozen, so the same inputs give the same pixels.
 
 - Not a test runner: `play` functions, MDX docs and addons are ignored.
   Interaction tests stay in the project's own tooling.
-- Renders need the `browser` worker and the console running at
-  `console_url`; without them `components::*`, `compare` and `diff::file`
-  still work.
+- Renders need the `browser` worker and the ADE (its address from
+  `console::status`, or `console_url` when set); without them
+  `components::*`, `compare` and `diff::file` still work.
 - A line builds once and is cached by sha; building `main` in a large
   monorepo takes tens of seconds. Prefer `wait: true` on
   `stories::builds::create`, or poll `stories::builds::get`.

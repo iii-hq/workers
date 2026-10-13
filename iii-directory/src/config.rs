@@ -312,6 +312,13 @@ pub struct SkillsConfig {
     #[serde(default = "default_registry_url")]
     pub registry_url: String,
 
+    /// Base URL of the registry's web app, used for the "open in registry"
+    /// links of kits and workers. Unset: derived from `registry_url` by
+    /// dropping a leading `api.` host label (`https://api.workers.iii.dev` →
+    /// `https://workers.iii.dev`).
+    #[serde(default)]
+    pub registry_web_url: Option<String>,
+
     /// Timeout for a single download operation (HTTP request OR `git clone`)
     /// in milliseconds. Also used as the request timeout for
     /// `directory::registry::*` HTTP calls.
@@ -469,6 +476,7 @@ impl Default for SkillsConfig {
             agents_skills_folder: default_agents_skills_folder(),
             global_agents_skills_folder: default_global_agents_skills_folder(),
             registry_url: default_registry_url(),
+            registry_web_url: None,
             download_timeout_ms: default_download_timeout_ms(),
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
             filter_unregistered: default_filter_unregistered(),

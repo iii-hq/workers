@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::state::{state_get, state_set};
 use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
-use crate::types::router::ProviderDeclaration;
+use crate::types::router::{DiscoveryStatus, ProviderDeclaration};
 use iii_sdk::{errors::Error, IIIClient};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -42,6 +42,11 @@ pub struct ProviderRecord {
     /// re-registration advances to one.
     #[serde(default)]
     pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<DiscoveryStatus>,
+    // Leases deliberately do not survive restart; never persist resolved inputs.
+    #[serde(skip)]
+    pub discovery_lease: Option<(String, String)>,
 }
 
 pub struct RegistryStore {
@@ -103,6 +108,8 @@ fn build_record(
         generation: existing
             .map(|e| e.generation.wrapping_add(1).max(1))
             .unwrap_or(1),
+        discovery: existing.and_then(|e| e.discovery.clone()),
+        discovery_lease: None,
         declaration,
     }
 }
@@ -287,6 +294,29 @@ impl RegistryStore {
                 format!("provider {id}: registration token mismatch"),
             )),
         }
+    }
+
+    /// Called under the entry transaction lock shared with resolve/reconcile/config.
+    pub async fn begin_discovery(&self, id: &str, fingerprint: String) -> String {
+        let attempt = Uuid::new_v4().to_string();
+        if let Some(record) = self.records.lock().await.get_mut(id) {
+            record.discovery_lease = Some((attempt.clone(), fingerprint));
+        }
+        attempt
+    }
+
+    /// Publish only after the durable write succeeds. Caller owns the entry lock.
+    pub async fn complete_discovery(&self, id: &str, status: DiscoveryStatus) -> Result<(), Error> {
+        let mut records = self.records.lock().await;
+        let mut next = records.clone();
+        let record = next
+            .get_mut(id)
+            .ok_or_else(|| Error::Handler("unknown discovery provider".into()))?;
+        record.discovery = Some(status);
+        record.discovery_lease = None;
+        self.persist(&next).await?;
+        *records = next;
+        Ok(())
     }
 
     /// Change availability only for the registration that originated an
