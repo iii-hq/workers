@@ -8,10 +8,12 @@
 //! The captured frame is downscaled to `max_dimension` and JPEG-encoded (a full
 //! Retina frame is tens of megabytes of PNG, which floods the model context and
 //! the live viewport). The model sees the downscaled image and its coordinate
-//! space; pointer actions map those coordinates through the display's LOGICAL
-//! point size and its global origin, which is exactly what `enigo`'s absolute
-//! coordinates use, so clicks land on the right display at the right point
-//! regardless of scale factor.
+//! space; pointer actions map those coordinates through the display's size and
+//! global origin as `xcap` reports them — logical points on macOS, physical
+//! pixels on Windows (the process is per-monitor-v2 DPI aware, see
+//! `pin_process_dpi`) — which is exactly what `enigo`'s absolute coordinates
+//! use, so clicks land on the right display at the right point regardless of
+//! scale factor. Never multiply by `scale_factor()`.
 //!
 //! Capture and input are synchronous, blocking OS calls, so each runs on a
 //! blocking thread. `enigo` state is not `Send`, so an `Enigo` is created, used,
@@ -103,6 +105,40 @@ pub fn preflight_screen_capture() -> Result<(), String> {
     }
 }
 
+/// Pin the process to per-monitor-v2 DPI awareness before any capture, input
+/// or accessibility call. xa11y switches the whole process to PMv2 on its
+/// first use; pinning it up front keeps one coordinate space for the life of
+/// the process instead of a mid-session switch. No-op off Windows.
+#[cfg(target_os = "windows")]
+pub fn pin_process_dpi() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetProcessDpiAwarenessContext(value: isize) -> i32;
+            fn GetThreadDpiAwarenessContext() -> isize;
+            fn AreDpiAwarenessContextsEqual(a: isize, b: isize) -> i32;
+            fn GetAwarenessFromDpiAwarenessContext(value: isize) -> i32;
+        }
+        const PER_MONITOR_AWARE_V2: isize = -4;
+        unsafe {
+            let current = GetThreadDpiAwarenessContext();
+            if SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) == 0
+                && AreDpiAwarenessContextsEqual(current, PER_MONITOR_AWARE_V2) == 0
+            {
+                // 0 unaware, 1 system aware, 2 per-monitor aware.
+                tracing::warn!(
+                    mode = GetAwarenessFromDpiAwarenessContext(current),
+                    "could not set per-monitor-v2 DPI awareness; clicks may miss on scaled displays"
+                );
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn pin_process_dpi() {}
+
 /// Current cursor position in the global point space (origin = main display
 /// top-left) — the same space `xcap::Monitor::from_point` and `enigo` absolute
 /// coordinates use. Returns `None` if unavailable; callers fall back to the
@@ -140,8 +176,9 @@ fn cursor_point() -> Option<(i32, i32)> {
 }
 
 /// Everything needed to map a downscaled-image coordinate to an absolute
-/// `enigo` coordinate: the captured display's global origin (points) and the
-/// scale from downscaled pixels to the display's logical points.
+/// `enigo` coordinate: the captured display's global origin and the scale from
+/// downscaled pixels to the display's size, both in `xcap`'s space — logical
+/// points on macOS, physical pixels on Windows (per-monitor-v2).
 #[derive(Clone, Copy)]
 struct Geom {
     origin_x: i32,
@@ -171,6 +208,7 @@ pub struct NativeHost {
 
 impl NativeHost {
     pub fn new(max_dimension: u32, jpeg_quality: u8, monitor: Option<u32>) -> Self {
+        pin_process_dpi();
         Self {
             max_dimension: max_dimension.max(320),
             jpeg_quality: jpeg_quality.clamp(1, 100),
@@ -192,6 +230,7 @@ impl NativeHost {
 
 /// List the local displays for `computer::displays`.
 pub fn list_displays() -> Result<Vec<DisplayInfo>, String> {
+    pin_process_dpi();
     let monitors = Monitor::all().map_err(|e| format!("enumerate monitors: {e}"))?;
     Ok(monitors
         .iter()
@@ -290,11 +329,13 @@ fn capture(
     let (rw, rh) = (img.width(), img.height());
     let (tw, th) = target_dims(rw, rh, max_dim);
 
-    // The display's LOGICAL size + global origin (points). `enigo` absolute
-    // coordinates and `Monitor::x/y/width/height` share this space, so mapping
-    // downscaled pixels -> logical points -> +origin lands the click correctly
-    // on this display at any scale factor. Fall back to the backing pixels at
-    // origin (0,0) if the geometry query fails.
+    // The display's size + global origin as `xcap` reports them: logical
+    // points on macOS, physical pixels on Windows (per-monitor-v2). `enigo`
+    // absolute coordinates and `Monitor::x/y/width/height` share this space,
+    // so mapping downscaled pixels -> display space -> +origin lands the click
+    // correctly on this display at any scale factor; never multiply by
+    // `scale_factor()`. Fall back to the backing pixels at origin (0,0) if the
+    // geometry query fails.
     let lx = monitor.x().unwrap_or(0);
     let ly = monitor.y().unwrap_or(0);
     let lw = monitor.width().unwrap_or(rw);
@@ -568,11 +609,6 @@ impl Driver for NativeHost {
             tapped
         })
         .await
-    }
-
-    async fn accessibility_tree(&self) -> Result<serde_json::Value, String> {
-        // No native a11y tree yet; observe falls back to the screenshot.
-        Ok(serde_json::Value::Null)
     }
 
     async fn close(&self) -> Result<(), String> {

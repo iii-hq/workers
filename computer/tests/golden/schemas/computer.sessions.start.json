@@ -64,6 +64,25 @@
           "width"
         ],
         "type": "object"
+      },
+      "SemanticSupport": {
+        "description": "Whether the session takes semantic (ref-based) actions.",
+        "properties": {
+          "reason": {
+            "description": "Why not, when unsupported.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported"
+        ],
+        "type": "object"
       }
     },
     "properties": {
@@ -82,6 +101,14 @@
         ],
         "description": "Desktop pixel dimensions; the coordinate space for `computer::act`."
       },
+      "semantic": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SemanticSupport"
+          }
+        ],
+        "description": "Accessibility (ref-based) actions on this session."
+      },
       "session_id": {
         "description": "Pass this to every other computer function.",
         "type": "string"
@@ -91,6 +118,7 @@
       "endpoint",
       "os",
       "screen",
+      "semantic",
       "session_id"
     ],
     "title": "StartOutput",

@@ -9,5 +9,9 @@ pub mod events;
 pub mod frames;
 pub mod functions;
 pub mod manifest;
+pub mod semantic;
 pub mod session;
 pub mod ui;
+
+#[cfg(test)]
+mod test_support;

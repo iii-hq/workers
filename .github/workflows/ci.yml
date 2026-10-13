@@ -324,6 +324,84 @@ jobs:
         run: cargo test --locked --test minilm_target
 
   # ──────────────────────────────────────────────────────────────
+  # computer's native driver and its accessibility layer only compile on
+  # macOS and Windows, which the ubuntu gate above never builds. Run the full
+  # suite on both, and on Windows (hosted runners have an interactive
+  # desktop, so UI Automation works) the semantic e2e against the AccessKit
+  # fixture. macOS e2e stays manual: TCC grants to cargo-hashed test binaries
+  # are not reliable on hosted runners.
+  # ──────────────────────────────────────────────────────────────
+  computer-native:
+    name: "computer: native build + semantic e2e (${{ matrix.os }})"
+    needs: discover
+    if: contains(needs.discover.outputs.rust, '"computer"')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: computer
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: worker-computer-${{ matrix.os }}
+          save-if: ${{ github.event_name == 'push' }}
+          workspaces: |
+            computer -> target
+            computer/tests/fixture -> target
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: 'pnpm'
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Build the console UI
+        working-directory: computer/ui
+        # Only this package and its workspace deps: a full-workspace install
+        # on Windows would let an unrelated package break this job.
+        run: pnpm --filter '@iii-workers/computer-ui...' install --frozen-lockfile && pnpm build
+
+      - name: Console UI tests
+        if: runner.os == 'Windows'
+        working-directory: computer/ui
+        run: pnpm test
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --all-features
+
+      - name: Build the accessibility fixture
+        if: runner.os == 'Windows'
+        run: cargo build --locked --manifest-path tests/fixture/Cargo.toml
+
+      - name: Semantic e2e against the fixture
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        env:
+          COMPUTER_A11Y_FIXTURE: ${{ github.workspace }}/computer/tests/fixture/target/debug/computer-a11y-fixture.exe
+        run: cargo test --locked --test semantic_live -- --ignored --test-threads=1
+
+  # ──────────────────────────────────────────────────────────────
   # crates/llama-native builds llama.cpp per target: shared libraries and
   # runtime-loaded backends on Linux x86_64 (the gates above), static Metal on
   # macOS, a static CPU build on aarch64 Linux. Only the release pipeline

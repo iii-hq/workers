@@ -1,11 +1,11 @@
 {
-  "description": "Drive the desktop: click, right_click, double_click, move, drag, scroll, type, press, or hotkey. Address by pixel coordinates read off the screenshot (top-left origin).",
+  "description": "Drive the desktop. By coordinates (pixels of the latest screenshot): click, right_click, double_click, move, drag, scroll, type, press, hotkey. By ref from computer::observe or computer::find (native macOS/Windows): invoke, set_value (with text), toggle, select — no mouse or keyboard involved, and the effect is not verified, so confirm with computer::find. A coordinate action invalidates refs.",
   "function_id": "computer::act",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "action": {
-        "description": "What to do: `click`, `right_click`, `double_click`, `move`, `drag`, `scroll`, `type`, `press`, or `hotkey`.",
+        "description": "By coordinate: `click`, `right_click`, `double_click`, `move`, `drag`, `scroll`, `type`, `press`, or `hotkey`. By `ref`: `invoke`, `set_value` (with `text`), `toggle`, or `select`.",
         "type": "string"
       },
       "button": {
@@ -24,6 +24,14 @@
         },
         "type": [
           "array",
+          "null"
+        ]
+      },
+      "ref": {
+        "default": null,
+        "description": "Element ref from `computer::observe` (include_a11y) or `computer::find`, for invoke/set_value/toggle/select. Refs die when a newer observe/find replaces them or a coordinate action runs.",
+        "type": [
+          "string",
           "null"
         ]
       },
@@ -50,7 +58,7 @@
       },
       "text": {
         "default": null,
-        "description": "Text to type, for `action=type`.",
+        "description": "Text to type (`type`) or the value to set (`set_value`).",
         "type": [
           "string",
           "null"

@@ -34,12 +34,46 @@ The native driver does the work no guest does for it:
 - Downscale to `max_screenshot_dimension` and JPEG-encode at
   `screenshot_quality`. A full Retina frame is tens of megabytes of PNG; that
   floods both the model context and the live viewport.
-- Input maps back through the display's **logical point** size and global
-  origin — the space `enigo` absolute coordinates use — so a click on a scaled
-  display lands where the model saw it.
+- Input maps back through the display's size and global origin as `xcap`
+  reports them — **logical points on macOS, physical pixels on Windows** (the
+  process is per-monitor-v2 DPI aware) — the space `enigo` absolute
+  coordinates use, so a click on a scaled display lands where the model saw
+  it. Never multiply by `scale_factor()`.
 
 The sandbox driver sidesteps all of it with one fixed virtual display: 1:1
 coordinates, no HiDPI, no multi-monitor ambiguity.
+
+## Semantic layer
+
+`src/semantic/` sits beside the `Driver`. Each native session owns a
+`SemanticSession`: one executor thread that alone builds and uses xa11y
+providers (COM is initialised there on Windows). Every snapshot not scoped by
+`root_ref` creates a fresh provider (a `root_ref` snapshot reuses the active
+one's, whose handle cache holds that element, and keeps that root's ref so a
+scoped find can be repeated to confirm an act). An observe with `include_a11y`
+always becomes the session's **active snapshot**; a find does only when it
+matches, so a find without matches keeps the old refs. Replacing the snapshot
+drops its provider, which frees xa11y's handle cache and kills the old refs.
+A coordinate or keyboard action bumps an invalidation counter, so refs read
+before it are refused.
+
+The executor runs one operation per session, taken with `try_lock`: an
+observe/find/act that meets another operation gets `busy` (find retries it
+within `timeout_ms`), never a queue. Acts also hold the session's `act_lock`,
+so a ref act waits behind a running coordinate or ref act instead of failing.
+A call whose deadline (walk 5 s, act 10 s, +1 s grace) passes, or whose caller
+cancels it, is never dispatched later: its executor is discarded along with
+the active snapshot, and the next call starts a fresh thread and provider.
+
+Observe walks breadth-first; find lets xa11y's matcher drive the same
+memoized, budgeted children closure (real providers mint a fresh handle on
+every fetch, so children are fetched once per parent). Walks are bounded by
+node count, absolute depth and a 5 s deadline. Secret values are dropped
+before the selector sees them (macOS `AXSecureTextField`; a password-like
+name everywhere), and selectors are restricted to normalized attribute names,
+because xa11y resolves unknown names against the unredacted `raw` map. On
+Windows the process is pinned to per-monitor-v2 DPI awareness before any
+capture, input or accessibility call.
 
 ## Durability and the screencast
 
@@ -99,3 +133,20 @@ an assertion that no function publishes an untyped schema. Regenerate
 deliberately with `UPDATE_GOLDENS=1 cargo test` — a diff there is a change to
 what every agent sees. `src/ui.rs` tests assert the embedded console assets are
 present and scoped.
+
+The semantic layer is tested on Linux against `semantic::fake::FakeTree`, a
+provider the test shapes. `tests/semantic_live.rs` runs the same layer
+against a real AccessKit window (`tests/fixture`); CI runs it on Windows.
+On a Mac, from `computer/` in a terminal with Accessibility and Screen
+Recording:
+
+    cargo build --locked --manifest-path tests/fixture/Cargo.toml
+    COMPUTER_A11Y_FIXTURE=$PWD/tests/fixture/target/debug/computer-a11y-fixture \
+      cargo test --locked --test semantic_live -- --ignored --test-threads=1
+
+Then, on a live stack with the harness and approval-gate, have an agent run
+`computer::find` and `computer::act` against the fixture or TextEdit: check
+the approval card, an act approved after several seconds (refs stay valid),
+the result reaching the model, and `observe` without image in the console.
+Without Accessibility, `find` must fail with `permission_denied`, never an
+empty tree.

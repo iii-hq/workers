@@ -105,9 +105,6 @@ pub trait Driver: Send + Sync {
     /// Press a chord: a single key (`["enter"]`) or a combination
     /// (`["ctrl", "c"]`).
     async fn keypress(&self, keys: &[String]) -> Result<(), String>;
-    /// Best-effort accessibility tree; `null` when the guest does not expose a
-    /// real one (Linux/Windows guests return a stub or nothing).
-    async fn accessibility_tree(&self) -> Result<serde_json::Value, String>;
     /// Close the underlying connection. Idempotent: closing an
     /// already-closed driver succeeds.
     async fn close(&self) -> Result<(), String>;

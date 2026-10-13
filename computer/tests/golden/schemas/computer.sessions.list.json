@@ -29,6 +29,25 @@
         ],
         "type": "object"
       },
+      "SemanticSupport": {
+        "description": "Whether the session takes semantic (ref-based) actions.",
+        "properties": {
+          "reason": {
+            "description": "Why not, when unsupported.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported"
+        ],
+        "type": "object"
+      },
       "SessionInfo": {
         "properties": {
           "created_ms": {
@@ -52,6 +71,14 @@
             "description": "True while a live screen stream is running for this session.",
             "type": "boolean"
           },
+          "semantic": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/SemanticSupport"
+              }
+            ],
+            "description": "Accessibility (ref-based) actions on this session."
+          },
           "session_id": {
             "type": "string"
           }
@@ -63,6 +90,7 @@
           "os",
           "screen",
           "screencast_active",
+          "semantic",
           "session_id"
         ],
         "type": "object"

@@ -4,6 +4,36 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::driver::Screen;
+use crate::session::Session;
+
+/// Whether the session takes semantic (ref-based) actions.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SemanticSupport {
+    pub supported: bool,
+    /// Why not, when unsupported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl SemanticSupport {
+    pub fn of(session: &Session) -> Self {
+        if session.semantic.is_some() {
+            Self {
+                supported: true,
+                reason: None,
+            }
+        } else {
+            Self {
+                supported: false,
+                reason: Some(
+                    "semantic actions need a native session on macOS or Windows; this session \
+                     takes coordinates only"
+                        .to_string(),
+                ),
+            }
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StartInput {
@@ -40,6 +70,8 @@ pub struct StartOutput {
     pub os: String,
     /// Desktop pixel dimensions; the coordinate space for `computer::act`.
     pub screen: Screen,
+    /// Accessibility (ref-based) actions on this session.
+    pub semantic: SemanticSupport,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -55,6 +87,8 @@ pub struct SessionInfo {
     pub last_used_ms: i64,
     /// True while a live screen stream is running for this session.
     pub screencast_active: bool,
+    /// Accessibility (ref-based) actions on this session.
+    pub semantic: SemanticSupport,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -73,4 +107,24 @@ pub struct StopOutput {
     pub ok: bool,
     /// False when the session was already gone.
     pub was_running: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantic::{fake::FakeTree, SemanticSession};
+    use crate::test_support::session_with;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn semantic_support_follows_the_session() {
+        let (plain, _) = session_with(None);
+        let s = SemanticSupport::of(&plain);
+        assert!(!s.supported);
+        assert!(s.reason.unwrap().contains("coordinates only"));
+        let tree = Arc::new(FakeTree::new("A", 1));
+        let (native, _) = session_with(Some(SemanticSession::new(tree.factory())));
+        let s = SemanticSupport::of(&native);
+        assert!(s.supported && s.reason.is_none());
+    }
 }

@@ -31,6 +31,9 @@ clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 async-trait = "0.1"
 base64 = "0.22"
+# Accessibility tree model, selector engine and the Provider trait. Pure Rust:
+# the platform backends below are the only crates that touch OS APIs.
+xa11y-core = "=0.15.2"
 
 # Native host backend (screen capture + input injection). Only meaningful on a
 # desktop OS, and these pull system libraries (dbus/xcb/xdo) that headless Linux
@@ -40,6 +43,15 @@ base64 = "0.22"
 enigo = "0.3"
 xcap = "0.9"
 image = "0.25"
+
+# Semantic (accessibility) backends. Never the `xa11y` umbrella crate: its
+# process-wide provider caches the first PermissionDenied forever and drags the
+# Linux backend into the lockfile.
+[target.'cfg(target_os = "macos")'.dependencies]
+xa11y-macos = "=0.15.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+xa11y-windows = "=0.15.2"
 
 [dev-dependencies]
 serde_json = "1"

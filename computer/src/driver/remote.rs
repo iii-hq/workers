@@ -238,11 +238,6 @@ impl Driver for RemoteClient {
         self.command_ok("hotkey", json!({ "keys": keys })).await
     }
 
-    async fn accessibility_tree(&self) -> Result<serde_json::Value, String> {
-        let v = self.command("get_accessibility_tree", json!({})).await?;
-        Ok(v.get("tree").cloned().unwrap_or(v))
-    }
-
     async fn close(&self) -> Result<(), String> {
         let mut guard = self.socket.lock().await;
         if let Some(mut socket) = guard.take() {

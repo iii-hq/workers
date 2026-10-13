@@ -357,11 +357,6 @@ impl Driver for IiiSandboxHost {
         .map(|_| ())
     }
 
-    async fn accessibility_tree(&self) -> Result<serde_json::Value, String> {
-        // A Linux X guest exposes no macOS-style AX tree.
-        Ok(serde_json::Value::Null)
-    }
-
     async fn close(&self) -> Result<(), String> {
         // Idempotent: a stop against an already-reaped sandbox is a success.
         match self.stop_sandbox().await {

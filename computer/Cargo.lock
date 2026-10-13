@@ -603,6 +603,9 @@ dependencies = [
  "tokio-tungstenite 0.24.0",
  "tracing",
  "tracing-subscriber",
+ "xa11y-core",
+ "xa11y-macos",
+ "xa11y-windows",
  "xcap",
 ]
 
@@ -3276,6 +3279,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "strum"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
+dependencies = [
+ "strum_macros",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4351,6 +4375,44 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "xa11y-core"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfed37d23cfb7a47937efc7b3e55ab44215cd1167f773bdeab45c699563b2e03"
+dependencies = [
+ "png",
+ "serde",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "xa11y-macos"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca41a13fa3473e70428fdf62fcb96a0c7d91df3b64faaf762ec6e9e248cbc1d5"
+dependencies = [
+ "cc",
+ "core-foundation",
+ "rayon",
+ "serde_json",
+ "xa11y-core",
+]
+
+[[package]]
+name = "xa11y-windows"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6c3d25f892391989395596ea1dfcbe439f35ccc599554f0a22eb5c136fac556"
+dependencies = [
+ "serde_json",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "xa11y-core",
+]
 
 [[package]]
 name = "xcap"

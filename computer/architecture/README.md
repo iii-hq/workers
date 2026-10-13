@@ -1,16 +1,19 @@
 # computer — architecture
 
 One desktop, three ways to reach it, behind one function surface. The worker is
-a capability primitive — it captures pixels and moves a cursor. Everything an
-agentic computer-use product needs around that (the model loop, approval,
-transcripts, tracing) belongs to the engine and the harness, not here.
+a capability primitive — it captures pixels and moves a cursor, and on native
+macOS/Windows sessions it also reads an app's accessibility tree and acts on
+its elements by reference. Everything an agentic computer-use product needs
+around that (the model loop, approval, transcripts, tracing) belongs to the
+engine and the harness, not here.
 
 ```text
   agent / console                worker                      the desktop
   ────────────────               ──────                      ───────────
   computer::act  ──────▶  functions/ ─▶ session ─▶ Driver ─┬─▶ native (this machine)
   computer::screenshot                    │                ├─▶ sandbox (microVM)
-                                          │                └─▶ remote (guest executor)
+  computer::observe / find                │                └─▶ remote (guest executor)
+                                          ├─▶ semantic/ (native macOS/Windows) ─▶ xa11y
   console viewport ◀── frame-changed ◀────┘ screencast pump (newest frame only)
         └────── computer::frame ──────▶ reads the stored frame
   sibling workers  ◀── session-started / session-stopped
@@ -22,11 +25,12 @@ transcripts, tracing) belongs to the engine and the harness, not here.
 |---|---|
 | `config.rs` | `WorkerConfig` schema (endpoint, session cap, timeouts, capture limits, sandbox display) and its shared hot-reloadable handle |
 | `configuration.rs` | `configuration::register` + the `computer::on-config-change` trigger |
-| `driver/mod.rs` | The `Driver` trait: the whole desktop semantic (capture, click, type, keypress, a11y tree, close) |
+| `driver/mod.rs` | The `Driver` trait: the whole desktop semantic (capture, click, type, keypress, close) |
 | `driver/native.rs` | This machine: `xcap` capture + `enigo` input, display pinning, downscale, macOS permission gates |
 | `driver/sandbox.rs` | A desktop in an iii-sandbox microVM, driven through `sandbox::exec` / `sandbox::fs` |
 | `driver/remote.rs` | A desktop reached through its guest executor over a WebSocket |
 | `session.rs` | Session registry, driver selection, durable records in `state`, the screencast pump |
+| `semantic/` | Semantic computer use beside the `Driver` (native macOS/Windows sessions only): a per-session executor thread owning the xa11y provider, the active snapshot and its ref table, budgeted walk + redaction, selector validation, tree text, error mapping, and the macOS/Windows provider factory (`fake.rs` is the Linux test provider) — see internals.md "Semantic layer" |
 | `events.rs` | `computer::session-started` / `session-stopped` trigger types and their subscriber fan-out |
 | `frames.rs` | `computer::frame-changed` trigger type: bounded bindings and per-binding coalescing delivery |
 | `functions/` | The `computer::*` wire surface, one module per function plus the golden-tested catalog |

@@ -55,7 +55,7 @@ Start a session, look at the screen, click what you see:
 # drive this machine: a bare start picks the native driver when neither
 # sandbox_image nor default_endpoint is configured
 iii trigger computer::sessions::start --json '{}'
-# -> { "session_id": "c1", "endpoint": "native", "os": "macos", "screen": { "width": 1512, "height": 945 } }
+# -> { "session_id": "c1", "endpoint": "native", "os": "macos", "screen": { "width": 1512, "height": 945 }, "semantic": { "supported": true } }
 
 # see the screen: an image block the vision model renders inline
 iii trigger computer::screenshot --json '{"session_id":"c1"}'
@@ -108,14 +108,32 @@ The rest of the surface: `computer::act` — pointer actions addressed by
 coordinate (click, right_click, double_click, move, drag, scroll) and keyboard
 actions that land wherever the desktop's focus is (`type` with `text`,
 `press` / `hotkey` with `keys`, e.g. `["cmd","c"]`) —
-`computer::observe` (screenshot plus the accessibility tree on macOS guests),
-`computer::displays`, `computer::sessions::list` and `computer::sessions::stop`.
+`computer::observe` (a screenshot and, with `include_a11y`, an app's
+accessibility tree), `computer::find`, `computer::displays`,
+`computer::sessions::list` and `computer::sessions::stop`.
+
 For commands and files, mind which machine you mean: on a native session the
 desktop IS this host, so the
 [shell](https://github.com/iii-hq/workers/tree/main/ide) worker is the right
 tool. A sandboxed desktop is reached with `sandbox::exec` / `sandbox::fs`, and
 a remote one through its own guest executor — `shell` would run on the host
 instead, which is a different machine entirely.
+
+On a native macOS or Windows session the worker also acts **by element**:
+`computer::observe { include_a11y: true, include_image: false }` or
+`computer::find { selector: "button[name='Save']" }` return lines carrying
+`[ref=…]`, and `computer::act { action: "invoke" | "set_value" | "toggle" |
+"select", ref }` acts on that element through the OS accessibility API — the
+worker moves no mouse, sends no keys and sets no focus. The effect is not
+verified; confirm with another `find`. Refs live until an `observe` with
+`include_a11y` or a `find` with matches replaces them, any coordinate or
+keyboard action (`type`, `press`, `hotkey`, console input included) runs on
+the session, a timed-out, cancelled or crashed accessibility call resets the
+session's executor, or the session stops or the worker restarts. macOS needs
+Accessibility **and** Screen Recording for the process running the worker.
+On Windows a password field's value is hidden only when its name looks like a
+password (or the app itself masks it): xa11y does not expose UIA's
+`IsPassword`. Remote and sandbox sessions stay coordinate-only.
 
 ## Console
 
