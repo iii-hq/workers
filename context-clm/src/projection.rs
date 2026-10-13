@@ -166,16 +166,17 @@ pub fn strip_thinking(m: &Msg) -> Msg {
 /// Map an edited mirror back to messages. A turn whose header number and role
 /// match an original turn and whose text is unchanged keeps the original
 /// message; anything else becomes a text turn (assistant only where an
-/// assistant turn was, user otherwise). Call/result pairs stay whole and in
-/// order. A result pairs with the nearest call above it in the projection
-/// that carries its id, so a call id may repeat across replies. If either
-/// side of a pair was edited or dropped, or the result moved above its call,
-/// both become text; a result moved further down goes back up to its call. A
-/// turn the model inserted between a kept call and its results moves below
-/// them, as llm-router's `reorder_displaced_results` does: not every provider
-/// runs that pass (openrouter, kimi and github-copilot drop a displaced
-/// result). CRLF line ends read as LF, in the mirror and in the originals
-/// alike; a kept turn is still the original, CRLF and all.
+/// assistant turn without calls was, user otherwise; a call turn becomes a
+/// `past_turn_note`, here and when its pair breaks). Call/result pairs stay
+/// whole and in order. A result pairs with the nearest call above it in the
+/// projection that carries its id, so a call id may repeat across replies. If
+/// either side of a pair was edited or dropped, or the result moved above its
+/// call, both become text; a result moved further down goes back up to its
+/// call. A turn the model inserted between a kept call and its results moves
+/// below them, as llm-router's `reorder_displaced_results` does: not every
+/// provider runs that pass (openrouter, kimi and github-copilot drop a
+/// displaced result). CRLF line ends read as LF, in the mirror and in the
+/// originals alike; a kept turn is still the original, CRLF and all.
 pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
     let text = &text.replace("\r\n", "\n");
     // Each original as the mirror shows it, rendered once: the number of
@@ -220,30 +221,31 @@ pub fn parse_mirror(text: &str, proj: &[Msg], model: &ModelRef) -> Vec<Msg> {
             continue;
         }
         // Only a turn that was the model's own may stay assistant; anything
-        // else it writes is a note, never fabricated assistant history.
-        let as_assistant = role == "assistant" && orig.is_some_and(|o| o.role == "assistant");
+        // else it writes is a note, never fabricated assistant history. A
+        // turn that made calls goes user-side too: calls shown as assistant
+        // text get copied as text instead of made.
         let body = unesc(body);
-        let text = if as_assistant || role == "user" {
-            body
-        } else {
-            prompt::lowered_note(role, &body)
+        let (as_role, text) = match orig {
+            Some(o) if role == "assistant" && o.is_assistant_call() => {
+                ("user", prompt::past_turn_note(&body))
+            }
+            Some(o) if role == "assistant" && o.role == "assistant" => ("assistant", body),
+            _ if role == "user" => ("user", body),
+            _ => ("user", prompt::lowered_note(role, &body)),
         };
-        out.push(text_msg(
-            if as_assistant { "assistant" } else { "user" },
-            &text,
-            model,
-        ));
+        out.push(text_msg(as_role, &text, model));
         src.push(None);
     }
 
+    // Only the two sides of a pair get here, so an assistant turn is a call.
     let textualize = |out: &mut Vec<Msg>, src: &mut Vec<Option<usize>>, i: usize| {
         let m = &out[i];
-        let (role, text) = match m.role.as_str() {
-            "assistant" => ("assistant", render_msg(m)),
-            "function_result" => ("user", prompt::lowered_note("tool", &render_msg(m))),
-            _ => ("user", render_msg(m)),
+        let text = match m.role.as_str() {
+            "assistant" => prompt::past_turn_note(&render_msg(m)),
+            "function_result" => prompt::lowered_note("tool", &render_msg(m)),
+            _ => render_msg(m),
         };
-        out[i] = text_msg(role, &text, model);
+        out[i] = text_msg("user", &text, model);
         src[i] = None;
     };
     // at[j]: where projection turn j landed in out; live(j) while still kept
@@ -439,14 +441,61 @@ mod tests {
         let p = proj();
         let edited = render_mirror(&p).replace("a\nb\nhuge output", "ls: a, b");
         let out = parse_mirror(&edited, &p, &model());
-        assert_eq!(roles(&out), vec!["assistant", "user", "user"]);
+        // The kept call loses its pair: it goes to the user side as a record.
+        assert_eq!(roles(&out), vec!["user", "user", "user"]);
         assert!(!structured(&out));
-        assert_eq!(text_of(&out[0]), render_msg(&call()));
+        assert_eq!(
+            text_of(&out[0]),
+            prompt::past_turn_note(&render_msg(&call()))
+        );
+        assert!(text_of(&out[0]).contains("(called shell::exec with "));
         assert_eq!(text_of(&out[1]), prompt::lowered_note("tool", "ls: a, b"));
         assert_eq!(out[2], note());
-        assert_eq!(out[0].rest["model"], "m");
-        assert_eq!(out[0].rest["provider"], "p");
-        assert_eq!(out[0].rest["stop_reason"], "end");
+        assert!(no_textual_call_as_assistant(&out));
+    }
+
+    /// No assistant message the model will see again holds a call as text.
+    fn no_textual_call_as_assistant(out: &[Msg]) -> bool {
+        out.iter()
+            .filter(|m| m.role == "assistant" && !m.is_assistant_call())
+            .all(|m| !render_msg(m).contains("[call") && !render_msg(m).contains("(called"))
+    }
+
+    #[test]
+    fn an_edited_call_turn_becomes_a_user_note() {
+        let p = proj();
+        let shown = render_msg(&call());
+        let edited = render_mirror(&p).replace(&shown, &format!("{shown}\nchecked the listing"));
+        let out = parse_mirror(&edited, &p, &model());
+        assert_eq!(roles(&out), vec!["user", "user", "user"]);
+        assert_eq!(
+            text_of(&out[0]),
+            prompt::past_turn_note(&format!("{shown}\nchecked the listing"))
+        );
+        assert!(text_of(&out[0]).contains("(called shell::exec with "));
+        assert!(no_textual_call_as_assistant(&out));
+        // Its result went with it, and the next render shows a user turn.
+        assert_eq!(
+            text_of(&out[1]),
+            prompt::lowered_note("tool", "a\nb\nhuge output")
+        );
+        assert!(render_mirror(&out).starts_with("[[CTX_TURN 1 role=user]]\n[an earlier"));
+    }
+
+    #[test]
+    fn an_edited_assistant_turn_without_calls_stays_assistant_text() {
+        let said = msg(
+            json!({"role": "assistant", "content": [{"type": "text", "text": "I will list the files."}],
+            "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 1}),
+        );
+        let p = vec![note(), said];
+        let edited = render_mirror(&p).replace("I will list the files.", "Listed: a, b.");
+        let out = parse_mirror(&edited, &p, &model());
+        assert_eq!(roles(&out), vec!["user", "assistant"]);
+        assert_eq!(text_of(&out[1]), "Listed: a, b.");
+        assert_eq!(out[1].rest["model"], "m");
+        assert_eq!(out[1].rest["provider"], "p");
+        assert_eq!(out[1].rest["stop_reason"], "end");
     }
 
     #[test]
@@ -454,8 +503,11 @@ mod tests {
         let p = proj();
         let edited = render_mirror(&p).replace(&render_msg(&call()), "I listed the files.");
         let out = parse_mirror(&edited, &p, &model());
-        assert_eq!(roles(&out), vec!["assistant", "user", "user"]);
-        assert_eq!(text_of(&out[0]), "I listed the files.");
+        assert_eq!(roles(&out), vec!["user", "user", "user"]);
+        assert_eq!(
+            text_of(&out[0]),
+            prompt::past_turn_note("I listed the files.")
+        );
         assert_eq!(
             text_of(&out[1]),
             prompt::lowered_note("tool", "a\nb\nhuge output")
@@ -467,8 +519,12 @@ mod tests {
         let p = proj();
         let edited = render_mirror(&p).replace("a\nb\nhuge output", "");
         let out = parse_mirror(&edited, &p, &model());
-        assert_eq!(roles(&out), vec!["assistant", "user"]);
+        assert_eq!(roles(&out), vec!["user", "user"]);
         assert!(!structured(&out));
+        assert_eq!(
+            text_of(&out[0]),
+            prompt::past_turn_note(&render_msg(&call()))
+        );
         assert_eq!(out[1], note());
     }
 
@@ -489,7 +545,7 @@ mod tests {
         assert_eq!(unchanged, p);
         let edited = render_mirror(&p).replace("\ntwo", "\n2");
         let out = parse_mirror(&edited, &p, &model());
-        assert_eq!(roles(&out), vec!["assistant", "user", "user"]);
+        assert_eq!(roles(&out), vec!["user", "user", "user"]);
         assert!(!structured(&out));
     }
 
@@ -665,7 +721,7 @@ mod tests {
         // Dropping the first result never leaves the first call without one;
         // the second pair is untouched and stays structured.
         let out = parse(&[turns[0], turns[2], turns[3]]);
-        assert_eq!(text_of(&out[0]), render_msg(&p[0]));
+        assert_eq!(text_of(&out[0]), prompt::past_turn_note(&render_msg(&p[0])));
         assert_eq!(out[1..], p[2..]);
         // Dropping the whole first pair keeps the second one as it was.
         assert_eq!(parse(&[turns[2], turns[3]]), p[2..]);
@@ -676,19 +732,22 @@ mod tests {
         let edited = mirror.replace(&render_msg(&p[2]), "I printed the directory.");
         let out = parse(&edited.split("\n\n").collect::<Vec<_>>());
         assert_eq!(out[..2], p[..2]);
-        assert_eq!(text_of(&out[2]), "I printed the directory.");
+        assert_eq!(
+            text_of(&out[2]),
+            prompt::past_turn_note("I printed the directory.")
+        );
         assert_eq!(text_of(&out[3]), prompt::lowered_note("tool", "/w"));
         // The second call moved below its result: that pair becomes text.
         let out = parse(&[turns[0], turns[1], turns[3], turns[2]]);
         assert_eq!(out[..2], p[..2]);
-        assert_eq!(roles(&out[2..]), vec!["user", "assistant"]);
-        assert_eq!(text_of(&out[3]), render_msg(&p[2]));
+        assert_eq!(roles(&out[2..]), vec!["user", "user"]);
+        assert_eq!(text_of(&out[3]), prompt::past_turn_note(&render_msg(&p[2])));
         // The first result moved below the second call goes back up to its own.
         assert_eq!(parse(&[turns[0], turns[2], turns[1], turns[3]]), p);
         // The first result moved above its call: that pair becomes text.
         let out = parse(&[turns[1], turns[0], turns[2], turns[3]]);
-        assert_eq!(roles(&out[..2]), vec!["user", "assistant"]);
-        assert_eq!(text_of(&out[1]), render_msg(&p[0]));
+        assert_eq!(roles(&out[..2]), vec!["user", "user"]);
+        assert_eq!(text_of(&out[1]), prompt::past_turn_note(&render_msg(&p[0])));
         assert_eq!(out[2..], p[2..]);
     }
 

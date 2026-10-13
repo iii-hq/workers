@@ -187,9 +187,17 @@ pub fn cap_note(elided: usize, limit: u64) -> String {
     format!("[... {elided} characters removed here so the output fits within the limit of {limit} tokens; use a more selective command, or free space by condensing your context file ...]")
 }
 
-/// One function call as shown in the mirror.
+/// One function call as shown in the mirror: a record of a call that ran,
+/// worded so it never reads as a call to write out.
 pub fn call_line(function_id: &str, arguments: &str) -> String {
-    format!("[call {function_id} {arguments}]")
+    format!("(called {function_id} with {arguments})")
+}
+
+/// An assistant turn that made calls and is now kept as text. It goes to the
+/// user side under this lead, so the model never sees its own calls written
+/// as assistant text and copies that instead of making a real call.
+pub fn past_turn_note(body: &str) -> String {
+    format!("[an earlier assistant turn, kept as text in the context file; the calls it lists already ran. Make new calls as real function calls, never as text.]\n{body}")
 }
 
 pub fn file_tag(name: &str) -> String {
@@ -385,7 +393,14 @@ mod tests {
             cap_note(9392, 32768).contains("9392 characters")
                 && cap_note(9392, 32768).contains("32768 tokens")
         );
-        assert_eq!(call_line("shell::exec", "{}"), "[call shell::exec {}]");
+        assert_eq!(
+            call_line("shell::exec", "{}"),
+            "(called shell::exec with {})"
+        );
+        let note = past_turn_note("(called f with {})");
+        assert!(note.starts_with("[an earlier assistant turn") && note.contains("already ran"));
+        assert!(note.contains("real function calls"), "{note}");
+        assert!(note.ends_with("]\n(called f with {})"), "{note}");
         assert!(lowered_note("tool", "x").ends_with("tool turn]\nx"));
         assert!(lowered_note("assistant", "x").contains("as an assistant turn"));
         assert!(lowered_note("editor", "x").contains("as an editor turn"));
