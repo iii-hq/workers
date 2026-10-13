@@ -479,7 +479,7 @@ mod tests {
             text_of(&out[1]),
             prompt::lowered_note("tool", "a\nb\nhuge output")
         );
-        assert!(render_mirror(&out).starts_with("[[CTX_TURN 1 role=user]]\n[an earlier"));
+        assert!(render_mirror(&out).starts_with("[[CTX_TURN 1 role=user]]\n[your earlier turn"));
     }
 
     #[test]

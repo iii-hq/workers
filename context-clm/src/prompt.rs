@@ -30,7 +30,7 @@ You have a limit of {limit} tokens of context. Each command result ends with a r
 
 Your context after the system prompt and the task is mirrored in the file `{mirror}` (a path relative to your working directory). The file is written before every step, and whatever it holds when the next step begins becomes your context from then on. The system prompt and the task are not in the file and cannot be edited.
 
-The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied.
+The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied. An edited turn that made calls comes back as text, with each call shown as `(called <function> with <arguments>)`: that is a record of what already ran. Always make new calls as real function calls, never by writing them as text.
 
 Edit the file with a script. Do not retype its text, and do not print it: you are already reading it as your context. `shell::exec` does not start a shell, so pass the script as {"command":"bash","args":["-c","<script>"]}; heredocs work that way. Example, replacing the text of turn 4 with a note:
 
@@ -197,7 +197,7 @@ pub fn call_line(function_id: &str, arguments: &str) -> String {
 /// user side under this lead, so the model never sees its own calls written
 /// as assistant text and copies that instead of making a real call.
 pub fn past_turn_note(body: &str) -> String {
-    format!("[an earlier assistant turn, kept as text in the context file; the calls it lists already ran. Make new calls as real function calls, never as text.]\n{body}")
+    format!("[your earlier turn, now text; these calls already ran]\n{body}")
 }
 
 pub fn file_tag(name: &str) -> String {
@@ -398,8 +398,10 @@ mod tests {
             "(called shell::exec with {})"
         );
         let note = past_turn_note("(called f with {})");
-        assert!(note.starts_with("[an earlier assistant turn") && note.contains("already ran"));
-        assert!(note.contains("real function calls"), "{note}");
+        assert!(note.starts_with("[your earlier turn") && note.contains("already ran"));
+        // the "make real calls" rule lives once in the section, not in every textualized turn
+        assert!(note.len() < 80, "{note}");
+        assert!(clm_section("m", 10).contains("never by writing them as text"));
         assert!(note.ends_with("]\n(called f with {})"), "{note}");
         assert!(lowered_note("tool", "x").ends_with("tool turn]\nx"));
         assert!(lowered_note("assistant", "x").contains("as an assistant turn"));
