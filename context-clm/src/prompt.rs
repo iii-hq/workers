@@ -71,24 +71,36 @@ const OVER_THE_LIMIT: &str = "Going over the limit rolls back your newest turns;
 /// What a replacement summary has to contain.
 const CARRY_OVER: &str = "Write each summary so you could carry on from it alone. Cover, in this order: what you will do next; the values you found and whether you verified them; the commands and queries you have already run; the options you ruled out, and why.";
 
-/// One deep pass toward about a quarter of the limit: a large, rare edit
-/// costs fewer steps than many small ones.
-fn condense_target(limit: u64) -> String {
-    format!(
-        "bring the context down to about {} tokens in one pass",
+/// One deep pass toward the `floor` (what the model cannot edit: system
+/// prompt, task, ledger) plus a quarter of the room above it: a large, rare
+/// edit costs fewer steps than many small ones. A floor at or over the limit
+/// leaves no room to share, so the target falls back to a quarter of the limit.
+fn condense_target(limit: u64, floor: u64) -> String {
+    let target = if floor < limit {
+        floor + (limit - floor) / 4
+    } else {
         limit / 4
-    )
+    };
+    format!("bring the context down to about {target} tokens in one pass")
 }
 
 /// An edit shares a step with the next call, as the CLM section says.
 const WITH_NEXT_CALL: &str = "Make the edit in the same reply as your next call (the next read, for example), so it takes no step of its own; if there is no next call yet, the edit alone is fine.";
 
 /// The one-shot nudge for a crossed tier (`frac` of the budget). `limit` is
-/// the enforced limit the condense target is a share of.
-pub fn tier_text(frac: f64, budget: u64, limit: u64, tokens: u64, hint: &str) -> String {
+/// the enforced limit and `floor` the part of it the model cannot edit; the
+/// condense target lies between the two.
+pub fn tier_text(
+    frac: f64,
+    budget: u64,
+    limit: u64,
+    floor: u64,
+    tokens: u64,
+    hint: &str,
+) -> String {
     let pct = py_round(frac * 100.0);
     let at = format!("Context use: {tokens} tokens, about {pct}% of the {budget}-token budget.");
-    let target = condense_target(limit);
+    let target = condense_target(limit, floor);
     if frac <= 0.25 {
         format!("[context note] {at} Nothing to do yet. Just avoid repeating searches and file reads you have already done.")
     } else if frac <= 0.5 {
@@ -100,9 +112,9 @@ pub fn tier_text(frac: f64, budget: u64, limit: u64, tokens: u64, hint: &str) ->
 
 /// The repeating nudge once the room left is too small; states the current
 /// share of the limit, whatever threshold fired it.
-pub fn persistent_text(tokens: u64, limit: u64, hint: &str) -> String {
+pub fn persistent_text(tokens: u64, limit: u64, floor: u64, hint: &str) -> String {
     let pct = py_round(tokens as f64 * 100.0 / limit.max(1) as f64);
-    let target = condense_target(limit);
+    let target = condense_target(limit, floor);
     format!("[context warning: act now] Context is at {tokens}/{limit} tokens, {pct}% of the limit. Condense now: replace old or stale turns with compact summaries that keep your findings, and {target}. {WITH_NEXT_CALL} {OVER_THE_LIMIT} {hint}")
 }
 
@@ -120,14 +132,18 @@ pub struct LedgerArgs {
     pub n_rolled: usize,
     pub tokens_after: u64,
     pub limit: u64,
+    /// What the model cannot edit, this ledger included (see `condense_target`).
+    pub floor: u64,
     pub hint: String,
     pub cmds: Vec<String>,
 }
 
 /// The note that replaces rolled-back turns.
 pub fn ledger_text(a: &LedgerArgs) -> String {
+    let target = condense_target(a.limit, a.floor);
+    // "Only condense", unlike the nudges: right after a rollback the context sits at the limit, so a call in the same reply could overflow it again.
     let mut s = format!(
-        "[context limit exceeded, rollback {}/{}] The context passed the {}-token limit, so your newest {} turn(s) were removed ({} in total during this run). Their content is gone. The context now stands at ~{}/{} tokens. Use this turn only to condense: replace old or stale turns with compact summaries that keep your findings. {}",
+        "[context limit exceeded, rollback {}/{}] The context passed the {}-token limit, so your newest {} turn(s) were removed ({} in total during this run). Their content is gone. The context now stands at ~{}/{} tokens. Use this turn only to condense: replace old or stale turns with compact summaries that keep your findings, and {target}. {}",
         a.retry, a.max_retry, a.limit, a.n_dropped, a.n_rolled, a.tokens_after, a.limit, a.hint
     );
     if !a.cmds.is_empty() {
@@ -279,23 +295,23 @@ mod tests {
 
     #[test]
     fn tier_texts_carry_numbers_and_hint_from_the_middle_tier() {
-        let low = tier_text(0.25, 32768, 30720, 9000, "HINT");
+        let low = tier_text(0.25, 32768, 30720, 0, 9000, "HINT");
         assert!(low.contains("9000 tokens, about 25% of the 32768-token budget"));
         assert!(!low.contains("HINT"));
-        assert!(tier_text(0.5, 32768, 30720, 17000, "HINT").ends_with("HINT"));
-        let high = tier_text(0.75, 100, 90, 80, "HINT");
+        assert!(tier_text(0.5, 32768, 30720, 0, 17000, "HINT").ends_with("HINT"));
+        let high = tier_text(0.75, 100, 90, 0, 80, "HINT");
         assert!(high.contains("75%") && high.ends_with("HINT"));
     }
 
     #[test]
     fn condense_nudges_aim_at_a_quarter_and_ride_with_the_next_call() {
         let texts = [
-            tier_text(0.5, 32768, 30720, 17000, "HINT"),
-            tier_text(0.75, 32768, 30720, 25000, "HINT"),
-            persistent_text(28000, 30720, "HINT"),
+            tier_text(0.5, 32768, 30720, 0, 17000, "HINT"),
+            tier_text(0.75, 32768, 30720, 0, 25000, "HINT"),
+            persistent_text(28000, 30720, 0, "HINT"),
         ];
         for t in texts {
-            // one deep pass toward a quarter of the limit (30720 / 4)
+            // with no floor, one deep pass toward a quarter of the limit (30720 / 4)
             assert!(t.contains("about 7680 tokens in one pass"), "{t}");
             // the edit shares a step with the next call, as the section says
             assert!(t.contains("same reply as your next call"), "{t}");
@@ -305,16 +321,64 @@ mod tests {
                 "{t}"
             );
         }
-        let low = tier_text(0.25, 32768, 30720, 9000, "HINT");
+        let low = tier_text(0.25, 32768, 30720, 0, 9000, "HINT");
         assert!(!low.contains("in one pass") && !low.contains("next call"));
+    }
+
+    #[test]
+    fn the_condense_target_is_a_quarter_of_what_can_be_edited() {
+        // tight budget: a 7129-token floor is above limit/4 (4608), so the
+        // target is 7129 + (18432 - 7129) / 4
+        let tight = [
+            tier_text(0.5, 20480, 18432, 7129, 11000, "HINT"),
+            tier_text(0.75, 20480, 18432, 7129, 16000, "HINT"),
+            persistent_text(16000, 18432, 7129, "HINT"),
+            ledger_text(&LedgerArgs {
+                retry: 1,
+                max_retry: 50,
+                n_dropped: 2,
+                n_rolled: 2,
+                tokens_after: 16000,
+                limit: 18432,
+                floor: 7129,
+                hint: "HINT".into(),
+                cmds: vec![],
+            }),
+        ];
+        for t in tight {
+            assert!(t.contains("about 9954 tokens in one pass"), "{t}");
+        }
+        // a floor at or over the limit leaves nothing to aim at: limit/4
+        for floor in [18432, 20000] {
+            let p = persistent_text(18000, 18432, floor, "");
+            assert!(p.contains("about 4608 tokens in one pass"), "{p}");
+        }
+    }
+
+    #[test]
+    fn the_ledger_asks_only_for_a_deep_condense() {
+        let l = ledger_text(&LedgerArgs {
+            retry: 1,
+            max_retry: 50,
+            n_dropped: 1,
+            n_rolled: 1,
+            tokens_after: 28000,
+            limit: 30720,
+            floor: 0,
+            hint: String::new(),
+            cmds: vec![],
+        });
+        assert!(l.contains("Use this turn only to condense"), "{l}");
+        assert!(l.contains("about 7680 tokens in one pass"), "{l}");
+        assert!(!l.contains("next call"), "{l}");
     }
 
     #[test]
     fn persistent_final_and_ledger_carry_their_numbers() {
         // The share is the current one (81%), not the threshold that fired (72.5%).
-        let p = persistent_text(25000, 30720, "HINT");
+        let p = persistent_text(25000, 30720, 0, "HINT");
         assert!(p.contains("25000/30720 tokens, 81% of the limit") && p.ends_with("HINT"));
-        assert!(persistent_text(29000, 30720, "").contains("94% of the limit"));
+        assert!(persistent_text(29000, 30720, 0, "").contains("94% of the limit"));
         assert!(final_text(31000, 32768).contains("31000/32768 tokens"));
         assert!(final_text(31000, 32768).contains("last turn"));
         let mut a = LedgerArgs {
@@ -324,6 +388,7 @@ mod tests {
             n_rolled: 7,
             tokens_after: 28000,
             limit: 30720,
+            floor: 0,
             hint: "HINT".into(),
             cmds: vec![],
         };
@@ -341,8 +406,8 @@ mod tests {
     #[test]
     fn crossing_the_limit_is_described_as_a_rollback_first() {
         let texts = [
-            tier_text(0.75, 100, 90, 80, "HINT"),
-            persistent_text(25000, 30720, "HINT"),
+            tier_text(0.75, 100, 90, 0, 80, "HINT"),
+            persistent_text(25000, 30720, 0, "HINT"),
             receipt_still_over(300, 250, 200),
         ];
         for t in texts {
@@ -362,15 +427,16 @@ mod tests {
             n_rolled: 1,
             tokens_after: 10,
             limit: 20,
+            floor: 0,
             hint: String::new(),
             cmds: vec![],
         });
         let texts = [
             hint,
             ledger,
-            tier_text(0.5, 100, 90, 60, ""),
-            tier_text(0.75, 100, 90, 80, ""),
-            persistent_text(80, 100, ""),
+            tier_text(0.5, 100, 90, 0, 60, ""),
+            tier_text(0.75, 100, 90, 0, 80, ""),
+            persistent_text(80, 100, 0, ""),
             clm_section(M, 100),
         ];
         for t in texts {

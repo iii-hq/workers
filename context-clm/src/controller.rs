@@ -244,10 +244,13 @@ fn level(budget: u64, ratio: f64) -> u64 {
 /// enforced limit (budget minus reserve). A tier fires at most once per run:
 /// it stays in `ctl.nudged` after a condense (the run ends at a stop, which
 /// starts a fresh `Ctl`), so later cycles rely on the persistent nudge.
+/// `floor` is the calibrated size of what the model cannot edit; the nudges
+/// aim their condense target above it.
 pub fn evaluate(
     cfg: &Cfg,
     ctl: &mut Ctl,
     tc: u64,
+    floor: u64,
     obs_max: u64,
     proj_len: usize,
     hint: &str,
@@ -269,11 +272,27 @@ pub fn evaluate(
     if limit == 0 {
         return Decision::Ok(None);
     }
-    match cfg.persistent {
-        PersistentNudge::Ratio(r) if tc >= (limit as f64 * r).floor() as u64 => {
-            let text = prompt::persistent_text(tc, limit, hint);
-            return Decision::Ok(Some(Nudge::Persistent { text }));
+    let mut crossed: Vec<f64> = cfg
+        .nudge_ratios
+        .iter()
+        .copied()
+        .filter(|&f| f > 0.0 && f < 1.0 && tc >= level(cfg.budget, f))
+        .collect();
+    crossed.sort_by(f64::total_cmp);
+    let tier = crossed
+        .iter()
+        .rev()
+        .copied()
+        .find(|f| !ctl.nudged.contains(f));
+    // Recorded even when the persistent nudge fires instead: a tier it
+    // crossed would otherwise fire right after the condense it asked for.
+    for f in crossed {
+        if !ctl.nudged.contains(&f) {
+            ctl.nudged.push(f);
         }
+    }
+    let persistent = match cfg.persistent {
+        PersistentNudge::Ratio(r) => tc >= (limit as f64 * r).floor() as u64,
         PersistentNudge::Adaptive => {
             let by_ratio = limit / 10;
             let by_obs = (cfg.obs_mult * obs_max as f64).floor() as u64;
@@ -282,34 +301,18 @@ pub fn evaluate(
             } else {
                 by_obs.min(limit / 2)
             };
-            if limit - tc < need {
-                let text = prompt::persistent_text(tc, limit, hint);
-                return Decision::Ok(Some(Nudge::Persistent { text }));
-            }
+            limit - tc < need
         }
-        _ => {}
+        PersistentNudge::Off => false,
+    };
+    if persistent {
+        let text = prompt::persistent_text(tc, limit, floor, hint);
+        return Decision::Ok(Some(Nudge::Persistent { text }));
     }
-    let mut crossed: Vec<f64> = cfg
-        .nudge_ratios
-        .iter()
-        .copied()
-        .filter(|&f| f > 0.0 && f < 1.0 && tc >= level(cfg.budget, f))
-        .collect();
-    crossed.sort_by(f64::total_cmp);
-    let Some(tier) = crossed
-        .iter()
-        .rev()
-        .copied()
-        .find(|f| !ctl.nudged.contains(f))
-    else {
+    let Some(tier) = tier else {
         return Decision::Ok(None);
     };
-    for f in crossed {
-        if !ctl.nudged.contains(&f) {
-            ctl.nudged.push(f);
-        }
-    }
-    let text = prompt::tier_text(tier, cfg.budget, limit, tc, hint);
+    let text = prompt::tier_text(tier, cfg.budget, limit, floor, tc, hint);
     Decision::Ok(Some(Nudge::Tier { tier, text }))
 }
 
@@ -640,12 +643,13 @@ mod tests {
         };
         let mut ctl = Ctl::default();
         assert_eq!(
-            evaluate(&fixed, &mut ctl, 5000, 0, 3, H),
+            evaluate(&fixed, &mut ctl, 5000, 0, 0, 3, H),
             Decision::Ok(None)
         );
         // 17000 crosses 0.25 (8192) and 0.5 (16384): only the highest fires.
-        let d1 = evaluate(&fixed, &mut ctl, 17000, 0, 3, H);
-        let want = prompt::tier_text(0.5, 32768, 30720, 17000, H);
+        // the floor reaches the text's condense target
+        let d1 = evaluate(&fixed, &mut ctl, 17000, 6000, 0, 3, H);
+        let want = prompt::tier_text(0.5, 32768, 30720, 6000, 17000, H);
         assert_eq!(
             d1,
             Decision::Ok(Some(Nudge::Tier {
@@ -654,24 +658,24 @@ mod tests {
             }))
         );
         assert_eq!(
-            evaluate(&fixed, &mut ctl, 17500, 0, 3, H),
+            evaluate(&fixed, &mut ctl, 17500, 0, 0, 3, H),
             Decision::Ok(None)
         );
         // condensed: the crossed tiers stay recorded for the rest of the run
         assert_eq!(
-            evaluate(&fixed, &mut ctl, 1000, 0, 3, H),
+            evaluate(&fixed, &mut ctl, 1000, 0, 0, 3, H),
             Decision::Ok(None)
         );
         assert_eq!(ctl.nudged, vec![0.25, 0.5]);
         assert_eq!(
-            evaluate(&fixed, &mut ctl, 9000, 0, 3, H),
+            evaluate(&fixed, &mut ctl, 9000, 0, 0, 3, H),
             Decision::Ok(None)
         );
         // a tier not crossed yet still fires once
-        let d4 = evaluate(&fixed, &mut ctl, 25000, 0, 3, H);
+        let d4 = evaluate(&fixed, &mut ctl, 25000, 0, 0, 3, H);
         assert!(matches!(d4, Decision::Ok(Some(Nudge::Tier { tier, .. })) if tier == 0.75));
         assert_eq!(
-            evaluate(&fixed, &mut ctl, 26000, 0, 3, H),
+            evaluate(&fixed, &mut ctl, 26000, 0, 0, 3, H),
             Decision::Ok(None)
         );
     }
@@ -680,36 +684,58 @@ mod tests {
     fn after_a_condense_only_the_persistent_nudge_fires_again() {
         // limit 30720: the adaptive band is 3072 tokens for small results
         let mut ctl = Ctl::default();
-        let first = evaluate(&clm(), &mut ctl, 17000, 0, 3, H);
+        let first = evaluate(&clm(), &mut ctl, 17000, 0, 0, 3, H);
         assert!(matches!(first, Decision::Ok(Some(Nudge::Tier { tier, .. })) if tier == 0.5));
         assert_eq!(
-            evaluate(&clm(), &mut ctl, 8000, 0, 3, H),
+            evaluate(&clm(), &mut ctl, 8000, 0, 0, 3, H),
             Decision::Ok(None)
         );
         assert_eq!(
-            evaluate(&clm(), &mut ctl, 17500, 0, 3, H),
+            evaluate(&clm(), &mut ctl, 17500, 0, 0, 3, H),
             Decision::Ok(None)
         );
-        let near = evaluate(&clm(), &mut ctl, 28000, 0, 3, H);
-        let want = prompt::persistent_text(28000, 30720, H);
+        let near = evaluate(&clm(), &mut ctl, 28000, 6000, 0, 3, H);
+        let want = prompt::persistent_text(28000, 30720, 6000, H);
         assert_eq!(near, Decision::Ok(Some(Nudge::Persistent { text: want })));
+    }
+
+    #[test]
+    fn tiers_the_persistent_nudge_crossed_stay_spent_after_a_condense() {
+        // A huge result fires the persistent nudge above the 0.5 level
+        // (16384) before any tier did: room 13720 < need 15360.
+        let mut ctl = Ctl::default();
+        let first = evaluate(&clm(), &mut ctl, 17000, 0, 50_000, 3, H);
+        assert!(matches!(
+            first,
+            Decision::Ok(Some(Nudge::Persistent { .. }))
+        ));
+        assert_eq!(ctl.nudged, vec![0.25, 0.5]);
+        // condensed, then grown past 0.5 again with small results
+        assert_eq!(
+            evaluate(&clm(), &mut ctl, 8000, 0, 0, 3, H),
+            Decision::Ok(None)
+        );
+        assert_eq!(
+            evaluate(&clm(), &mut ctl, 17500, 0, 0, 3, H),
+            Decision::Ok(None)
+        );
     }
 
     #[test]
     fn adaptive_persistent_fires_when_room_is_below_twice_the_largest_result() {
         let mut ctl = Ctl::default();
         // limit 30720, room 5720 < need 2 x 4000
-        let d = evaluate(&clm(), &mut ctl, 25000, 4000, 3, H);
-        let want = prompt::persistent_text(25000, 30720, H);
+        let d = evaluate(&clm(), &mut ctl, 25000, 0, 4000, 3, H);
+        let want = prompt::persistent_text(25000, 30720, 0, H);
         assert!(want.contains("25000/30720 tokens"));
         assert_eq!(d, Decision::Ok(Some(Nudge::Persistent { text: want })));
         // small results: the band is 10% of the limit (3072); room 5720 is enough
-        let d = evaluate(&clm(), &mut Ctl::default(), 25000, 100, 3, H);
+        let d = evaluate(&clm(), &mut Ctl::default(), 25000, 0, 100, 3, H);
         assert!(matches!(d, Decision::Ok(Some(Nudge::Tier { .. }))));
         // a huge result is capped at half the limit (15360)
-        let d = evaluate(&clm(), &mut Ctl::default(), 16000, 50_000, 3, H);
+        let d = evaluate(&clm(), &mut Ctl::default(), 16000, 0, 50_000, 3, H);
         assert!(matches!(d, Decision::Ok(Some(Nudge::Persistent { .. }))));
-        let d = evaluate(&clm(), &mut Ctl::default(), 15000, 50_000, 3, H);
+        let d = evaluate(&clm(), &mut Ctl::default(), 15000, 0, 50_000, 3, H);
         assert!(matches!(d, Decision::Ok(Some(Nudge::Tier { .. }))));
     }
 
@@ -719,10 +745,10 @@ mod tests {
             persistent: PersistentNudge::Ratio(0.9),
             ..clm()
         };
-        let d = evaluate(&ratio, &mut Ctl::default(), 27648, 0, 3, H);
-        let want = prompt::persistent_text(27648, 30720, H);
+        let d = evaluate(&ratio, &mut Ctl::default(), 27648, 0, 0, 3, H);
+        let want = prompt::persistent_text(27648, 30720, 0, H);
         assert_eq!(d, Decision::Ok(Some(Nudge::Persistent { text: want })));
-        let d = evaluate(&ratio, &mut Ctl::default(), 27647, 0, 3, H);
+        let d = evaluate(&ratio, &mut Ctl::default(), 27647, 0, 0, 3, H);
         assert!(matches!(d, Decision::Ok(Some(Nudge::Tier { .. }))));
     }
 
@@ -733,32 +759,35 @@ mod tests {
             ..clm()
         };
         let mut ctl = Ctl::default();
-        assert_eq!(evaluate(&one, &mut ctl, 31000, 0, 4, H), Decision::Rollback);
+        assert_eq!(
+            evaluate(&one, &mut ctl, 31000, 0, 0, 4, H),
+            Decision::Rollback
+        );
         assert_eq!((ctl.n_retry, ctl.consec), (1, 1));
         // one denominator: the final turn names the enforced limit, not the budget
         let want = prompt::final_text(31000, 30720);
         assert_eq!(
-            evaluate(&one, &mut ctl, 31000, 0, 4, H),
+            evaluate(&one, &mut ctl, 31000, 0, 0, 4, H),
             Decision::Final(want)
         );
-        assert_eq!(evaluate(&one, &mut ctl, 31000, 0, 4, H), Decision::Stop);
+        assert_eq!(evaluate(&one, &mut ctl, 31000, 0, 0, 4, H), Decision::Stop);
         let mut b = Ctl::default();
         assert!(matches!(
-            evaluate(&base(), &mut b, 31000, 0, 4, H),
+            evaluate(&base(), &mut b, 31000, 0, 0, 4, H),
             Decision::Final(_)
         ));
         assert_eq!(
-            evaluate(&base(), &mut b, 30000, 0, 4, H),
+            evaluate(&base(), &mut b, 30000, 0, 0, 4, H),
             Decision::Ok(None)
         );
         assert!(matches!(
-            evaluate(&base(), &mut b, 31000, 0, 4, H),
+            evaluate(&base(), &mut b, 31000, 0, 0, 4, H),
             Decision::Final(_)
         ));
         // nothing left to roll back: straight to the final turn
         let mut e = Ctl::default();
         assert!(matches!(
-            evaluate(&clm(), &mut e, 31000, 0, 0, H),
+            evaluate(&clm(), &mut e, 31000, 0, 0, 0, H),
             Decision::Final(_)
         ));
         // a limit below the rollback margin never rolls back
@@ -767,7 +796,7 @@ mod tests {
             ..clm()
         };
         assert!(matches!(
-            evaluate(&small, &mut Ctl::default(), 3000, 0, 4, H),
+            evaluate(&small, &mut Ctl::default(), 3000, 0, 0, 4, H),
             Decision::Final(_)
         ));
     }
@@ -779,7 +808,7 @@ mod tests {
             ..clm()
         };
         assert_eq!(
-            evaluate(&off, &mut Ctl::default(), 999_999, 0, 3, H),
+            evaluate(&off, &mut Ctl::default(), 999_999, 0, 0, 3, H),
             Decision::Ok(None)
         );
     }
@@ -899,7 +928,7 @@ mod tests {
         assert_eq!(edge.limit(), edge.retry_margin);
         let mut ctl = Ctl::default();
         assert!(matches!(
-            evaluate(&edge, &mut ctl, 3000, 0, 4, H),
+            evaluate(&edge, &mut ctl, 3000, 0, 0, 4, H),
             Decision::Final(_)
         ));
         assert_eq!((ctl.n_retry, ctl.consec), (0, 0));
@@ -909,7 +938,7 @@ mod tests {
             ..clm()
         };
         assert_eq!(
-            evaluate(&above, &mut Ctl::default(), 3000, 0, 4, H),
+            evaluate(&above, &mut Ctl::default(), 3000, 0, 0, 4, H),
             Decision::Rollback
         );
     }

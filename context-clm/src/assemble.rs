@@ -327,9 +327,9 @@ fn model_key(m: &ModelRef) -> String {
 /// Ruler tokens of the longest nudge. A nudge is pushed after `tc` is
 /// measured, so a limit clamped to the model's room keeps this headroom.
 fn nudge_allowance(hint: &str) -> u64 {
-    let longest = tier_text(1.0, u64::MAX, u64::MAX, u64::MAX, hint)
+    let longest = tier_text(1.0, u64::MAX, u64::MAX, u64::MAX, u64::MAX, hint)
         .len()
-        .max(persistent_text(u64::MAX, u64::MAX, hint).len());
+        .max(persistent_text(u64::MAX, u64::MAX, u64::MAX, hint).len());
     longest as u64 / 4 + 8
 }
 
@@ -665,7 +665,9 @@ fn run_step(
         .map(|m| (raw_count("", std::slice::from_ref(m)) as f64 * ratio) as u64)
         .max()
         .unwrap_or(0);
-    let mut dec = evaluate(&cfg, &mut st.ctl, tc, obs_max, st.proj.len(), &hint);
+    // What the model cannot edit: system prompt, section, task and ledger.
+    let floor = cal(&window(st, &[], &[]));
+    let mut dec = evaluate(&cfg, &mut st.ctl, tc, floor, obs_max, st.proj.len(), &hint);
     let mut rolled = Value::Null;
     if matches!(dec, Decision::Rollback) {
         let target = rollback_target(&cfg, &st.ctl);
@@ -679,7 +681,7 @@ fn run_step(
         keep.reverse();
         let kept = keep.len();
         // The ledger that goes out with the request once `dropped` is gone.
-        let ledger = |ctl: &Ctl, dropped: &[Msg], tokens_after: u64| {
+        let ledger = |ctl: &Ctl, dropped: &[Msg], tokens_after: u64, floor: u64| {
             let mut ctl = ctl.clone();
             note_commands(&mut ctl, dropped);
             let text = ledger_text(&LedgerArgs {
@@ -689,6 +691,7 @@ fn run_step(
                 n_rolled: ctl.n_rolled + dropped.len(),
                 tokens_after,
                 limit,
+                floor,
                 hint: hint.clone(),
                 cmds: ctl.cmds,
             });
@@ -696,10 +699,10 @@ fn run_step(
         };
         // Pop until the request fits the target with its ledger in place,
         // the ledger's figure at its widest, so the ledger sent never pushes
-        // it back over.
+        // it back over (its 20 digits also cover a longer target figure).
         let mut dropped = Vec::new();
         loop {
-            st.ledger = Some(ledger(&st.ctl, &dropped, u64::MAX));
+            st.ledger = Some(ledger(&st.ctl, &dropped, u64::MAX, floor));
             if st.proj.is_empty() || cal(&window(st, &st.proj, &keep)) <= target {
                 break;
             }
@@ -707,12 +710,15 @@ fn run_step(
         }
         st.proj.append(&mut keep);
         st.edit_mark = st.edit_mark.min(st.proj.len());
-        // The figure the ledger states and the degrade check below count the
-        // ledger: measured again after the figure's digits changed its length.
+        // The figures the ledger states (its size and floor) and the degrade
+        // check below count the ledger: measured again after the figures'
+        // digits changed its length.
         let mut tokens_after = cal(&window(st, &st.proj, &[]));
+        let mut floor = cal(&window(st, &[], &[]));
         for _ in 0..2 {
-            st.ledger = Some(ledger(&st.ctl, &dropped, tokens_after));
+            st.ledger = Some(ledger(&st.ctl, &dropped, tokens_after, floor));
             tokens_after = cal(&window(st, &st.proj, &[]));
+            floor = cal(&window(st, &[], &[]));
         }
         note_commands(&mut st.ctl, &dropped);
         st.ctl.n_rolled += dropped.len();
@@ -1735,6 +1741,16 @@ mod tests {
         let sent = messages(&d.delegate.last());
         let nudge = sent.last().unwrap()["content"][0]["text"].as_str().unwrap();
         assert!(nudge.starts_with("[context warning: act now]"), "{nudge}");
+        // The condense target sits above what the model cannot edit.
+        let st = d.store.load(SID).unwrap().unwrap();
+        let sys = section(st.section_limit);
+        let floor = (raw_count(&sys, &[st.raw0.clone().unwrap()]) as f64 * st.ratio) as u64;
+        let limit = st.budget - ClmConfig::default().reserve_tokens;
+        let target = floor + (limit - floor) / 4;
+        assert!(
+            nudge.contains(&format!("about {target} tokens in one pass")),
+            "{nudge}"
+        );
     }
 
     #[tokio::test]
@@ -1973,6 +1989,17 @@ mod tests {
         assert_eq!(
             line["rolled"]["tokens_after"],
             raw_count(&section(st.section_limit), &sent)
+        );
+        // Its condense target sits above the floor it is part of (reserve 0).
+        let floor = raw_count(&section(st.section_limit), &sent[..2]);
+        let target = floor + (st.budget - floor) / 4;
+        let ledger = serde_json::to_value(&sent[1]).unwrap()["content"][0]["text"].clone();
+        assert!(
+            ledger
+                .as_str()
+                .unwrap()
+                .contains(&format!("about {target} tokens in one pass")),
+            "{ledger}"
         );
     }
 
@@ -2296,7 +2323,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let hint = compaction_hint(&mirror_rel(SID));
-        let lead = persistent_text(0, 0, &hint);
+        let lead = persistent_text(0, 0, 0, &hint);
         let lead = &lead[..=lead.find(']').unwrap()];
         assert!(nudge.starts_with(lead), "{nudge}");
 
