@@ -30,7 +30,7 @@ You have a limit of {limit} tokens of context. Each command result ends with a r
 
 Your context after the system prompt and the task is mirrored in the file `{mirror}` (a path relative to your working directory). The file is written before every step, and whatever it holds when the next step begins becomes your context from then on. The system prompt and the task are not in the file and cannot be edited.
 
-The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied. An edited turn that made calls comes back as text, with each call shown as `(called <function> with <arguments>)`: that is a record of what already ran. Always make new calls as real function calls, never by writing them as text.
+The file is a series of turns. Each turn starts with a header line such as `[[CTX_TURN 3 role=tool]]` (turn number, then the role: user, assistant or tool), followed by the turn's text. If you delete a turn's text and leave its header, the turn drops out of your context. Never remove or change the header of a turn you want to keep. Edits take effect on the next step, and the next command result tells you whether yours was applied. An edit needs no step of its own: make it in the same reply as your next call, and both calls run in that step. An edited turn that made calls comes back as text, with each call shown as `(called <function> with <arguments>)`: that is a record of what already ran. Always make new calls as real function calls, never by writing them as text.
 
 Edit the file with a script. Do not retype its text, and do not print it: you are already reading it as your context. `shell::exec` does not start a shell, so pass the script as {"command":"bash","args":["-c","<script>"]}; heredocs work that way. Example, replacing the text of turn 4 with a note:
 
@@ -252,6 +252,12 @@ mod tests {
         // A later clamp shows only in the readout: it is named as the live limit.
         assert!(s.contains("the newest readout"), "{s}");
         assert!(s.contains(r#"{"command":"bash","args":["-c","<script>"]}"#));
+        // An edit rides along with the next call instead of taking a step.
+        assert!(
+            s.contains("An edit needs no step of its own")
+                && s.contains("same reply as your next call"),
+            "{s}"
+        );
         assert!(!s.contains("{mirror}") && !s.contains("{limit}"));
         assert_eq!(s, clm_section(M, 63488));
     }

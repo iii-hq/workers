@@ -1,10 +1,13 @@
 //! `context-clm` binary: connect, register and read the `context-clm`
-//! configuration entry, register the strategy, status and `session::deleted`
-//! cleanup, follow configuration changes, serve until SIGINT/SIGTERM.
+//! configuration entry, register the strategy, status and the
+//! `harness::turn-completed` and `session::deleted` cleanups, follow
+//! configuration changes, serve until SIGINT/SIGTERM.
 use std::sync::Arc;
 
 use clap::Parser;
-use context_clm::assemble::{self, Deps, IiiDelegate, Locks, SessionDeletedEvent};
+use context_clm::assemble::{
+    self, Deps, IiiDelegate, Locks, SessionDeletedEvent, TurnCompletedEvent,
+};
 use context_clm::configuration;
 use context_clm::status::{self, StatusRequest};
 use context_clm::store::Store;
@@ -89,6 +92,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             json!({}),
         ),
     );
+    // `{}`: every session's turns; the handler acts only on CLM state.
+    let _turn_completed = iii_config_client::try_bind(
+        &iii,
+        RegisterTriggerInput::new(
+            "harness::turn-completed",
+            assemble::ON_TURN_COMPLETED_ID,
+            json!({}),
+        ),
+    );
     // Bound last so the reload closes over fully built state.
     configuration::register_config_trigger(&iii, config)?
         .run()
@@ -135,6 +147,19 @@ fn register_functions(iii: &IIIClient, deps: &Arc<Deps<IiiDelegate>>) {
             async move { assemble::on_session_deleted(&d, event).await }
         })
         .description("Internal: remove a deleted session's CLM mirror, state and step log.")
+        .metadata(json!({ "internal": true })),
+    );
+    let d = deps.clone();
+    iii.register_function(
+        assemble::ON_TURN_COMPLETED_ID,
+        RegisterFunction::new_async(move |event: TurnCompletedEvent| {
+            let d = d.clone();
+            async move { assemble::on_turn_completed(&d, event).await }
+        })
+        .description(
+            "Internal: remove a finished turn's CLM mirror (and an unused .clm) from the \
+             session's root; the next step writes it again.",
+        )
         .metadata(json!({ "internal": true })),
     );
 }

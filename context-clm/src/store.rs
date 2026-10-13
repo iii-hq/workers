@@ -152,6 +152,11 @@ impl Store {
         self.dir.join("log").join(format!("{}.jsonl", safe_id(sid)))
     }
 
+    /// Whether the session has a state file, readable or not.
+    pub fn exists(&self, sid: &str) -> bool {
+        self.state_path(sid).exists()
+    }
+
     pub fn load(&self, sid: &str) -> io::Result<Option<SessionState>> {
         match fs::read(self.state_path(sid)) {
             Ok(bytes) => serde_json::from_slice(&bytes)

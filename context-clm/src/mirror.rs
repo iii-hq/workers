@@ -73,6 +73,15 @@ pub fn remove_mirror(root: &Path, sid: &str) -> io::Result<()> {
     imp::remove(root, &file_name(sid))
 }
 
+/// Remove `<root>/.clm` when it holds nothing but its `.gitignore`, so a
+/// finished turn leaves no stray directory behind. Anything else in it (a
+/// mirror of another session, a temp, a file of the model's) keeps it whole;
+/// a missing root or `.clm` is fine. A symlinked `.clm` is refused, never
+/// followed.
+pub fn remove_dir_if_unused(root: &Path) -> io::Result<()> {
+    imp::remove_dir_if_unused(root)
+}
+
 fn invalid_data(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
@@ -275,6 +284,77 @@ mod imp {
         unlink_at(&dir, &format!("{name}.tmp"))?;
         unlink_at(&dir, name)
     }
+
+    pub fn remove_dir_if_unused(root: &Path) -> io::Result<()> {
+        let root_fd = match open_root(root) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            other => other?,
+        };
+        let dir = match open_clm(&root_fd, root, false) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            other => other?,
+        };
+        if !holds_only_gitignore(&dir)? {
+            return Ok(());
+        }
+        // NOTE: a race with another session's write on this root is benign.
+        // A write landing after the listing keeps `.clm` (the rmdir fails)
+        // without its `.gitignore` until that session's next write; a write
+        // holding a `.clm` fd removed here fails, and its next step writes again.
+        unlink_at(&dir, GITIGNORE)?;
+        let name = cstr(MIRROR_DIR)?;
+        // SAFETY: live fd, NUL-terminated name. `AT_REMOVEDIR` removes only an
+        // empty directory and never follows a symlink swapped in meanwhile.
+        let ret = unsafe { libc::unlinkat(root_fd.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+        match check(ret) {
+            // Refilled or removed by another session meanwhile.
+            Err(e)
+                if !matches!(
+                    e.raw_os_error(),
+                    Some(libc::ENOTEMPTY | libc::EEXIST | libc::ENOENT)
+                ) =>
+            {
+                Err(e)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether `dir` holds no entry but `.gitignore`, listed through a
+    /// duplicate of its fd (never a path that could be re-resolved).
+    fn holds_only_gitignore(dir: &File) -> io::Result<bool> {
+        // SAFETY: `dir` is a live fd. On success `fdopendir` owns the
+        // duplicate and `closedir` closes it; on failure it is closed here.
+        // `d_name` is NUL-terminated and read before the next `readdir`.
+        unsafe {
+            let fd = libc::fcntl(dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let stream = libc::fdopendir(fd);
+            if stream.is_null() {
+                let e = io::Error::last_os_error();
+                libc::close(fd);
+                return Err(e);
+            }
+            // NOTE: a NULL `readdir` is taken as the end; its errors (EBADF,
+            // EOVERFLOW) cannot occur on a 64-bit target with this fresh fd.
+            let mut only = true;
+            loop {
+                let entry = libc::readdir(stream);
+                if entry.is_null() {
+                    break;
+                }
+                let name = std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()).to_bytes();
+                if !matches!(name, b"." | b"..") && name != GITIGNORE.as_bytes() {
+                    only = false;
+                    break;
+                }
+            }
+            libc::closedir(stream);
+            Ok(only)
+        }
+    }
 }
 
 // NOTE: there is no directory-fd API here, so paths are re-resolved on every
@@ -364,6 +444,38 @@ mod imp {
         let path = root.join(MIRROR_DIR).join(name);
         remove_if_exists(&tmp_path(&path))?;
         remove_if_exists(&path)
+    }
+
+    pub fn remove_dir_if_unused(root: &Path) -> io::Result<()> {
+        let dir = root.join(MIRROR_DIR);
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(invalid_data(format!(
+                    "{} is not a directory",
+                    dir.display()
+                )))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        }
+        for entry in fs::read_dir(&dir)? {
+            if entry?.file_name() != GITIGNORE {
+                return Ok(());
+            }
+        }
+        remove_if_exists(&dir.join(GITIGNORE))?;
+        match fs::remove_dir(&dir) {
+            Err(e)
+                if !matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                Err(e)
+            }
+            _ => Ok(()),
+        }
     }
 }
 

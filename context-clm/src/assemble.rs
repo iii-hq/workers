@@ -1,6 +1,6 @@
 //! `context-clm::assemble` — the CLM strategy behind the harness's
 //! `context::assemble` contract (spec §5.2), and the per-session plumbing it
-//! shares with the `session::deleted` cleanup.
+//! shares with the `harness::turn-completed` and `session::deleted` cleanups.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -21,7 +21,7 @@ use crate::controller::{
     cap_newest, evaluate, exec_body, gate_rejects, note_commands, pop_step, raw_count, real_edit,
     rollback_target, Cfg, Ctl, Decision, Nudge,
 };
-use crate::mirror::{mirror_rel, read_mirror, remove_mirror, write_mirror};
+use crate::mirror::{mirror_rel, read_mirror, remove_dir_if_unused, remove_mirror, write_mirror};
 use crate::projection::{
     mirror_change, msg_hash, parse_mirror, render_mirror, strip_thinking, text_msg, MirrorChange,
 };
@@ -36,6 +36,7 @@ use crate::types::{AssembleRequest, AssembleResponse, Block, ModelRef, Msg};
 
 pub const ASSEMBLE_ID: &str = "context-clm::assemble";
 pub const ON_SESSION_DELETED_ID: &str = "context-clm::on-session-deleted";
+pub const ON_TURN_COMPLETED_ID: &str = "context-clm::on-turn-completed";
 /// Every step is delegated here for the model limits and the final fit.
 pub const CONTEXT_ASSEMBLE_ID: &str = "context::assemble";
 /// The spike's ceiling for the delegated hop (a long window is serialized twice).
@@ -356,7 +357,7 @@ fn commit(
     }
     if let Some(prev) = prev_root.filter(|p| *p != root) {
         // A previous root that is gone is fine (remove_mirror skips it).
-        if let Err(e) = remove_mirror(Path::new(prev), sid) {
+        if let Err(e) = clear_mirror(prev, sid) {
             tracing::warn!(session_id = sid, root = %prev, error = %e, "context-clm: could not remove the mirror under the previous root");
         }
     }
@@ -961,7 +962,7 @@ pub async fn on_session_deleted<D>(
     }
     let removed = !matches!(loaded, Ok(None));
     if let Some(root) = loaded.ok().flatten().and_then(|s| s.root) {
-        if let Err(e) = remove_mirror(Path::new(&root), &sid) {
+        if let Err(e) = clear_mirror(&root, &sid) {
             tracing::warn!(session_id = %sid, %root, error = %e, "context-clm: mirror removal failed; state and step log are removed anyway");
         }
     }
@@ -972,6 +973,71 @@ pub async fn on_session_deleted<D>(
     deps.locks.forget(&sid);
     drop(serialized);
     Ok(SessionDeletedAck { ok: true, removed })
+}
+
+/// Remove the session's mirror under `root`, then `.clm` itself once
+/// nothing but its `.gitignore` is left.
+fn clear_mirror(root: &str, sid: &str) -> std::io::Result<()> {
+    remove_mirror(Path::new(root), sid).and_then(|()| remove_dir_if_unused(Path::new(root)))
+}
+
+/// `harness::turn-completed` payload (only the fields we read).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct TurnCompletedEvent {
+    pub session_id: String,
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnCompletedAck {
+    pub ok: bool,
+    /// The event was for the turn of the session's last CLM step, so its
+    /// mirror was cleared (a failed removal is logged).
+    pub removed: bool,
+}
+
+/// Keep a finished turn's workspace clean: remove the session's mirror, and
+/// `.clm` once only its `.gitignore` is left. Only for the turn of the
+/// state's last step, so a late or repeated event never removes a mirror a
+/// newer turn wrote. `written` is cleared, so the next step renders the
+/// mirror again and reads no edit. Failures are logged; the ack stays `ok`.
+pub async fn on_turn_completed<D>(
+    deps: &Deps<D>,
+    event: TurnCompletedEvent,
+) -> Result<TurnCompletedAck, Error> {
+    let sid = event.session_id;
+    let done = |removed| Ok(TurnCompletedAck { ok: true, removed });
+    // Every harness session's turns end here: one that never ran CLM takes
+    // no lock entry.
+    if !deps.store.exists(&sid) {
+        return done(false);
+    }
+    let lock = deps.locks.get(&sid);
+    let _serialized = lock.lock().await;
+    let mut st = match deps.store.load(&sid) {
+        Ok(Some(st)) => st,
+        Ok(None) => return done(false),
+        Err(e) => {
+            tracing::warn!(session_id = %sid, error = %e, "context-clm: unreadable state; its mirror cannot be located");
+            return done(false);
+        }
+    };
+    let last_turn = st.last_step.as_ref().map(|(turn, _)| turn.as_str());
+    let Some(root) = st
+        .root
+        .clone()
+        .filter(|_| last_turn == Some(&event.turn_id))
+    else {
+        return done(false);
+    };
+    if let Err(e) = clear_mirror(&root, &sid) {
+        tracing::warn!(session_id = %sid, %root, error = %e, "context-clm: could not clear the finished turn's mirror");
+    }
+    st.written = None;
+    if let Err(e) = deps.store.save(&sid, &st) {
+        tracing::warn!(session_id = %sid, error = %e, "context-clm: could not save the state after clearing the mirror");
+    }
+    done(true)
 }
 
 #[cfg(test)]
@@ -2341,6 +2407,7 @@ mod tests {
             }
         );
         assert!(read_mirror(&root, SID).unwrap().is_none());
+        assert!(!root.join(".clm").exists(), "an unused .clm goes too");
         assert!(d.store.load(SID).unwrap().is_none());
         assert!(!log.exists());
         // A redelivery finds nothing and still acknowledges.
@@ -2417,5 +2484,139 @@ mod tests {
             }
         );
         assert!(!state.exists());
+    }
+
+    fn turn_completed(turn: &str) -> TurnCompletedEvent {
+        TurnCompletedEvent {
+            session_id: SID.into(),
+            turn_id: turn.into(),
+        }
+    }
+
+    fn step_log(dir: &Path) -> Vec<Value> {
+        let log = dir.join(format!("state/log/{}.jsonl", safe_id(SID)));
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_completed_turn_clears_its_mirror_and_the_next_step_renders_it_again() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task"), call("c1", "ls"), result("c1", "a.txt")];
+        assemble(&d, request(&raw[..1], Some(&root), 1))
+            .await
+            .unwrap();
+        assemble(&d, request(&raw, Some(&root), 2)).await.unwrap();
+        assert!(read_mirror(&root, SID).unwrap().is_some());
+
+        let ack = on_turn_completed(&d, turn_completed("turn-1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            ack,
+            TurnCompletedAck {
+                ok: true,
+                removed: true
+            }
+        );
+        assert!(!root.join(".clm").exists(), "the mirror and .clm are gone");
+        assert!(d.store.load(SID).unwrap().unwrap().written.is_none());
+
+        // The next turn's first step renders the mirror again and counts no edit.
+        raw.extend([reply("done"), user("next")]);
+        let mut req = request(&raw, Some(&root), 1);
+        req.options.turn_id = Some("turn-2".into());
+        assemble(&d, req).await.unwrap();
+        assert!(read_mirror(&root, SID).unwrap().is_some());
+        let st = d.store.load(SID).unwrap().unwrap();
+        assert_eq!((st.stats.edits_applied, st.stats.edits_rejected), (0, 0));
+        assert_eq!(step_log(dir.path()).last().unwrap()["edit"]["kind"], "none");
+        let sent = d.delegate.last().to_string();
+        assert!(!sent.contains(crate::prompt::RECEIPT_TAG), "{sent}");
+    }
+
+    #[tokio::test]
+    async fn a_late_turn_completed_leaves_the_newer_turns_mirror() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        let mut raw = vec![user("task")];
+        assemble(&d, request(&raw, Some(&root), 1)).await.unwrap();
+        raw.extend([reply("done"), user("next")]);
+        let mut req = request(&raw, Some(&root), 1);
+        req.options.turn_id = Some("turn-2".into());
+        assemble(&d, req).await.unwrap();
+
+        let ack = on_turn_completed(&d, turn_completed("turn-1"))
+            .await
+            .unwrap();
+        assert!(!ack.removed);
+        assert!(read_mirror(&root, SID).unwrap().is_some());
+        assert!(d.store.load(SID).unwrap().unwrap().written.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_completed_turn_keeps_clm_while_another_session_has_a_mirror() {
+        let (_dir, root, d) = setup(ClmConfig::default());
+        assemble(&d, request(&[user("task")], Some(&root), 1))
+            .await
+            .unwrap();
+        crate::mirror::write_mirror(&root, "other", "theirs").unwrap();
+
+        assert!(
+            on_turn_completed(&d, turn_completed("turn-1"))
+                .await
+                .unwrap()
+                .removed
+        );
+        assert!(read_mirror(&root, SID).unwrap().is_none());
+        assert_eq!(
+            read_mirror(&root, "other").unwrap().as_deref(),
+            Some("theirs")
+        );
+        assert!(root.join(".clm/.gitignore").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_completed_turn_never_follows_a_symlinked_clm() {
+        let (dir, root, d) = setup(ClmConfig::default());
+        assemble(&d, request(&[user("task")], Some(&root), 1))
+            .await
+            .unwrap();
+        // The agent swaps `.clm` for a link to a directory it planted elsewhere.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let name = Path::new(&mirror_rel(SID)).file_name().unwrap().to_owned();
+        std::fs::write(elsewhere.join(&name), "PLANTED").unwrap();
+        std::fs::write(elsewhere.join(".gitignore"), "*\n").unwrap();
+        std::fs::remove_dir_all(root.join(".clm")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(".clm")).unwrap();
+
+        let ack = on_turn_completed(&d, turn_completed("turn-1"))
+            .await
+            .unwrap();
+        assert!(ack.ok, "a failed removal never fails the event");
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join(&name)).unwrap(),
+            "PLANTED"
+        );
+        assert!(elsewhere.join(".gitignore").exists());
+        assert!(std::fs::symlink_metadata(root.join(".clm"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[tokio::test]
+    async fn a_session_without_clm_state_takes_no_lock_on_turn_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = deps(dir.path(), ClmConfig::default());
+        let ack = on_turn_completed(&d, turn_completed("turn-1"))
+            .await
+            .unwrap();
+        assert!(ack.ok && !ack.removed);
+        assert!(d.locks.0.lock().unwrap().is_empty());
     }
 }

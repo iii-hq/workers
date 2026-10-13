@@ -3,7 +3,9 @@
 use std::fs::{self, File};
 use std::io;
 
-use context_clm::mirror::{mirror_rel, read_mirror, remove_mirror, safe_id, write_mirror};
+use context_clm::mirror::{
+    mirror_rel, read_mirror, remove_dir_if_unused, remove_mirror, safe_id, write_mirror,
+};
 
 /// `read_mirror` refuses files above 16 MiB.
 const MAX_MIRROR_BYTES: u64 = 16 << 20;
@@ -282,4 +284,56 @@ fn existing_gitignore_is_left_alone_and_loose_dir_is_tightened() {
         0o700
     );
     assert!(!clm.join(".gitignore.tmp").exists());
+}
+
+#[test]
+fn an_unused_clm_directory_is_removed_with_its_gitignore() {
+    let root = tempfile::tempdir().unwrap();
+    // Nothing to remove: no `.clm`, and no root at all.
+    remove_dir_if_unused(root.path()).unwrap();
+    remove_dir_if_unused(&root.path().join("gone")).unwrap();
+
+    write_mirror(root.path(), "s_1", "x").unwrap();
+    remove_dir_if_unused(root.path()).unwrap();
+    assert!(
+        root.path().join(".clm/s_1.ctx").exists(),
+        "a mirror keeps it"
+    );
+
+    remove_mirror(root.path(), "s_1").unwrap();
+    remove_dir_if_unused(root.path()).unwrap();
+    assert!(!root.path().join(".clm").exists());
+
+    // An empty one goes too.
+    fs::create_dir(root.path().join(".clm")).unwrap();
+    remove_dir_if_unused(root.path()).unwrap();
+    assert!(!root.path().join(".clm").exists());
+}
+
+#[test]
+fn a_clm_directory_with_anything_else_is_kept_whole() {
+    let root = tempfile::tempdir().unwrap();
+    write_mirror(root.path(), "s_1", "x").unwrap();
+    remove_mirror(root.path(), "s_1").unwrap();
+    fs::write(root.path().join(".clm/notes"), "mine").unwrap();
+    remove_dir_if_unused(root.path()).unwrap();
+    assert!(root.path().join(".clm/.gitignore").exists());
+    assert!(root.path().join(".clm/notes").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unused_symlinked_clm_directory_is_never_followed() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join(".gitignore"), "*\n").unwrap();
+    symlink(outside.path(), root.path().join(".clm")).unwrap();
+
+    assert!(remove_dir_if_unused(root.path()).is_err());
+    assert!(outside.path().join(".gitignore").exists());
+    assert!(fs::symlink_metadata(root.path().join(".clm"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
 }

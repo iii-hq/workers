@@ -21,6 +21,7 @@ const FUNCTIONS: &[&str] = &[
     "context-clm::assemble",
     "context-clm::status",
     "context-clm::on-session-deleted",
+    "context-clm::on-turn-completed",
 ];
 
 struct Worker(Child);
@@ -123,14 +124,15 @@ async fn boots_configures_registers_and_exits_cleanly_on_sigterm() {
 
     let expected: BTreeSet<String> = FUNCTIONS.iter().map(|id| id.to_string()).collect();
     timeout(Duration::from_secs(10), async {
-        let (mut registered, mut seeded, mut reload, mut identity, mut session_deleted) =
-            (false, false, false, false, false);
+        let (mut registered, mut seeded, mut reload, mut identity) = (false, false, false, false);
+        let (mut session_deleted, mut turn_completed) = (false, false);
         let mut functions = BTreeSet::new();
         while !(registered
             && seeded
             && reload
             && identity
             && session_deleted
+            && turn_completed
             && functions == expected)
         {
             let frame = frames.recv().await.expect("worker stays connected");
@@ -179,6 +181,11 @@ async fn boots_configures_registers_and_exits_cleanly_on_sigterm() {
                     assert_eq!(frame["function_id"], "context-clm::on-session-deleted");
                     assert_eq!(frame["config"], json!({}));
                     session_deleted = true;
+                }
+                "registertrigger" if frame["trigger_type"] == "harness::turn-completed" => {
+                    assert_eq!(frame["function_id"], "context-clm::on-turn-completed");
+                    assert_eq!(frame["config"], json!({}));
+                    turn_completed = true;
                 }
                 "invocationresult" if frame["function_id"] == "context-clm::configuration-id" => {
                     assert_eq!(frame["result"], json!({"id": "context-clm"}));
