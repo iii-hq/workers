@@ -2348,23 +2348,23 @@ test('keeps the actual first painted Environment prose line within eighty charac
   }
 })
 
-test('opens the actual worker configuration reference beside a pending override without changing its draft', async ({
-  page,
-}) => {
-  for (const scenario of [
-    { mode: 'identity', theme: 'dark', width: 1656, height: 1314 },
-    { mode: 'catalog', theme: 'light', width: 390, height: 844 },
-    { mode: 'constraints', theme: 'dark', width: 1656, height: 1314 },
-    {
-      mode: 'constraints',
-      theme: 'light',
-      width: 390,
-      height: 844,
-      catalog: true,
-    },
-    { mode: 'error', theme: 'light', width: 390, height: 844 },
-    { mode: 'error', theme: 'dark', width: 1656, height: 1314, pane: 720 },
-  ]) {
+for (const scenario of [
+  { mode: 'identity', theme: 'dark', width: 1656, height: 1314 },
+  { mode: 'catalog', theme: 'light', width: 390, height: 844 },
+  { mode: 'constraints', theme: 'dark', width: 1656, height: 1314 },
+  {
+    mode: 'constraints',
+    theme: 'light',
+    width: 390,
+    height: 844,
+    catalog: true,
+  },
+  { mode: 'error', theme: 'light', width: 390, height: 844 },
+  { mode: 'error', theme: 'dark', width: 1656, height: 1314, pane: 720 },
+]) {
+  test(`opens the actual worker configuration reference beside a pending override without changing its draft in ${scenario.theme} at ${scenario.width}${'pane' in scenario ? `/${scenario.pane} pane` : ''}: ${scenario.mode}`, async ({
+    page,
+  }) => {
     await page.setViewportSize({
       width: scenario.width,
       height: scenario.height,
@@ -2677,19 +2677,19 @@ test('opens the actual worker configuration reference beside a pending override 
         .toBe('port: 3114')
       expect(await editCalls(page)).toEqual([])
     }
-  }
-})
+  })
+}
 
-test('provides a thirty-two-pixel desktop Build on start control while retaining narrow touch sizing and the actual command patch', async ({
-  page,
-}) => {
-  for (const theme of ['dark', 'light']) {
-    for (const scenario of [
-      { width: 1656, height: 1314, narrow: false },
-      { width: 1656, height: 1314, narrow: true, pane: 720 },
-      { width: 390, height: 844, narrow: true },
-      { width: 450, height: 900, narrow: true },
-    ]) {
+for (const theme of ['dark', 'light']) {
+  for (const scenario of [
+    { width: 1656, height: 1314, narrow: false },
+    { width: 1656, height: 1314, narrow: true, pane: 720 },
+    { width: 390, height: 844, narrow: true },
+    { width: 450, height: 900, narrow: true },
+  ]) {
+    test(`provides a thirty-two-pixel desktop Build on start control while retaining narrow touch sizing and the actual command patch in ${theme} at ${scenario.width}${'pane' in scenario ? `/${scenario.pane} pane` : ''}`, async ({
+      page,
+    }) => {
       const { narrow } = scenario
       await page.setViewportSize({
         width: scenario.width,
@@ -2775,9 +2775,9 @@ test('provides a thirty-two-pixel desktop Build on start control while retaining
       ).toContainText('Settings saved for ade')
       expect(await editCalls(page)).toHaveLength(1)
       expect((await editCalls(page))[0].payload.run).toBe(editedCommand)
-    }
+    })
   }
-})
+}
 
 test('distinguishes a confirmed write awaiting verification from new unsaved edits and reloads safely', async ({
   page,

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useState } from 'react'
+import { act, useLayoutEffect, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CodeEditor } from './CodeEditor'
@@ -138,6 +138,26 @@ describe('CodeEditor value sync', () => {
 
     expect(onChange).toHaveBeenCalledWith('one\ntwo\nthree\n')
     expect(editor.getValue).toHaveBeenCalledTimes(1)
+    expect(editor.setValue).not.toHaveBeenCalled()
+  })
+
+  it('does not lose rapid typing to an older controlled-value echo', async () => {
+    function TypingDuringCommit() {
+      const [text, set] = useState('')
+      useLayoutEffect(() => {
+        // Interleave the next key with the previous edit's React commit,
+        // before a passive value-sync effect could overwrite the model.
+        if (text === 'p') editor.type('po')
+        if (text === 'po') editor.type(`${editor.getValue()}r`)
+      }, [text])
+      return <CodeEditor value={text} onChange={set} language="yaml" />
+    }
+    await act(async () => root.render(<TypingDuringCommit />))
+    vi.clearAllMocks()
+
+    await act(async () => editor.type('p'))
+
+    expect(editor.getValue()).toBe('por')
     expect(editor.setValue).not.toHaveBeenCalled()
   })
 

@@ -535,8 +535,9 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       if (!hasActions) hideSelectionBar()
     }, [hasActions, hideSelectionBar])
 
-    // Prop → editor sync (external value swaps, language, options).
-    React.useEffect(() => {
+    // Apply replacements during the commit: a passive effect can replay an
+    // older controlled value after Monaco has already accepted another key.
+    React.useLayoutEffect(() => {
       const editor = editorRef.current
       if (!ready || !editor || value === editorValueRef.current) return
       // The same editor refilled from outside (an agent rewriting the open
