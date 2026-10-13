@@ -15,8 +15,9 @@ import (
 // Only the child worker receives credentials, which must stay out of its seed.
 func TestCloudEnvironmentEngine(t *testing.T) {
 	engine, worker := os.Getenv("III_BINARY"), os.Getenv("WHATSAPP_BINARY")
-	if engine == "" || worker == "" {
-		t.Skip("set III_BINARY and WHATSAPP_BINARY for isolated loopback integration")
+	database := os.Getenv("DATABASE_BINARY")
+	if engine == "" || worker == "" || database == "" {
+		t.Skip("set III_BINARY, WHATSAPP_BINARY and DATABASE_BINARY for isolated loopback integration")
 	}
 	clearCloudEnvironment(t)
 	dir := t.TempDir()
@@ -58,6 +59,15 @@ func TestCloudEnvironmentEngine(t *testing.T) {
 	for _, mode := range []string{"seed", "existing", "local"} {
 		t.Run(mode, func(t *testing.T) {
 			namespace := "whatsapp-env-" + mode
+			databaseSeed := filepath.Join(dir, namespace+"-database.yaml")
+			if err := os.WriteFile(databaseSeed, []byte("databases:\n  whatsapp:\n    url: sqlite:"+filepath.Join(t.TempDir(), "whatsapp.db")+"\n    pool:\n      max: 1\nhistory_max_entries: 0\nhistory_max_bytes: 0\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			smokeProcess(t, dir, namespace+"-database", database, []string{"--url", engineURL, "--config", databaseSeed}, "III_NAMESPACE="+namespace, "III_CONFIG_NAME="+namespace+"-database", "III_DISABLE_TRACE_PAYLOADS=1")
+			smokeWait(t, "environment test database worker", func() bool {
+				_, err := smokeValue(engine, engineURL, namespace, "database::listDatabases", map[string]any{})
+				return err == nil
+			})
 			seed := DefaultConfig()
 			seed.DataDir = filepath.Join(t.TempDir(), "accounts")
 			seed.MaxSessions = 3
