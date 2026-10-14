@@ -111,21 +111,28 @@ async fn support_from(
     use std::sync::atomic::Ordering::{AcqRel, Acquire};
     // Bounded: every D-Bus call (method_timeout) and our wait (`limit`).
     // Connect/auth is not, so `busy` guarantees a probe whose thread is still
-    // parked is never joined by another: at most one probe thread exists.
+    // parked is never joined by another: at most one probe thread exists. A
+    // call that finds one running waits for it to end (a healthy probe takes
+    // milliseconds), then probes itself, all within the same `limit`.
     let unanswered = || {
         (
             false,
             Some("the AT-SPI accessibility bus did not answer within 1.5 s".to_string()),
         )
     };
-    if busy.compare_exchange(false, true, AcqRel, Acquire).is_err() {
-        return unanswered();
+    let deadline = tokio::time::Instant::now() + limit;
+    // ponytail: polls the flag every 10 ms; a Notify if overlaps get frequent.
+    while busy.compare_exchange(false, true, AcqRel, Acquire).is_err() {
+        if tokio::time::Instant::now() >= deadline {
+            return unanswered();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     let task = tokio::task::spawn_blocking(move || {
         let _slot = ProbeSlot(busy);
         read()
     });
-    match tokio::time::timeout(limit, task).await {
+    match tokio::time::timeout_at(deadline, task).await {
         Ok(Ok(BusState { address: false, .. })) => (false, Some(A11Y_BUS_MISSING.to_string())),
         Ok(Ok(BusState { enabled: false, .. })) => (true, Some(A11Y_OFF.to_string())),
         Ok(Ok(_)) => (true, None),
@@ -181,6 +188,30 @@ mod tests {
         assert!(!ok);
         assert!(reason.unwrap().contains("did not answer"));
         assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn a_call_overlapping_a_healthy_probe_waits_for_it() {
+        let busy = flag();
+        let slow = || {
+            std::thread::sleep(Duration::from_millis(200));
+            BusState {
+                address: true,
+                enabled: true,
+            }
+        };
+        let quick = || BusState {
+            address: true,
+            enabled: false,
+        };
+        let limit = Duration::from_secs(5);
+        let (a, b) = tokio::join!(
+            support_from(busy, slow, limit),
+            support_from(busy, quick, limit)
+        );
+        assert_eq!(a, (true, None));
+        // Its own probe ran once the first ended: no false "did not answer".
+        assert_eq!(b, (true, Some(A11Y_OFF.to_string())));
     }
 
     #[tokio::test]
