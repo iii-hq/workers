@@ -32,6 +32,9 @@ pub(crate) struct FakeTree {
     pub block_actions: AtomicBool,
     pub panic_on_action: AtomicBool,
     pub on_fetch: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// When set, `focused_app` fails with this error: no app in the
+    /// foreground (`SelectorNotMatched`) or a provider failure.
+    pub foreground_error: Mutex<Option<Error>>,
 }
 
 fn default_actions(role: Role) -> Vec<String> {
@@ -73,6 +76,7 @@ impl FakeTree {
             block_actions: AtomicBool::new(false),
             panic_on_action: AtomicBool::new(false),
             on_fetch: Mutex::new(None),
+            foreground_error: Mutex::new(None),
         }
     }
 
@@ -229,6 +233,9 @@ impl Provider for FakeTree {
         Ok(apps.into_iter().map(|a| self.data(a)).collect())
     }
     fn focused_app(&self) -> Result<ElementData> {
+        if let Some(e) = self.foreground_error.lock().unwrap().clone() {
+            return Err(e);
+        }
         Ok(self.data(0))
     }
     fn list_shell_surfaces(&self) -> Result<Vec<(ShellSurfaceKind, ElementData)>> {

@@ -45,13 +45,16 @@ impl Code {
             Code::InvalidSelector => "fix the selector and retry",
             Code::StaleRef => "re-run computer::find or computer::observe and use the new refs",
             Code::NotSupported => {
-                "the element is disabled, gone, or does not support this action; re-run \
-                 computer::find (e.g. with [enabled=\"true\"] and timeout_ms) before acting"
+                "re-run computer::find (e.g. with [enabled=\"true\"] and timeout_ms) before acting"
             }
             Code::Busy => "another accessibility operation is running on this session; retry",
-            Code::PermissionDenied => {
+            Code::PermissionDenied if cfg!(target_os = "macos") => {
                 "on macOS grant BOTH Accessibility and Screen Recording (System Settings › \
                  Privacy & Security) to the process running the computer worker, then retry"
+            }
+            Code::PermissionDenied => {
+                "the OS refused accessibility access to the process running the computer \
+                 worker; check its accessibility permissions, then retry"
             }
             Code::UnsupportedSession => {
                 "act by coordinates, or start a native session on macOS or Windows"
@@ -89,6 +92,30 @@ impl SemanticError {
     }
 }
 
+/// An xa11y error named by its variant (plus the code of a `Platform`
+/// error), never by its `Display`: `SelectorNotMatched` and `Timeout` carry
+/// a `Diagnosis` built from provider data, and `AccessibilityNotEnabled` the
+/// app's name — app text that skipped redaction and escaping.
+fn kind(e: &X) -> String {
+    let name = match e {
+        X::Platform { code, .. } => return format!("Platform {code}"),
+        X::PermissionDenied { .. } => "PermissionDenied",
+        X::AccessibilityNotEnabled { .. } => "AccessibilityNotEnabled",
+        X::SelectorNotMatched { .. } => "SelectorNotMatched",
+        X::ElementStale { .. } => "ElementStale",
+        X::ActionNotSupported { .. } => "ActionNotSupported",
+        X::TextValueNotSupported => "TextValueNotSupported",
+        X::Timeout { .. } => "Timeout",
+        X::InvalidSelector { .. } => "InvalidSelector",
+        X::InvalidActionData { .. } => "InvalidActionData",
+        X::InvalidConfig { .. } => "InvalidConfig",
+        X::NoElementBounds => "NoElementBounds",
+        X::Unsupported { .. } => "Unsupported",
+        _ => "unknown error",
+    };
+    name.to_string()
+}
+
 /// Classify a failed semantic action. `advertised` is whether the snapshot
 /// listed the verb in the element's `actions`: on Windows a removed element
 /// can no longer hand out the pattern it advertised, which xa11y reports as
@@ -122,14 +149,14 @@ pub fn map_act_error(e: &X, action: &str, advertised: bool) -> SemanticError {
         X::Unsupported { .. } | X::InvalidActionData { .. } | X::NoElementBounds => {
             SemanticError::new(
                 Code::NotSupported,
-                format!("{action} is not available here: {e}"),
+                format!("{action} is not available here ({})", kind(e)),
             )
         }
         // Everything else — Platform codes, TextValueNotSupported, variants
         // added later — may have happened after dispatch: conservative.
         other => SemanticError::new(
             Code::EffectUnknown,
-            format!("{action} failed after it was dispatched: {other}"),
+            format!("{action} failed after it was dispatched ({})", kind(other)),
         ),
     }
 }
@@ -154,7 +181,7 @@ pub fn map_read_error(e: &X, rooted: bool) -> SemanticError {
         }
         other => SemanticError::new(
             Code::BackendError,
-            format!("accessibility read failed: {other}"),
+            format!("accessibility read failed ({})", kind(other)),
         ),
     }
 }
@@ -246,7 +273,16 @@ mod tests {
         };
         let e = map_read_error(&denied, false);
         assert_eq!(e.code, Code::PermissionDenied);
-        assert!(e.message.contains("Screen Recording"), "{}", e.message);
+        if cfg!(target_os = "macos") {
+            assert!(e.message.contains("Screen Recording"), "{}", e.message);
+        } else {
+            // The macOS grant steps would only mislead on another OS.
+            assert!(
+                !e.message.contains("macOS") && e.message.contains("refused accessibility access"),
+                "{}",
+                e.message
+            );
+        }
         let stale = X::ElementStale {
             selector: "s".into(),
         };
@@ -279,19 +315,20 @@ mod tests {
     }
 
     #[test]
-    fn handler_codes_never_collide_with_harness_unknown_outcome_codes() {
-        let all = [
-            Code::InvalidInput,
-            Code::InvalidSelector,
-            Code::StaleRef,
-            Code::NotSupported,
-            Code::Busy,
-            Code::PermissionDenied,
-            Code::UnsupportedSession,
-            Code::BackendError,
-            Code::EffectUnknown,
+    fn wire_codes_are_pinned_and_never_harness_unknown_outcome_codes() {
+        let wire = [
+            (Code::InvalidInput, "invalid_input"),
+            (Code::InvalidSelector, "invalid_selector"),
+            (Code::StaleRef, "stale_ref"),
+            (Code::NotSupported, "not_supported"),
+            (Code::Busy, "busy"),
+            (Code::PermissionDenied, "permission_denied"),
+            (Code::UnsupportedSession, "unsupported_session"),
+            (Code::BackendError, "backend_error"),
+            (Code::EffectUnknown, "effect_unknown"),
         ];
-        for c in all {
+        for (c, s) in wire {
+            assert_eq!(c.as_str(), s);
             assert!(
                 ![
                     "timeout",
@@ -299,9 +336,50 @@ mod tests {
                     "invocation_stopped",
                     "engine_restart"
                 ]
-                .contains(&c.as_str()),
-                "{c:?}"
+                .contains(&s),
+                "{s}"
             );
         }
+    }
+
+    #[test]
+    fn messages_never_carry_xa11y_display_text() {
+        let diag = || xa11y_core::Diagnosis::new().last_observed("SENTINEL app text");
+        let errs = [
+            X::selector_not_matched("button").diagnose(diag()),
+            X::timeout(std::time::Duration::from_secs(1)).diagnose(diag()),
+            X::AccessibilityNotEnabled {
+                app: "SENTINEL app".into(),
+                instructions: "x".into(),
+            },
+            X::Platform {
+                code: -25204,
+                message: "SENTINEL os text".into(),
+            },
+            X::Unsupported {
+                feature: "SENTINEL feature".into(),
+            },
+        ];
+        for e in &errs {
+            for m in [
+                map_read_error(e, false).message,
+                map_act_error(e, "invoke", true).message,
+            ] {
+                assert!(!m.contains("SENTINEL"), "{m}");
+            }
+        }
+        assert!(
+            map_read_error(&errs[1], false)
+                .message
+                .contains("(Timeout)"),
+            "{}",
+            map_read_error(&errs[1], false).message
+        );
+        assert!(map_read_error(&errs[3], false)
+            .message
+            .starts_with("accessibility read failed (Platform -25204)"));
+        assert!(map_act_error(&errs[4], "invoke", true)
+            .message
+            .starts_with("invoke is not available here (Unsupported)"));
     }
 }

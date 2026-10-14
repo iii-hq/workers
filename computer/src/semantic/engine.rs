@@ -116,14 +116,17 @@ fn app_named(provider: &dyn Provider, name: &str) -> Result<ElementData, Semanti
         n => {
             let pids: Vec<String> = apps
                 .iter()
-                .map(|a| a.pid.map_or_else(|| "?".to_string(), |p| p.to_string()))
+                .filter_map(|a| a.pid)
+                .map(|p| p.to_string())
                 .collect();
+            let which = match (pids.len(), n - pids.len()) {
+                (_, 0) => format!("pids {}", pids.join(", ")),
+                (0, unknown) => format!("{unknown} without a pid"),
+                (_, unknown) => format!("pids {} and {unknown} without a pid", pids.join(", ")),
+            };
             Err(SemanticError::new(
                 Code::InvalidInput,
-                format!(
-                    "{n} running applications are named \"{name}\" (pids {}); pass app_pid",
-                    pids.join(", ")
-                ),
+                format!("{n} running applications are named \"{name}\" ({which}); pass app_pid"),
             ))
         }
     }
@@ -172,19 +175,17 @@ impl Engine {
             Some(pid) => App::by_pid_with(provider.clone(), pid, Duration::ZERO),
             None => App::foreground_with(provider.clone(), Duration::ZERO),
         };
-        // With a zero timeout the lookup makes one attempt; its terminal
-        // "not found" may come back as either variant.
+        // A lookup that finds no app is `SelectorNotMatched` (xa11y's poll
+        // loop makes a single attempt with a zero timeout); anything else,
+        // `Timeout` included, is the provider failing.
         let app = found.map_err(|e| match e {
-            xa11y_core::Error::SelectorNotMatched { .. } | xa11y_core::Error::Timeout { .. } => {
-                SemanticError::new(
-                    Code::InvalidInput,
-                    if scope.app_pid.is_some() {
-                        "no running application matches app_pid"
-                    } else {
-                        "no application is in the foreground; pass app_name or app_pid"
-                    },
-                )
+            xa11y_core::Error::SelectorNotMatched { .. } if scope.app_pid.is_some() => {
+                SemanticError::new(Code::InvalidInput, "no running application matches app_pid")
             }
+            xa11y_core::Error::SelectorNotMatched { .. } => SemanticError::new(
+                Code::InvalidInput,
+                "no application is in the foreground; pass app_name or app_pid",
+            ),
             other => map_read_error(&other, false),
         })?;
         Ok((provider, app.data))
@@ -694,7 +695,11 @@ mod tests {
         let err = e.snapshot(&query(None), deadline(), true).unwrap_err();
         assert_eq!(err.code, Code::PermissionDenied);
         assert!(err.message.contains("enable Accessibility"));
-        assert!(err.message.contains("Screen Recording"));
+        if cfg!(target_os = "macos") {
+            assert!(err.message.contains("Screen Recording"), "{}", err.message);
+        } else {
+            assert!(!err.message.contains("macOS"), "{}", err.message);
+        }
     }
 
     #[test]
@@ -840,6 +845,88 @@ mod tests {
         assert_eq!(
             e.act("e1", Verb::Invoke, None).unwrap_err().code,
             Code::StaleRef
+        );
+    }
+
+    #[test]
+    fn a_provider_timeout_on_the_app_lookup_is_a_backend_error() {
+        let t = form();
+        *t.foreground_error.lock().unwrap() = Some(X::timeout(Duration::from_secs(1)));
+        let (mut e, _) = engine(&t);
+        assert_eq!(
+            e.snapshot(&query(None), deadline(), true).unwrap_err().code,
+            Code::BackendError
+        );
+        *t.foreground_error.lock().unwrap() = Some(X::selector_not_matched("focused application"));
+        let err = e.snapshot(&query(None), deadline(), true).unwrap_err();
+        assert_eq!(err.code, Code::InvalidInput);
+        assert!(
+            err.message.contains("no application is in the foreground"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_name_without_pids_never_prints_question_marks() {
+        let t = FakeTree::new("Doc", 7);
+        let a = t.add_app("Doc", 0);
+        let b = t.add_app("Doc", 0);
+        for idx in [a, b] {
+            t.edit(idx, |e| e.pid = None);
+        }
+        let t = Arc::new(t);
+        let (mut e, _) = engine(&t);
+        let mut q = query(None);
+        q.scope.app_name = Some("Doc".into());
+        let err = e.snapshot(&q, deadline(), true).unwrap_err();
+        assert!(
+            err.message
+                .contains("3 running applications are named \"Doc\" (pids 7 and 2 without a pid)"),
+            "{}",
+            err.message
+        );
+        assert!(!err.message.contains('?'), "{}", err.message);
+    }
+
+    #[test]
+    fn toggle_and_select_reach_their_own_provider_calls() {
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        t.add(w, Role::CheckBox, "Ativo");
+        t.add(w, Role::ListItem, "Dois");
+        let t = Arc::new(t);
+        let (mut e, _) = engine(&t);
+        let out = e.snapshot(&query(None), deadline(), true).unwrap();
+        e.act(&ref_of(&out.text, "Ativo"), Verb::Toggle, None)
+            .unwrap();
+        e.act(&ref_of(&out.text, "Dois"), Verb::Select, None)
+            .unwrap();
+        assert_eq!(t.actions(), vec!["toggle:Ativo", "select:Dois"]);
+    }
+
+    #[test]
+    fn an_unadvertised_verb_the_provider_refuses_is_not_supported() {
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        // A text field advertises only set_value, so a refused press is the
+        // element's answer, not a removed element.
+        let nome = t.add(w, Role::TextField, "Nome");
+        let t = Arc::new(t);
+        t.fail(
+            nome,
+            X::ActionNotSupported {
+                action: "press".into(),
+                role: Role::TextField,
+            },
+        );
+        let (mut e, _) = engine(&t);
+        let out = e.snapshot(&query(None), deadline(), true).unwrap();
+        assert_eq!(
+            e.act(&ref_of(&out.text, "Nome"), Verb::Invoke, None)
+                .unwrap_err()
+                .code,
+            Code::NotSupported
         );
     }
 }
