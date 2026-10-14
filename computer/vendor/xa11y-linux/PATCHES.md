@@ -5,8 +5,8 @@ upstream `v0.15.2` tag; the crates.io tarball lacks it).
 
 Re-applying on an upgrade: start from the new pristine crate, hand-copy this
 `Cargo.toml`, redo every item below, then run the checks at the end. Patch
-sites in the source are marked `[P1]` … `[P4]`; the new tests sit under
-`// ── Vendored patches P1-P4` at the end of `src/atspi.rs`.
+sites in the source are marked `[P1]` … `[P5]`; the new tests sit under
+`// ── Vendored patches P1-P5` at the end of `src/atspi.rs`.
 
 ## Goals
 
@@ -84,23 +84,39 @@ copy matches the name), else `Platform "EditableText.SetTextContents failed: …
 `"password text"` or `ATSPI_ROLE_PASSWORD_TEXT` (40). For such an element the
 `Text` and `Value` interfaces are never read. The guard sits at every reader:
 - `build_element_data`: skips `get_value`, so `value` and `raw.atspi_value` are `None`.
-  `raw.atspi_role` is unchanged (`"password text"` / `"role_num:40"`).
+  `raw.atspi_role` is unchanged (`"password text"` / `"role_num:40"`). It fails
+  closed: when `GetRole` fails the text is not read either (`raw.atspi_role`
+  is then the role name, or `"role_num:0"`).
 - `matches_ref` `value` filter (the selector fast path): calls `GetRole` first
   and fails closed (no read) when the role is 40 or `GetRole` fails.
 - `events.rs` `build_event_snapshot`: skips `get_value`. The function is now
-  `pub(crate)` so the test can reach it.
+  `pub(crate)` so the test can reach it. Unlike the two above it still reads
+  the text when the role cannot be read; only `subscribe` reaches it, and the
+  consumer never subscribes.
 
 Known ceiling: an event subscription (`subscribe`) still receives AT-SPI
 `TextChanged` signal bodies, whose `any_data` can carry inserted text.
 `dispatch` drops it (`_any`), but zbus has already read the bytes. Not
 subscribing is the only way to avoid that.
 
+### P5: every D-Bus call has a reply timeout
+
+`connect_a11y_bus` builds both connections, the session bus (for
+`org.a11y.Bus.GetAddress`) and the AT-SPI bus, through `bounded()`, which sets
+zbus's `method_timeout` to `CALL_TIMEOUT` (5 s). Upstream set none, and zbus
+has no default: dbus-broker never times a call out and the a11y bus's
+dbus-daemon waits 300 s, so a frozen app parked the calling thread, and the
+walk's `rayon::join`/`par_iter` could park every pool thread with it. A call
+past the limit now fails like any other D-Bus error. `events.rs` subscriptions
+use the same function.
+
 ## New tests (`src/atspi.rs`, hermetic zbus p2p peers)
 
 - `p1_failed_action_probes_get_role_by_error_name`
 - `p2_select_without_an_action_uses_the_parents_selection`
 - `p3_set_value_is_one_call_and_honours_the_reply`
-- `p4_password_text_is_never_read`
+- `p4_password_text_is_never_read` (includes a field whose role cannot be read)
+- `p5_a_peer_that_never_replies_is_cut_off` (the test client is built through `bounded()` too)
 
 ## Checks after re-applying
 

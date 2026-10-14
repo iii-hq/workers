@@ -56,6 +56,17 @@ pub struct LinuxProvider {
     window_manager: WindowManager,
 }
 
+/// [P5] How long any D-Bus call on the session or AT-SPI bus may wait for its
+/// reply. zbus has no default, dbus-broker never times a call out and the
+/// a11y bus's dbus-daemon waits 300 s, so a frozen app would otherwise park
+/// the calling thread (and the rayon pool threads under it) indefinitely.
+pub(crate) const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// [P5] Build a connection whose method calls give up after [`CALL_TIMEOUT`].
+fn bounded(builder: zbus::blocking::connection::Builder<'_>) -> zbus::Result<Connection> {
+    builder.method_timeout(CALL_TIMEOUT).build()
+}
+
 /// AT-SPI2 accessible reference: (bus_name, object_path).
 #[derive(Debug, Clone)]
 pub(crate) struct AccessibleRef {
@@ -87,14 +98,16 @@ impl LinuxProvider {
                 message: format!("AT-SPI accessibility bus unavailable ({step}): {e}"),
             }
         }
-        let session = Connection::session().map_err(|e| a11y_bus_error("session bus", e))?;
+        let session = zbus::blocking::connection::Builder::session()
+            .and_then(bounded)
+            .map_err(|e| a11y_bus_error("session bus", e))?;
         let address: String = Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus")
             .and_then(|proxy| proxy.call("GetAddress", &()))
             .map_err(|e| a11y_bus_error("org.a11y.Bus.GetAddress", e))?;
         let address = zbus::Address::try_from(address.as_str())
             .map_err(|e| a11y_bus_error("bus address", e))?;
         zbus::blocking::connection::Builder::address(address)
-            .and_then(|builder| builder.build())
+            .and_then(bounded)
             .map_err(|e| a11y_bus_error("connect", e))
     }
 
@@ -689,9 +702,11 @@ impl LinuxProvider {
     /// property fetches are independent and run in parallel via rayon::join.
     fn build_element_data(&self, aref: &AccessibleRef, pid: Option<u32>) -> ElementData {
         let role_name = self.get_role_name(aref).unwrap_or_default();
-        let role_num = self.get_role_number(aref).unwrap_or(0);
-        // [P4] A password field's text never enters the process.
-        let secret = is_password_text(&role_name, role_num);
+        let role_num = self.get_role_number(aref).ok();
+        // [P4] A password field's text never enters the process. An unreadable
+        // numeric role fails closed, as in the selector fast path.
+        let secret = role_num.is_none_or(|n| is_password_text(&role_name, n));
+        let role_num = role_num.unwrap_or(0);
         let coarse_role = {
             let by_name = if !role_name.is_empty() {
                 map_atspi_role(&role_name)
@@ -4026,7 +4041,7 @@ mod tests {
         assert!(msg.contains("/org/a11y/atspi/accessible/3"), "{msg}");
     }
 
-    // ── Vendored patches P1-P4 (see PATCHES.md) ─────────────────────────────
+    // ── Vendored patches P1-P5 (see PATCHES.md) ─────────────────────────────
     //
     // One p2p peer per test. Each path serves only the interfaces its case
     // needs; a path that serves nothing answers `UnknownObject`, a served path
@@ -4062,10 +4077,10 @@ mod tests {
                 .build()
                 .expect("server connection")
         });
-        let connection = zbus::blocking::connection::Builder::async_io_unix_stream(client_socket)
-            .p2p()
-            .build()
-            .expect("client connection");
+        // The same builder as `connect_a11y_bus`, so P5's timeout is in play.
+        let connection =
+            bounded(zbus::blocking::connection::Builder::async_io_unix_stream(client_socket).p2p())
+                .expect("client connection");
         let server = server.join().expect("server thread");
         let provider = LinuxProvider {
             a11y_bus: connection,
@@ -4346,7 +4361,10 @@ mod tests {
     fn p4_password_text_is_never_read() {
         let secret_reads = Arc::new(AtomicUsize::new(0));
         let entry_reads = Arc::new(AtomicUsize::new(0));
-        let (password_text, unnamed_text, entry_text) = (
+        let (password_text, unnamed_text, unreadable_text, entry_text) = (
+            PatchText {
+                reads: secret_reads.clone(),
+            },
             PatchText {
                 reads: secret_reads.clone(),
             },
@@ -4361,7 +4379,7 @@ mod tests {
             peer.serve_at(
                 "/app",
                 PatchAccessible {
-                    children: vec!["/password", "/unnamed", "/entry"],
+                    children: vec!["/password", "/unnamed", "/unreadable", "/entry"],
                     ..PatchAccessible::new(75, "application")
                 },
             )?
@@ -4370,6 +4388,15 @@ mod tests {
             // No role name: the numeric role alone (raw "role_num:40") decides.
             .serve_at("/unnamed", PatchAccessible::new(40, ""))?
             .serve_at("/unnamed", unnamed_text)?
+            // Neither role readable (`GetRole` fails, no name): fails closed.
+            .serve_at(
+                "/unreadable",
+                PatchAccessible {
+                    role: None,
+                    ..PatchAccessible::new(0, "")
+                },
+            )?
+            .serve_at("/unreadable", unreadable_text)?
             .serve_at("/entry", PatchAccessible::new(79, "entry"))?
             .serve_at("/entry", entry_text)
         });
@@ -4380,6 +4407,9 @@ mod tests {
         let unnamed = provider.build_element_data(&peer_ref("/unnamed"), None);
         assert_eq!(unnamed.value, None);
         assert_eq!(unnamed.raw["atspi_role"], "role_num:40");
+        let unreadable = provider.build_element_data(&peer_ref("/unreadable"), None);
+        assert_eq!(unreadable.value, None);
+        assert_eq!(unreadable.raw["atspi_role"], "role_num:0");
         // Control: the same Text interface is read for an ordinary entry.
         let entry = provider.build_element_data(&peer_ref("/entry"), None);
         assert_eq!(entry.value.as_deref(), Some("hunter2"));
@@ -4399,5 +4429,23 @@ mod tests {
 
         assert_eq!(secret_reads.load(Ordering::SeqCst), 0);
         assert!(entry_reads.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    fn p5_a_peer_that_never_replies_is_cut_off() {
+        // Nothing served, so no object server: the peer reads every call and
+        // never answers, like a frozen app behind dbus-broker.
+        let (_server, provider) = patch_peer(Ok);
+        let started = std::time::Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(provider.get_role_number(&peer_ref("/frozen")));
+        });
+        // Backstop: without P5 this fails instead of hanging the run.
+        let reply = rx
+            .recv_timeout(CALL_TIMEOUT + std::time::Duration::from_secs(5))
+            .expect("the call never returned");
+        assert!(reply.is_err(), "{reply:?}");
+        assert!(started.elapsed() >= CALL_TIMEOUT, "{reply:?}");
     }
 }
