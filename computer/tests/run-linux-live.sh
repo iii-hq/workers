@@ -4,6 +4,7 @@
 # and locally. It never touches the caller's desktop, session bus or dconf:
 # everything runs inside dbus-run-session with GSETTINGS_BACKEND=memory (the
 # IsEnabled write below would otherwise persist toolkit-accessibility=true).
+# AT_SPI_BUS_ADDRESS is unset too: accesskit prefers it over the private bus.
 #
 #   tests/run-linux-live.sh                                   # everything
 #   tests/run-linux-live.sh --test semantic_live invoke_dispatches_exactly_once
@@ -16,6 +17,7 @@ cd "$(dirname "$0")/.."
 if [[ -z "${COMPUTER_LIVE_INSIDE:-}" ]]; then
   # A Wayland login would make the worker refuse X11 (by design).
   exec env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE -u DISPLAY \
+    -u AT_SPI_BUS_ADDRESS \
     GSETTINGS_BACKEND=memory COMPUTER_LIVE_INSIDE=1 \
     dbus-run-session -- "$0" "$@"
 fi
