@@ -34,11 +34,29 @@ The native driver does the work no guest does for it:
 - Downscale to `max_screenshot_dimension` and JPEG-encode at
   `screenshot_quality`. A full Retina frame is tens of megabytes of PNG; that
   floods both the model context and the live viewport.
-- Input maps back through the display's size and global origin as `xcap`
+- Input maps back through the display's size and global origin as the OS half
   reports them — **logical points on macOS, physical pixels on Windows** (the
-  process is per-monitor-v2 DPI aware) — the space `enigo` absolute
-  coordinates use, so a click on a scaled display lands where the model saw
-  it. Never multiply by `scale_factor()`.
+  process is per-monitor-v2 DPI aware) **and on Linux** (X11 root pixels:
+  RandR, GetImage and XTest share them) — the space that OS's input injection
+  uses, so a click on a scaled display lands where the model saw it. Never
+  multiply by a scale factor, and never click by AT-SPI bounds (GTK4 reports
+  (0,0) for every element).
+
+### Linux
+
+`detect()` decides once per session: `WAYLAND_DISPLAY` set, or an X server
+that advertises `XWAYLAND`, is a Wayland desktop (semantic-only driver); a
+plain X server gets the X11 driver; no display refuses the session. The X11
+driver keeps one connection per session, and every X call is bounded by 10 s,
+so a hung X server fails the call instead of wedging the session. Text is
+typed as keysyms; a character missing from the keyboard map is bound to a
+spare keycode for that call (per segment, as many distinct characters as
+there are free keycodes), with a 150 ms settle before typing and before
+restoring the map. A client that re-reads the map after the restore drops that
+character (xdotool's race), and the map is server-global: another client can
+compete for the same free keycodes. `type_text` turns Caps Lock off for the
+duration of the call and back on afterwards (it refuses when it cannot). Every
+press is released by a guard, error or not.
 
 The sandbox driver sidesteps all of it with one fixed virtual display: 1:1
 coordinates, no HiDPI, no multi-monitor ambiguity.
@@ -73,8 +91,8 @@ Observe walks breadth-first; find lets xa11y's matcher drive the same
 memoized, budgeted children closure (real providers mint a fresh handle on
 every fetch, so children are fetched once per parent). Walks are bounded by
 node count, absolute depth and a 5 s deadline. Secret values are dropped
-before the selector sees them (macOS `AXSecureTextField`; a password-like
-name everywhere), and selectors are restricted to normalized attribute names,
+before the selector sees them (macOS `AXSecureTextField`, the AT-SPI password role, and a password-like
+name everywhere; on Linux the vendored provider never even reads a password field's text), and selectors are restricted to normalized attribute names,
 because xa11y resolves unknown names against the unredacted `raw` map. On
 Windows the process is pinned to per-monitor-v2 DPI awareness before any
 capture, input or accessibility call.
@@ -97,6 +115,22 @@ capture, input or accessibility call.
   it read the reply, still discards the executor (conservative).
 - **Cancelled input.** A coordinate action cancelled mid-dispatch may still
   land after its invalidation bump and after `act_lock` is released.
+- **Wayland.** No screenshots, pointer or keyboard: text goes in only through
+  `set_value` (AT-SPI `EditableText`), so terminals and fields without it take
+  no text.
+- **No window manager.** On a bare X server (Xvfb/Xorg alone) a click does not
+  give keyboard focus, so toolkits that wait for focus (winit/AccessKit apps:
+  egui, Bevy, Slint) ignore typed keys; run a window manager.
+- **No gate on the accessibility bus.** Any process of the same user reads
+  and drives every app's tree; redaction by role and name covers passwords,
+  and there is no app allowlist.
+- **IsEnabled on at-spi2-core ≥ 2.61** falls back to false when the last
+  listener (e.g. Orca) leaves; the warning reappears on the next `list`.
+- **Flatpak.** An app behind `xdg-dbus-proxy` may report the proxy's pid, so
+  `app_pid` scoping can miss it (unverified).
+- **Per-snapshot cost on Linux.** Every snapshot builds a provider (two D-Bus
+  connections and an X one): about 32 ms per find attempt, measured in the e2e
+  (`snapshot_cost_is_measured`).
 
 ## Durability and the screencast
 

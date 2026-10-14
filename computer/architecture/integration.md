@@ -27,7 +27,7 @@ contract: screenshot, read a position off the image, act on it. After anything
 that changes the screen, screenshot again before acting — a stale coordinate is
 a click somewhere else.
 
-**By ref** (native macOS/Windows sessions): `invoke`, `set_value` (`text`),
+**By ref** (native sessions): `invoke`, `set_value` (`text`),
 `toggle`, `select`, on a ref from `observe` (with `include_a11y`) or `find`.
 Refusals come back as errors with a stable code — `invalid_input`,
 `invalid_selector`, `stale_ref`, `not_supported`, `busy`,
@@ -46,7 +46,12 @@ All native sessions share one desktop: a coordinate or keyboard action on any
 of them kills the refs of all of them. On Windows
 `invoke` falls through Invoke → Toggle → Select → ExpandCollapse.
 `sessions::start` and `sessions::list` report `semantic: { supported,
-reason? }` per session. Remote and sandbox sessions no longer return a tree:
+reason? }` per session.
+They also report `coordinates: { supported, reason? }`: false only on a native
+Linux session on Wayland, where every screenshot and coordinate action
+(including `type`, `press`, `hotkey` and the console screencast) is refused
+with `unsupported_session`. On a native Linux session `semantic.reason` can be
+set while `supported` is true: a warning that accessibility is off. Remote and sandbox sessions no longer return a tree:
 `observe` with `include_a11y` appends
 `a11y tree unavailable: unsupported_session` (or fails with that code when
 `include_image` is false).

@@ -47,6 +47,20 @@ wallpaper with all windows stripped) and **Accessibility** (without it clicks an
 typing are dropped) in System Settings > Privacy & Security, then restart it. The
 sandbox driver needs neither.
 
+**Linux, native driver.** On an X11 session (Xorg or Xvfb) a native session
+captures and acts by coordinate like macOS/Windows; coordinates are physical
+root pixels. Run a window manager: on a bare X server a click gives no keyboard
+focus, so toolkits that wait for focus (egui, Bevy, Slint) ignore typed keys.
+On a Wayland desktop (GNOME and KDE default to it) the session is
+semantic-only: `sessions::start` reports `coordinates: { supported: false }`,
+`screen` is 0x0, screenshots and coordinate actions are refused with
+`unsupported_session`, and you read and act by ref. Ref actions need the
+AT-SPI bus; when accessibility is off, `semantic.reason` carries a warning
+with the command that turns it on for the login session (`gdbus call … IsEnabled
+'<true>'`). The worker never runs it itself: it also persists
+`toolkit-accessibility=true` in dconf. Chromium/Electron apps also need
+`--force-renderer-accessibility`.
+
 ## Quickstart
 
 Start a session, look at the screen, click what you see:
@@ -119,7 +133,7 @@ tool. A sandboxed desktop is reached with `sandbox::exec` / `sandbox::fs`, and
 a remote one through its own guest executor — `shell` would run on the host
 instead, which is a different machine entirely.
 
-On a native macOS or Windows session the worker also acts **by element**:
+On a native session the worker also acts **by element**:
 `computer::observe { include_a11y: true, include_image: false }` or
 `computer::find { selector: "button[name='Save']" }` return lines carrying
 `[ref=…]`, and `computer::act { action: "invoke" | "set_value" | "toggle" |
@@ -133,7 +147,8 @@ crashed accessibility call resets the session's executor, or the session
 stops or the worker restarts. macOS needs Accessibility **and** Screen
 Recording for the process running the worker. On Windows a password field's
 value is hidden only when its name looks like a password (or the app itself
-masks it): xa11y does not expose UIA's `IsPassword`. Remote and sandbox
+masks it): xa11y does not expose UIA's `IsPassword`. On Linux a password field
+is recognised by its AT-SPI role, whatever its name. Remote and sandbox
 sessions stay coordinate-only.
 
 ## Console
