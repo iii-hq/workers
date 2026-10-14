@@ -192,8 +192,15 @@ const SECRET_PARTS: &[&str] = &[
 const SECRET_WORDS: &[&str] = &["pin", "senha"];
 
 pub fn is_secret(el: &ElementData) -> bool {
-    let secure = |key: &str| el.raw.get(key).and_then(|v| v.as_str()) == Some("AXSecureTextField");
-    if secure("ax_role") || secure("ax_subrole") {
+    let raw = |key: &str| el.raw.get(key).and_then(|v| v.as_str());
+    // macOS secure fields by role/subrole; AT-SPI PASSWORD_TEXT by its role
+    // name (GTK, Qt) or xa11y's numeric fallback (AccessKit), which xa11y
+    // maps to a plain text field.
+    if raw("ax_role") == Some("AXSecureTextField")
+        || raw("ax_subrole") == Some("AXSecureTextField")
+        || raw("atspi_role")
+            .is_some_and(|r| r.eq_ignore_ascii_case("password text") || r == "role_num:40")
+    {
         return true;
     }
     let Some(name) = el.name.as_deref() else {
@@ -222,8 +229,9 @@ pub fn is_secret(el: &ElementData) -> bool {
 pub fn redact(el: &mut ElementData) {
     if is_secret(el) {
         el.value = None;
-        el.raw.remove("AXValue");
-        el.raw.remove("uia_value");
+        for key in ["AXValue", "uia_value", "atspi_value"] {
+            el.raw.remove(key);
+        }
     }
 }
 
@@ -339,6 +347,33 @@ mod tests {
             .map(|e| e.name.unwrap())
             .collect();
         assert_eq!(names, vec!["Salvar alterações", "Doc"]);
+    }
+
+    #[test]
+    fn atspi_password_roles_are_secret_whatever_the_name() {
+        // AT-SPI PASSWORD_TEXT reaches us as a plain text field: the role
+        // name where the bridge serves GetRoleName (GTK, Qt), xa11y's numeric
+        // fallback where it does not (AccessKit).
+        for role in ["password text", "Password Text", "role_num:40"] {
+            let mut e = ElementData::for_role(Role::TextField);
+            e.name = Some("Código".into());
+            e.value = Some("hunter2".into());
+            e.raw.insert("atspi_role".into(), role.into());
+            e.raw.insert("atspi_value".into(), "hunter2".into());
+            redact(&mut e);
+            assert_eq!(e.value, None, "{role}");
+            assert!(!e.raw.contains_key("atspi_value"), "{role}");
+            // Copies of name and role stay: they are not the secret.
+            assert!(e.raw.contains_key("atspi_role"), "{role}");
+        }
+        let mut plain = ElementData::for_role(Role::TextField);
+        plain.name = Some("Código".into());
+        plain.value = Some("x".into());
+        plain.raw.insert("atspi_role".into(), "text".into());
+        plain.raw.insert("atspi_value".into(), "x".into());
+        redact(&mut plain);
+        assert_eq!(plain.value.as_deref(), Some("x"));
+        assert!(plain.raw.contains_key("atspi_value"));
     }
 
     #[test]

@@ -129,6 +129,12 @@ mod tests {
             code("button[name='OK'], [bounds*='1']"),
             Some(Code::InvalidSelector)
         );
+        // AT-SPI keeps its raw value and role too.
+        assert_eq!(code("[atspi_value^='a']"), Some(Code::InvalidSelector));
+        assert_eq!(
+            code("text_field[atspi_role='password text']"),
+            Some(Code::InvalidSelector)
+        );
         let msg = parse_selector("[uia_value='a']").unwrap_err().message;
         assert!(
             msg.contains("name, value"),
