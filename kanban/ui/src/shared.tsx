@@ -1,4 +1,6 @@
-import type { ExtensionIii } from '@iii-dev/console-ui'
+import { Chip, type ExtensionIii } from '@iii-dev/console-ui'
+import { ChartPie, Circle, CircleCheck, CircleDashed, Contrast } from 'lucide-react'
+import { useSyncExternalStore } from 'react'
 
 export type Column = { id: string; label: string }
 
@@ -81,6 +83,9 @@ export type AgentProfile = {
   model: string | null
 }
 
+/** `kanban::ticket::links`: tickets this one mentions by key, and tickets whose text mentions it. */
+export type TicketLinks = { mentions: TicketSummary[]; mentioned_by: TicketSummary[] }
+
 export type ConfigInfo = {
   configuration_id: string
   data_path: string
@@ -118,19 +123,19 @@ export const api = {
     iii.trigger<Ticket>('kanban::ticket::create', payload),
   update: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<Ticket>('kanban::ticket::update', payload),
-  move: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::move', payload),
+  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.trigger<Ticket>('kanban::ticket::move', payload),
   remove: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<Ticket>('kanban::ticket::delete', payload),
   restore: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<Ticket>('kanban::ticket::restore', payload),
   comment: (iii: ExtensionIii, payload: Record<string, unknown>) =>
     iii.trigger<{ comment: Comment; ticket: Ticket }>('kanban::comment::create', payload),
+  links: (iii: ExtensionIii, id: string) => iii.trigger<TicketLinks>('kanban::ticket::links', { id }),
 }
 
 type Listener = (event: ChangeEvent) => void
 
-let hubListeners = new Set<Listener>()
+const hubListeners = new Set<Listener>()
 let hubTeardown: (() => void) | null = null
 
 function hubInit(iii: ExtensionIii): void {
@@ -167,26 +172,38 @@ export function subscribeChanges(iii: ExtensionIii, listener: Listener): () => v
   }
 }
 
+/* ── own writes ───────────────────────────────────────────────────────── */
+
+const ownWrites = new Map<string, string>()
+const ownListeners = new Set<() => void>()
+let ownVersion = 0
+
 /**
- * Apply one ticket event to the board columns. The worker renumbers a whole
- * column on every move, but an event carries only the moved ticket, so the
- * card is spliced in at its 1-based `order` and both columns are renumbered
- * locally — the same layout the next `kanban::board::get` would return.
+ * The newest `updated_at` this browser tab got back from a write of its own,
+ * per ticket id. A ticket that has not changed since is the user's own edit,
+ * so it never counts as "changed since your last visit"; a later edit by an
+ * agent does.
  */
-export function upsertSummary(columns: BoardColumn[], summary: TicketSummary): BoardColumn[] {
-  const renumber = (tickets: TicketSummary[]) => tickets.map((ticket, index) => ({ ...ticket, order: index + 1 }))
-  const stripped = columns.map((column) => ({
-    ...column,
-    tickets: renumber(column.tickets.filter((ticket) => ticket.id !== summary.id)),
-  }))
-  if (summary.deleted_at) return stripped
-  return stripped.map((column) => {
-    if (column.id !== summary.status) return column
-    const tickets = [...column.tickets]
-    const position = Math.max(0, Math.min(summary.order - 1, tickets.length))
-    tickets.splice(position, 0, summary)
-    return { ...column, tickets: renumber(tickets) }
-  })
+export const OWN_WRITES: ReadonlyMap<string, string> = ownWrites
+
+/** Record a write this tab made (the ticket as the server returned it). */
+export function noteOwnWrite(ticket: { id: string; updated_at: string }): void {
+  const known = ownWrites.get(ticket.id)
+  if (known !== undefined && Date.parse(known) >= Date.parse(ticket.updated_at)) return
+  ownWrites.set(ticket.id, ticket.updated_at)
+  ownVersion += 1
+  for (const listener of ownListeners) listener()
+}
+
+/** Re-render when an own write is recorded; the value only changes to say so. */
+export function useOwnWritesVersion(): number {
+  return useSyncExternalStore(
+    (listener) => {
+      ownListeners.add(listener)
+      return () => ownListeners.delete(listener)
+    },
+    () => ownVersion,
+  )
 }
 
 export function summarizeTicket(ticket: Ticket): TicketSummary {
@@ -221,3 +238,52 @@ export function priorityTone(priority: string): 'neutral' | 'warning' | 'danger'
   return PRIORITY_TONE[priority] ?? 'neutral'
 }
 
+/** Display text for a configured priority value (`high` → `High`). */
+export function priorityLabel(priority: string): string {
+  return priority ? priority.charAt(0).toUpperCase() + priority.slice(1) : priority
+}
+
+export type StatusTone = 'ghost' | 'faint' | 'ink' | 'warn' | 'ok'
+
+/**
+ * The glyph for a column, by its position, since columns are configurable:
+ * first = not started (dashed), last = done (check, ok), the one before last
+ * on boards of 4+ = review (pie, warn), second on 4+ = ready (circle), the
+ * rest = in progress (half, ink — accent is reserved for live state).
+ */
+export function statusGlyph(columns: Column[], status: string) {
+  const i = columns.findIndex((column) => column.id === status)
+  const n = columns.length
+  if (i < 0) return { Icon: Circle, tone: 'ghost' as StatusTone }
+  if (i === 0) return { Icon: CircleDashed, tone: 'ghost' as StatusTone }
+  if (i === n - 1) return { Icon: CircleCheck, tone: 'ok' as StatusTone }
+  if (n >= 4 && i === n - 2) return { Icon: ChartPie, tone: 'warn' as StatusTone }
+  if (n >= 4 && i === 1) return { Icon: Circle, tone: 'faint' as StatusTone }
+  return { Icon: Contrast, tone: 'ink' as StatusTone }
+}
+
+export function StatusGlyph({ columns, status }: { columns: Column[]; status: string }) {
+  const { Icon, tone } = statusGlyph(columns, status)
+  return (
+    <span aria-hidden="true" className="kanban-status-glyph" data-tone={tone}>
+      <Icon size={16} />
+    </span>
+  )
+}
+
+/**
+ * A priority as a Chip: a tone dot on a muted tint, the word in ink. The most
+ * urgent configured priority (last in config order) is alert, the next warn,
+ * the rest neutral.
+ */
+export function PriorityChip({ priority, priorities }: { priority: string; priorities: string[] }) {
+  const index = priorities.indexOf(priority)
+  const fromTop = index < 0 ? -1 : priorities.length - 1 - index
+  const tone = fromTop === 0 ? 'alert' : fromTop === 1 ? 'warn' : 'neutral'
+  return (
+    <Chip className="kanban-priority" data-tone={tone}>
+      <span aria-hidden="true" className="kanban-priority__dot" />
+      {priorityLabel(priority)}
+    </Chip>
+  )
+}

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "check": "node filters.check.ts && node board-state.check.ts && node ticket-links.check.ts"
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*"

@@ -1,0 +1,444 @@
+[data-iii-ui="kanban"] .kanban-list {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+[data-iii-ui="kanban"] .kanban-list__empty {
+  padding: 16px 14px;
+}
+
+/* The viewport is the scroller, so the sticky header and the bar share one frame. */
+[data-iii-ui="kanban"] .kanban-list__viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-bar] .kanban-list__viewport {
+  padding-bottom: 88px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__table {
+  min-width: 1000px;
+  table-layout: fixed;
+}
+
+/* Header */
+
+[data-iii-ui="kanban"] .kanban-list__table .kanban-list__headrow {
+  border-bottom: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 36px;
+  padding: 0 8px;
+  background: var(--color-panel);
+  box-shadow: inset 0 -1px 0 var(--color-edge);
+  vertical-align: middle;
+  font-weight: 500;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head--select {
+  width: 44px;
+  padding: 0;
+  text-align: center;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head--key {
+  width: 88px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head--status {
+  width: 136px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head--priority {
+  width: 112px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head--assignee {
+  width: 168px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head--updated {
+  width: 104px;
+  text-align: right;
+}
+
+/* Pull the button's padding back so the label lines up with the cells below. */
+[data-iii-ui="kanban"] .kanban-list__sort {
+  margin-left: -8px;
+  padding: 0 8px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__head--updated .kanban-list__sort {
+  margin-right: -8px;
+  margin-left: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__sort[data-active] {
+  color: var(--color-ink);
+}
+
+/* Groups and rows */
+
+[data-iii-ui="kanban"] .kanban-list__group {
+  height: 36px;
+  padding: 0 12px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  vertical-align: middle;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-iii-ui="kanban"] .kanban-list__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-list__cell {
+  height: 44px;
+  padding: 0 8px;
+  overflow: hidden;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kanban-list__cell--select {
+  padding: 0;
+  text-align: center;
+}
+
+[data-iii-ui="kanban"] .kanban-list__cell--end {
+  font-size: 11px;
+  text-align: right;
+}
+
+[data-iii-ui="kanban"] .kanban-list__mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-list__box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__box--end {
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__box > svg {
+  flex: none;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-list__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-iii-ui="kanban"] .kanban-list__faint {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-list__title {
+  flex: 0 1 auto;
+  min-width: 96px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+[data-iii-ui="kanban"] .kanban-list__title:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__chip {
+  flex: none;
+}
+
+[data-iii-ui="kanban"] .kanban-list__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-list__dot[data-tone="alert"] {
+  background: var(--color-alert);
+}
+
+[data-iii-ui="kanban"] .kanban-list__dot[data-tone="warn"] {
+  background: var(--color-warn);
+}
+
+[data-iii-ui="kanban"] .kanban-list__dot[data-tone="faint"] {
+  background: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-list__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Bulk bar */
+
+[data-iii-ui="kanban"] .kanban-list__bar {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  height: 44px;
+  padding: 0 6px 0 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-floating), 0 0 0 1px var(--color-edge);
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kanban-list__bar > * {
+  flex: none;
+}
+
+[data-iii-ui="kanban"] .kanban-list__summary {
+  padding-right: 8px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A bulk menu button stays pressed while its menu is open, like the filter triggers. */
+[data-iii-ui="kanban"] .kanban-list__menu[data-state="open"] {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="kanban"] .kanban-list__delete[data-highlighted] {
+  color: var(--color-alert);
+}
+
+[data-iii-ui="kanban"] .kanban-list__clear {
+  margin-left: 4px;
+}
+
+/* Bulk menus (portalled, still under the worker scope) */
+
+[data-iii-ui="kanban"] .kanban-list__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__labels {
+  width: 300px;
+  max-width: calc(100vw - 16px);
+}
+
+[data-iii-ui="kanban"] .kanban-list__find {
+  padding: 4px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__scroll {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+[data-iii-ui="kanban"] .kanban-list__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kanban-list__coverage {
+  padding-left: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-list__hint {
+  margin: 0;
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="kanban"] .kanban-list__item[data-narrow] {
+  min-height: 44px;
+}
+
+/* Hover only where a pointer can hover: on touch it would stay lit after the tap. */
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kanban-list__row:not([data-selected]):hover {
+    background: var(--color-surface-hover);
+  }
+
+  [data-iii-ui="kanban"] .kanban-list__title:hover {
+    text-decoration: underline;
+  }
+
+  [data-iii-ui="kanban"] .kanban-list__delete:hover {
+    color: var(--color-alert);
+  }
+}
+
+/* Narrow: no table. A tools strip (select all, sort) over status groups of list rows; a bar that fits the pane. */
+
+[data-iii-ui="kanban"] .kanban-list__tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 8px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__caption {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-list__sort-select {
+  flex: 1;
+  min-height: 44px;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__viewport {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px 8px;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow][data-bar] .kanban-list__viewport {
+  padding-bottom: 72px;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__viewport > * {
+  flex: none;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__check {
+  min-width: 44px;
+  min-height: 44px;
+  justify-content: center;
+}
+
+/* The checkbox is the left 44px of the row; the title's hit area covers the rest of it. */
+[data-iii-ui="kanban"] .kanban-list__ticket {
+  gap: 4px;
+  padding: 6px 12px 6px 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__ticket .kanban-list__check {
+  position: relative;
+  z-index: 1;
+}
+
+[data-iii-ui="kanban"] .kanban-list__ticket .kanban-list__title {
+  display: -webkit-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+[data-iii-ui="kanban"] .kanban-list__ticket .kanban-list__title::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+[data-iii-ui="kanban"] .kanban-list__ticket .kanban-list__title:focus-visible {
+  outline: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__ticket .kanban-list__title:focus-visible::after {
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+/* The shared row lights on :hover; on touch that sticks after a tap. */
+@media (hover: none) {
+  [data-iii-ui="kanban"] .kanban-list__ticket:not([data-selected="true"]):hover {
+    background: transparent;
+  }
+}
+
+/* The bar spans the pane: the summary gives way, the four controls never scroll away. */
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__bar {
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  gap: 2px;
+  height: 48px;
+  padding: 0 2px 0 12px;
+  transform: none;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__bar > .kanban-list__summary {
+  flex: 1;
+  min-width: 0;
+  padding-right: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__bar > button {
+  padding: 0 10px;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__bar > .kanban-list__more,
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__bar > .kanban-list__clear {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}

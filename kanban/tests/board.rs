@@ -4,8 +4,8 @@
 use iii_kanban::board::{
     ActivityFilter, BoardContext, CommentFilter, CreateCommentInput, CreateTicketInput,
     TicketFilter, UpdatePatch, create_comment, create_ticket, delete_ticket, find_ticket,
-    list_activity, list_comments, list_tickets, move_ticket, restore_ticket, summarize,
-    update_ticket,
+    list_activity, list_comments, list_tickets, move_ticket, next_at, restore_ticket, summarize,
+    ticket_links, update_ticket,
 };
 use iii_kanban::config::{Column, KanbanConfig, normalize};
 use iii_kanban::events::{
@@ -14,7 +14,7 @@ use iii_kanban::events::{
 };
 use iii_kanban::functions::{
     self, BoardGetInput, BoardView, CommentCreateInput, ConfigInfo, TicketCreateInput,
-    TicketUpdateInput, board_view,
+    TicketUpdateInput, board_view, ticket_outcome,
 };
 use iii_kanban::store::{Board, Comment, Ticket, read_board, write_board};
 use serde_json::{Value, json};
@@ -322,6 +322,442 @@ fn a_soft_delete_leaves_the_row_on_the_board_and_can_be_restored() {
     assert_eq!(restored.deleted_at, None);
     assert_eq!(list_tickets(&board, &TicketFilter::default()).len(), 1);
     assert_eq!(restored.activity.last().unwrap().kind, "ticket.restored");
+}
+
+#[test]
+fn deleting_a_deleted_ticket_and_restoring_a_live_one_change_nothing() {
+    let mut board = Board::empty();
+    let created = create_ticket(&mut board, &titled("Twice"), &context(), &at(1)).unwrap();
+
+    let live = ticket(&board, &created.id);
+    let restored_live = restore_ticket(&mut board, &created.id, "user", &at(2)).unwrap();
+    assert_eq!(restored_live, live, "restoring a live ticket is a no-op");
+    assert!(
+        ticket_outcome(Some(live), Some(restored_live))
+            .ticket
+            .is_none(),
+        "no ticket.restored event for a no-op"
+    );
+
+    let deleted = delete_ticket(&mut board, &created.id, "user", &at(3)).unwrap();
+    let again = delete_ticket(&mut board, &created.id, "user", &at(4)).unwrap();
+    assert_eq!(
+        again, deleted,
+        "deleting twice keeps deleted_at, updated_at and the timeline"
+    );
+    assert_eq!(again.deleted_at.as_deref(), Some(at(3).as_str()));
+    assert!(
+        ticket_outcome(Some(deleted), Some(again)).ticket.is_none(),
+        "no ticket.deleted event for a no-op"
+    );
+}
+
+#[test]
+fn the_change_event_fans_out_only_when_the_ticket_changed() {
+    let mut board = Board::empty();
+    let created = create_ticket(&mut board, &titled("Events"), &context(), &at(1)).unwrap();
+    let deleted = delete_ticket(&mut board, &created.id, "user", &at(2)).unwrap();
+
+    let changed = ticket_outcome(Some(created.clone()), Some(deleted.clone()));
+    assert_eq!(changed.ticket.as_ref(), Some(&deleted));
+    assert_eq!(changed.result.as_ref(), Some(&deleted));
+
+    let unchanged = ticket_outcome(Some(deleted.clone()), Some(deleted.clone()));
+    assert!(unchanged.ticket.is_none(), "same ticket, no event");
+    assert_eq!(
+        unchanged.result.as_ref(),
+        Some(&deleted),
+        "the caller still gets the ticket"
+    );
+
+    let missing = ticket_outcome(None, None);
+    assert!(missing.ticket.is_none() && missing.result.is_none());
+}
+
+#[test]
+fn moving_a_ticket_to_where_it_already_is_changes_nothing() {
+    let mut board = Board::empty();
+    for title in ["A", "B", "C"] {
+        create_ticket(&mut board, &titled(title), &context(), &at(1)).unwrap();
+    }
+    let before = board.clone();
+    for (key, index) in [
+        ("KAN-2", Some(1)),
+        ("KAN-1", Some(0)),
+        ("KAN-3", None),
+        ("KAN-3", Some(99)),
+    ] {
+        let moved = move_ticket(
+            &mut board,
+            key,
+            "backlog",
+            index,
+            Some("agent"),
+            &context(),
+            &at(9),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            moved,
+            ticket(&before, key),
+            "{key} at {index:?}: ticket unchanged"
+        );
+        assert!(
+            ticket_outcome(Some(ticket(&before, key)), Some(moved))
+                .ticket
+                .is_none(),
+            "{key} at {index:?}: no ticket.moved event"
+        );
+        assert_eq!(
+            board.tickets, before.tickets,
+            "{key} at {index:?}: board untouched"
+        );
+    }
+
+    // A real reorder still counts.
+    let moved = move_ticket(
+        &mut board,
+        "KAN-3",
+        "backlog",
+        Some(0),
+        None,
+        &context(),
+        &at(10),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(moved.order, 1);
+    assert_eq!(moved.updated_at, at(10));
+    assert!(
+        ticket_outcome(Some(ticket(&before, "KAN-3")), Some(moved))
+            .ticket
+            .is_some()
+    );
+}
+
+#[test]
+fn a_deleted_ticket_cannot_be_moved_until_it_is_restored() {
+    let mut board = Board::empty();
+    let created = create_ticket(&mut board, &titled("Gone"), &context(), &at(1)).unwrap();
+    delete_ticket(&mut board, &created.id, "user", &at(2)).unwrap();
+    let before = board.clone();
+
+    let error = move_ticket(
+        &mut board,
+        &created.key,
+        "done",
+        None,
+        None,
+        &context(),
+        &at(3),
+    )
+    .unwrap_err();
+    assert_eq!(error, "cannot move a deleted ticket");
+    assert_eq!(
+        board.tickets, before.tickets,
+        "a rejected move leaves the board alone"
+    );
+
+    restore_ticket(&mut board, &created.id, "user", &at(4)).unwrap();
+    let moved = move_ticket(
+        &mut board,
+        &created.key,
+        "done",
+        None,
+        None,
+        &context(),
+        &at(5),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(moved.status, "done");
+}
+
+#[test]
+fn a_deleted_ticket_takes_other_edits_but_not_a_status_change() {
+    let mut board = Board::empty();
+    let created = create_ticket(&mut board, &titled("Gone"), &context(), &at(1)).unwrap();
+    delete_ticket(&mut board, &created.id, "user", &at(2)).unwrap();
+    let before = board.clone();
+
+    let status = UpdatePatch {
+        status: Some("done".into()),
+        ..UpdatePatch::default()
+    };
+    let error = update_ticket(
+        &mut board,
+        &created.key,
+        &status,
+        "user",
+        &context(),
+        &at(3),
+    )
+    .unwrap_err();
+    assert_eq!(error, "cannot move a deleted ticket");
+    assert_eq!(
+        board.tickets, before.tickets,
+        "a rejected status change leaves the board alone"
+    );
+
+    // Annotating still works, and so does naming the column it is already in.
+    let annotate = UpdatePatch {
+        title: Some("Gone, noted".into()),
+        status: Some(created.status.clone()),
+        ..UpdatePatch::default()
+    };
+    let updated = update_ticket(
+        &mut board,
+        &created.key,
+        &annotate,
+        "agent",
+        &context(),
+        &at(4),
+    )
+    .unwrap()
+    .unwrap()
+    .ticket;
+    assert_eq!(updated.title, "Gone, noted");
+    assert_eq!(updated.status, created.status);
+
+    restore_ticket(&mut board, &created.id, "user", &at(5)).unwrap();
+    let updated = update_ticket(
+        &mut board,
+        &created.key,
+        &status,
+        "user",
+        &context(),
+        &at(6),
+    )
+    .unwrap()
+    .unwrap()
+    .ticket;
+    assert_eq!(updated.status, "done");
+}
+
+#[test]
+fn writes_in_the_same_millisecond_get_strictly_increasing_timestamps() {
+    // 2026-01-01T00:00:00.000Z, the clock frozen for every write below.
+    const FROZEN: i64 = 1_767_225_600_000;
+    let mut board = Board::empty();
+
+    let first = next_at(&board, FROZEN);
+    assert_eq!(
+        first, "2026-01-01T00:00:00.000Z",
+        "an empty board follows the clock"
+    );
+    let created = create_ticket(&mut board, &titled("A"), &context(), &first).unwrap();
+
+    let mut stamps = vec![first];
+    for title in ["B", "C", "D"] {
+        let write = next_at(&board, FROZEN);
+        let patch = UpdatePatch {
+            title: Some(title.into()),
+            ..UpdatePatch::default()
+        };
+        let updated = update_ticket(&mut board, &created.key, &patch, "user", &context(), &write)
+            .unwrap()
+            .unwrap()
+            .ticket;
+        assert_eq!(updated.updated_at, write);
+        assert_eq!(
+            updated.activity.last().map(|entry| entry.at.as_str()),
+            Some(write.as_str()),
+            "the activity entry carries the write's timestamp"
+        );
+        stamps.push(write);
+    }
+    assert!(
+        stamps.windows(2).all(|pair| pair[0] < pair[1]),
+        "strictly increasing: {stamps:?}"
+    );
+    assert_eq!(stamps[3], "2026-01-01T00:00:00.003Z");
+
+    // A write to another ticket must not reuse an instant either, and a clock
+    // stepped back keeps moving forward.
+    let other = next_at(&board, FROZEN - 5_000);
+    assert_eq!(other, "2026-01-01T00:00:00.004Z");
+    // A later clock is taken as is.
+    assert_eq!(next_at(&board, FROZEN + 10_000), "2026-01-01T00:00:10.000Z");
+}
+
+fn labelled(board: &mut Board, labels: &[&str]) -> Ticket {
+    let input = CreateTicketInput {
+        labels: Some(labels.iter().map(|label| label.to_string()).collect()),
+        ..titled("Labelled")
+    };
+    create_ticket(board, &input, &context(), &at(1)).unwrap()
+}
+
+fn relabel(board: &mut Board, patch: UpdatePatch, second: u32) -> iii_kanban::board::UpdateResult {
+    update_ticket(board, "KAN-1", &patch, "agent", &context(), &at(second))
+        .unwrap()
+        .unwrap()
+}
+
+fn strings(values: &[&str]) -> Option<Vec<String>> {
+    Some(values.iter().map(|value| value.to_string()).collect())
+}
+
+#[test]
+fn add_and_remove_labels_edit_the_current_labels_instead_of_replacing_them() {
+    let mut board = Board::empty();
+    labelled(&mut board, &["Bug", "ui"]);
+
+    // Two writers that both read ["Bug", "ui"]: neither overwrites the other.
+    relabel(
+        &mut board,
+        UpdatePatch {
+            add_labels: strings(&["api"]),
+            ..UpdatePatch::default()
+        },
+        2,
+    );
+    let both = relabel(
+        &mut board,
+        UpdatePatch {
+            add_labels: strings(&["  perf ", "", "   "]),
+            ..UpdatePatch::default()
+        },
+        3,
+    );
+    assert_eq!(both.ticket.labels, ["Bug", "ui", "api", "perf"]);
+    assert_eq!(
+        serde_json::to_value(&both.changes).unwrap(),
+        json!([{ "field": "labels", "from": ["Bug", "ui", "api"], "to": ["Bug", "ui", "api", "perf"] }])
+    );
+    assert_eq!(both.ticket.updated_at, at(3));
+    assert_eq!(both.ticket.activity.last().unwrap().kind, "ticket.updated");
+
+    let removed = relabel(
+        &mut board,
+        UpdatePatch {
+            remove_labels: strings(&["UI", " PERF ", "missing"]),
+            ..UpdatePatch::default()
+        },
+        4,
+    );
+    assert_eq!(removed.ticket.labels, ["Bug", "api"]);
+}
+
+#[test]
+fn add_labels_skips_a_label_already_present_in_any_ascii_case() {
+    let mut board = Board::empty();
+    labelled(&mut board, &["Bug"]);
+    let added = relabel(
+        &mut board,
+        UpdatePatch {
+            add_labels: strings(&["bug", "BUG", "Feature", "feature"]),
+            ..UpdatePatch::default()
+        },
+        2,
+    );
+    assert_eq!(
+        added.ticket.labels,
+        ["Bug", "Feature"],
+        "first spelling wins"
+    );
+}
+
+#[test]
+fn labels_then_remove_then_add_apply_in_that_order() {
+    let mut board = Board::empty();
+    labelled(&mut board, &["old"]);
+    let result = relabel(
+        &mut board,
+        UpdatePatch {
+            labels: strings(&["a", "b", "c"]),
+            remove_labels: strings(&["B", "x"]),
+            add_labels: strings(&["b", "d"]),
+            ..UpdatePatch::default()
+        },
+        2,
+    );
+    assert_eq!(result.ticket.labels, ["a", "c", "b", "d"]);
+    assert_eq!(
+        serde_json::to_value(&result.changes).unwrap(),
+        json!([{ "field": "labels", "from": ["old"], "to": ["a", "c", "b", "d"] }])
+    );
+}
+
+#[test]
+fn a_label_patch_that_changes_nothing_records_nothing() {
+    let mut board = Board::empty();
+    let created = labelled(&mut board, &["bug", "ui"]);
+    for patch in [
+        UpdatePatch {
+            add_labels: strings(&["BUG", " ui ", ""]),
+            ..UpdatePatch::default()
+        },
+        UpdatePatch {
+            remove_labels: strings(&["nope", " "]),
+            ..UpdatePatch::default()
+        },
+        UpdatePatch {
+            add_labels: strings(&[]),
+            remove_labels: strings(&[]),
+            ..UpdatePatch::default()
+        },
+        UpdatePatch {
+            labels: strings(&["bug", "ui"]),
+            ..UpdatePatch::default()
+        },
+        UpdatePatch {
+            labels: strings(&["bug", "ui"]),
+            add_labels: strings(&["Ui"]),
+            ..UpdatePatch::default()
+        },
+    ] {
+        let result = relabel(&mut board, patch.clone(), 9);
+        assert!(result.changes.is_empty(), "{patch:?}");
+        assert_eq!(
+            result.ticket, created,
+            "{patch:?}: updated_at and timeline untouched"
+        );
+        assert!(
+            ticket_outcome(Some(created.clone()), Some(result.ticket))
+                .ticket
+                .is_none(),
+            "{patch:?}: no ticket.updated event"
+        );
+    }
+}
+
+#[test]
+fn labels_are_deduplicated_ignoring_case_keeping_the_first_spelling() {
+    let mut board = Board::empty();
+    let created = labelled(&mut board, &["bug", "Bug", " bug ", "feature", "BUG"]);
+    assert_eq!(created.labels, ["bug", "feature"]);
+    let result = relabel(
+        &mut board,
+        UpdatePatch {
+            labels: strings(&["Docs", "docs", "bug", "BUG"]),
+            ..UpdatePatch::default()
+        },
+        2,
+    );
+    assert_eq!(result.ticket.labels, ["Docs", "bug"]);
+}
+
+#[test]
+fn update_input_accepts_add_labels_and_remove_labels() {
+    let input: TicketUpdateInput = serde_json::from_value(
+        json!({ "id": "KAN-1", "add_labels": ["a"], "remove_labels": ["b", "c"] }),
+    )
+    .unwrap();
+    assert_eq!(input.add_labels, strings(&["a"]));
+    assert_eq!(input.remove_labels, strings(&["b", "c"]));
+    let absent: TicketUpdateInput = serde_json::from_value(json!({ "id": "KAN-1" })).unwrap();
+    assert!(absent.add_labels.is_none() && absent.remove_labels.is_none());
+
+    let schema = serde_json::to_value(schemars::schema_for!(TicketUpdateInput)).unwrap();
+    for field in ["add_labels", "remove_labels"] {
+        assert_eq!(
+            schema["properties"][field]["items"]["type"], "string",
+            "{field}"
+        );
+        assert_eq!(schema["required"], json!(["id"]), "{field} is optional");
+    }
 }
 
 #[test]
@@ -882,6 +1318,95 @@ fn board_view_narrows_columns_limits_rows_and_can_go_compact() {
     }
 }
 
+fn numbered(board: &mut Board, number: u64, title: &str, description: &str) {
+    board.next_number = number;
+    let input = CreateTicketInput {
+        description: Some(description.into()),
+        ..titled(title)
+    };
+    create_ticket(board, &input, &context(), &at(1)).unwrap();
+}
+
+#[test]
+fn ticket_links_find_keys_in_both_directions_on_word_boundaries() {
+    let mut board = Board::empty();
+    // Created out of numeric order: the lists sort by ticket number.
+    numbered(&mut board, 20, "Twenty, see KAN-5", "KAN-5 again");
+    numbered(
+        &mut board,
+        5,
+        "Subject, blocks KAN-16",
+        "Blocked by kan-13 and (KAN-14).",
+    );
+    numbered(
+        &mut board,
+        12,
+        "Twelve",
+        "Cites KAN-50, XKAN-5 and KAN-5x, none of them KAN five.",
+    );
+    numbered(&mut board, 13, "Thirteen", "");
+    numbered(&mut board, 14, "Fourteen", "");
+    numbered(&mut board, 15, "Fifteen", "Part of KAN-5.");
+    numbered(&mut board, 16, "Sixteen", "");
+    numbered(&mut board, 17, "Seventeen", "");
+    numbered(&mut board, 18, "Eighteen", "Also KAN-5, but deleted.");
+    numbered(&mut board, 120, "Hundred twenty", "");
+    for (key, body) in [
+        (
+            "KAN-5",
+            "In KAN-15; also KAN-120, KAN-17, KAN-999 and self KAN-5.",
+        ),
+        ("KAN-13", "Back to kan-5."),
+    ] {
+        create_comment(&mut board, &comment(key, body, None, None), &at(2))
+            .unwrap()
+            .unwrap();
+    }
+    for key in ["KAN-17", "KAN-18"] {
+        delete_ticket(&mut board, key, "user", &at(3)).unwrap();
+    }
+
+    let keys = |tickets: Vec<&Ticket>| -> Vec<String> {
+        tickets.into_iter().map(|t| t.key.clone()).collect()
+    };
+    let (mentions, mentioned_by) = ticket_links(&board, "kan-5", "KAN").unwrap();
+    assert_eq!(
+        keys(mentions),
+        ["KAN-13", "KAN-14", "KAN-15", "KAN-16", "KAN-120"],
+        "title, description and comments; not KAN-12 inside KAN-120, not itself, not the deleted or the unknown"
+    );
+    assert_eq!(
+        keys(mentioned_by),
+        ["KAN-13", "KAN-15", "KAN-20"],
+        "once each; not KAN-50, XKAN-5, KAN-5x or the deleted"
+    );
+    assert!(ticket_links(&board, "KAN-404", "KAN").is_none());
+}
+
+#[test]
+fn ticket_links_boundary_is_not_a_letter_digit_slash_or_hyphen_on_either_side() {
+    for (text, found) in [
+        ("fix/KAN-1-login", false),
+        ("KAN-1-2", false),
+        ("https://x/browse/KAN-1", false),
+        ("çKAN-1", false),
+        ("KAN-1é", false),
+        ("2KAN-1", false),
+        ("(KAN-1)", true),
+        ("KAN-1.", true),
+        ("KAN-1,", true),
+        ("“KAN-1”", true),
+        ("Revisão: veja KAN-1, ação já feita", true),
+        ("_KAN-1_", true),
+    ] {
+        let mut board = Board::empty();
+        numbered(&mut board, 1, "Subject", "");
+        numbered(&mut board, 2, "Citing", text);
+        let (_, mentioned_by) = ticket_links(&board, "KAN-1", "KAN").unwrap();
+        assert_eq!(mentioned_by.len(), usize::from(found), "{text:?}");
+    }
+}
+
 #[test]
 fn matches_ticket_treats_an_empty_reference_as_no_filter() {
     assert!(matches_ticket("", TICKET_ID, "KAN-7"));
@@ -892,7 +1417,7 @@ fn matches_ticket_treats_an_empty_reference_as_no_filter() {
 #[test]
 fn the_catalog_names_every_function_once_with_typed_object_schemas() {
     let ids = functions::FUNCTION_IDS;
-    assert_eq!(ids.len(), 15);
+    assert_eq!(ids.len(), 16);
     let mut unique = ids.to_vec();
     unique.sort();
     unique.dedup();
