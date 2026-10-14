@@ -82,8 +82,10 @@
 }
 
 /* --- context breakdown (dialog on desktop, sheet on phones) ----------- */
+/* Wide enough for the usage table's two value columns. The dialog itself
+   (DialogContent) already caps the height at 85vh and scrolls. */
 [data-iii-ui="harness"] .harness-ui-dialog {
-  max-width: 22rem;
+  max-width: 30rem;
 }
 [data-iii-ui="harness"] .harness-ui-sheet .harness-ui-pop {
   min-height: 0;
@@ -94,7 +96,7 @@
 [data-iii-ui="harness"] .harness-ui-pop {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 20px;
   font-size: 12px;
   color: var(--color-ink);
 }
@@ -109,11 +111,41 @@
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+[data-iii-ui="harness"] .harness-ui-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+[data-iii-ui="harness"] .harness-ui-section-title {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-section-meta {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-note {
+  margin: 0;
+  color: var(--color-ink-faint);
+}
+/* The empty part of the bar is the Free row's swatch colour. */
 [data-iii-ui="harness"] .harness-ui-stack {
   display: flex;
   width: 100%;
   height: 8px;
-  background: var(--color-surface);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-active);
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -125,13 +157,16 @@
 [data-iii-ui="harness"] .harness-ui-legend {
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
 [data-iii-ui="harness"] .harness-ui-legend-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11.5px;
+  min-height: 22px;
+  font-size: 12px;
+}
+[data-iii-ui="harness"] .harness-ui-legend-row[data-sub] {
+  padding-left: 16px;
 }
 [data-iii-ui="harness"] .harness-ui-swatch {
   flex: none;
@@ -146,56 +181,288 @@
   white-space: nowrap;
   color: var(--color-ink-faint);
 }
+[data-iii-ui="harness"] .harness-ui-legend-row[data-group] .harness-ui-legend-label {
+  color: var(--color-ink);
+  font-weight: 500;
+}
 [data-iii-ui="harness"] .harness-ui-legend-val,
 [data-iii-ui="harness"] .harness-ui-legend-pct {
+  flex: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+[data-iii-ui="harness"] .harness-ui-legend-val {
+  width: 64px;
+}
+[data-iii-ui="harness"] .harness-ui-legend-row[data-sub] .harness-ui-legend-val {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-legend-pct {
+  width: 40px;
+  color: var(--color-ink-faint);
+}
+/* The last generation step: what the provider actually billed. */
+[data-iii-ui="harness"] .harness-ui-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 32px;
+  padding: 6px 10px;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+[data-iii-ui="harness"] .harness-ui-step-label {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-step-val {
+  flex: 1;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-step-hit {
+  color: var(--color-ink);
+}
+/* Usage: one metric per row, this conversation, then (for a parent) the
+   same counter summed over its sub-agents. */
+[data-iii-ui="harness"] .harness-ui-usage {
+  font-size: 12px;
+}
+/* The recipe's cells are 22px text + 24px padding; a metric list wants
+   26px rows. */
+[data-iii-ui="harness"] .harness-ui-usage th,
+[data-iii-ui="harness"] .harness-ui-usage td {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  line-height: 18px;
+  vertical-align: middle;
+}
+[data-iii-ui="harness"] .harness-ui-usage .harness-ui-num {
+  width: 9rem;
+  white-space: nowrap;
+}
+[data-iii-ui="harness"] .harness-ui-usage td.harness-ui-num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="harness"] .harness-ui-legend-pct {
+[data-iii-ui="harness"] .harness-ui-usage thead th {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  white-space: normal;
+}
+[data-iii-ui="harness"] .harness-ui-usage tbody th {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+[data-iii-ui="harness"] .harness-ui-usage tr[data-strong] th,
+[data-iii-ui="harness"] .harness-ui-usage tr[data-strong] td {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] .harness-ui-skeleton {
+  display: inline-block;
+  width: 40px;
+  height: 12px;
+  vertical-align: middle;
+}
+[data-iii-ui="harness"] .harness-ui-hit[data-tone]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: var(--radius-full);
+  vertical-align: 1px;
+}
+[data-iii-ui="harness"] .harness-ui-hit[data-tone="ok"]::before {
+  background: var(--color-ok);
+}
+[data-iii-ui="harness"] .harness-ui-hit[data-tone="warn"]::before {
+  background: var(--color-warn);
+}
+[data-iii-ui="harness"] .harness-ui-usage-cost {
+  display: flex;
+  justify-content: space-between;
+  min-height: 30px;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 500;
+}
+[data-iii-ui="harness"] .harness-ui-usage-cost .harness-ui-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="harness"] .harness-ui-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* Sub-agents: one ListItem per descendant, the whole row opens it. The rows
+   bleed into the dialog padding so the hover fill frames the text. */
+[data-iii-ui="harness"] .harness-ui-subs {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -12px;
+}
+[data-iii-ui="harness"] .harness-ui-sub-id {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+}
+/* The ListItem trailing slot is a block: cost and chevron sit side by side. */
+[data-iii-ui="harness"] .harness-ui-sub-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="harness"] .harness-ui-sub-icon {
   flex: none;
-  width: 36px;
-  text-align: right;
   color: var(--color-ink-ghost);
 }
+[data-iii-ui="harness"] .harness-ui-sub-cost {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] .harness-ui-sub-share {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+}
+/* Footer: the session id with copy, and the conversation that spawned it. */
 [data-iii-ui="harness"] .harness-ui-pop-foot {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-top: 8px;
-  font-size: 11px;
-  /* Provenance, actuals, cache and cost are findings, not chrome: they stay
-     at reading weight instead of the ghost tint used for decoration. */
-  color: var(--color-ink);
-}
-
-[data-iii-ui="harness"] .harness-ui-pop-session {
-  display: flex;
-  align-items: center;
   gap: 6px;
 }
-
-[data-iii-ui="harness"] .harness-ui-pop-session-id {
-  font-family: var(--font-mono);
-  /* Flex items refuse to shrink past their content without this, so a long
-     session id would push the copy button out of the popover instead of
-     ellipsing. */
+[data-iii-ui="harness"] .harness-ui-field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="harness"] .harness-ui-field-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
   min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-field-label {
+  flex: none;
+  width: 76px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-field {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  height: 32px;
+  padding-left: 10px;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+[data-iii-ui="harness"] .harness-ui-field:has(.harness-ui-field-input:focus) {
+  box-shadow: inset 0 0 0 1px var(--color-rule-focus);
+}
+[data-iii-ui="harness"] .harness-ui-field-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="harness"] .harness-ui-copy[data-copy="copied"] {
+  color: var(--color-ok);
+}
+[data-iii-ui="harness"] .harness-ui-copy-failed {
+  margin: 0 0 0 88px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-warn-strong);
+}
+[data-iii-ui="harness"] .harness-ui-parent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+[data-iii-ui="harness"] button.harness-ui-parent {
+  cursor: pointer;
+}
+[data-iii-ui="harness"] button.harness-ui-parent:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] button.harness-ui-parent:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+[data-iii-ui="harness"] .harness-ui-parent-id {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-[data-iii-ui="harness"] .harness-ui-cache-hit {
-  font-variant-numeric: tabular-nums;
-  color: var(--color-ink);
+/* Phones get the sheet (the dialog never renders there): 16px in the field
+   so focusing it never zooms the page. */
+/* Two value columns of 9rem overflow a 390px sheet: let them size to the
+   numbers, with tighter gaps. */
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-usage .harness-ui-num {
+  width: auto;
 }
-
-[data-iii-ui="harness"] .harness-ui-cache-hit[data-tone="ok"] {
-  color: var(--color-ok);
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-usage th,
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-usage td {
+  padding-left: 6px;
+  padding-right: 6px;
 }
-
-[data-iii-ui="harness"] .harness-ui-cache-hit[data-tone="warn"] {
-  color: var(--color-warn-strong);
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-field {
+  height: 44px;
+}
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-field-input {
+  font-size: 16px;
+}
+/* Too narrow for label and value on one line: stack them. */
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-step {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-step-val {
+  text-align: left;
 }
 
 /* --- function-trigger message (chat / traces card) ------------------- */
