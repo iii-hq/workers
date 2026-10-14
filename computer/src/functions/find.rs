@@ -26,8 +26,9 @@ pub struct FindInput {
     pub selector: String,
     #[serde(flatten)]
     pub scope: TreeScope,
-    /// Keep looking for up to this many ms until something matches (0-30000,
-    /// default 0 = one attempt). Not with root_ref.
+    /// Keep looking for up to this many ms until something matches, also
+    /// waiting for the app itself to start (app_name) or come to the
+    /// foreground (0-30000, default 0 = one attempt). Not with root_ref.
     #[serde(default)]
     pub timeout_ms: Option<u32>,
 }
@@ -80,12 +81,15 @@ pub(crate) async fn handle(session: &Arc<Session>, req: FindInput) -> Result<Fin
     let limit = Duration::from_millis(timeout_ms as u64);
     let mut last = None;
     let mut busy = None;
+    let mut app_missing = false;
     loop {
         session.touch();
         match layer.snapshot(query.clone(), false).await {
             Ok(out) if out.matches > 0 => return Ok(output(out, start)),
             Ok(out) => last = Some(out),
             Err(e) if e.code == Code::Busy => busy = Some(e),
+            // The app may still be starting: wait for it like for a match.
+            Err(e) if e.app_missing && timeout_ms > 0 => app_missing = true,
             Err(e) => return Err(e.into_iii()),
         }
         // Start another attempt only if it would begin before the deadline.
@@ -94,9 +98,17 @@ pub(crate) async fn handle(session: &Arc<Session>, req: FindInput) -> Result<Fin
         }
         tokio::time::sleep(FIND_POLL).await;
     }
-    // Every attempt in the window met another operation: report busy.
+    let waited = start.elapsed().as_millis();
     match last {
+        // The app answered at least once: no match is a result, not an error.
         Some(out) => Ok(output(out, start)),
+        None if app_missing => Err(invalid(match &req.scope.app_name {
+            Some(name) => {
+                format!("no running application named \"{name}\" after waiting {waited} ms")
+            }
+            None => format!("no application came to the foreground after waiting {waited} ms"),
+        })),
+        // Every attempt in the window met another operation: report busy.
         None => Err(busy
             .unwrap_or_else(|| SemanticError::new(Code::Busy, "no attempt could run"))
             .into_iii()),
@@ -300,5 +312,105 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(code(e), "unsupported_session");
+    }
+
+    #[tokio::test]
+    async fn a_timed_find_waits_for_the_app_to_start() {
+        let t = Arc::new(FakeTree::new("App", 1));
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        let later = t.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let doc = later.add_app("Doc", 9);
+            later.add(doc, Role::Button, "OK");
+        });
+        let out = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","selector":"button[name='OK']","app_name":"Doc","timeout_ms":3000})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.matches, 1, "{}", out.tree);
+        assert!(out.waited_ms >= 250, "{}", out.waited_ms);
+    }
+
+    #[tokio::test]
+    async fn an_app_that_never_starts_is_an_input_error_after_the_wait() {
+        let t = Arc::new(FakeTree::new("App", 1));
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        let start = Instant::now();
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","selector":"button","app_name":"Nunca","timeout_ms":300})),
+        )
+        .await
+        .unwrap_err();
+        let iii_sdk::errors::Error::Remote { code, message, .. } = e else {
+            panic!("expected Error::Remote");
+        };
+        assert_eq!(code, "invalid_input");
+        assert!(
+            message.contains("no running application named \"Nunca\" after waiting"),
+            "{message}"
+        );
+        assert!(start.elapsed() >= Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn an_app_that_starts_but_never_matches_is_an_empty_result() {
+        let t = Arc::new(FakeTree::new("App", 1));
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        let later = t.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            later.add_app("Doc", 9);
+        });
+        let out = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","selector":"button[name='OK']","app_name":"Doc","timeout_ms":500})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.matches, 0);
+        assert!(out.tree.contains("no matches"), "{}", out.tree);
+    }
+
+    #[tokio::test]
+    async fn a_missing_pid_fails_at_once_even_with_a_wait() {
+        let t = Arc::new(FakeTree::new("App", 1));
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        let start = Instant::now();
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","selector":"button","app_pid":999,"timeout_ms":3000})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "invalid_input");
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn a_timed_find_waits_for_a_foreground_app() {
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        t.add(w, Role::Button, "OK");
+        let t = Arc::new(t);
+        *t.foreground_error.lock().unwrap() = Some(xa11y_core::Error::selector_not_matched(
+            "focused application",
+        ));
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        let later = t.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            *later.foreground_error.lock().unwrap() = None;
+        });
+        let out = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","selector":"button[name='OK']","timeout_ms":3000})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.matches, 1);
     }
 }

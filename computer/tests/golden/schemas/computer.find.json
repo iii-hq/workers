@@ -59,7 +59,7 @@
       },
       "timeout_ms": {
         "default": null,
-        "description": "Keep looking for up to this many ms until something matches (0-30000, default 0 = one attempt). Not with root_ref.",
+        "description": "Keep looking for up to this many ms until something matches, also waiting for the app itself to start (app_name) or come to the foreground (0-30000, default 0 = one attempt). Not with root_ref.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [

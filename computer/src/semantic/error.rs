@@ -73,6 +73,9 @@ impl Code {
 pub struct SemanticError {
     pub code: Code,
     pub message: String,
+    /// The scoped app is not running, or no app is in the foreground — yet,
+    /// maybe: a timed find keeps waiting. Never on the wire.
+    pub app_missing: bool,
 }
 
 impl SemanticError {
@@ -80,7 +83,14 @@ impl SemanticError {
         Self {
             code,
             message: format!("{}; {}", what.into(), code.recovery()),
+            app_missing: false,
         }
+    }
+
+    /// Mark an `invalid_input` as "the app is not there (yet)".
+    pub fn with_app_missing(mut self) -> Self {
+        self.app_missing = true;
+        self
     }
 
     /// What every semantic call gets on a remote or sandboxed session.

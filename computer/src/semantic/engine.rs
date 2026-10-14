@@ -124,7 +124,8 @@ fn app_named(provider: &dyn Provider, name: &str) -> Result<ElementData, Semanti
         0 => Err(SemanticError::new(
             Code::InvalidInput,
             format!("no running application named \"{name}\""),
-        )),
+        )
+        .with_app_missing()),
         1 => Ok(apps.remove(0)),
         n => {
             let pids: Vec<String> = apps
@@ -201,7 +202,8 @@ impl Engine {
             xa11y_core::Error::SelectorNotMatched { .. } => SemanticError::new(
                 Code::InvalidInput,
                 "no application is in the foreground; pass app_name or app_pid",
-            ),
+            )
+            .with_app_missing(),
             other => map_read_error(&other, false),
         })?;
         Ok((provider, app.data))
