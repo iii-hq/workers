@@ -35,6 +35,11 @@ pub const A11Y_OFF: &str = "Accessibility is off: GTK apps are readable, but Qt,
 #[cfg(target_os = "linux")]
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1_500);
 
+/// Set while a probe thread is alive: connect/auth has no timeout of its own,
+/// so a stalled bus can park at most this one thread.
+#[cfg(target_os = "linux")]
+static PROBING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// What the session bus says about AT-SPI.
 #[cfg(target_os = "linux")]
 struct BusState {
@@ -47,7 +52,9 @@ struct BusState {
 /// Read-only: the worker never changes an accessibility setting (spec D3).
 #[cfg(target_os = "linux")]
 fn read_bus() -> BusState {
-    let Ok(c) = zbus::blocking::Connection::session() else {
+    let Ok(c) = zbus::blocking::connection::Builder::session()
+        .and_then(|b| b.method_timeout(PROBE_TIMEOUT).build())
+    else {
         return BusState {
             address: false,
             enabled: false,
@@ -81,36 +88,67 @@ fn read_bus() -> BusState {
 /// once per call with a 1.5 s limit.
 #[cfg(target_os = "linux")]
 pub async fn a11y_support() -> (bool, Option<String>) {
-    support_from(read_bus, PROBE_TIMEOUT).await
+    support_from(&PROBING, read_bus, PROBE_TIMEOUT).await
+}
+
+/// Releases the single-flight flag when the probe thread ends.
+#[cfg(target_os = "linux")]
+struct ProbeSlot(&'static std::sync::atomic::AtomicBool);
+
+#[cfg(target_os = "linux")]
+impl Drop for ProbeSlot {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 #[cfg(target_os = "linux")]
 async fn support_from(
+    busy: &'static std::sync::atomic::AtomicBool,
     read: impl FnOnce() -> BusState + Send + 'static,
     limit: std::time::Duration,
 ) -> (bool, Option<String>) {
-    match tokio::time::timeout(limit, tokio::task::spawn_blocking(read)).await {
+    use std::sync::atomic::Ordering::{AcqRel, Acquire};
+    // Bounded: every D-Bus call (method_timeout) and our wait (`limit`).
+    // Connect/auth is not, so `busy` guarantees a probe whose thread is still
+    // parked is never joined by another: at most one probe thread exists.
+    let unanswered = || {
+        (
+            false,
+            Some("the AT-SPI accessibility bus did not answer within 1.5 s".to_string()),
+        )
+    };
+    if busy.compare_exchange(false, true, AcqRel, Acquire).is_err() {
+        return unanswered();
+    }
+    let task = tokio::task::spawn_blocking(move || {
+        let _slot = ProbeSlot(busy);
+        read()
+    });
+    match tokio::time::timeout(limit, task).await {
         Ok(Ok(BusState { address: false, .. })) => (false, Some(A11Y_BUS_MISSING.to_string())),
         Ok(Ok(BusState { enabled: false, .. })) => (true, Some(A11Y_OFF.to_string())),
         Ok(Ok(_)) => (true, None),
-        // ponytail: a bus that does not answer in 1.5 s counts as missing;
-        // the blocked thread finishes on its own.
-        _ => (
-            false,
-            Some("the AT-SPI accessibility bus did not answer within 1.5 s".to_string()),
-        ),
+        // ponytail: a bus that does not answer in 1.5 s counts as missing.
+        _ => unanswered(),
     }
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    fn flag() -> &'static std::sync::atomic::AtomicBool {
+        Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)))
+    }
 
     #[tokio::test]
     async fn the_bus_probe_maps_to_support() {
         let probe = |address, enabled| {
             support_from(
+                flag(),
                 move || BusState { address, enabled },
                 Duration::from_secs(5),
             )
@@ -129,6 +167,7 @@ mod tests {
     async fn a_silent_bus_does_not_hold_up_the_session() {
         let started = Instant::now();
         let (ok, reason) = support_from(
+            flag(),
             || {
                 std::thread::sleep(Duration::from_millis(800));
                 BusState {
@@ -142,5 +181,55 @@ mod tests {
         assert!(!ok);
         assert!(reason.unwrap().contains("did not answer"));
         assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_probe_is_never_stacked() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::sync::mpsc;
+        let busy = flag();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel::<()>();
+        let (r1, r2) = (runs.clone(), runs.clone());
+        let limit = Duration::from_millis(50);
+        let stalled = move || {
+            r1.fetch_add(1, SeqCst);
+            let _ = rx.recv();
+            BusState {
+                address: true,
+                enabled: true,
+            }
+        };
+        let second = move || {
+            r2.fetch_add(1, SeqCst);
+            BusState {
+                address: true,
+                enabled: true,
+            }
+        };
+        let r3 = runs.clone();
+        let (a, b) = tokio::join!(
+            support_from(busy, stalled, limit),
+            support_from(busy, second, limit)
+        );
+        assert!(!a.0 && !b.0);
+        assert_eq!(runs.load(SeqCst), 1);
+        // Released: the next call probes again.
+        tx.send(()).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let again = support_from(
+            busy,
+            move || {
+                r3.fetch_add(1, SeqCst);
+                BusState {
+                    address: true,
+                    enabled: true,
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(again, (true, None));
+        assert_eq!(runs.load(SeqCst), 2);
     }
 }
