@@ -128,12 +128,13 @@ worker moves no mouse, sends no keys and sets no focus. The effect is not
 verified; confirm with another `find`. Refs live until an `observe` with
 `include_a11y` or a `find` with matches replaces them, any coordinate or
 keyboard action (`type`, `press`, `hotkey`, console input included) runs on
-the session, a timed-out, cancelled or crashed accessibility call resets the
-session's executor, or the session stops or the worker restarts. macOS needs
-Accessibility **and** Screen Recording for the process running the worker.
-On Windows a password field's value is hidden only when its name looks like a
-password (or the app itself masks it): xa11y does not expose UIA's
-`IsPassword`. Remote and sandbox sessions stay coordinate-only.
+any native session (they share the desktop), a timed-out, cancelled or
+crashed accessibility call resets the session's executor, or the session
+stops or the worker restarts. macOS needs Accessibility **and** Screen
+Recording for the process running the worker. On Windows a password field's
+value is hidden only when its name looks like a password (or the app itself
+masks it): xa11y does not expose UIA's `IsPassword`. Remote and sandbox
+sessions stay coordinate-only.
 
 ## Console
 

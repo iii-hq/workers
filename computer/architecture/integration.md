@@ -33,9 +33,15 @@ Refusals come back as errors with a stable code — `invalid_input`,
 `invalid_selector`, `stale_ref`, `not_supported`, `busy`,
 `permission_denied`, `unsupported_session`, `backend_error` — none of which
 had any effect; `effect_unknown` means the action may or may not have
-happened. The exception is `observe` with `include_image=true`: any tree
-failure becomes an appended `a11y tree unavailable: <code>: …` line next to
-the image, and only `include_image=false` returns the error. On Windows
+happened. With `include_image=true`, `observe` still returns the image when the
+tree cannot be read right now (`unsupported_session`, `permission_denied`,
+`backend_error`, `busy`), with an appended `a11y tree unavailable: <code>: …`
+line; a wrong request (`invalid_input`, `stale_ref`) is an error either way.
+Every tree starts with the untrusted-content marker and an
+`app "<name>" pid <n>` line. `find` with `timeout_ms` also waits for an
+`app_name` that is not running yet, or for any app to reach the foreground.
+All native sessions share one desktop: a coordinate action on any of them
+kills the refs of all of them. On Windows
 `invoke` falls through Invoke → Toggle → Select → ExpandCollapse.
 `sessions::start` and `sessions::list` report `semantic: { supported,
 reason? }` per session. Remote and sandbox sessions no longer return a tree:

@@ -87,7 +87,10 @@ after every action.
 ## Acting by element (native sessions)
 
 1. `computer::find`, or `computer::observe` with `include_a11y: true,
-   include_image: false`, scoped with `app_name`/`app_pid`. Leave the image
+   include_image: false`, scoped with `app_name`/`app_pid`. Every tree opens
+   with an `app "<name>" pid <n>` line: check it is the app you meant. With
+   `timeout_ms`, `find` also waits for an `app_name` that is still starting.
+   Leave the image
    out: an image next to the tree can push the result past the harness size
    cap, and then the new refs never reach you while the old ones are already
    replaced.
@@ -97,7 +100,8 @@ after every action.
    `[checked='on']`, `[selected='true']`, `timeout_ms` for slow UIs). A find
    with matches replaces the refs; one with no matches leaves them valid.
 4. On `stale_ref`, look again; never reuse a ref after any coordinate or
-   keyboard action (`type`, `press` and `hotkey` included). On
+   keyboard action (`type`, `press` and `hotkey` included) on any native
+   session — they share one desktop. On
    `effect_unknown`, observe before repeating — never repeat a `toggle` blind.
    On `not_supported`, the element was disabled or does not offer that action
    (e.g. `toggle` on a plain button): find it again (e.g. `[enabled='true']`

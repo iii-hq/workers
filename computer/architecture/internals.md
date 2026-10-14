@@ -54,12 +54,16 @@ scoped find can be repeated to confirm an act). An observe with `include_a11y`
 always becomes the session's **active snapshot**; a find does only when it
 matches, so a find without matches keeps the old refs. Replacing the snapshot
 drops its provider, which frees xa11y's handle cache and kills the old refs.
-A coordinate or keyboard action bumps an invalidation counter, so refs read
-before it are refused.
+Every native session drives the same desktop, so all of them share one
+invalidation counter and one `act_lock`. A coordinate or keyboard action on
+any of them bumps the counter before the input and again when it returns,
+fails or is cancelled (a drop guard), so refs read before or during it are
+refused; the next semantic call drops the invalidated snapshot and its
+provider.
 
 The executor runs one operation per session, taken with `try_lock`: an
 observe/find/act that meets another operation gets `busy` (find retries it
-within `timeout_ms`), never a queue. Acts also hold the session's `act_lock`,
+within `timeout_ms`), never a queue. Acts also hold the desktop's `act_lock`,
 so a ref act waits behind a running coordinate or ref act instead of failing.
 A call whose deadline (walk 5 s, act 10 s, +1 s grace) passes, or whose caller
 cancels it, is never dispatched later: its executor is discarded along with
@@ -74,6 +78,25 @@ name everywhere), and selectors are restricted to normalized attribute names,
 because xa11y resolves unknown names against the unredacted `raw` map. On
 Windows the process is pinned to per-monitor-v2 DPI awareness before any
 capture, input or accessibility call.
+
+## Known limits
+
+- **Windows passwords.** A password field's value is hidden only when its
+  name looks like a password (or the app masks it): xa11y does not read UIA's
+  `IsPassword`. The fix belongs upstream.
+- **Pathological selectors.** A 1 KiB selector such as `* * * …` is bounded
+  by the walk's 5 s deadline, not by its size.
+- **Parent cycles.** The walker keeps no visited set; AX and UIA mint a fresh
+  handle per fetch, so a cycle cannot form there.
+- **Old Windows.** The DPI pin links Windows 10 1607+ APIs; older Windows
+  cannot load the worker.
+- **Bidi controls.** xa11y strips them from name, value and description; the
+  tree text escapes control characters and line separators, not bidi
+  formatting beyond that.
+- **Late cancel.** A caller cancelled after the executor replied, but before
+  it read the reply, still discards the executor (conservative).
+- **Cancelled input.** A coordinate action cancelled mid-dispatch may still
+  land after its invalidation bump and after `act_lock` is released.
 
 ## Durability and the screencast
 
@@ -143,6 +166,10 @@ Recording:
     cargo build --locked --manifest-path tests/fixture/Cargo.toml
     COMPUTER_A11Y_FIXTURE=$PWD/tests/fixture/target/debug/computer-a11y-fixture \
       cargo test --locked --test semantic_live -- --ignored --test-threads=1
+
+Set `COMPUTER_A11Y_FIXTURE_LOG_DIR` to keep the fixture logs somewhere else than
+the temp dir. With two native sessions, a click in one must turn the other's
+refs into `stale_ref`.
 
 Then, on a live stack with the harness and approval-gate, have an agent run
 `computer::find` and `computer::act` against the fixture or TextEdit: check
