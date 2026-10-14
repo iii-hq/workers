@@ -11,6 +11,7 @@ functions:
   - kanban::comment::create
   - state::get
   - state::compare-and-set
+  - shell::exec
 ---
 # Ultracode Verifier
 

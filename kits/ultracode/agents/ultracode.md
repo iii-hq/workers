@@ -21,6 +21,8 @@ functions:
   - kanban::ticket::update
   - kanban::comment::create
   - directory::agents::get
+  - engine::unregister_trigger
+  - harness::triggers::list
 ---
 # Ultracode
 

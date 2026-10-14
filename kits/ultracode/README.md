@@ -10,7 +10,7 @@ Claude Code-style dynamic workflows on iii, with the kanban board as the task ma
 | **ultracode-verifier** (hidden) | refutes a result; judge (one per model) and completeness critic | none (nor on Default): judges pick per spawn |
 | **ultracode-qa** (hidden) | refutes a result in the In review wave (the default verifier) | pin a mid-tier model |
 
-No `workflow` worker, code runner or fp pipeline: just `harness`, `state` and `kanban`.
+No `workflow` worker, code runner or fp pipeline: just `harness`, `state`, `kanban` and `ide` (the shell and file functions the tiers preload).
 
 ## Install
 
@@ -66,7 +66,7 @@ iii trigger harness::send --json '{"message":"<goal + args>","model":"<provider:
 - state with the kv adapter (the redis adapter refuses `state::barrier`), `store_method: file_based` (the default; `in_memory` loses barrier progress and results on restart) and `triggers_enabled: true` (the default).
 - **Approval gate.** Allow these to run without a prompt:
   - `state::barrier`, unattended: the harness calls it on every state write in a wave's scope.
-  - for sub-agents: `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, plus whatever the work needs. A held call in a sub-agent never expires; a wave held on approvals ends the run as `blocked`.
+  - for sub-agents: `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, `shell::exec`, `coder::read-file` (plus `coder::create-file` and `coder::update-file` for `ultracode-impl`, and `state::get` for verifiers), and whatever else the work needs. A held call in a sub-agent never expires; a wave held on approvals ends the run as `blocked`.
   - for the orchestrator: `harness::spawn`, `harness::metrics`, `state::compare-and-set`, `kanban::ticket::links`, `harness::stop`, and `directory::agents::get` when `judges=` is used. Without a rule, each `harness::stop` of a timed-out child waits for your approval. The repository rule set (`iii-permissions.yaml`) denies it with `'!harness::stop'` and the first matching rule wins: to allow it, put `- harness::stop` above that line (the allow then applies to every agent). If you keep the deny, timed-out children are parked as `stuck`.
 - **Trust.** Any agent allowed `kanban::ticket::create` can queue `[KEY]` work, which then runs with the orchestrator's permissions.
 

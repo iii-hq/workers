@@ -10,6 +10,8 @@ functions:
   - kanban::ticket::get
   - kanban::comment::create
   - state::compare-and-set
+  - shell::exec
+  - coder::read-file
 ---
 # Ultracode Worker
 

@@ -6,4 +6,7 @@ color: blue
 extends: ultracode-worker
 hidden: true
 reasoning_effort: high
+functions:
+  - coder::update-file
+  - coder::create-file
 ---

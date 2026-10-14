@@ -12,3 +12,6 @@ workers:
   # Needs kanban::ticket::links and add_labels / remove_labels (iii-hq/workers#1384).
   # Pin to the first kanban release that includes #1384 (0.1.20 does not); update this when kanban is released.
   kanban: ^0.1.21
+  # shell::exec and coder::* preloaded by the work and verify tiers. No caret: projects pin
+  # ide@latest, and ^0.12 would hold it below 0.13. Not `shell` (a registry alias) or `coder`.
+  ide: ">=0.12.0"
