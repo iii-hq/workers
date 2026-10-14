@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
-use crate::tmux_cli::{resolve_cwd, validate_command, validate_name, SEP};
+use crate::tmux_cli::{resolve_cwd, unescape_separators, validate_command, validate_name, SEP};
 
 pub const CREATE: &str = "tmux::sessions::create";
 pub const RENAME: &str = "tmux::sessions::rename";
@@ -80,7 +80,7 @@ pub fn created_format() -> String {
 }
 
 pub fn parse_created(output: &str) -> Result<CreatedSession, String> {
-    let line = output.lines().next().unwrap_or_default();
+    let line = unescape_separators(output.lines().next().unwrap_or_default());
     let fields: Vec<&str> = line.split(SEP).collect();
     if fields.len() != 5 {
         return Err(format!("unexpected tmux output: {line:?}"));
@@ -179,6 +179,11 @@ mod tests {
             ("@7", 0)
         );
         assert_eq!(created.pane_id, "%9");
+        let escaped = parse_created("$3\\037my sess\\037@7\\0370\\037%9\n").unwrap();
+        assert_eq!(
+            (escaped.session.as_str(), escaped.pane_id.as_str()),
+            ("my sess", "%9")
+        );
         assert!(parse_created("nonsense").is_err());
     }
 }

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{register_fn, spec, Ctx, FunctionSpec, KilledOutput};
 use crate::tmux_cli::{
-    resolve_cwd, validate_command, validate_name, window_target, WindowArg, WindowRef, SEP,
+    resolve_cwd, unescape_separators, validate_command, validate_name, window_target, WindowArg,
+    WindowRef, SEP,
 };
 
 pub const CREATE: &str = "tmux::windows::create";
@@ -84,7 +85,7 @@ pub struct RenamedWindow {
 }
 
 pub fn parse_created(output: &str) -> Result<CreatedWindow, String> {
-    let line = output.lines().next().unwrap_or_default();
+    let line = unescape_separators(output.lines().next().unwrap_or_default());
     let fields: Vec<&str> = line.split(SEP).collect();
     if fields.len() != 4 {
         return Err(format!("unexpected tmux output: {line:?}"));
@@ -229,6 +230,8 @@ mod tests {
             ),
             ("$3", "@8", 2, "%11")
         );
+        let escaped = parse_created("$3\\037@8\\0372\\037%11").unwrap();
+        assert_eq!(escaped.window_index, 2);
         assert!(parse_created("").is_err());
     }
 }

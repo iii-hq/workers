@@ -1,16 +1,32 @@
 //! Running tmux commands and reading their output.
 //!
 //! Every listing uses `-F` formats whose fields are separated by U+001F (unit
-//! separator), which tmux passes through untouched and no session, window or
-//! path name contains in practice. The free-text field (pane title) is always
-//! last so a stray separator in it cannot shift the others.
+//! separator), which no session, window or path name contains in practice.
+//! Some tmux builds (Ubuntu's 3.4, for one) print it as the four characters
+//! `\037`; [`unescape_separators`] turns those back. The free-text field (pane
+//! title) is always last so a stray separator in it cannot shift the others.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::WorkerConfig;
 
 pub const SEP: char = '\x1f';
+
+/// [`SEP`] as tmux prints it when it passes command output through `vis(3)`
+/// (octal, backslashes left alone).
+const ESCAPED_SEP: &str = "\\037";
+
+/// One line of `-F` output with its separators raw. A line that already holds
+/// a raw separator came from a tmux that prints it untouched and is kept as is.
+pub fn unescape_separators(line: &str) -> Cow<'_, str> {
+    if line.contains(SEP) || !line.contains(ESCAPED_SEP) {
+        Cow::Borrowed(line)
+    } else {
+        Cow::Owned(line.replace(ESCAPED_SEP, &SEP.to_string()))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Socket {
@@ -124,8 +140,11 @@ impl Tmux {
         match self.run(["list-sessions", "-F", format.as_str()]).await {
             Ok(output) => Ok(output
                 .lines()
-                .filter_map(|line| line.split_once(SEP))
-                .map(|(id, name)| (id.to_string(), name.to_string()))
+                .filter_map(|line| {
+                    let line = unescape_separators(line);
+                    let (id, name) = line.split_once(SEP)?;
+                    Some((id.to_string(), name.to_string()))
+                })
                 .collect()),
             Err(TmuxError::NoServer) => Ok(Vec::new()),
             Err(error) => Err(error),
@@ -168,12 +187,16 @@ impl Tmux {
             .map_err(|error| error.to_string())?;
         output
             .lines()
-            .filter_map(|line| line.split_once(SEP))
+            .filter_map(|line| {
+                let line = unescape_separators(line);
+                let (id, index) = line.split_once(SEP)?;
+                Some((id.to_string(), index.to_string()))
+            })
             .find(|(id, index)| match window {
                 WindowRef::Id(wanted) => id == wanted,
                 WindowRef::Index(wanted) => index.parse::<u32>().ok() == Some(*wanted),
             })
-            .map(|(id, _)| id.to_string())
+            .map(|(id, _)| id)
             .ok_or_else(|| match window {
                 WindowRef::Id(id) => format!("window {id} not found in session {session_id}"),
                 WindowRef::Index(index) => {
@@ -332,6 +355,7 @@ fn number<T: std::str::FromStr + Default>(value: &str) -> T {
 pub fn parse_list_all(output: &str) -> RawSnapshot {
     let mut snapshot = RawSnapshot::default();
     for line in output.lines() {
+        let line = unescape_separators(line);
         let mut chars = line.chars();
         let tag = chars.next();
         let Some(rest) = chars.as_str().strip_prefix(SEP) else {
@@ -580,6 +604,45 @@ mod tests {
         );
         assert_eq!(snapshot.clients[0].tty, "/dev/pts/3");
         assert_eq!(snapshot.server.unwrap().pid, 41901);
+    }
+
+    #[test]
+    fn escaped_separators_parse_like_raw_ones() {
+        // Ubuntu's tmux 3.4 prints U+001F as `\037`; Unicode and backslashes
+        // stay as they are.
+        let output = [
+            line('S', &["$1", "my sess", "1791592553", "1791592600", "2"]),
+            line(
+                'P',
+                &[
+                    "$1",
+                    "@4",
+                    "%7",
+                    "0",
+                    "1",
+                    "4242",
+                    "147",
+                    "56",
+                    "0",
+                    "claude",
+                    "/home/u/ação",
+                    "a\\b",
+                ],
+            ),
+        ]
+        .join("\n")
+        .replace(SEP, ESCAPED_SEP);
+        let snapshot = parse_list_all(&output);
+        assert_eq!(snapshot.sessions[0].name, "my sess");
+        assert_eq!(snapshot.sessions[0].attached, 2);
+        let pane = &snapshot.panes[0];
+        assert_eq!((pane.id.as_str(), pane.pid), ("%7", 4242));
+        assert_eq!(pane.cwd, "/home/u/ação");
+        assert_eq!(pane.title, "a\\b");
+
+        let raw = format!("$1{SEP}a\\037b");
+        assert_eq!(unescape_separators(&raw), raw, "a raw separator wins");
+        assert_eq!(unescape_separators("plain"), "plain");
     }
 
     #[test]

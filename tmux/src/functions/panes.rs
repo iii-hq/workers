@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{register_fn, spec, Ctx, FunctionSpec};
-use crate::tmux_cli::{is_pane_id, Tmux, SEP};
+use crate::tmux_cli::{is_pane_id, unescape_separators, Tmux, SEP};
 
 pub const SELECT: &str = "tmux::panes::select";
 pub const CAPTURE: &str = "tmux::panes::capture";
@@ -79,7 +79,7 @@ const SELECTED_FORMAT: [&str; 4] = [
 ];
 
 pub fn parse_selected(output: &str) -> Result<SelectedPane, String> {
-    let line = output.lines().next().unwrap_or_default();
+    let line = unescape_separators(output.lines().next().unwrap_or_default());
     let fields: Vec<&str> = line.split(SEP).collect();
     if fields.len() != 4 {
         return Err(format!("unexpected tmux output: {line:?}"));
@@ -104,6 +104,7 @@ const CAPTURE_FORMAT: [&str; 5] = [
 /// whatever the screen holds can never be mistaken for the header.
 pub fn parse_capture(pane_id: &str, output: &str) -> Result<PaneCapture, String> {
     let (header, text) = output.split_once('\n').unwrap_or((output, ""));
+    let header = unescape_separators(header);
     let fields: Vec<&str> = header.split(SEP).collect();
     if fields.len() != 5 {
         return Err(format!("unexpected tmux output: {header:?}"));
@@ -223,6 +224,7 @@ mod tests {
             ),
             ("$3", "@8", "%11", true)
         );
+        assert!(parse_selected("$3\\037@8\\037%11\\0370\n").is_ok());
         assert!(parse_selected("").is_err());
     }
 
@@ -241,6 +243,10 @@ mod tests {
             (80, 24, 3, 1)
         );
         assert!(!capture.alternate);
+        assert_eq!(capture.text, screen);
+        let escaped = header.replace(SEP, "\\037");
+        let capture = parse_capture("%4", &format!("{escaped}\n{screen}\n")).unwrap();
+        assert_eq!((capture.width, capture.height), (80, 24));
         assert_eq!(capture.text, screen);
         // A screen line that happens to look like a header is still text.
         let tricky = parse_capture("%4", &format!("{header}\n{header}\n")).unwrap();
