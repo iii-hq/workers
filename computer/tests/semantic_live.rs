@@ -479,3 +479,12 @@ async fn a_coordinate_click_lands_before_and_after_semantic_use() {
         );
     }
 }
+
+/// The private session of run-linux-live.sh turns accessibility on, so the
+/// probe must say so with no warning.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn the_live_bus_reports_accessibility_on() {
+    assert_eq!(platform::a11y_support().await, (true, None));
+}

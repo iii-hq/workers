@@ -239,12 +239,13 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .start(req.image, req.endpoint, req.os, req.monitor)
                     .await
                     .map_err(Error::Handler)?;
+                let bus = sessions::linux_bus(std::slice::from_ref(&session)).await;
                 Ok::<_, Error>(sessions::StartOutput {
                     session_id: session.id.clone(),
                     endpoint: session.endpoint.clone(),
                     os: session.os.clone(),
                     screen: session.screen,
-                    semantic: sessions::Support::semantic(&session),
+                    semantic: sessions::Support::semantic(&session, bus.as_ref()),
                     coordinates: sessions::Support::coordinates(&session),
                 })
             }
@@ -260,9 +261,9 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |_req: sessions::ListInput| {
             let sessions = sessions.clone();
             async move {
-                let infos = sessions
-                    .list()
-                    .await
+                let live = sessions.list().await;
+                let bus = sessions::linux_bus(&live).await;
+                let infos = live
                     .iter()
                     .map(|s| sessions::SessionInfo {
                         session_id: s.id.clone(),
@@ -272,7 +273,7 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         created_ms: s.created_ms,
                         last_used_ms: s.last_used_ms(),
                         screencast_active: s.screencast_active(),
-                        semantic: sessions::Support::semantic(s),
+                        semantic: sessions::Support::semantic(s, bus.as_ref()),
                         coordinates: sessions::Support::coordinates(s),
                     })
                     .collect();

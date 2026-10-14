@@ -10,7 +10,8 @@ use crate::session::Session;
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Support {
     pub supported: bool,
-    /// Why not, when unsupported.
+    /// Why not, when unsupported. On a supported `semantic` it is a warning
+    /// instead: on Linux, accessibility is off and only GTK apps expose a tree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -30,15 +31,16 @@ impl Support {
         }
     }
 
-    /// Semantic (ref-based) actions: native sessions only.
-    pub fn semantic(session: &Session) -> Self {
-        if session.semantic.is_some() {
-            Self::yes()
-        } else {
-            Self::no(
+    /// Semantic (ref-based) actions: native sessions only. `bus` is what
+    /// [`linux_bus`] read for this call (a native Linux session reports it).
+    pub fn semantic(session: &Session, bus: Option<&Support>) -> Self {
+        match (&session.semantic, bus) {
+            (None, _) => Self::no(
                 "semantic actions need a native session (macOS, Windows or Linux); this session \
                  takes coordinates only",
-            )
+            ),
+            (Some(_), Some(bus)) => bus.clone(),
+            (Some(_), None) => Self::yes(),
         }
     }
 
@@ -50,6 +52,23 @@ impl Support {
             None => Self::yes(),
         }
     }
+}
+
+/// The AT-SPI bus state native Linux sessions report in `semantic`, probed
+/// once per call (never per session); `None` without a semantic session.
+#[cfg(target_os = "linux")]
+pub async fn linux_bus(sessions: &[std::sync::Arc<Session>]) -> Option<Support> {
+    if !sessions.iter().any(|s| s.semantic.is_some()) {
+        return None;
+    }
+    let (supported, reason) = crate::semantic::platform::a11y_support().await;
+    Some(Support { supported, reason })
+}
+
+/// Off Linux nothing is probed.
+#[cfg(not(target_os = "linux"))]
+pub async fn linux_bus(_: &[std::sync::Arc<Session>]) -> Option<Support> {
+    None
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -141,12 +160,12 @@ mod tests {
     #[tokio::test]
     async fn semantic_support_follows_the_session() {
         let (plain, _) = session_with(None);
-        let s = Support::semantic(&plain);
+        let s = Support::semantic(&plain, None);
         assert!(!s.supported);
         assert!(s.reason.unwrap().contains("coordinates only"));
         let tree = Arc::new(FakeTree::new("A", 1));
         let (native, _) = session_with(Some(SemanticSession::new(tree.factory())));
-        let s = Support::semantic(&native);
+        let s = Support::semantic(&native, None);
         assert!(s.supported && s.reason.is_none());
     }
 
@@ -159,5 +178,21 @@ mod tests {
         let c = Support::coordinates(&wayland);
         assert!(!c.supported);
         assert_eq!(c.reason.as_deref(), Some("why"));
+    }
+
+    #[tokio::test]
+    async fn a_bus_warning_reaches_only_semantic_sessions() {
+        let warning = Support {
+            supported: true,
+            reason: Some("Accessibility is off: …".to_string()),
+        };
+        let tree = Arc::new(FakeTree::new("A", 1));
+        let (native, _) = session_with(Some(SemanticSession::new(tree.factory())));
+        let s = Support::semantic(&native, Some(&warning));
+        assert!(s.supported && s.reason.unwrap().starts_with("Accessibility is off"));
+        let (plain, _) = session_with(None);
+        assert!(!Support::semantic(&plain, Some(&warning)).supported);
+        // No semantic session, no probe.
+        assert!(linux_bus(&[plain]).await.is_none());
     }
 }

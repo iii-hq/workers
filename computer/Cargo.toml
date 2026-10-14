@@ -65,6 +65,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # AT-SPI semantic backend: xa11y-linux 0.15.2 vendored with our patches and
 # without its Wayland/uinput/portal code (vendor/xa11y-linux/PATCHES.md).
 xa11y-linux = { path = "vendor/xa11y-linux" }
+# Read-only AT-SPI bus probe (org.a11y.Bus GetAddress, org.a11y.Status
+# IsEnabled); same version and features as the vendored crate, so no new
+# crate enters the graph.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [dev-dependencies]
 serde_json = "1"

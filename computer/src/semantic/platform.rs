@@ -20,3 +20,127 @@ pub fn factory() -> ProviderFactory {
         Ok(Arc::new(provider) as Arc<dyn Provider>)
     })
 }
+
+/// A native Linux session's semantic support as the session bus reports it.
+#[cfg(target_os = "linux")]
+pub const A11Y_BUS_MISSING: &str = "the AT-SPI accessibility bus is not running in this session";
+
+#[cfg(target_os = "linux")]
+pub const A11Y_OFF: &str = "Accessibility is off: GTK apps are readable, but Qt, Firefox, \
+     AccessKit (egui/Slint/Bevy) and Chromium/Electron apps expose no tree. To turn it on for \
+     this login session run: `gdbus call --session --dest org.a11y.Bus --object-path \
+     /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status IsEnabled \
+     '<true>'`. Chromium/Electron also need `--force-renderer-accessibility`.";
+
+#[cfg(target_os = "linux")]
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1_500);
+
+/// What the session bus says about AT-SPI.
+#[cfg(target_os = "linux")]
+struct BusState {
+    /// `org.a11y.Bus.GetAddress` answered.
+    address: bool,
+    /// `org.a11y.Status.IsEnabled` (unreadable counts as off).
+    enabled: bool,
+}
+
+/// Read-only: the worker never changes an accessibility setting (spec D3).
+#[cfg(target_os = "linux")]
+fn read_bus() -> BusState {
+    let Ok(c) = zbus::blocking::Connection::session() else {
+        return BusState {
+            address: false,
+            enabled: false,
+        };
+    };
+    let address = c
+        .call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some("org.a11y.Bus"),
+            "GetAddress",
+            &(),
+        )
+        .is_ok();
+    let enabled = c
+        .call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.a11y.Status", "IsEnabled"),
+        )
+        .ok()
+        .and_then(|m| m.body().deserialize::<zbus::zvariant::OwnedValue>().ok())
+        .and_then(|v| bool::try_from(v).ok())
+        .unwrap_or(false);
+    BusState { address, enabled }
+}
+
+/// `(supported, reason)` for a native Linux session's semantic layer, read
+/// once per call with a 1.5 s limit.
+#[cfg(target_os = "linux")]
+pub async fn a11y_support() -> (bool, Option<String>) {
+    support_from(read_bus, PROBE_TIMEOUT).await
+}
+
+#[cfg(target_os = "linux")]
+async fn support_from(
+    read: impl FnOnce() -> BusState + Send + 'static,
+    limit: std::time::Duration,
+) -> (bool, Option<String>) {
+    match tokio::time::timeout(limit, tokio::task::spawn_blocking(read)).await {
+        Ok(Ok(BusState { address: false, .. })) => (false, Some(A11Y_BUS_MISSING.to_string())),
+        Ok(Ok(BusState { enabled: false, .. })) => (true, Some(A11Y_OFF.to_string())),
+        Ok(Ok(_)) => (true, None),
+        // ponytail: a bus that does not answer in 1.5 s counts as missing;
+        // the blocked thread finishes on its own.
+        _ => (
+            false,
+            Some("the AT-SPI accessibility bus did not answer within 1.5 s".to_string()),
+        ),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn the_bus_probe_maps_to_support() {
+        let probe = |address, enabled| {
+            support_from(
+                move || BusState { address, enabled },
+                Duration::from_secs(5),
+            )
+        };
+        assert_eq!(
+            probe(false, true).await,
+            (false, Some(A11Y_BUS_MISSING.to_string()))
+        );
+        assert_eq!(probe(true, false).await, (true, Some(A11Y_OFF.to_string())));
+        assert_eq!(probe(true, true).await, (true, None));
+        // The one command that turns it on on every at-spi2-core version.
+        assert!(A11Y_OFF.contains("org.a11y.Status IsEnabled '<true>'"));
+    }
+
+    #[tokio::test]
+    async fn a_silent_bus_does_not_hold_up_the_session() {
+        let started = Instant::now();
+        let (ok, reason) = support_from(
+            || {
+                std::thread::sleep(Duration::from_millis(800));
+                BusState {
+                    address: true,
+                    enabled: true,
+                }
+            },
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(!ok);
+        assert!(reason.unwrap().contains("did not answer"));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+}

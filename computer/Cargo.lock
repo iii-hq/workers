@@ -610,6 +610,7 @@ dependencies = [
  "xa11y-windows",
  "xcap",
  "xkeysym",
+ "zbus",
 ]
 
 [[package]]
