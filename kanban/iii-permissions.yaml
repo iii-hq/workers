@@ -7,9 +7,21 @@ rules:
   - '!kanban::ui-content'
   - '!kanban::on-config-change'
   # Deleting and restoring a ticket is the human's call, made from the
-  # ticket screen (see skills/kanban-tickets.md). Agents move tickets.
+  # ticket screen (see skills/tickets/kanban-tickets.md). Agents move tickets.
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
+  # Planning is the human's call, made in the console: agents file tickets
+  # under a project or release, but never create, rename, ship or convert them.
+  - '!kanban::project::create'
+  - '!kanban::project::update'
+  - '!kanban::project::archive'
+  - '!kanban::project::restore'
+  - '!kanban::release::create'
+  - '!kanban::release::update'
+  - '!kanban::release::ship'
+  - '!kanban::release::reopen'
+  - '!kanban::release::delete'
+  - '!kanban::label::convert'
   # The chat mention provider is console plumbing; agents read a mentioned
   # ticket through kanban::ticket::get (the provider's declared details).
   - '!kanban::mention::search'
@@ -23,6 +35,8 @@ rules:
   - kanban::ticket::create
   - kanban::ticket::update
   - kanban::ticket::move
+  - kanban::project::list
+  - kanban::release::list
   - kanban::comment::create
   - kanban::comment::list
   - kanban::activity::list

@@ -21,6 +21,7 @@ import {
   StatusDot,
   StatusPanel,
   uiClasses,
+  useConfirm,
   type Host,
   type PageRenderProps,
 } from '@iii-dev/console-ui'
@@ -29,6 +30,7 @@ import { useContainerNarrow, useCopyFlash, usePaneState } from '@iii-dev/console
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowUpRight,
   AtSign,
   Bot,
   Check,
@@ -36,6 +38,8 @@ import {
   Clock,
   Columns2,
   Copy,
+  Flag,
+  ListTree,
   Pencil,
   Plus,
   RefreshCw,
@@ -52,7 +56,10 @@ import { allLabels } from './filters'
 import { TICKET_HREF, linkTicketKeys, type LinkedTicket } from './links'
 import {
   BOARD_PAGE_ID,
+  PLAN_CHANGED_EVENT,
+  PROJECTS_PAGE_ID,
   PriorityChip,
+  RELEASES_PAGE_ID,
   StatusGlyph,
   TICKET_PAGE_ID,
   api,
@@ -62,12 +69,33 @@ import {
   subscribeChanges,
   type Activity,
   type AgentProfile,
+  type BoardData,
+  type Brief,
   type Change,
   type Column,
   type Ticket,
   type TicketLinks,
   type TicketSummary,
 } from './shared'
+import {
+  groupSubtaskAdds,
+  parentBlockedReason,
+  parentOffer,
+  parentSentence,
+  planSentence,
+  subtaskSentence,
+  type Part,
+} from './subtask-rules'
+import {
+  DoneWarning,
+  ParentSelector,
+  ParentStrip,
+  ProjectSelector,
+  ReleaseSelector,
+  SubtasksSection,
+  TicketRef,
+  type Act,
+} from './subtasks'
 
 function readContextId(context: unknown): string | null {
   if (!context || typeof context !== 'object') return null
@@ -126,6 +154,12 @@ function mentionsKey(ticket: Ticket, key: string): boolean {
   return texts.some((text) => text?.toLowerCase().includes(needle))
 }
 
+/** The one-line view of a ticket, as a subtask's `parent` carries it. */
+function briefOf(ticket: Ticket): Brief {
+  const { id, key, title, status, priority, assignee, deleted_at, project_id, release_id } = ticket
+  return { id, key, title, status, priority, assignee, deleted_at, project_id, release_id }
+}
+
 /** Set when a ticket opens another: the next screen to show a ticket puts focus on its title, the clicked control is gone. */
 let focusTitleBefore = 0
 
@@ -151,7 +185,23 @@ function describeLabelChange(change: Change): ReactNode {
   ))
 }
 
-function activitySentence(entry: Activity, columns: Column[], nameOf: (id: string) => string): ReactNode {
+type KeyRef = (key: string) => ReactNode
+
+/** A sentence made of text and ticket keys: a key opens its ticket. */
+function renderParts(parts: Part[], ref: KeyRef): ReactNode {
+  return parts.map((part, index) =>
+    typeof part === 'string' ? part : <Fragment key={`${part.ticket}:${index}`}>{ref(part.ticket)}</Fragment>,
+  )
+}
+
+function describeField(change: Change, columns: Column[], nameOf: (id: string) => string, ref: KeyRef): ReactNode {
+  if (change.field === 'labels') return describeLabelChange(change)
+  if (change.field === 'parent') return renderParts(parentSentence(change), ref)
+  if (change.field === 'project' || change.field === 'release') return planSentence(change)
+  return describeChange(change, columns, nameOf)
+}
+
+function activitySentence(entry: Activity, columns: Column[], nameOf: (id: string) => string, ref: KeyRef): ReactNode {
   switch (entry.type) {
     case 'ticket.created':
       return `created this in ${statusLabel(columns, String(entry.changes?.[0]?.to ?? ''))}`
@@ -163,10 +213,13 @@ function activitySentence(entry: Activity, columns: Column[], nameOf: (id: strin
       return changes.map((change, index) => (
         <Fragment key={`${change.field}:${index}`}>
           {index > 0 ? ', ' : null}
-          {change.field === 'labels' ? describeLabelChange(change) : describeChange(change, columns, nameOf)}
+          {describeField(change, columns, nameOf, ref)}
         </Fragment>
       ))
     }
+    case 'subtask.added':
+    case 'subtask.removed':
+      return renderParts(subtaskSentence(entry.type, entry.changes), ref)
     case 'ticket.deleted':
       return 'deleted this ticket'
     case 'ticket.restored':
@@ -189,9 +242,14 @@ function activityIcon(entry: Activity): LucideIcon {
       return Trash2
     case 'ticket.restored':
       return RotateCcw
+    case 'subtask.added':
+    case 'subtask.removed':
+      return ListTree
     default: {
       const changes = entry.changes ?? []
-      return changes.length > 0 && changes.every((change) => change.field === 'labels') ? Tag : Pencil
+      const only = (...fields: string[]) =>
+        changes.length > 0 && changes.every((change) => fields.includes(change.field))
+      return only('labels') ? Tag : only('parent') ? ListTree : only('project', 'release') ? Flag : Pencil
     }
   }
 }
@@ -325,6 +383,8 @@ type TicketScreenProps = {
   columns: Column[]
   priorities: string[]
   agents: AgentProfile[]
+  /** The column that counts as done, when the caller already knows it; the board read overrides it. */
+  doneStatus?: string
   onBack?: () => void
   /** Where a linked ticket opens when the host has no panes (`host.panels`). */
   onOpenTicket?: (key: string) => void
@@ -340,6 +400,7 @@ export function TicketScreen({
   columns,
   priorities,
   agents,
+  doneStatus: knownDoneStatus,
   onBack,
   onOpenTicket,
   onRequestClose,
@@ -358,7 +419,8 @@ export function TicketScreen({
   const [titleDraft, setTitleDraft] = useState('')
   const [replyTo, setReplyTo] = useState<{ id: string; author: string } | null>(null)
   const [pending, setPending] = useState(0)
-  const [boardLabels, setBoardLabels] = useState<string[]>([])
+  const [board, setBoard] = useState<BoardData | null>(null)
+  const [parentView, setParentView] = useState<Ticket | null>(null)
   const [links, setLinks] = useState<LinkRow[]>([])
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>('all')
   const { narrow, props: shell } = useShell()
@@ -397,18 +459,95 @@ export function TicketScreen({
     void load()
   }, [load])
 
-  useEffect(() => {
-    let cancelled = false
+  // The board: label suggestions, the project, release and parent choices, the done column. Read once, and
+  // again whenever one of those lists opens.
+  const boardRequest = useRef(0)
+  const refreshBoard = useCallback(() => {
+    const request = ++boardRequest.current
     void api
       .board(host.iii)
-      .then((board) => {
-        if (!cancelled) setBoardLabels(allLabels(board.columns.flatMap((column) => column.tickets)))
+      .then((next) => {
+        if (boardRequest.current === request) setBoard(next)
       })
       .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
   }, [host])
+  useEffect(() => {
+    refreshBoard()
+    return () => {
+      boardRequest.current++
+    }
+  }, [refreshBoard])
+  const boardTickets = useMemo(() => (board ? board.columns.flatMap((column) => column.tickets) : null), [board])
+  const boardLabels = useMemo(() => allLabels(boardTickets ?? []), [boardTickets])
+  const doneStatus = board?.done_status || knownDoneStatus || columns[columns.length - 1]?.id || ''
+
+  // A subtask shows its parent's numbers and its siblings: the parent as the worker returns it.
+  const parentId = ticket?.parent_id ?? null
+  const parentRequest = useRef(0)
+  const parentTimer = useRef<number | undefined>(undefined)
+  const selfTimer = useRef<number | undefined>(undefined)
+  const selfRequest = useRef(0)
+  const fetchParent = useCallback(() => {
+    const id = ticketRef.current?.parent_id
+    const request = ++parentRequest.current
+    if (!id) {
+      setParentView(null)
+      return
+    }
+    void api
+      .ticket(host.iii, id)
+      .then((view) => {
+        if (parentRequest.current === request) setParentView(view)
+      })
+      .catch(() => undefined)
+  }, [host])
+  useEffect(() => {
+    fetchParent()
+    return () => {
+      parentRequest.current++
+    }
+  }, [fetchParent, parentId])
+  // A burst of events (closing ten subtasks) is one read.
+  const refreshParent = useCallback(() => {
+    window.clearTimeout(parentTimer.current)
+    parentTimer.current = window.setTimeout(fetchParent, 300)
+  }, [fetchParent])
+  const refreshSelf = useCallback(() => {
+    window.clearTimeout(selfTimer.current)
+    selfTimer.current = window.setTimeout(() => {
+      const id = ticketRef.current?.id
+      if (id) {
+        // Only the newest read counts: with a burst of closes the older reply can land last, and an equal
+        // `updated_at` would not tell it apart.
+        const request = ++selfRequest.current
+        void api
+          .ticket(host.iii, id)
+          .then((next) => {
+            if (selfRequest.current === request) show(next)
+          })
+          .catch(() => undefined)
+      }
+    }, 300)
+  }, [host, show])
+  useEffect(
+    () => () => {
+      window.clearTimeout(parentTimer.current)
+      window.clearTimeout(selfTimer.current)
+      selfRequest.current++
+    },
+    [],
+  )
+
+  // A project or release written in another pane fires no change event: the options, and the project or
+  // release this ticket sits in (a shipped release moves its open tickets), are read again.
+  useEffect(() => {
+    const onPlanChanged = () => {
+      refreshBoard()
+      refreshSelf()
+    }
+    window.addEventListener(PLAN_CHANGED_EVENT, onPlanChanged)
+    return () => window.removeEventListener(PLAN_CHANGED_EVENT, onPlanChanged)
+  }, [refreshBoard, refreshSelf])
 
   const ticketUpdatedAt = ticket?.updated_at
   const linksRequest = useRef(0)
@@ -452,15 +591,22 @@ export function TicketScreen({
         incoming.key.toLowerCase() === wanted
       ) {
         show(incoming)
+        // Its status counts in the parent's progress.
+        if (incoming.parent_id) refreshParent()
         return
       }
-      // Someone else's ticket: its row, or the text that cites this one, may have changed the links.
       const own = ticketRef.current
-      if (own && (linksRef.current.some((row) => row.ticket.id === incoming.id) || mentionsKey(incoming, own.key))) {
+      if (!own) return
+      // One of its subtasks changed: the list and the progress are the worker's to count.
+      if (incoming.parent_id === own.id) refreshSelf()
+      // Its parent or a sibling changed: the strip and the previous/next buttons.
+      if (own.parent_id && (incoming.id === own.parent_id || incoming.parent_id === own.parent_id)) refreshParent()
+      // Someone else's ticket: its row, or the text that cites this one, may have changed the links.
+      if (linksRef.current.some((row) => row.ticket.id === incoming.id) || mentionsKey(incoming, own.key)) {
         refetchLinks()
       }
     })
-  }, [host, ticketId, show, refetchLinks])
+  }, [host, ticketId, show, refetchLinks, refreshParent, refreshSelf])
 
   // After a ticket opens another in this pane, the control that was clicked is gone: focus the new title.
   const titleRef = useRef<HTMLHeadingElement>(null)
@@ -481,6 +627,7 @@ export function TicketScreen({
   const composerId = useId()
   const linksTitleId = useId()
   const addLabelId = useId()
+  const parentNoteId = useId()
   const labelsRef = useRef<HTMLDivElement>(null)
   const startEditing = useCallback(() => {
     if (!ticket || ticket.deleted_at) return
@@ -542,6 +689,47 @@ export function TicketScreen({
     },
     [host, load, show],
   )
+
+  /**
+   * A write on other tickets (subtasks): runs it, shows what failed, and re-reads this ticket either way, so a
+   * bulk action that stopped halfway shows how far it got. True when it worked.
+   */
+  const act = useCallback<Act>(
+    async (work) => {
+      setPending((count) => count + 1)
+      setActionError(null)
+      let ok = false
+      try {
+        await work()
+        ok = true
+      } catch (caught) {
+        setActionError(errorMessage(caught))
+      }
+      try {
+        const fresh = await api.ticket(host.iii, ticketRef.current?.id ?? ticketId)
+        if (ok) noteOwnWrite(fresh)
+        show(fresh)
+      } catch {
+        // The change event brings the same view.
+      }
+      setPending((count) => count - 1)
+      return ok
+    },
+    [host, ticketId, show],
+  )
+
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  const detachFromParent = async () => {
+    const parent = ticketRef.current?.parent
+    if (!parent) return
+    const yes = await confirm({
+      title: `Detach from ${parent.key}?`,
+      description: 'It stays on the board as a ticket of its own, with its own project and release.',
+      details: [`${ticketRef.current?.key} — ${ticketRef.current?.title}`],
+      confirmLabel: 'Detach',
+    })
+    if (yes) void patch({ parent: null })
+  }
 
   const saveDescription = async () => {
     if (await patch({ description: draft })) setEditingDescription(false)
@@ -736,6 +924,36 @@ export function TicketScreen({
   const visibleTimeline = timeline.filter(
     ({ comment }) => activityFilter === 'all' || (activityFilter === 'comments') === Boolean(comment),
   )
+  const keyRef: KeyRef = (key) => <TicketRef onOpen={canOpenTicket ? openTicket : undefined} ticketKey={key} />
+  // The parent and the subtasks have their own places on this screen: they are not repeated as links.
+  const related = new Set([ticket.parent_id, ...ticket.children.map((child) => child.id)])
+  const shownLinks = links.filter((row) => !related.has(row.ticket.id))
+  const parentLinked = links.some((row) => row.ticket.id === ticket.parent_id)
+  const childLinked = links.some((row) => ticket.children.some((child) => child.id === row.ticket.id))
+  const projectName = board?.projects.find((project) => project.id === ticket.project_id)?.name
+  const releaseName = board?.releases.find((release) => release.id === ticket.release_id)?.name
+  const parentBlocked = parentBlockedReason(ticket)
+  // The parent as the worker last returned it: the copy inside this ticket goes stale when the parent is deleted elsewhere.
+  const parentBrief = parentView?.id === ticket.parent_id ? briefOf(parentView) : ticket.parent
+  /** "Its parent is in Phase 2 · Add to Phase 2": the parent's project or release, offered once, never applied. */
+  const facetOffer = (kind: 'project' | 'release') => {
+    const offer = deleted ? null : parentOffer(ticket, kind, board?.projects ?? [], board?.releases ?? [])
+    if (!offer) return null
+    return (
+      <div className="kanban-prop__offer">
+        <span>Its parent is in {offer.name}</span>
+        <Button
+          className="kanban-touch"
+          disabled={busy}
+          onClick={() => void patch({ [kind]: offer.id })}
+          size="sm"
+          variant="pill"
+        >
+          Add to {offer.name}
+        </Button>
+      </div>
+    )
+  }
 
   return (
     <PageShell {...shell}>
@@ -790,6 +1008,18 @@ export function TicketScreen({
       />
       <PageMain>
         <div className="kanban-record" data-autofocus="" tabIndex={-1}>
+          {parentBrief ? (
+            <div className="kanban-record__strip">
+              <ParentStrip
+                canOpen={canOpenTicket}
+                columns={columns}
+                onOpen={openTicket}
+                parent={parentBrief}
+                parentView={parentView?.id === ticket.parent_id ? parentView : null}
+                ticketId={ticket.id}
+              />
+            </div>
+          ) : null}
           <div className="kanban-record__grid">
             <div className="kanban-record__head" data-area="head">
               <div className="kanban-record__eyebrow">
@@ -860,6 +1090,14 @@ export function TicketScreen({
                   by {agentName(ticket.created_by)}
                 </span>
               </div>
+              <DoneWarning
+                busy={busy}
+                columns={columns}
+                doneStatus={doneStatus}
+                host={host}
+                onAct={act}
+                ticket={ticket}
+              />
             </div>
 
             <aside aria-label="Properties" className="kanban-record__props" data-area="props">
@@ -904,6 +1142,105 @@ export function TicketScreen({
                       placeholder="Unassigned"
                       value={ticket.assignee ?? undefined}
                     />
+                  </div>
+                  <div className="kanban-prop kanban-prop--facet">
+                    <span className="kanban-prop__label">Project</span>
+                    <div className="kanban-prop__stack">
+                      <div className="kanban-prop__row">
+                        <ProjectSelector
+                          disabled={deleted}
+                          onChange={(next) => void patch({ project: next })}
+                          onOpen={refreshBoard}
+                          projects={board?.projects ?? null}
+                          value={ticket.project_id}
+                        />
+                        {ticket.project_id && hasPanels ? (
+                          <IconButton
+                            className="kanban-touch"
+                            label={projectName ? `Open project ${projectName}` : 'Open project'}
+                            onClick={() =>
+                              host.panels?.open({ pageId: PROJECTS_PAGE_ID, context: { id: ticket.project_id } })
+                            }
+                            variant="ghost"
+                          >
+                            <ArrowUpRight size={16} />
+                          </IconButton>
+                        ) : null}
+                      </div>
+                      {facetOffer('project')}
+                    </div>
+                  </div>
+                  <div className="kanban-prop kanban-prop--facet">
+                    <span className="kanban-prop__label">Release</span>
+                    <div className="kanban-prop__stack">
+                      <div className="kanban-prop__row">
+                        <ReleaseSelector
+                          disabled={deleted}
+                          onChange={(next) => void patch({ release: next })}
+                          onOpen={refreshBoard}
+                          releases={board?.releases ?? null}
+                          value={ticket.release_id}
+                        />
+                        {ticket.release_id && hasPanels ? (
+                          <IconButton
+                            className="kanban-touch"
+                            label={releaseName ? `Open release ${releaseName}` : 'Open release'}
+                            onClick={() =>
+                              host.panels?.open({ pageId: RELEASES_PAGE_ID, context: { id: ticket.release_id } })
+                            }
+                            variant="ghost"
+                          >
+                            <ArrowUpRight size={16} />
+                          </IconButton>
+                        ) : null}
+                      </div>
+                      {facetOffer('release')}
+                    </div>
+                  </div>
+                  <div className="kanban-prop kanban-prop--facet">
+                    <span className="kanban-prop__label">Parent</span>
+                    <div className="kanban-prop__stack">
+                      <div className="kanban-prop__row">
+                        <ParentSelector
+                          aria-describedby={parentBlocked ? parentNoteId : undefined}
+                          current={parentBrief}
+                          disabled={deleted || parentBlocked !== null}
+                          onChange={(next) => void patch({ parent: next })}
+                          onOpen={refreshBoard}
+                          selfId={ticket.id}
+                          tickets={boardTickets}
+                          value={ticket.parent?.key ?? null}
+                        />
+                        {ticket.parent && canOpenTicket ? (
+                          <IconButton
+                            className="kanban-touch"
+                            label={`Open parent ${ticket.parent.key}`}
+                            onClick={() => openTicket(ticket.parent?.key ?? '')}
+                            variant="ghost"
+                          >
+                            <ArrowUpRight size={16} />
+                          </IconButton>
+                        ) : null}
+                      </div>
+                      {parentBlocked ? (
+                        <p className="kanban-prop__note" id={parentNoteId}>
+                          {parentBlocked}
+                        </p>
+                      ) : null}
+                      {ticket.parent && !deleted ? (
+                        <div>
+                          <Button
+                            className="kanban-touch"
+                            disabled={busy}
+                            onClick={() => void detachFromParent()}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            Detach…
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="kanban-prop kanban-prop--labels" data-empty={ticket.labels.length === 0 ? 'true' : undefined}>
                     <span className="kanban-prop__label">Labels</span>
@@ -1054,17 +1391,40 @@ export function TicketScreen({
               ) : (
                 <p className="kanban-muted">No description yet.</p>
               )}
-              {links.length > 0 ? (
+              {ticket.parent_id ? null : (
+                <SubtasksSection
+                  agents={agents}
+                  busy={busy}
+                  canOpen={canOpenTicket}
+                  columns={columns}
+                  deleted={deleted}
+                  doneStatus={doneStatus}
+                  host={host}
+                  onAct={act}
+                  onOpen={openTicket}
+                  onPick={refreshBoard}
+                  priorities={priorities}
+                  projects={board?.projects ?? []}
+                  releases={board?.releases ?? []}
+                  ticket={ticket}
+                  tickets={boardTickets}
+                />
+              )}
+              {shownLinks.length > 0 ? (
                 <section aria-labelledby={linksTitleId} className="kanban-links">
                   <div className="kanban-section__head">
                     <h2 className="kanban-section__title" id={linksTitleId}>
                       Linked tickets
                     </h2>
-                    <span className="kanban-section__count kanban-section__count--inline">{links.length}</span>
+                    <span className="kanban-section__count kanban-section__count--inline">{shownLinks.length}</span>
                   </div>
-                  <p className="kanban-muted">Tickets this one mentions, and tickets that mention it.</p>
+                  <p className="kanban-muted">
+                    Tickets this one mentions, and tickets that mention it.
+                    {parentLinked ? ` Its parent, ${ticket.parent?.key}, is shown above.` : ''}
+                    {childLinked ? ' Its subtasks are listed above.' : ''}
+                  </p>
                   <ul className="kanban-links__list">
-                    {links.map(({ ticket: linked, relation }) => (
+                    {shownLinks.map(({ ticket: linked, relation }) => (
                       <li key={linked.id}>
                         <button
                           className="kanban-link-row"
@@ -1110,7 +1470,33 @@ export function TicketScreen({
                 <p className="kanban-muted">No {activityFilter} yet.</p>
               ) : (
                 <ol className="kanban-timeline">
-                  {visibleTimeline.map(({ entry, comment }) => {
+                  {groupSubtaskAdds(visibleTimeline).map((row) => {
+                    if (row.kind === 'adds') {
+                      const first = row.items[0]?.entry
+                      const last = row.items[row.items.length - 1]?.entry
+                      if (!first || !last) return null
+                      return (
+                        <li className="kanban-event" key={first.id}>
+                          <span className="kanban-event__icon">
+                            <ListTree size={16} />
+                          </span>
+                          <span className="kanban-event__text">
+                            <strong>{agentName(first.actor)}</strong> added {row.keys.length} subtasks{' '}
+                            <span title={row.keys.join(', ')}>
+                              {keyRef(row.keys[0] ?? '')} … {keyRef(row.keys[row.keys.length - 1] ?? '')}
+                            </span>
+                          </span>
+                          <time
+                            className="kanban-mono kanban-event__time"
+                            dateTime={last.at}
+                            title={absoluteTime(last.at)}
+                          >
+                            {ago(last.at)}
+                          </time>
+                        </li>
+                      )
+                    }
+                    const { entry, comment } = row.item
                     if (comment) {
                       const author = agents.find((agent) => agent.id === comment.author)
                       return (
@@ -1162,7 +1548,7 @@ export function TicketScreen({
                           <EventIcon size={16} />
                         </span>
                         <span className="kanban-event__text">
-                          <strong>{agentName(entry.actor)}</strong> {activitySentence(entry, columns, agentName)}
+                          <strong>{agentName(entry.actor)}</strong> {activitySentence(entry, columns, agentName, keyRef)}
                         </span>
                         <time
                           className="kanban-mono kanban-event__time"
@@ -1203,6 +1589,7 @@ export function TicketScreen({
         open={confirming}
         title={deleted ? 'Restore this ticket?' : 'Delete this ticket?'}
       />
+      {confirmDialog}
     </PageShell>
   )
 }
@@ -1221,6 +1608,7 @@ export function TicketPage({
   const contextId = readContextId(panelContext?.context)
   const [columns, setColumns] = useState<Column[]>([])
   const [priorities, setPriorities] = useState<string[]>([])
+  const [doneStatus, setDoneStatus] = useState('')
   const [agents, setAgents] = useState<AgentProfile[]>([])
   const { props: shell } = useShell()
 
@@ -1236,6 +1624,7 @@ export function TicketPage({
         if (cancelled) return
         setColumns(info.columns ?? [])
         setPriorities(info.priorities ?? [])
+        setDoneStatus(info.done_status ?? '')
       })
       .catch(() => undefined)
     void api
@@ -1278,6 +1667,7 @@ export function TicketPage({
       agents={agents}
       columns={columns}
       commands={commands}
+      doneStatus={doneStatus}
       host={host}
       // One screen per ticket: drafts, reply target and errors never travel to the next one.
       key={id}

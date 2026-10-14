@@ -10,7 +10,7 @@ type: how-to
 
 - The `kanban-tickets` skill owns the write mechanics — actor, keys, columns, priorities, the comment loop. If it is not in your context: `directory::skills::get { "id": "kanban/tickets/kanban-tickets" }`.
 - `kanban::config::info {}` — the live column ids, priorities and key prefix. Never assume a column id; read it.
-- `kanban::board::get {}` — what is already planned. A ticket you cannot see is a ticket you will duplicate.
+- `kanban::board::get {}` — what is already planned, plus the board's projects and releases. A ticket you cannot see is a ticket you will duplicate.
 
 The board is the authoritative record. The chat is a scratchpad that is thrown away when the session ends.
 
@@ -70,6 +70,28 @@ A ticket is a slice that can ship and be checked on its own.
 - Ordering is a `Depends on:` line in Notes, not a tenth criterion.
 - Infrastructure with no observable outcome is a `Notes` line inside the ticket that needs it — not a ticket.
 
+## Group outcomes under a parent; file them under a project and release
+
+When a feature is more than one outcome, keep one **feature ticket** (the Problem, the Outcome and the criteria that only hold once everything landed) and file each outcome as a **subtask** by creating it with `parent`:
+
+```json
+kanban::ticket::create {
+  "title": "Filters survive a reload",
+  "description": "<the template above>",
+  "parent": "KAN-7",
+  "project": "iii cloud",
+  "release": "Phase 2",
+  "actor": "product-manager"
+}
+```
+
+- **One level.** The parent must be live and have no parent; a ticket that already has subtasks cannot become a subtask. Move an existing ticket under a feature with `kanban::ticket::update { "id": "KAN-9", "parent": "KAN-7" }` (`"parent": null` detaches).
+- **A subtask is a full ticket.** It carries its own criteria, `Verify:` lines and `Out of scope`; the feature ticket's criteria cover only what no single subtask can show. Ordering between subtasks is still a `Depends on:` line.
+- **Progress counts only the done column.** The parent's `progress` is `{ done, total }` over its live subtasks in `done_status`; a subtask in `in_review` is not done. The parent does not move when a subtask does, and a feature ticket moved to done with open subtasks is flagged in the console.
+- **Nothing is inherited.** A subtask does not copy its parent's project or release; pass `project` and `release` on each one. Both take an id or a name.
+- **Set them only if the user named them.** Read `kanban::project::list {}` and `kanban::release::list {}` and use what they return. A project or release that does not exist yet is the user's to create in the console (creating, shipping and converting them are not agent actions); ask, or leave the field empty and say so in the ticket's `Notes`.
+- **A single-outcome ticket needs no parent.** Do not wrap one ticket in a feature ticket to look organised.
+
 ## The edit loop — the part that must not slip
 
 The plan changes every few turns. Each change lands in the ticket **in the same turn it is agreed**:
@@ -119,4 +141,6 @@ Assigning is a **separate decision**. Leave `assignee` null unless the user name
 - [ ] Every ticket has ≥3 acceptance criteria, each with an observable result and a `Verify:` line.
 - [ ] `Out of scope` is non-empty on every ticket.
 - [ ] Every `Depends on:` key exists on the board.
+- [ ] A multi-outcome feature has one feature ticket, and each outcome is a subtask created with `parent` (one level only).
+- [ ] `project` / `release` are set only to ids or names `kanban::project::list` / `kanban::release::list` returned, and passed on each subtask explicitly.
 - [ ] `actor: "product-manager"` on every write; `assignee` only set to an id `kanban::agent::list` actually returned.

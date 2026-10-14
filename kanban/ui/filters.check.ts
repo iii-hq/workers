@@ -1,6 +1,7 @@
 // Self-check for src/filters.ts: `node filters.check.ts` (Node 24 strips types).
 import assert from 'node:assert/strict'
 import {
+  coerceFilters,
   coerceViews,
   EMPTY_FILTERS,
   type Filters,
@@ -146,4 +147,47 @@ assert.deepEqual(
   ['x', 'z'],
   'duplicate view ids keep the first',
 )
+// Project and release filters: ids, '' is "none", any-of inside a facet, facet counts skip their own filter.
+const p1 = ticket('KAN-31', [], { project_id: 'pr1', release_id: 'r2' })
+const p2 = ticket('KAN-32', [], { project_id: 'pr2', release_id: 'r2' })
+const p0 = ticket('KAN-33', [], { project_id: null, release_id: null })
+const old = ticket('KAN-34', []) // no project_id/release_id at all (older worker, stale event)
+assert.ok(matches(p1, f({ projects: ['pr1'] }), ctx) && !matches(p2, f({ projects: ['pr1'] }), ctx), 'project id')
+assert.ok(matches(p2, f({ projects: ['pr1', 'pr2'] }), ctx), 'any of the projects')
+assert.ok(matches(p0, f({ projects: [''] }), ctx) && matches(old, f({ projects: [''] }), ctx), '"" is no project')
+assert.ok(!matches(p1, f({ projects: [''] }), ctx), 'no project excludes tickets with one')
+assert.ok(matches(p0, f({ releases: [''] }), ctx) && !matches(p1, f({ releases: [''] }), ctx), '"" is no release')
+assert.ok(matches(p1, f({ releases: ['r2'], projects: ['pr1'] }), ctx), 'facets combine')
+assert.ok(!matches(p2, f({ releases: ['r2'], projects: ['pr1'] }), ctx), 'facets combine with and')
+const all = [p1, p2, p0, old]
+const filtered = f({ projects: ['pr1'], releases: ['r2'] })
+assert.deepEqual(
+  { ...facetCounts(all, filtered, ctx, 'projects') },
+  { pr1: 1, pr2: 1 },
+  'project counts keep the release filter, skip their own',
+)
+assert.deepEqual(
+  { ...facetCounts(all, filtered, ctx, 'releases') },
+  { r2: 1 },
+  'release counts keep the project filter, skip their own',
+)
+assert.deepEqual(
+  { ...facetCounts(all, EMPTY_FILTERS, ctx, 'projects') },
+  { pr1: 1, pr2: 1, '': 2 },
+  'none counts as ""',
+)
+assert.ok(sameFilters(f({ projects: ['b', 'a'] }), f({ projects: ['a', 'b'] })), 'project order is irrelevant')
+assert.ok(!sameFilters(f({ releases: ['a'] }), EMPTY_FILTERS), 'a release filter is a filter')
+assert.ok(!sameFilters(f({ projects: ['a'] }), f({ releases: ['a'] })), 'project is not release')
+assert.deepEqual(
+  coerceFilters({ labels: ['x'] }),
+  f({ labels: ['x'] }),
+  'older stored filters default to no project/release',
+)
+assert.deepEqual(
+  coerceFilters({ projects: ['a', 3], releases: 'nope' }),
+  f({ projects: ['a'] }),
+  'bad project/release values are dropped',
+)
+
 console.log('filters: ok')

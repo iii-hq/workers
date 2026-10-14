@@ -194,11 +194,23 @@ rules:
   - '!harness::on-compose-operation'
   # kanban: console asset delivery and the configuration reload sink are
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
-  # ticket screen; the ticket working loop is allowlisted below.
+  # ticket screen; the ticket working loop is allowlisted below. Planning is
+  # the human's call too: agents file tickets under a project or release but
+  # never create, rename, ship or convert them.
   - '!kanban::ui-content'
   - '!kanban::on-config-change'
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
+  - '!kanban::project::create'
+  - '!kanban::project::update'
+  - '!kanban::project::archive'
+  - '!kanban::project::restore'
+  - '!kanban::release::create'
+  - '!kanban::release::update'
+  - '!kanban::release::ship'
+  - '!kanban::release::reopen'
+  - '!kanban::release::delete'
+  - '!kanban::label::convert'
   # stories: console asset delivery, the /ui-files content function and the
   # configuration reload sink are engine plumbing. Reads, comparisons,
   # renders and line builds are allowlisted below.
@@ -429,6 +441,8 @@ rules:
   - kanban::ticket::create
   - kanban::ticket::update
   - kanban::ticket::move
+  - kanban::project::list
+  - kanban::release::list
   - kanban::comment::create
   - kanban::comment::list
   - kanban::activity::list

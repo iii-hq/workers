@@ -186,6 +186,38 @@
   flex: none;
 }
 
+/* Where a ticket sits in the plan (subtask of, subtasks done, release, project): a quiet line under the title. */
+[data-iii-ui="kanban"] .kanban-list__stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__plan {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-ink-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kanban-list__stack > .kanban-list__plan {
+  display: block;
+}
+
+[data-iii-ui="kanban"] .kanban-list__fact + .kanban-list__fact::before {
+  content: " · ";
+}
+
+/* What a bulk action left out. */
+[data-iii-ui="kanban"] .kanban-list__result {
+  flex: none;
+  padding: 8px 12px 0;
+}
+
 [data-iii-ui="kanban"] .kanban-list__dot {
   flex: none;
   width: 6px;
@@ -280,6 +312,11 @@
 [data-iii-ui="kanban"] .kanban-list__scroll {
   max-height: 260px;
   overflow-y: auto;
+}
+
+/* In the parent picker the key keeps its width and the title gives way. */
+[data-iii-ui="kanban"] .kanban-list__scroll .kanban-list__mono {
+  flex: none;
 }
 
 [data-iii-ui="kanban"] .kanban-list__name {
@@ -406,6 +443,21 @@
   outline-offset: -2px;
 }
 
+/* Narrow: the plan facts trail the description ("KAN-12 · Backlog · High · Phase 2"), same size and colour. */
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__plan {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__plan::before {
+  content: " · ";
+}
+
+[data-iii-ui="kanban"] .kanban-list[data-narrow] .kanban-list__result {
+  padding: 8px 8px 0;
+}
+
 /* The shared row lights on :hover; on touch that sticks after a tap. */
 @media (hover: none) {
   [data-iii-ui="kanban"] .kanban-list__ticket:not([data-selected="true"]):hover {
@@ -441,4 +493,86 @@
   width: 44px;
   height: 44px;
   padding: 0;
+}
+
+/* Phone: the More menu's release, project and parent choices open as pages in a sheet (48px rows, like the filter sheets). */
+
+[data-iii-ui="kanban"] .kanban-list__sheet-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 0 12px 12px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__sheet-body .kanban-list__find {
+  flex: none;
+  padding: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__sheet-body .kanban-list__find input {
+  height: 48px;
+}
+
+/* Only the list scrolls: the search stays in reach. */
+[data-iii-ui="kanban"] .kanban-list__sheet-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Keys of different lengths (KAN-9, KAN-10, KAN-186) still start their titles at one x. */
+[data-iii-ui="kanban"] .kanban-list__sheet-list .kanban-list__mono {
+  flex: none;
+  min-width: 7ch;
+}
+
+[data-iii-ui="kanban"] .kanban-list__pick {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="kanban"] .kanban-list__pick[aria-checked="true"] {
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui="kanban"] .kanban-list__pick:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+[data-iii-ui="kanban"] .kanban-list__pick:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+[data-iii-ui="kanban"] .kanban-list__tick {
+  flex: none;
+  opacity: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-list__pick[aria-checked="true"] .kanban-list__tick {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  [data-iii-ui="kanban"] .kanban-list__pick:hover {
+    background: var(--color-surface-hover);
+  }
 }

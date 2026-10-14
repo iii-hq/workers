@@ -18,6 +18,8 @@ functions:
   - kanban::activity::list
   - kanban::config::info
   - kanban::agent::list
+  - kanban::project::list
+  - kanban::release::list
   - engine::register_trigger
   - harness::triggers::list
   - harness::triggers::unregister

@@ -1,11 +1,12 @@
 //! Behaviour of the board operations, the store round-trip, the trigger
 //! filters and the function catalog — engine-free.
 
+use iii_kanban::board::TicketView;
 use iii_kanban::board::{
     ActivityFilter, BoardContext, CommentFilter, CreateCommentInput, CreateTicketInput,
     TicketFilter, UpdatePatch, create_comment, create_ticket, delete_ticket, find_ticket,
     list_activity, list_comments, list_tickets, move_ticket, next_at, restore_ticket, summarize,
-    ticket_links, update_ticket,
+    ticket_links, ticket_view, update_ticket,
 };
 use iii_kanban::config::{Column, KanbanConfig, normalize};
 use iii_kanban::events::{
@@ -14,7 +15,7 @@ use iii_kanban::events::{
 };
 use iii_kanban::functions::{
     self, BoardGetInput, BoardView, CommentCreateInput, ConfigInfo, TicketCreateInput,
-    TicketUpdateInput, board_view, ticket_outcome,
+    TicketUpdateInput, board_view,
 };
 use iii_kanban::store::{Board, Comment, Ticket, read_board, write_board};
 use serde_json::{Value, json};
@@ -23,6 +24,7 @@ fn context() -> BoardContext {
     BoardContext {
         prefix: "KAN".into(),
         default_status: "backlog".into(),
+        done_status: "done".into(),
         columns: [("backlog", "Backlog"), ("todo", "To do"), ("done", "Done")]
             .into_iter()
             .map(|(id, label)| Column {
@@ -64,6 +66,21 @@ fn comment(
 
 fn ticket(board: &Board, id: &str) -> Ticket {
     find_ticket(board, id).cloned().expect("ticket exists")
+}
+
+/// What `functions::ticket_outcome` announces for a one-ticket write: the
+/// ticket of the first event (`None` fires nothing) and the caller's result.
+struct Fired {
+    ticket: Option<Ticket>,
+    result: Option<Ticket>,
+}
+
+fn ticket_outcome(before: Option<Ticket>, after: Option<Ticket>) -> Fired {
+    let outcome = functions::ticket_outcome(&Board::empty(), &context(), before, after, &[]);
+    Fired {
+        ticket: outcome.tickets.first().map(|view| view.ticket.clone()),
+        result: outcome.result.map(|view| view.ticket),
+    }
 }
 
 #[test]
@@ -318,7 +335,9 @@ fn a_soft_delete_leaves_the_row_on_the_board_and_can_be_restored() {
         "deleting twice records nothing new"
     );
 
-    let restored = restore_ticket(&mut board, &created.id, "user", &at(4)).unwrap();
+    let restored = restore_ticket(&mut board, &created.id, "user", &at(4))
+        .unwrap()
+        .ticket;
     assert_eq!(restored.deleted_at, None);
     assert_eq!(list_tickets(&board, &TicketFilter::default()).len(), 1);
     assert_eq!(restored.activity.last().unwrap().kind, "ticket.restored");
@@ -330,7 +349,9 @@ fn deleting_a_deleted_ticket_and_restoring_a_live_one_change_nothing() {
     let created = create_ticket(&mut board, &titled("Twice"), &context(), &at(1)).unwrap();
 
     let live = ticket(&board, &created.id);
-    let restored_live = restore_ticket(&mut board, &created.id, "user", &at(2)).unwrap();
+    let restored_live = restore_ticket(&mut board, &created.id, "user", &at(2))
+        .unwrap()
+        .ticket;
     assert_eq!(restored_live, live, "restoring a live ticket is a no-op");
     assert!(
         ticket_outcome(Some(live), Some(restored_live))
@@ -1010,7 +1031,7 @@ async fn the_board_file_round_trips_and_a_missing_file_is_an_empty_board() {
     write_board(&file, &board).await.unwrap();
 
     let raw: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(raw["version"], 1);
+    assert_eq!(raw["version"], 2);
     assert_eq!(raw["next_number"], 2);
     assert!(
         raw["tickets"][&created.id]["activity"][0]
@@ -1054,12 +1075,12 @@ fn normalize_config_repairs_hostile_input() {
 
 const TICKET_ID: &str = "8ec5c3fc-21bd-4142-b503-31bdb9e1ce70";
 
-fn sample_ticket() -> Ticket {
+fn sample_ticket() -> TicketView {
     let mut board = Board::empty();
     let mut ticket = create_ticket(&mut board, &titled("Sample"), &context(), &at(1)).unwrap();
     ticket.id = TICKET_ID.into();
     ticket.key = "KAN-7".into();
-    ticket
+    ticket_view(&Board::empty(), &ticket, "done")
 }
 
 fn change_event(event: &str) -> ChangeEvent {
@@ -1071,6 +1092,7 @@ fn change_event(event: &str) -> ChangeEvent {
         comment: None,
         activity: None,
         at: at(9),
+        releases: vec![],
     }
 }
 
@@ -1417,7 +1439,7 @@ fn matches_ticket_treats_an_empty_reference_as_no_filter() {
 #[test]
 fn the_catalog_names_every_function_once_with_typed_object_schemas() {
     let ids = functions::FUNCTION_IDS;
-    assert_eq!(ids.len(), 16);
+    assert_eq!(ids.len(), 28);
     let mut unique = ids.to_vec();
     unique.sort();
     unique.dedup();
@@ -1438,6 +1460,7 @@ fn the_catalog_names_every_function_once_with_typed_object_schemas() {
     assert_eq!(board["properties"]["columns"]["type"], "array");
     let info = serde_json::to_value(schemars::schema_for!(ConfigInfo)).unwrap();
     assert!(info["properties"]["subscribers"].is_object());
+    assert_eq!(info["properties"]["done_status"]["type"], "string");
 }
 
 #[test]

@@ -75,6 +75,21 @@ kanban::ticket::move { "id": "KAN-7", "status": "done", "actor": "product-manage
 
 A criterion that passed with a caveat is not passed — a caveat is a not-met. That is the whole point of the gate.
 
+## Reviewing a parent
+
+A feature ticket with subtasks does not follow its children, so its own criteria are not enough: read `progress` on the `kanban::ticket::get` result before you accept.
+
+```json
+kanban::ticket::get { "id": "KAN-20" }   // "progress": { "done": 4, "total": 5 }, "children": [ … ]
+```
+
+- **Accept a parent only when `progress.done == progress.total`.** `done` counts the children in the board's `done_status` column (`kanban::config::info`); a child in `in_review` is not done, and deleted children are not counted.
+- **Or when each open child is explicitly cut.** Comment on that child that it is cut and why, then detach it (`kanban::ticket::update { "id": "<child>", "parent": null }`) so `progress` matches the plan. A child left open without that comment is an unmet criterion.
+- Otherwise reject the parent: comment naming each open child by key, then move the parent back to `in_progress`. Do not close a child you did not review to make the count match; a child sitting in `in_review` goes through this gate on its own.
+- The parent's criteria still need their own evidence, per verdict above — the children being done is necessary, not sufficient (the seam between them is usually the criterion).
+
+A child is reviewed on its own ticket like any other. Its parent is context (read the parent's description for the seam), not a place to post the verdict.
+
 Never delete a ticket, and never move a ticket you did not review.
 
 ## Changing the criteria is a planning act, not a review act
@@ -125,6 +140,7 @@ Teardown when the ticket lands: `harness::triggers::list {}` to find the `subscr
 - **You accepted on a summary.** Symptom: the ticket is `done` and the bug it described is still reproducible. Cause: the engineer's comment was read as evidence. Fix: one verdict per criterion, evidence per criterion.
 - **You rejected your own rejection.** Symptom: the same review comment appears on the ticket repeatedly. Cause: the `kanban:change` binding fired on your own move back to `in_progress`. Fix: re-read the ticket and no-op unless the status is `in_review`.
 - **A closed ticket keeps waking you.** Symptom: a wake for a ticket that is `done` and reviewed, with nothing to do. Cause: the handler read the status and returned without tearing the bindings down. Fix: on `done`, unregister `<KEY>-*` before you stop.
+- **A parent accepted with open children.** Symptom: the console flags the feature ticket in the done column, with subtasks still open. Cause: only the parent's own criteria were checked. Fix: read `progress`; accept only at `progress.done == progress.total` or with every open child cut by comment.
 - **`done` with a caveat.** Symptom: the ticket is closed and the caveat lives only in a comment. Cause: "met, but…". Fix: a caveat is a not-met — comment and move to `in_progress`.
 - **The criteria moved after the work.** Symptom: the ticket passes against a description nobody built to. Cause: the description was edited during review. Fix: criteria changes go through the user as planning, in a separate turn.
 - **Reviewed stale work.** Symptom: you approve a commit that was superseded. Cause: you checked the artefact before the last activity row. Fix: read the activity timeline, then review the newest state.
@@ -138,6 +154,7 @@ Teardown when the ticket lands: `harness::triggers::list {}` to find the `subscr
 - [ ] Every "met" has an observation you can point at — a URL, a command, a quoted file line.
 - [ ] Any not-met or cannot-verify → comment naming the criterion, expected vs observed, then move to `in_progress`.
 - [ ] Any accept → comment, then move to `done`.
+- [ ] A parent is accepted only when `progress.done == progress.total`, or every open child is explicitly cut with a comment and detached.
 - [ ] `author` and `actor` are `product-manager` on every write.
 - [ ] On `done`: the ticket's review binding unregistered (this binding last), and `harness::triggers::list` re-read to confirm nothing of yours is left armed for it.
 - [ ] The sweep retired once nothing you were watching is still in `in_review`.

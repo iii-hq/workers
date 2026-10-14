@@ -220,6 +220,26 @@
   color: var(--color-ink-ghost);
 }
 
+/* A sub-heading inside a list ("Released") or above a menu ("Group by"); the quiet word after a name ("Archived"). */
+[data-iii-ui="kanban"] .kanban-filter__heading {
+  margin: 0;
+  padding: 6px 8px 2px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="kanban"] .kanban-filter__sheet .kanban-filter__heading {
+  padding: 12px 12px 4px;
+}
+
+[data-iii-ui="kanban"] .kanban-filter__tag {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
 [data-iii-ui="kanban"] .kanban-filter__dot {
   flex: none;
   width: 6px;

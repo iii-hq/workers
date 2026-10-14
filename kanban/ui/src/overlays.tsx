@@ -1,11 +1,11 @@
 import {
   Button,
+  Chip,
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
   Input,
-  List,
   ListItem,
   RawValueInput,
   Select,
@@ -21,14 +21,19 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { Plus, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import {
+  PLAN_CHANGED_EVENT,
   api,
+  priorityLabel,
+  statusLabel,
   type AgentProfile,
   type Column,
   type ConfigInfo,
   type Ticket,
 } from './shared'
+import { NO_FACETS, laneName, resolveDefaults, type Facets, type NewTicketDefaults, type Plan } from './subtask-rules'
+import { ParentSelector, ProjectSelector, ReleaseSelector } from './subtasks'
 
 type CreateTicketDialogProps = {
   open: boolean
@@ -38,6 +43,8 @@ type CreateTicketDialogProps = {
   priorities: string[]
   agents: AgentProfile[]
   defaultStatus: string
+  /** Opened from a swimlane cell: the column and the project, release or parent the new ticket starts with. */
+  defaults?: NewTicketDefaults
   onCreated: (ticket: Ticket) => void
 }
 
@@ -49,26 +56,99 @@ export function CreateTicketDialog({
   priorities,
   agents,
   defaultStatus,
+  defaults,
   onCreated,
 }: CreateTicketDialogProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [status, setStatus] = useState(defaultStatus)
+  const [status, setStatus] = useState(defaults?.status ?? defaultStatus)
   const [priority, setPriority] = useState(priorities[0] ?? 'medium')
   const [assignee, setAssignee] = useState<string | undefined>(undefined)
+  const [facets, setFacets] = useState<Facets>(NO_FACETS)
+  // What the swimlane put in the facets, for the hint under them; null until the board is read.
+  const [seeded, setSeeded] = useState<Facets>(NO_FACETS)
+  // The swimlane's own name, kept from the opening so the closing dialog doesn't change its sentence.
+  const [laneLabel, setLaneLabel] = useState<string | null>(null)
+  const [plan, setPlan] = useState<Plan | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const hintId = useId()
+  // The board hands over fresh objects on every reload: only opening the dialog reads them, so a reload while
+  // it is open never wipes what was typed.
+  const defaultsRef = useRef(defaults)
+  defaultsRef.current = defaults
+  const defaultStatusRef = useRef(defaultStatus)
+  defaultStatusRef.current = defaultStatus
+  const prioritiesRef = useRef(priorities)
+  prioritiesRef.current = priorities
 
   useEffect(() => {
     if (!open) return
     setTitle('')
     setDescription('')
-    setStatus(defaultStatus)
-    setPriority(priorities[0] ?? 'medium')
+    setStatus(defaultsRef.current?.status ?? defaultStatusRef.current)
+    // The worker files a ticket without a priority under the first configured one.
+    setPriority(prioritiesRef.current[0] ?? 'medium')
     setAssignee(undefined)
+    setFacets(NO_FACETS)
+    setSeeded(NO_FACETS)
+    setLaneLabel(defaultsRef.current?.lane ?? null)
+    setPlan(null)
     setError(null)
     setBusy(false)
-  }, [open, defaultStatus, priorities])
+  }, [open])
+
+  // Projects, releases and the tickets a new one can hang from: read when the dialog opens and again when a
+  // project or release is written elsewhere. Only the first read seeds the facets; later ones keep the user's
+  // picks and drop what is gone or closed to new tickets.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    let seeding = true
+    let latest = 0
+    const read = () => {
+      const request = ++latest
+      void api
+        .board(host.iii)
+        .then((board) => {
+          if (cancelled || request !== latest) return
+          const next = {
+            projects: board.projects ?? [],
+            releases: board.releases ?? [],
+            tickets: board.columns.flatMap((column) => column.tickets),
+          }
+          setPlan(next)
+          if (seeding) {
+            seeding = false
+            const seed = resolveDefaults(next, defaultsRef.current)
+            setFacets(seed)
+            setSeeded(seed)
+          } else {
+            setFacets((now) => resolveDefaults(next, now))
+          }
+        })
+        // Without the board the facets stay empty; the ticket can still be created.
+        .catch(() => {
+          if (!cancelled && request === latest && seeding) setPlan({ projects: [], releases: [], tickets: [] })
+        })
+    }
+    read()
+    window.addEventListener(PLAN_CHANGED_EVENT, read)
+    return () => {
+      cancelled = true
+      window.removeEventListener(PLAN_CHANGED_EVENT, read)
+    }
+  }, [open, host])
+
+  const setFacet = (kind: keyof Facets, next: string | null) => setFacets((now) => ({ ...now, [kind]: next }))
+  const prefilled = (kind: keyof Facets) => Boolean(seeded[kind]) && seeded[kind] === facets[kind]
+  const hint = (kind: keyof Facets) =>
+    prefilled(kind) ? (
+      <span className="kanban-field__hint" id={`${hintId}-${kind}`}>
+        Prefilled from the swimlane
+      </span>
+    ) : undefined
+  const lane = plan ? laneName(plan, seeded, laneLabel) : laneLabel
 
   const submit = async () => {
     const trimmed = title.trim()
@@ -82,6 +162,9 @@ export function CreateTicketDialog({
         status,
         priority,
         assignee: assignee ?? null,
+        ...(facets.project ? { project: facets.project } : {}),
+        ...(facets.release ? { release: facets.release } : {}),
+        ...(facets.parent ? { parent: facets.parent } : {}),
         actor: 'user',
       })
       onCreated(ticket)
@@ -97,7 +180,9 @@ export function CreateTicketDialog({
       <DialogContent className="kanban-dialog">
         <DialogTitle>New ticket</DialogTitle>
         <DialogDescription>
-          It is added to the board, and the ticket opens beside it.
+          {lane
+            ? `Opened from the ${lane} swimlane, in the ${statusLabel(columns, status)} column.`
+            : 'It is added to the board, and the ticket opens beside it.'}
         </DialogDescription>
         <div
           className="kanban-dialog__form"
@@ -135,7 +220,7 @@ export function CreateTicketDialog({
               <span className="kanban-field__label">Priority</span>
               <Select
                 onChange={setPriority}
-                options={priorities.map((value) => ({ value, label: value }))}
+                options={priorities.map((value) => ({ value, label: priorityLabel(value) }))}
                 value={priority}
               />
             </label>
@@ -155,6 +240,40 @@ export function CreateTicketDialog({
                 placeholder="Unassigned"
                 value={assignee}
               />
+            </div>
+          </div>
+          <div className="kanban-dialog__grid">
+            <div className="kanban-field">
+              <span className="kanban-field__label">Project</span>
+              <ProjectSelector
+                aria-describedby={prefilled('project') ? `${hintId}-project` : undefined}
+                onChange={(next) => setFacet('project', next)}
+                projects={plan?.projects ?? null}
+                value={facets.project}
+              />
+              {hint('project')}
+            </div>
+            <div className="kanban-field">
+              <span className="kanban-field__label">Release</span>
+              <ReleaseSelector
+                aria-describedby={prefilled('release') ? `${hintId}-release` : undefined}
+                onChange={(next) => setFacet('release', next)}
+                releases={plan?.releases ?? null}
+                value={facets.release}
+              />
+              {hint('release')}
+            </div>
+            <div className="kanban-field">
+              <span className="kanban-field__label">Parent</span>
+              <ParentSelector
+                aria-describedby={prefilled('parent') ? `${hintId}-parent` : undefined}
+                current={null}
+                onChange={(next) => setFacet('parent', next)}
+                selfId={null}
+                tickets={plan?.tickets ?? null}
+                value={facets.parent}
+              />
+              {hint('parent')}
             </div>
           </div>
           {error ? <p className="kanban-field__error">{error}</p> : null}
@@ -205,6 +324,9 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
   const agentsPath = typeof record.agents_path === 'string' ? record.agents_path : ''
   const idPrefix = typeof record.id_prefix === 'string' ? record.id_prefix : ''
   const defaultStatus = typeof record.default_status === 'string' ? record.default_status : ''
+  // Unset, or a column that is gone: the worker repairs it to the last column, so that is what the form shows.
+  const storedDone = typeof record.done_status === 'string' ? record.done_status : ''
+  const doneStatus = columns.some((column) => column.id === storedDone) ? storedDone : (columns[columns.length - 1]?.id ?? '')
   const [info, setInfo] = useState<ConfigInfo | null>(null)
   const [activeColumn, setActiveColumn] = useState<number | null>(null)
   const consumed = useRef<string | null>(null)
@@ -238,14 +360,21 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
     const next = columns.map((column, position) =>
       position === index ? { ...column, ...changes } : column,
     )
-    update({ columns: next })
+    // Renaming the done or the default column's id keeps it that column.
+    const renamed = changes.id !== undefined ? columns[index]?.id : undefined
+    update({
+      columns: next,
+      ...(renamed !== undefined && renamed === doneStatus ? { done_status: changes.id } : {}),
+      ...(renamed !== undefined && renamed === defaultStatus ? { default_status: changes.id } : {}),
+    })
   }
 
   const addColumn = () => {
     let suffix = columns.length + 1
     while (columns.some((column) => column.id === `column_${suffix}`)) suffix += 1
     const next = [...columns, { id: `column_${suffix}`, label: `Column ${suffix}` }]
-    update({ columns: next })
+    // Done is the last column while done_status is unset (or gone): write it down, or the new column takes it.
+    update({ columns: next, ...(doneStatus && storedDone !== doneStatus ? { done_status: doneStatus } : {}) })
     setActiveColumn(next.length - 1)
   }
 
@@ -323,6 +452,22 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
                 onChange={(next) => update({ default_status: next })}
                 options={columns.map((column) => ({ value: column.id, label: column.label }))}
                 value={defaultStatus}
+              />
+            )}
+          />
+          <SettingsField
+            data-field="done_status"
+            description="Progress, subtask counts and releases count a ticket as done only in this column. In review is not done."
+            error={errors?.get('/done_status')}
+            field={fieldFocus('done_status')}
+            id="kanban-done-status"
+            label="Done column"
+            renderControl={(controlProps) => (
+              <Select
+                {...controlProps}
+                onChange={(next) => update({ done_status: next })}
+                options={columns.map((column) => ({ value: column.id, label: column.label }))}
+                value={doneStatus}
               />
             )}
           />
@@ -441,6 +586,14 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
                   key={`${column.id}-${index}`}
                   label={column.label}
                   onClick={() => setActiveColumn(index)}
+                  trailing={
+                    column.id === defaultStatus || column.id === doneStatus ? (
+                      <>
+                        {column.id === defaultStatus ? <Chip>Default column</Chip> : null}
+                        {column.id === doneStatus ? <Chip>Done column</Chip> : null}
+                      </>
+                    ) : undefined
+                  }
                 />
               ))}
             </SettingsList>
@@ -476,7 +629,11 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
             meta="agents_path_resolved"
           />
           <SettingsRow
-            description={info ? `${info.columns.length} columns · ${info.priorities.length} priorities` : 'Resolving…'}
+            description={
+              info
+                ? `${info.columns.length} columns · ${info.priorities.length} priorities · done is ${statusLabel(info.columns, info.done_status)}`
+                : 'Resolving…'
+            }
             label="Effective board"
             layout="stacked"
           />

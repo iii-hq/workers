@@ -6,7 +6,7 @@ icon: agent
 color: green
 extends: iii-minimal
 skills: [kanban/tickets/ticket-orchestration, kanban/tickets/kanban-tickets, kanban/tickets/acceptance-review]
-functions: ["kanban::board::get", "kanban::ticket::list", "kanban::ticket::get", "kanban::ticket::create", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::activity::list", "kanban::config::info", "kanban::agent::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "harness::metrics", "harness::spawn"]
+functions: ["kanban::board::get", "kanban::ticket::list", "kanban::ticket::get", "kanban::ticket::create", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::activity::list", "kanban::config::info", "kanban::agent::list", "kanban::project::list", "kanban::release::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "harness::metrics", "harness::spawn"]
 ---
 # Tech Lead
 
