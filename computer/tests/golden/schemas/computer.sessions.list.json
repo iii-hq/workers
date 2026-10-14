@@ -29,27 +29,16 @@
         ],
         "type": "object"
       },
-      "SemanticSupport": {
-        "description": "Whether the session takes semantic (ref-based) actions.",
-        "properties": {
-          "reason": {
-            "description": "Why not, when unsupported.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "supported": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "supported"
-        ],
-        "type": "object"
-      },
       "SessionInfo": {
         "properties": {
+          "coordinates": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/Support"
+              }
+            ],
+            "description": "Screenshots and coordinate actions (pointer, keyboard) on this session."
+          },
           "created_ms": {
             "format": "int64",
             "type": "integer"
@@ -74,7 +63,7 @@
           "semantic": {
             "allOf": [
               {
-                "$ref": "#/definitions/SemanticSupport"
+                "$ref": "#/definitions/Support"
               }
             ],
             "description": "Accessibility (ref-based) actions on this session."
@@ -84,6 +73,7 @@
           }
         },
         "required": [
+          "coordinates",
           "created_ms",
           "endpoint",
           "last_used_ms",
@@ -92,6 +82,25 @@
           "screencast_active",
           "semantic",
           "session_id"
+        ],
+        "type": "object"
+      },
+      "Support": {
+        "description": "Whether the session takes one kind of action, and why not.",
+        "properties": {
+          "reason": {
+            "description": "Why not, when unsupported.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supported": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported"
         ],
         "type": "object"
       }

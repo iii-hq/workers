@@ -144,10 +144,29 @@ pub(crate) fn invalid(msg: impl Into<String>) -> Error {
     crate::semantic::SemanticError::new(crate::semantic::Code::InvalidInput, msg).into_iii()
 }
 
+/// How to work on a session that takes no coordinates.
+const BY_REF_INSTEAD: &str = "read the screen with computer::observe (include_a11y=true, \
+     include_image=false) or computer::find and act by ref (invoke, set_value, toggle, select)";
+
+/// Refuse a capture or input on a session without coordinates, with the
+/// driver's reason and the by-ref way out.
+pub(crate) fn require_coordinates(session: &Session) -> Result<(), Error> {
+    match session.driver().coordinates() {
+        Some(reason) => Err(crate::semantic::SemanticError::with_recovery(
+            crate::semantic::Code::UnsupportedSession,
+            reason,
+            BY_REF_INSTEAD,
+        )
+        .into_iii()),
+        None => Ok(()),
+    }
+}
+
 /// Capture the desktop, refusing anything that is not a real image. An
 /// undetectable encoding would otherwise reach the model inside an image
 /// content block, where it renders as nothing with no explanation.
 async fn capture(session: &Arc<Session>) -> Result<crate::driver::Shot, Error> {
+    require_coordinates(session)?;
     let shot = session
         .driver()
         .screenshot()
@@ -215,7 +234,8 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     endpoint: session.endpoint.clone(),
                     os: session.os.clone(),
                     screen: session.screen,
-                    semantic: sessions::SemanticSupport::of(&session),
+                    semantic: sessions::Support::semantic(&session),
+                    coordinates: sessions::Support::coordinates(&session),
                 })
             }
         })
@@ -242,7 +262,8 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         created_ms: s.created_ms,
                         last_used_ms: s.last_used_ms(),
                         screencast_active: s.screencast_active(),
-                        semantic: sessions::SemanticSupport::of(s),
+                        semantic: sessions::Support::semantic(s),
+                        coordinates: sessions::Support::coordinates(s),
                     })
                     .collect();
                 Ok::<_, Error>(sessions::ListOutput { sessions: infos })
@@ -355,6 +376,7 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sessions = sessions.clone();
             async move {
                 let session = get_session(&sessions, &req.session_id).await?;
+                require_coordinates(&session)?;
                 session.start_screencast().await;
                 Ok::<_, Error>(frame::AckOutput { ok: true })
             }
@@ -396,4 +418,112 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         .description(FRAME_DESC)
         .metadata(serde_json::json!({ "internal": true })),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::SemanticOnly;
+    use crate::semantic::fake::FakeTree;
+    use crate::semantic::{outline_marker, SemanticSession};
+    use crate::test_support::{session_driving, session_with};
+    use serde_json::json;
+    use xa11y_core::Role;
+
+    const WHY: &str = "this Linux desktop runs Wayland; screenshots and coordinate input need \
+                       an X11 session (Xorg or Xvfb)";
+
+    fn wayland() -> (Arc<Session>, Arc<FakeTree>) {
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        t.add(w, Role::Button, "Salvar");
+        let t = Arc::new(t);
+        let s = session_driving(
+            Arc::new(SemanticOnly(WHY.to_string())),
+            Some(SemanticSession::new(t.factory())),
+        );
+        (s, t)
+    }
+
+    fn ref_of(text: &str, needle: &str) -> String {
+        let line = text.lines().find(|l| l.contains(needle)).unwrap();
+        line.trim_start()
+            .strip_prefix("[ref=")
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_session_without_coordinates_refuses_capture_and_input_with_a_way_out() {
+        let (s, t) = wayland();
+        let mut errors = vec![
+            capture(&s).await.unwrap_err(),
+            require_coordinates(&s).unwrap_err(),
+        ];
+        // The defaults capture: still refused, never silently tree-only.
+        for v in [
+            json!({"session_id":"c1"}),
+            json!({"session_id":"c1","include_a11y":true}),
+        ] {
+            let req = serde_json::from_value(v).unwrap();
+            errors.push(observe::handle(&s, req).await.unwrap_err());
+        }
+        for v in [
+            json!({"session_id":"c1","action":"click","x":1,"y":1}),
+            // Refused before the request is even checked.
+            json!({"session_id":"c1","action":"click"}),
+            json!({"session_id":"c1","action":"type","text":"x"}),
+            json!({"session_id":"c1","action":"press","keys":["enter"]}),
+        ] {
+            let req = serde_json::from_value(v).unwrap();
+            errors.push(act::handle(&s, req).await.unwrap_err());
+        }
+        for e in errors {
+            let Error::Remote { code, message, .. } = e else {
+                panic!("expected Error::Remote");
+            };
+            assert_eq!(code, "unsupported_session");
+            assert!(message.starts_with(WHY), "{message}");
+            assert!(
+                message.contains("include_image=false") && message.contains("act by ref"),
+                "{message}"
+            );
+            assert!(!message.contains("act by coordinates"), "{message}");
+        }
+        assert_eq!(t.children_calls(), 0, "a refused observe read no tree");
+        assert!(t.actions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_without_coordinates_still_reads_and_acts_by_ref() {
+        let (s, t) = wayland();
+        let out = observe::handle(
+            &s,
+            serde_json::from_value(
+                json!({"session_id":"c1","include_image":false,"include_a11y":true}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let text = out.content[0].text.clone().unwrap();
+        assert!(text.contains(outline_marker()), "{text}");
+        let r = ref_of(&text, "Salvar");
+        act::handle(
+            &s,
+            serde_json::from_value(json!({"session_id":"c1","action":"invoke","ref":r})).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(t.actions(), vec!["press:Salvar"]);
+    }
+
+    #[tokio::test]
+    async fn a_coordinate_session_passes_the_gate() {
+        let (s, _) = session_with(None);
+        require_coordinates(&s).unwrap();
+    }
 }

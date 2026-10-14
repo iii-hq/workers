@@ -6,31 +6,48 @@ use serde::{Deserialize, Serialize};
 use crate::driver::Screen;
 use crate::session::Session;
 
-/// Whether the session takes semantic (ref-based) actions.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct SemanticSupport {
+/// Whether the session takes one kind of action, and why not.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Support {
     pub supported: bool,
     /// Why not, when unsupported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-impl SemanticSupport {
-    pub fn of(session: &Session) -> Self {
+impl Support {
+    fn yes() -> Self {
+        Self {
+            supported: true,
+            reason: None,
+        }
+    }
+
+    fn no(reason: impl Into<String>) -> Self {
+        Self {
+            supported: false,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// Semantic (ref-based) actions: native sessions only.
+    pub fn semantic(session: &Session) -> Self {
         if session.semantic.is_some() {
-            Self {
-                supported: true,
-                reason: None,
-            }
+            Self::yes()
         } else {
-            Self {
-                supported: false,
-                reason: Some(
-                    "semantic actions need a native session on macOS or Windows; this session \
-                     takes coordinates only"
-                        .to_string(),
-                ),
-            }
+            Self::no(
+                "semantic actions need a native session on macOS or Windows; this session \
+                 takes coordinates only",
+            )
+        }
+    }
+
+    /// Screenshots and coordinate actions: every session but a semantic-only
+    /// native one (a Wayland desktop).
+    pub fn coordinates(session: &Session) -> Self {
+        match session.driver().coordinates() {
+            Some(reason) => Self::no(reason),
+            None => Self::yes(),
         }
     }
 }
@@ -71,7 +88,9 @@ pub struct StartOutput {
     /// Desktop pixel dimensions; the coordinate space for `computer::act`.
     pub screen: Screen,
     /// Accessibility (ref-based) actions on this session.
-    pub semantic: SemanticSupport,
+    pub semantic: Support,
+    /// Screenshots and coordinate actions (pointer, keyboard) on this session.
+    pub coordinates: Support,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -88,7 +107,9 @@ pub struct SessionInfo {
     /// True while a live screen stream is running for this session.
     pub screencast_active: bool,
     /// Accessibility (ref-based) actions on this session.
-    pub semantic: SemanticSupport,
+    pub semantic: Support,
+    /// Screenshots and coordinate actions (pointer, keyboard) on this session.
+    pub coordinates: Support,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -112,19 +133,31 @@ pub struct StopOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::SemanticOnly;
     use crate::semantic::{fake::FakeTree, SemanticSession};
-    use crate::test_support::session_with;
+    use crate::test_support::{session_driving, session_with};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn semantic_support_follows_the_session() {
         let (plain, _) = session_with(None);
-        let s = SemanticSupport::of(&plain);
+        let s = Support::semantic(&plain);
         assert!(!s.supported);
         assert!(s.reason.unwrap().contains("coordinates only"));
         let tree = Arc::new(FakeTree::new("A", 1));
         let (native, _) = session_with(Some(SemanticSession::new(tree.factory())));
-        let s = SemanticSupport::of(&native);
+        let s = Support::semantic(&native);
         assert!(s.supported && s.reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn coordinate_support_follows_the_driver() {
+        let (plain, _) = session_with(None);
+        let c = Support::coordinates(&plain);
+        assert!(c.supported && c.reason.is_none());
+        let wayland = session_driving(Arc::new(SemanticOnly("why".to_string())), None);
+        let c = Support::coordinates(&wayland);
+        assert!(!c.supported);
+        assert_eq!(c.reason.as_deref(), Some("why"));
     }
 }

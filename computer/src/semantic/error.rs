@@ -80,9 +80,15 @@ pub struct SemanticError {
 
 impl SemanticError {
     pub fn new(code: Code, what: impl Into<String>) -> Self {
+        Self::with_recovery(code, what, code.recovery())
+    }
+
+    /// A refusal with its own recovery hint instead of the code's generic
+    /// one (a session without coordinates must not be told to act by them).
+    pub fn with_recovery(code: Code, what: impl Into<String>, recovery: &str) -> Self {
         Self {
             code,
-            message: format!("{}; {}", what.into(), code.recovery()),
+            message: format!("{}; {recovery}", what.into()),
             app_missing: false,
         }
     }
@@ -206,6 +212,14 @@ pub fn map_read_error(e: &X, rooted: bool) -> SemanticError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn with_recovery_replaces_the_code_hint() {
+        let e = SemanticError::with_recovery(Code::UnsupportedSession, "no screen", "read by ref");
+        assert_eq!(e.code, Code::UnsupportedSession);
+        assert_eq!(e.message, "no screen; read by ref");
+        assert!(!e.app_missing);
+    }
+
     use super::*;
     use xa11y_core::{Error as X, Role};
 

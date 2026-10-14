@@ -65,8 +65,8 @@
         ],
         "type": "object"
       },
-      "SemanticSupport": {
-        "description": "Whether the session takes semantic (ref-based) actions.",
+      "Support": {
+        "description": "Whether the session takes one kind of action, and why not.",
         "properties": {
           "reason": {
             "description": "Why not, when unsupported.",
@@ -86,6 +86,14 @@
       }
     },
     "properties": {
+      "coordinates": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Support"
+          }
+        ],
+        "description": "Screenshots and coordinate actions (pointer, keyboard) on this session."
+      },
       "endpoint": {
         "description": "What the session drives: `native` for the local machine, or the normalized remote endpoint.",
         "type": "string"
@@ -104,7 +112,7 @@
       "semantic": {
         "allOf": [
           {
-            "$ref": "#/definitions/SemanticSupport"
+            "$ref": "#/definitions/Support"
           }
         ],
         "description": "Accessibility (ref-based) actions on this session."
@@ -115,6 +123,7 @@
       }
     },
     "required": [
+      "coordinates",
       "endpoint",
       "os",
       "screen",

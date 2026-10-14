@@ -235,6 +235,7 @@ pub(crate) async fn handle(session: &Arc<Session>, req: ActInput) -> Result<ActO
             )
         }));
     }
+    super::require_coordinates(session)?;
     let planned = plan(&req, session.screen)?;
     let _guard = session.act_lock.lock().await;
     session.touch();

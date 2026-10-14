@@ -167,3 +167,25 @@ pub(crate) fn code(e: iii_sdk::errors::Error) -> String {
         other => format!("handler: {other}"),
     }
 }
+
+/// A session on any driver (no fake-desktop counters), id `c1`.
+pub(crate) fn session_driving(
+    driver: Arc<dyn Driver>,
+    semantic: Option<SemanticSession>,
+) -> Arc<Session> {
+    Session::new(
+        "c1".to_string(),
+        "native".to_string(),
+        "linux".to_string(),
+        Screen {
+            width: 0,
+            height: 0,
+        },
+        now_ms(),
+        driver,
+        crate::config::WorkerConfig::default().into_shared(),
+        FrameNotifier::new(Arc::new(NullSink)),
+        Arc::new(tokio::sync::Mutex::new(())),
+        semantic,
+    )
+}
