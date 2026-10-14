@@ -113,3 +113,16 @@ fn coder_scaffold_worker_needs_approval() {
         Decision::NeedsApproval
     ));
 }
+
+/// Read-only cross-references (kanban #1384): allowed like kanban::ticket::get.
+#[test]
+fn kanban_ticket_links_is_allowed() {
+    assert!(matches!(
+        repository_permissions().check(
+            "kanban::ticket::links",
+            &json!({ "id": "KAN-1" }),
+            PermissionMode::Manual
+        ),
+        Decision::Allow { .. }
+    ));
+}

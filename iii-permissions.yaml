@@ -425,6 +425,7 @@ rules:
   - kanban::board::get
   - kanban::ticket::list
   - kanban::ticket::get
+  - kanban::ticket::links
   - kanban::ticket::create
   - kanban::ticket::update
   - kanban::ticket::move
