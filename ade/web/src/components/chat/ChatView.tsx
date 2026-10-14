@@ -76,6 +76,7 @@ import {
   findSideChat,
   type SideChatQuote,
   SideChatQuotesContext,
+  selectionQuote,
   sideChatMessages,
   sideChatQuote,
   sideChatQuotes,
@@ -165,6 +166,7 @@ import {
   type AsideTab,
   ChatAside,
   QuoteChip,
+  SelectionToolbar,
 } from './ChatAside'
 import {
   Composer,
@@ -2753,6 +2755,18 @@ export function ChatView({
   // palette lists these rows under "Chat" with their keys.
   const viewRef = useRef<HTMLElement>(null)
   useQuoteHighlights(viewRef, heldQuotes, conversation.messages)
+  const agentProfileName = conversation.agentProfile?.name
+  const readSelection = useCallback(() => {
+    const picked = selectionQuote(
+      viewRef.current,
+      messagesRef.current,
+      agentProfileName,
+    )
+    const list = viewRef.current?.querySelector('[data-message-list]')
+    return picked && list
+      ? { ...picked, bounds: list.getBoundingClientRect() }
+      : null
+  }, [agentProfileName])
   const working = conversation.status === 'working'
   useEffect(() => {
     if (!commands) return
@@ -2916,33 +2930,13 @@ export function ChatView({
                 'A temporary chat that sees this one; quotes the selection',
               keywords: ['side panel', 'question', 'quote', 'btw'],
               run: () => {
-                const selection = window.getSelection()
-                const node = selection?.anchorNode ?? null
-                const element =
-                  node instanceof Element ? node : (node?.parentElement ?? null)
-                const messageId =
-                  selection && !selection.isCollapsed && element
-                    ? viewRef.current?.contains(element)
-                      ? element
-                          .closest('[data-message-row]')
-                          ?.getAttribute('data-message-row')
-                      : null
-                    : null
-                const source = messageId
-                  ? messagesRef.current.find((m) => m.id === messageId)
-                  : undefined
-                if (selection && messageId) {
-                  askInSideChat({
-                    messageId,
-                    text: selection.toString(),
-                    agent:
-                      source?.role === 'assistant'
-                        ? source.agent || conversation.agentProfile?.name
-                        : undefined,
-                  })
-                } else {
-                  showAside('side-chat')
-                }
+                const picked = selectionQuote(
+                  viewRef.current,
+                  messagesRef.current,
+                  conversation.agentProfile?.name,
+                )
+                if (picked) askInSideChat(picked.quote)
+                else showAside('side-chat')
               },
             },
           ]
@@ -3379,6 +3373,7 @@ export function ChatView({
       className={`flex min-h-0 min-w-0 flex-1${asideSide === 'left' ? ' flex-row-reverse' : ''}`}
     >
       {view}
+      <SelectionToolbar read={readSelection} onAsk={askInSideChat} />
       <ChatAside
         conversation={conversation}
         side={asideSide}

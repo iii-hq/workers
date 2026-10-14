@@ -360,6 +360,29 @@ describe('ChatAside side chat', () => {
   })
 })
 
+describe('ChatAside unread reply', () => {
+  it('marks the Side chat tab while the Context tab is up', async () => {
+    localStorage.clear()
+    const answered = chat('fork-1', {
+      createdAt: 20,
+      sessionMetadata: { side_chat_of: 'main' },
+      messages: [{ id: 'r1', role: 'assistant', content: 'ok', createdAt: 30 }],
+    })
+    mocks.ctx = makeCtx([main, answered])
+    const view = render()
+    await settle()
+    const dot = () => view.querySelector('[data-side-chat-unread]')
+    expect(dot()).not.toBeNull()
+    expect(button('Side chat, new reply')).toBeDefined()
+    const tab = [...view.querySelectorAll('[role="tab"]')].find((el) =>
+      el.textContent?.startsWith('Side chat'),
+    ) as HTMLElement
+    act(() => tab.click())
+    await settle()
+    expect(dot()).toBeNull()
+  })
+})
+
 describe('ChatAside context', () => {
   it('lets the context read only while the panel is open', async () => {
     mocks.ctx = makeCtx([main])

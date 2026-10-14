@@ -853,8 +853,11 @@ export function Composer({
         {/* Desktop toolbar: attach (and the optional memory / permission
             pickers) on the left; the quiet model label and the send button
             on the right, where the eye lands after typing. */}
+        {/* In a narrow pane (a side panel, a split) the model label gives
+            way: the left group keeps its width and the send button stays
+            in view. */}
         <div className="hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
-          <div className="flex min-w-0 flex-1 items-center gap-1">
+          <div className="flex flex-1 items-center gap-1">
             <AttachmentButton
               onAttach={handleAttach}
               disabled={inputDisabled}
@@ -879,7 +882,7 @@ export function Composer({
             ) : null}
           </div>
 
-          <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
             {composerControls}
             <ModelPicker
               value={model}

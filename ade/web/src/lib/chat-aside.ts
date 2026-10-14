@@ -237,6 +237,44 @@ export function hideSideChats<T extends Conversation>(
   return conversations.filter((c) => !hidden(c))
 }
 
+/**
+ * The text selected inside one transcript row under `root`, as a side chat
+ * quote with where it sits on screen; null for no selection, a selection
+ * spanning rows, or one outside the transcript (the composer, a dialog).
+ */
+export function selectionQuote(
+  root: HTMLElement | null,
+  messages: readonly Message[],
+  agentName?: string,
+): { quote: SideChatQuote; rect: DOMRect } | null {
+  const selection = root?.ownerDocument.getSelection()
+  if (!root || !selection || selection.isCollapsed || !selection.rangeCount) {
+    return null
+  }
+  const text = selection.toString()
+  if (!text.trim()) return null
+  const range = selection.getRangeAt(0)
+  const rowOf = (node: Node) =>
+    (node instanceof Element ? node : node.parentElement)?.closest(
+      '[data-message-row]',
+    ) ?? null
+  const row = rowOf(range.startContainer)
+  if (!row || row !== rowOf(range.endContainer) || !root.contains(row)) {
+    return null
+  }
+  const messageId = row.getAttribute('data-message-row') ?? ''
+  const source = messages.find((message) => message.id === messageId)
+  return {
+    quote: {
+      messageId,
+      text,
+      agent:
+        source?.role === 'assistant' ? source.agent || agentName : undefined,
+    },
+    rect: range.getBoundingClientRect(),
+  }
+}
+
 const QUOTE_HIGHLIGHT = 'side-chat-quote'
 
 /**

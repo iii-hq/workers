@@ -1,12 +1,16 @@
 import {
   BookmarkPlus,
+  Check,
   Clock,
+  Copy,
   Layers,
+  MessageSquareQuote,
   MessagesSquare,
   Trash2,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -31,6 +35,7 @@ import {
   sideChatsMadeHere,
   withSideChatQuote,
 } from '@/lib/chat-aside'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
@@ -322,7 +327,20 @@ export function ChatAside({
         },
         {
           value: 'side-chat',
-          label: 'Side chat',
+          // A reply that landed while the Context tab was up.
+          label: unread ? (
+            <>
+              Side chat
+              <span
+                aria-hidden
+                data-side-chat-unread=""
+                className="size-1.5 rounded-full bg-accent"
+              />
+              <span className="sr-only">, new reply</span>
+            </>
+          ) : (
+            'Side chat'
+          ),
           icon: <MessagesSquare aria-hidden className="size-4" />,
         },
       ]}
@@ -601,5 +619,147 @@ export function QuoteChip({
         </IconButton>
       ) : null}
     </div>
+  )
+}
+
+/** Half the toolbar's width, to keep it on screen near the edges. */
+const TOOLBAR_HALF = 112
+const toolbarButton =
+  'inline-flex h-7 items-center gap-1.5 rounded-md px-2 font-sans text-[13px] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-accent [&>svg]:size-4 [&>svg]:shrink-0'
+
+/** What a selection toolbar points at: the quote, where it is, and the
+ *  transcript box it must stay inside. */
+export interface SelectedQuote {
+  quote: SideChatQuote
+  rect: DOMRect
+  bounds: DOMRect
+}
+
+/**
+ * Floats Copy and "Ask in side chat" over text selected in the transcript.
+ * `read` says what is selected (see `selectionQuote`); the toolbar shows
+ * once the pointer lets go, follows the selection while it scrolls, and
+ * hides on Escape, a press elsewhere, or the selection leaving the box.
+ */
+export function SelectionToolbar({
+  read,
+  onAsk,
+}: {
+  read: () => SelectedQuote | null
+  onAsk: (quote: SideChatQuote) => void
+}) {
+  const [shown, setShown] = useState<SelectedQuote | null>(null)
+  const [copied, setCopied] = useState(false)
+  const readRef = useRef(read)
+  readRef.current = read
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let pressed = false
+    let pressedInTranscript = false
+    let frame = 0
+    const update = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (pressed) return
+        const picked = readRef.current()
+        const visible =
+          picked &&
+          picked.rect.bottom > picked.bounds.top &&
+          picked.rect.top < picked.bounds.bottom
+        setShown(visible ? picked : null)
+        if (!picked) setCopied(false)
+      })
+    }
+    const down = (event: PointerEvent) => {
+      if (toolbarRef.current?.contains(event.target as Node)) return
+      pressed = true
+      pressedInTranscript = Boolean(
+        (event.target as Element).closest?.('[data-message-list]'),
+      )
+      setShown(null)
+    }
+    // Also on a cancelled press: dragging selected text ends in a drag, not
+    // a pointerup. A press elsewhere (a button, the sidebar) leaves the
+    // selection alone and does not bring the toolbar back.
+    const up = () => {
+      if (!pressed) return
+      pressed = false
+      if (pressedInTranscript) update()
+    }
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShown(null)
+    }
+    document.addEventListener('selectionchange', update)
+    document.addEventListener('pointerdown', down, true)
+    document.addEventListener('pointerup', up, true)
+    document.addEventListener('pointercancel', up, true)
+    document.addEventListener('dragend', up, true)
+    document.addEventListener('keydown', key)
+    window.addEventListener('scroll', update, true)
+    window.addEventListener('resize', update)
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('selectionchange', update)
+      document.removeEventListener('pointerdown', down, true)
+      document.removeEventListener('pointerup', up, true)
+      document.removeEventListener('pointercancel', up, true)
+      document.removeEventListener('dragend', up, true)
+      document.removeEventListener('keydown', key)
+      window.removeEventListener('scroll', update, true)
+      window.removeEventListener('resize', update)
+    }
+  }, [])
+  if (!shown) return null
+  const { quote, rect, bounds } = shown
+  // Above the selection, or below it at the top of the transcript and on
+  // touch screens, where the system's own selection menu sits above.
+  const below =
+    rect.top - 48 < bounds.top ||
+    window.matchMedia?.('(pointer: coarse)').matches
+  const center = Math.min(
+    Math.max(rect.left + rect.width / 2, TOOLBAR_HALF + 8),
+    window.innerWidth - TOOLBAR_HALF - 8,
+  )
+  return createPortal(
+    <div
+      ref={toolbarRef}
+      role="toolbar"
+      aria-label="Selection"
+      data-selection-toolbar=""
+      className="fixed z-50 flex items-center gap-0.5 rounded-md bg-panel-raised p-0.5 shadow-floating"
+      style={{
+        left: center,
+        top: below ? rect.bottom + 8 : rect.top - 8,
+        translate: below ? '-50% 0' : '-50% -100%',
+      }}
+      // Keep the selection: a press on a button would collapse it.
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      <button
+        type="button"
+        className={toolbarButton}
+        onClick={() => {
+          void copyTextToClipboard(quote.text).then((ok) => {
+            if (ok) setCopied(true)
+          })
+        }}
+      >
+        {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      <button
+        type="button"
+        className={toolbarButton}
+        onClick={() => {
+          setShown(null)
+          window.getSelection()?.removeAllRanges()
+          onAsk(quote)
+        }}
+      >
+        <MessageSquareQuote aria-hidden />
+        Ask in side chat
+      </button>
+    </div>,
+    document.body,
   )
 }
