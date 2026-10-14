@@ -399,7 +399,16 @@ jobs:
         timeout-minutes: 15
         env:
           COMPUTER_A11Y_FIXTURE: ${{ github.workspace }}/computer/tests/fixture/target/debug/computer-a11y-fixture.exe
+          COMPUTER_A11Y_FIXTURE_LOG_DIR: ${{ runner.temp }}
         run: cargo test --locked --test semantic_live -- --ignored --test-threads=1
+
+      - name: Upload the fixture logs
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: a11y-fixture-logs
+          path: ${{ runner.temp }}/a11y-fixture-*.log
+          if-no-files-found: ignore
 
   # ──────────────────────────────────────────────────────────────
   # crates/llama-native builds llama.cpp per target: shared libraries and

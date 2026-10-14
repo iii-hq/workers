@@ -9,6 +9,8 @@
 //!
 //! macOS needs Accessibility and Screen Recording for the terminal running
 //! it; Windows needs an interactive desktop (hosted windows-latest has one).
+//! `COMPUTER_A11Y_FIXTURE_LOG_DIR` picks where the fixture logs go (default:
+//! the temp dir); CI uploads them when the job fails.
 #![cfg(any(target_os = "macos", target_os = "windows"))]
 
 use std::path::PathBuf;
@@ -37,11 +39,15 @@ struct Win {
 }
 
 impl Fixture {
-    async fn start() -> Self {
+    /// The fixture's window is up (it logged it); its tree may not be yet.
+    async fn launch() -> Self {
         let bin = std::env::var("COMPUTER_A11Y_FIXTURE")
             .expect("set COMPUTER_A11Y_FIXTURE to the built computer-a11y-fixture binary");
         static RUN: AtomicU64 = AtomicU64::new(0);
-        let log = std::env::temp_dir().join(format!(
+        let dir = std::env::var_os("COMPUTER_A11Y_FIXTURE_LOG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let log = dir.join(format!(
             "a11y-fixture-{}-{}.log",
             std::process::id(),
             RUN.fetch_add(1, Ordering::SeqCst)
@@ -60,20 +66,30 @@ impl Fixture {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        // AccessKit serves an empty placeholder to the first accessibility
-        // query and builds the real tree on its event loop: wait until the
-        // tree is really there instead of sleeping a guess.
+        f
+    }
+
+    /// Launched, and its real accessibility tree is readable. AccessKit
+    /// serves an empty placeholder to the first query and builds the tree on
+    /// its event loop, so poll instead of sleeping a guess.
+    async fn start() -> Self {
+        let f = Self::launch().await;
         let probe = session();
         let start = Instant::now();
-        while probe
-            .snapshot(query(f.pid(), Some("button[name='Remover']")), false)
-            .await
-            .map(|o| o.matches)
-            != Ok(1)
-        {
+        loop {
+            let got = probe
+                .snapshot(query(f.pid(), Some("button[name='Remover']")), false)
+                .await;
+            if matches!(&got, Ok(o) if o.matches == 1) {
+                break;
+            }
             assert!(
                 start.elapsed() < Duration::from_secs(15),
-                "fixture tree never appeared"
+                "fixture tree never appeared; last read: {}",
+                match got {
+                    Ok(o) => format!("{} matches\n{}", o.matches, o.text),
+                    Err(e) => format!("{:?}: {}", e.code, e.message),
+                }
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -145,20 +161,67 @@ fn refs(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn first_ref(text: &str) -> String {
+    refs(text)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no ref in:\n{text}"))
+}
+
 fn ref_on(text: &str, needle: &str) -> String {
     let line = text
         .lines()
         .find(|l| l.contains(needle))
         .unwrap_or_else(|| panic!("{needle} in:\n{text}"));
-    refs(line).remove(0)
+    first_ref(line)
 }
 
+/// Before a negative check: time for a stray action to show up in the log.
 fn settle() {
     std::thread::sleep(Duration::from_millis(400));
 }
 
+/// Poll `cond` for up to 5 s: the fixture applies an action on its own
+/// event loop, after the accessibility call already returned.
+async fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !cond() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "never happened: {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn find(s: &SemanticSession, pid: u32, selector: &str) -> computer::semantic::SnapshotOut {
     s.snapshot(query(pid, Some(selector)), false).await.unwrap()
+}
+
+/// Retry `find` until it reports `n` matches, for up to 5 s.
+async fn wait_matches(s: &SemanticSession, pid: u32, selector: &str, n: usize) {
+    let start = Instant::now();
+    loop {
+        let out = find(s, pid, selector).await;
+        if out.matches == n {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{selector}: {} matches, want {n}\n{}",
+            out.matches,
+            out.text
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Exactly `n` actions logged: wait for the n-th, then make sure no extra
+/// one follows.
+async fn exactly_actions(f: &Fixture, n: usize) {
+    wait_for(&format!("{n} fixture actions"), || f.actions().len() >= n).await;
+    settle();
+    assert_eq!(f.actions().len(), n, "{:?}", f.actions());
 }
 
 #[tokio::test]
@@ -168,17 +231,16 @@ async fn invoke_dispatches_exactly_once() {
     let s = session();
     let out = find(&s, f.pid(), "button[name='Salvar']").await;
     assert_eq!(out.matches, 1, "{}", out.text);
-    s.act(refs(&out.text).remove(0), Verb::Invoke, None)
+    s.act(first_ref(&out.text), Verb::Invoke, None)
         .await
         .unwrap();
-    settle();
-    let actions = f.actions();
-    assert_eq!(actions.len(), 1, "{actions:?}");
-    assert!(actions[0].starts_with("action Salvar Click"), "{actions:?}");
-    assert_eq!(
-        find(&s, f.pid(), "[name^='Status: salvo 1']").await.matches,
-        1
+    exactly_actions(&f, 1).await;
+    assert!(
+        f.actions()[0].starts_with("action Salvar Click"),
+        "{:?}",
+        f.actions()
     );
+    wait_matches(&s, f.pid(), "[name^='Status: salvo 1']", 1).await;
 }
 
 #[tokio::test]
@@ -188,24 +250,20 @@ async fn set_value_round_trips_unicode() {
     let s = session();
     let out = find(&s, f.pid(), "text_field[name='Nome']").await;
     s.act(
-        refs(&out.text).remove(0),
+        first_ref(&out.text),
         Verb::SetValue,
         Some("ação, João, €".into()),
     )
     .await
     .unwrap();
-    settle();
-    assert_eq!(f.actions().len(), 1, "{:?}", f.actions());
-    assert_eq!(
-        find(
-            &s,
-            f.pid(),
-            "text_field[name='Nome'][value='ação, João, €']"
-        )
-        .await
-        .matches,
-        1
-    );
+    exactly_actions(&f, 1).await;
+    wait_matches(
+        &s,
+        f.pid(),
+        "text_field[name='Nome'][value='ação, João, €']",
+        1,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -214,31 +272,19 @@ async fn toggle_and_select_change_observed_state() {
     let f = Fixture::start().await;
     let s = session();
     let out = find(&s, f.pid(), "check_box[name='Ativo']").await;
-    s.act(refs(&out.text).remove(0), Verb::Toggle, None)
+    s.act(first_ref(&out.text), Verb::Toggle, None)
         .await
         .unwrap();
-    settle();
     // Counts, not names: how UIA/AX toggle and select map onto AccessKit
     // actions is the platform's business; one request per act is ours.
-    assert_eq!(f.actions().len(), 1, "{:?}", f.actions());
-    assert_eq!(
-        find(&s, f.pid(), "check_box[name='Ativo'][checked='on']")
-            .await
-            .matches,
-        1
-    );
+    exactly_actions(&f, 1).await;
+    wait_matches(&s, f.pid(), "check_box[name='Ativo'][checked='on']", 1).await;
     let out = find(&s, f.pid(), "[name='Dois']").await;
-    s.act(refs(&out.text).remove(0), Verb::Select, None)
+    s.act(first_ref(&out.text), Verb::Select, None)
         .await
         .unwrap();
-    settle();
-    assert_eq!(f.actions().len(), 2, "{:?}", f.actions());
-    assert_eq!(
-        find(&s, f.pid(), "[name='Dois'][selected='true']")
-            .await
-            .matches,
-        1
-    );
+    exactly_actions(&f, 2).await;
+    wait_matches(&s, f.pid(), "[name='Dois'][selected='true']", 1).await;
 }
 
 #[tokio::test]
@@ -259,7 +305,7 @@ async fn a_disabled_button_is_refused_without_effect() {
     let s = session();
     let out = find(&s, f.pid(), "button[name='Desabilitado']").await;
     let err = s
-        .act(refs(&out.text).remove(0), Verb::Invoke, None)
+        .act(first_ref(&out.text), Verb::Invoke, None)
         .await
         .unwrap_err();
     assert_eq!(err.code, Code::NotSupported);
@@ -280,12 +326,13 @@ async fn a_removed_element_is_a_stale_ref() {
     let salvar = ref_on(&tree.text, "\"Salvar\"");
     let remover = ref_on(&tree.text, "\"Remover\"");
     s.act(remover, Verb::Invoke, None).await.unwrap();
-    settle();
-    let before = f.actions().len();
+    // Wait on the log, not on a find: a find with matches would replace the
+    // snapshot and make the next act stale for the wrong reason.
+    exactly_actions(&f, 1).await;
     let err = s.act(salvar, Verb::Invoke, None).await.unwrap_err();
     assert_eq!(err.code, Code::StaleRef, "{}", err.message);
     settle();
-    assert_eq!(f.actions().len(), before);
+    assert_eq!(f.actions().len(), 1, "{:?}", f.actions());
 }
 
 #[tokio::test]
@@ -293,7 +340,7 @@ async fn a_removed_element_is_a_stale_ref() {
 async fn a_replaced_snapshot_is_a_stale_ref() {
     let f = Fixture::start().await;
     let s = session();
-    let old = refs(&find(&s, f.pid(), "button[name='Salvar']").await.text).remove(0);
+    let old = first_ref(&find(&s, f.pid(), "button[name='Salvar']").await.text);
     find(&s, f.pid(), "button[name='Remover']").await;
     assert_eq!(
         s.act(old, Verb::Invoke, None).await.unwrap_err().code,
@@ -348,12 +395,26 @@ async fn click_center(host: &NativeHost, display: &DisplayInfo, win: Win) {
     host.left_click(ix, iy).await.unwrap();
 }
 
+fn mouse_clicks(f: &Fixture) -> Vec<(i64, i64)> {
+    f.lines()
+        .into_iter()
+        .filter_map(|l| l.strip_prefix("mouse ").map(String::from))
+        .map(|l| {
+            let v: Vec<i64> = l.split(' ').map(|n| n.parse().unwrap()).collect();
+            (v[0], v[1])
+        })
+        .collect()
+}
+
 /// Smoke test: a coordinate click on the fixture lands, and still lands after
 /// a semantic call in the same process.
 #[tokio::test]
 #[ignore]
 async fn a_coordinate_click_lands_before_and_after_semantic_use() {
-    let f = Fixture::start().await;
+    // No readiness probe: the first click must precede any semantic call.
+    let f = Fixture::launch().await;
+    // The window is logged at creation; give it a moment to be shown.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let window = f.window().unwrap();
     let (ww, wh) = (window.w, window.h);
     let host = NativeHost::new(4096, 80, None);
@@ -363,20 +424,13 @@ async fn a_coordinate_click_lands_before_and_after_semantic_use() {
         .find(|d| d.primary)
         .expect("a primary display");
     click_center(&host, &display, window).await;
-    settle();
+    wait_for("the first click", || mouse_clicks(&f).len() == 1).await;
     let s = session();
     s.snapshot(query(f.pid(), None), true).await.unwrap();
     click_center(&host, &display, window).await;
+    wait_for("the second click", || mouse_clicks(&f).len() == 2).await;
     settle();
-    let clicks: Vec<(i64, i64)> = f
-        .lines()
-        .into_iter()
-        .filter_map(|l| l.strip_prefix("mouse ").map(String::from))
-        .map(|l| {
-            let v: Vec<i64> = l.split(' ').map(|n| n.parse().unwrap()).collect();
-            (v[0], v[1])
-        })
-        .collect();
+    let clicks = mouse_clicks(&f);
     assert_eq!(clicks.len(), 2, "{:?}", f.lines());
     for (cx, cy) in clicks {
         assert!(
