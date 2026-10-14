@@ -12,6 +12,10 @@
 //! length of one call, xdotool-style, and the map is restored afterwards.
 //! Every press has its release guaranteed, error or not.
 
+use std::net::Shutdown;
+use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -36,6 +40,21 @@ pub const NO_DISPLAY: &str =
 /// re-reads after the restore drops the character (xdotool's known race).
 const REMAP_SETTLE: Duration = Duration::from_millis(150);
 
+/// How long the handshake, or one driver call, may wait on the X server: a
+/// stopped server or a partitioned TCP display would otherwise block forever
+/// with the connection and the native act lock held.
+// ponytail: one ceiling per call, not per request; a legit call slower than
+// 10 s (a huge GetImage over a slow TCP link, one very long text segment)
+// fails. Per-request deadlines if that ever bites.
+const X_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The core-state Lock bit, and the keysym of the key that toggles it.
+const LOCK: u16 = 0x2;
+const CAPS_LOCK: u32 = 0xffe5;
+const CAPS_ON: &str = "Caps Lock is on and this worker cannot turn it off on this keyboard map; \
+                       typed letters would come out in the wrong case. Turn Caps Lock off and \
+                       retry.";
+
 // XTest event types (core protocol event codes).
 const KEY_PRESS: u8 = 2;
 const KEY_RELEASE: u8 = 3;
@@ -59,13 +78,14 @@ pub enum Desktop {
 pub fn detect() -> Result<Desktop, String> {
     let set = |v: &str| std::env::var_os(v).is_some_and(|s| !s.is_empty());
     classify(set("WAYLAND_DISPLAY"), set("DISPLAY"), || {
-        let (c, _) = connect()?;
-        let ext = c
-            .query_extension(b"XWAYLAND")
-            .map_err(xerr)?
-            .reply()
-            .map_err(xerr)?;
-        Ok(ext.present)
+        Conn::default().with(|c, _| {
+            let ext = c
+                .query_extension(b"XWAYLAND")
+                .map_err(xerr)?
+                .reply()
+                .map_err(xerr)?;
+            Ok(ext.present)
+        })
     })
 }
 
@@ -89,12 +109,58 @@ fn classify(
     })
 }
 
-fn connect() -> Result<(RustConnection, usize), String> {
-    RustConnection::connect(None).map_err(|e| {
-        format!(
-            "cannot open the X display {:?} ({e}); check DISPLAY and XAUTHORITY",
-            std::env::var("DISPLAY").unwrap_or_default()
-        )
+/// Open `display` (`None`: `$DISPLAY`), giving up after `deadline`. A
+/// handshake given up on is left to finish or fail on its own thread.
+fn connect(display: Option<&str>, deadline: Duration) -> Result<(RustConnection, usize), String> {
+    let name = display.map_or_else(
+        || std::env::var("DISPLAY").unwrap_or_default(),
+        str::to_owned,
+    );
+    let (tx, rx) = mpsc::channel();
+    let owned = display.map(str::to_owned);
+    std::thread::spawn(move || {
+        let _ = tx.send(RustConnection::connect(owned.as_deref()));
+    });
+    match rx.recv_timeout(deadline) {
+        Ok(Ok(c)) => Ok(c),
+        Ok(Err(e)) => Err(format!(
+            "cannot open the X display {name:?} ({e}); check DISPLAY and XAUTHORITY"
+        )),
+        Err(_) => Err(format!(
+            "the X display {name:?} did not answer within {} s; check DISPLAY and XAUTHORITY",
+            deadline.as_secs_f32()
+        )),
+    }
+}
+
+/// Run `f`, shutting `sock` (a dup of the connection's socket) down if it has
+/// not returned after `deadline`: x11rb's blocked poll then fails, `f`
+/// returns, and the error names the cut-off.
+fn bounded<T>(
+    sock: &UnixStream,
+    deadline: Duration,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let (done, wait) = mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        let dog = s.spawn(move || {
+            let late = matches!(wait.recv_timeout(deadline), Err(RecvTimeoutError::Timeout));
+            if late {
+                let _ = sock.shutdown(Shutdown::Both);
+            }
+            late
+        });
+        let out = f();
+        drop(done);
+        // A call that finished just as the cut came is reported cut too: its
+        // socket is gone either way.
+        if dog.join().unwrap_or(true) {
+            return Err(format!(
+                "the X server did not answer within {} s",
+                deadline.as_secs_f32()
+            ));
+        }
+        out
     })
 }
 
@@ -102,9 +168,10 @@ fn xerr(e: impl std::fmt::Display) -> String {
     format!("X11: {e}")
 }
 
-/// One X connection per driver, opened on first use.
+/// One X connection per driver, opened on first use, and a dup of its socket
+/// for the watchdog of [`bounded`].
 #[derive(Default)]
-pub struct Conn(Mutex<Option<(RustConnection, Window)>>);
+pub struct Conn(Mutex<Option<(RustConnection, Window, UnixStream)>>);
 
 impl Conn {
     fn with<T>(
@@ -113,12 +180,14 @@ impl Conn {
     ) -> Result<T, String> {
         let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
-            let (c, screen) = connect()?;
+            let (c, screen) = connect(None, X_DEADLINE)?;
             let root = c.setup().roots[screen].root;
-            *slot = Some((c, root));
+            // Wrapping a TCP socket is fine: only shutdown(2) is called on it.
+            let sock = AsFd::as_fd(c.stream()).try_clone_to_owned().map_err(xerr)?;
+            *slot = Some((c, root, UnixStream::from(sock)));
         }
-        let (c, root) = slot.as_ref().expect("connected above");
-        let out = f(c, *root);
+        let (c, root, sock) = slot.as_ref().expect("connected above");
+        let out = bounded(sock, X_DEADLINE, || f(c, *root));
         if out.is_err() {
             // ponytail: reconnects after any failed call, not only a dead
             // connection; a reconnect is one handshake.
@@ -221,20 +290,20 @@ fn pick(
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>, String> {
-    let (c, screen) = connect()?;
-    let root = c.setup().roots[screen].root;
-    Ok(monitors(&c, root)?
-        .into_iter()
-        .enumerate()
-        .map(|(i, m)| DisplayInfo {
-            index: i as u32,
-            name: m.name,
-            primary: m.primary,
-            builtin: false,
-            width: m.w,
-            height: m.h,
-        })
-        .collect())
+    Conn::default().with(|c, root| {
+        Ok(monitors(c, root)?
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| DisplayInfo {
+                index: i as u32,
+                name: m.name,
+                primary: m.primary,
+                builtin: false,
+                width: m.w,
+                height: m.h,
+            })
+            .collect())
+    })
 }
 
 /// 4-byte little-endian BGRX pixels → RGBA (alpha forced opaque); `None`
@@ -320,6 +389,13 @@ fn sync(c: &RustConnection) -> Result<(), String> {
     Ok(())
 }
 
+/// The core state: modifiers (`LOCK` among them) and, in bits 13-14, the XKB
+/// group.
+fn state(c: &RustConnection, root: Window) -> Result<u16, String> {
+    let p = c.query_pointer(root).map_err(xerr)?.reply().map_err(xerr)?;
+    Ok(p.mask.into())
+}
+
 /// Presses not yet released. Dropping it releases them, latest first, so an
 /// error between a press and its release never leaves a key or button held
 /// on the user's desktop.
@@ -368,6 +444,15 @@ fn presses(
     root: Window,
 ) -> Held<impl FnMut(u8, u8) -> Result<(), String> + '_> {
     Held::new(move |kind, detail| fake(c, root, kind, detail, (0, 0)))
+}
+
+/// Press and release one key, then wait for the server to process both.
+fn tap(c: &RustConnection, root: Window, kc: u8) -> Result<(), String> {
+    let mut held = presses(c, root);
+    held.press(KEY_PRESS, kc)?;
+    held.release()?;
+    drop(held);
+    sync(c)
 }
 
 fn button(b: Btn) -> u8 {
@@ -644,15 +729,78 @@ impl Drop for Bound<'_> {
     }
 }
 
+/// What type_text does about Caps Lock before typing.
+#[derive(Debug, PartialEq)]
+enum Caps {
+    /// Lock is off: nothing.
+    Off,
+    /// Tap this keycode to turn Lock off, and again afterwards.
+    Tap(u8),
+    /// Lock is on and no key is known to turn it off.
+    Refuse,
+}
+
+/// `mask` is the core state, `key` the keycode bound to Caps_Lock if any.
+fn caps_plan(mask: u16, key: Option<u8>) -> Caps {
+    match key {
+        _ if mask & LOCK == 0 => Caps::Off,
+        Some(kc) => Caps::Tap(kc),
+        None => Caps::Refuse,
+    }
+}
+
+/// Caps Lock that type_text turned off. Dropping it turns Lock back on when
+/// it is off, so the desktop keeps its state on every path, error or not.
+struct LockBack<'a> {
+    conn: &'a Conn,
+    kc: u8,
+}
+
+impl Drop for LockBack<'_> {
+    fn drop(&mut self) {
+        let _ = self.conn.with(|c, root| {
+            if state(c, root)? & LOCK == 0 {
+                tap(c, root, self.kc)?;
+            }
+            Ok(())
+        });
+    }
+}
+
 pub fn type_text(conn: &Conn, text: &str) -> Result<(), String> {
-    conn.with(|c, root| {
+    // One call reads the map, the XKB group and Lock, and plans; each segment
+    // then gets a call of its own, so the deadline bounds a segment, not the
+    // whole text.
+    let (per, shift, segments, caps) = conn.with(|c, root| {
         let map = Keymap::read(c)?;
-        // The XKB group lives in bits 13-14 of the core state.
-        let pointer = c.query_pointer(root).map_err(xerr)?.reply().map_err(xerr)?;
-        let group = (u16::from(pointer.mask) >> 13) & 3;
-        let shift = map.find(0xffe1).map(|(kc, _)| kc);
-        for seg in plan_text(text, &map, group != 0)? {
-            let _bound = Bound::new(c, map.per, &seg.bind)?;
+        let mask = state(c, root)?;
+        let segments = plan_text(text, &map, (mask >> 13) & 3 != 0)?;
+        let caps = caps_plan(mask, map.find(CAPS_LOCK).map(|(kc, _)| kc));
+        Ok((map.per, map.find(0xffe1).map(|(kc, _)| kc), segments, caps))
+    })?;
+    // Lock flips the case of mapped letters, and Lock-aware clients upper-case
+    // what a spare keycode types too: type with it off.
+    let _lock_back = match caps {
+        Caps::Off => None,
+        Caps::Refuse => return Err(CAPS_ON.to_string()),
+        Caps::Tap(kc) => {
+            // Armed before the tap: from here every path puts Lock back.
+            let back = LockBack { conn, kc };
+            conn.with(|c, root| {
+                tap(c, root, kc)?;
+                if state(c, root)? & LOCK != 0 {
+                    // A Shift_Lock setup: undo the tap and refuse.
+                    tap(c, root, kc)?;
+                    return Err(CAPS_ON.to_string());
+                }
+                Ok(())
+            })?;
+            Some(back)
+        }
+    };
+    for seg in &segments {
+        conn.with(|c, root| {
+            let bound = Bound::new(c, per, &seg.bind)?;
             if !seg.bind.is_empty() {
                 sync(c)?;
                 std::thread::sleep(REMAP_SETTLE);
@@ -674,9 +822,11 @@ pub fn type_text(conn: &Conn, text: &str) -> Result<(), String> {
                 sync(c)?;
                 std::thread::sleep(REMAP_SETTLE);
             }
-        }
-        sync(c)
-    })
+            drop(bound);
+            sync(c)
+        })?;
+    }
+    Ok(())
 }
 
 /// A single key is a tap; a chord holds all but the last, taps the last,
@@ -898,6 +1048,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn caps_lock_is_tapped_off_or_refused() {
+        // Shift (0x1) and the XKB group (bit 13) do not count, Lock (0x2) does.
+        assert_eq!(caps_plan(0x2001, Some(66)), Caps::Off);
+        assert_eq!(caps_plan(0, None), Caps::Off);
+        assert_eq!(caps_plan(0x2003, Some(66)), Caps::Tap(66));
+        assert_eq!(caps_plan(0x2, None), Caps::Refuse);
+    }
+
+    #[test]
+    fn a_silent_server_is_cut_off_at_the_deadline() {
+        use std::io::Read;
+        use std::time::Instant;
+        let (ours, _server) = UnixStream::pair().unwrap();
+        // Backstop: without the watchdog the read gives up after 5 s and the
+        // elapsed check fails instead of hanging the suite.
+        ours.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let start = Instant::now();
+        let err = bounded(&ours, Duration::from_millis(50), || {
+            let n = (&ours).read(&mut [0u8; 1]).map_err(|e| e.to_string())?;
+            Err::<(), _>(format!("read {n} bytes"))
+        })
+        .unwrap_err();
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(err, "the X server did not answer within 0.05 s");
+        // A call that returns in time is untouched and does not wait out the
+        // deadline.
+        let start = Instant::now();
+        assert_eq!(bounded(&ours, Duration::from_secs(10), || Ok(7)), Ok(7));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn connect_gives_up_on_a_display_that_never_answers() {
+        use std::net::TcpListener;
+        use std::time::Instant;
+        // TCP, because x11rb 0.14 dials /tmp/.X11-unix/X0 for a socket-path
+        // display name. Bound, never accepted: the kernel completes the
+        // connect and the handshake waits for a setup reply that never comes.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let display = format!("127.0.0.1:{}", port.checked_sub(6000).unwrap());
+        let start = Instant::now();
+        let err = connect(Some(&display), Duration::from_millis(100)).unwrap_err();
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            err,
+            format!(
+                "the X display {display:?} did not answer within 0.1 s; check DISPLAY and \
+                 XAUTHORITY"
+            )
+        );
+    }
+
     /// Needs an X server: run through tests/run-linux-live.sh.
     #[test]
     #[ignore]
@@ -921,6 +1133,45 @@ mod tests {
         // 15 free keycodes, so two segments.
         type_text(&conn, "çãé€ł日本語中文한국어ñöüßøåæ").unwrap();
         keys(&conn, &["ctrl".to_string(), "a".to_string()]).unwrap();
+        // Caps Lock on: type_text taps it off to type and back on after.
+        let caps = conn.with(|c, _| Keymap::read(c)).unwrap().find(CAPS_LOCK);
+        let caps = caps.expect("Caps_Lock on Xvfb's map").0;
+        let locked = || conn.with(state).unwrap() & LOCK != 0;
+        conn.with(|c, root| tap(c, root, caps)).unwrap();
+        assert!(locked(), "Caps Lock turned on");
+        // A focused window of our own sees the typed keys and their state.
+        use x11rb::protocol::xproto::{CreateWindowAux, EventMask, InputFocus, WindowClass};
+        let (watch, screen) = connect(None, X_DEADLINE).unwrap();
+        let (top, win) = (
+            watch.setup().roots[screen].root,
+            watch.generate_id().unwrap(),
+        );
+        let aux = CreateWindowAux::new().event_mask(EventMask::KEY_PRESS);
+        let class = WindowClass::INPUT_OUTPUT;
+        watch
+            .create_window(0, win, top, 0, 0, 50, 50, 0, class, 0, &aux)
+            .unwrap();
+        watch.map_window(win).unwrap();
+        watch
+            .set_input_focus(InputFocus::POINTER_ROOT, win, 0u32)
+            .unwrap();
+        sync(&watch).unwrap();
+        type_text(&conn, "Hello ç").unwrap();
+        assert!(locked(), "Caps Lock back on after typing");
+        sync(&watch).unwrap();
+        let mut typed = 0;
+        while let Some(ev) = watch.poll_for_event().unwrap() {
+            if let x11rb::protocol::Event::KeyPress(k) = ev {
+                if k.detail != caps {
+                    typed += 1;
+                    assert_eq!(u16::from(k.state) & LOCK, 0, "typed with Lock: {k:?}");
+                }
+            }
+        }
+        assert_eq!(typed, 8, "seven characters and the Shift of the H");
+        drop(watch);
+        conn.with(|c, root| tap(c, root, caps)).unwrap();
+        assert!(!locked(), "Caps Lock off again: the server is left clean");
         let after = conn.with(|c, _| Keymap::read(c)).unwrap().syms;
         assert_eq!(before, after, "keyboard map restored");
     }
