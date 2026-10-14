@@ -86,10 +86,17 @@ struct Snapshot {
     born: u64,
 }
 
+const INVALIDATED: &str = "refs were invalidated by a physical action on this desktop";
+const NO_SNAPSHOT: &str =
+    "no active snapshot (none taken yet, or the accessibility executor was reset)";
+
 pub struct Engine {
     factory: ProviderFactory,
     invalidations: Arc<AtomicU64>,
     active: Option<Snapshot>,
+    /// Why there is no active snapshot: never taken, or dropped because a
+    /// physical action invalidated it.
+    gone: &'static str,
 }
 
 fn stale(what: impl Into<String>) -> SemanticError {
@@ -144,17 +151,24 @@ impl Engine {
             factory,
             invalidations,
             active: None,
+            gone: NO_SNAPSHOT,
+        }
+    }
+
+    /// Drop an invalidated snapshot now, freeing its provider and handle
+    /// cache; later calls still learn why their refs died.
+    fn reap(&mut self) {
+        let now = self.invalidations.load(Ordering::SeqCst);
+        if self.active.as_ref().is_some_and(|s| s.born != now) {
+            self.active = None;
+            self.gone = INVALIDATED;
         }
     }
 
     fn live(&self) -> Result<&Snapshot, SemanticError> {
-        let snap = self.active.as_ref().ok_or_else(|| {
-            stale("no active snapshot (none taken yet, or the accessibility executor was reset)")
-        })?;
+        let snap = self.active.as_ref().ok_or_else(|| stale(self.gone))?;
         if snap.born != self.invalidations.load(Ordering::SeqCst) {
-            return Err(stale(
-                "refs were invalidated by a coordinate action on this session",
-            ));
+            return Err(stale(INVALIDATED));
         }
         Ok(snap)
     }
@@ -199,6 +213,7 @@ impl Engine {
         deadline: Instant,
         install_if_empty: bool,
     ) -> Result<SnapshotOut, SemanticError> {
+        self.reap();
         let born = self.invalidations.load(Ordering::SeqCst);
         let rooted = q.scope.root_ref.is_some();
         let (provider, root) = self.resolve_root(&q.scope)?;
@@ -309,6 +324,7 @@ impl Engine {
         verb: Verb,
         text: Option<&str>,
     ) -> Result<String, SemanticError> {
+        self.reap();
         let snap = self.live()?;
         let el = snap.refs.get(r).ok_or_else(|| unknown_ref(r))?;
         if !el.states.enabled {
@@ -583,8 +599,36 @@ mod tests {
             .act(&ref_of(&out.text, "Salvar"), Verb::Invoke, None)
             .unwrap_err();
         assert_eq!(err.code, Code::StaleRef);
-        assert!(err.message.contains("coordinate action"), "{}", err.message);
+        assert!(err.message.contains("physical action"), "{}", err.message);
         assert!(t.actions().is_empty());
+    }
+
+    #[test]
+    fn an_invalidated_snapshot_is_dropped_by_the_next_call() {
+        let t = form();
+        let (mut e, inv) = engine(&t);
+        let base = Arc::strong_count(&t);
+        let out = e.snapshot(&query(None), deadline(), true).unwrap();
+        assert_eq!(
+            Arc::strong_count(&t),
+            base + 1,
+            "the snapshot holds its provider"
+        );
+        inv.fetch_add(1, Ordering::SeqCst);
+        let none = e
+            .snapshot(&query(Some("button[name='Nada']")), deadline(), false)
+            .unwrap();
+        assert_eq!(none.matches, 0);
+        assert_eq!(
+            Arc::strong_count(&t),
+            base,
+            "the invalidated provider is freed"
+        );
+        let err = e
+            .act(&ref_of(&out.text, "Salvar"), Verb::Invoke, None)
+            .unwrap_err();
+        assert_eq!(err.code, Code::StaleRef);
+        assert!(err.message.contains("physical action"), "{}", err.message);
     }
 
     #[test]
@@ -696,7 +740,7 @@ mod tests {
         inv.fetch_add(1, Ordering::SeqCst);
         let err = e.snapshot(&q, deadline(), false).unwrap_err();
         assert_eq!(err.code, Code::StaleRef);
-        assert!(err.message.contains("coordinate action"), "{}", err.message);
+        assert!(err.message.contains("physical action"), "{}", err.message);
     }
 
     #[test]

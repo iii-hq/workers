@@ -14,12 +14,14 @@ use crate::session::{now_ms, Session};
 
 /// Every screenshot is a distinct ~64 KB JPEG-looking buffer; `fail` makes
 /// captures error; `inputs` counts every pointer/keyboard call on entry;
-/// `hold` keeps each input call pending until cleared.
+/// `hold` keeps each input call pending until cleared; `fail_input` makes
+/// every input fail after it was counted.
 pub(crate) struct FakeDesktop {
     pub shots: AtomicU64,
     pub fail: AtomicBool,
     pub inputs: AtomicU64,
     pub hold: AtomicBool,
+    pub fail_input: AtomicBool,
 }
 
 impl FakeDesktop {
@@ -27,6 +29,9 @@ impl FakeDesktop {
         self.inputs.fetch_add(1, Ordering::SeqCst);
         while self.hold.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        if self.fail_input.load(Ordering::SeqCst) {
+            return Err("input failed".to_string());
         }
         Ok(())
     }
@@ -98,6 +103,7 @@ pub(crate) fn session_on(
         fail: AtomicBool::new(false),
         inputs: AtomicU64::new(0),
         hold: AtomicBool::new(false),
+        fail_input: AtomicBool::new(false),
     });
     let cfg = crate::config::WorkerConfig {
         screencast_fps: 200, // 5 ms frames keep the tests fast

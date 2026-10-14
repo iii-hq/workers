@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::invalid;
 use crate::driver::{Driver, Screen};
-use crate::semantic::{SemanticError, Verb, MAX_SET_VALUE_CHARS};
+use crate::semantic::{SemanticError, SemanticSession, Verb, MAX_SET_VALUE_CHARS};
 use crate::session::Session;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -205,6 +205,19 @@ async fn dispatch(driver: &Arc<dyn Driver>, p: Physical) -> Result<String, Error
     })
 }
 
+/// Bumps the ref-invalidation counter when dropped — after the input
+/// returns, fails, or the handler is cancelled mid-dispatch — so a walk that
+/// ran while the input was landing is stale too.
+struct InvalidateOnDrop<'a>(Option<&'a SemanticSession>);
+
+impl Drop for InvalidateOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(semantic) = self.0 {
+            semantic.invalidate();
+        }
+    }
+}
+
 pub(crate) async fn handle(session: &Arc<Session>, req: ActInput) -> Result<ActOutput, Error> {
     if let Some(verb) = Verb::parse(&req.action) {
         return by_ref(session, &req, verb).await;
@@ -225,21 +238,14 @@ pub(crate) async fn handle(session: &Arc<Session>, req: ActInput) -> Result<ActO
     let planned = plan(&req, session.screen)?;
     let _guard = session.act_lock.lock().await;
     session.touch();
-    // Before the input too, so refs taken earlier die even if this handler
-    // is cancelled mid-dispatch.
+    // Refs taken before this input die now; `_after` (dropped before
+    // `_guard`) kills the ones a concurrent walk takes while it lands.
     if let Some(semantic) = &session.semantic {
         semantic.invalidate();
     }
-    let result = dispatch(session.driver(), planned).await;
-    // Input may have reached the desktop even when the driver reported an
-    // error, and a walk that ran during it is stale too.
-    if let Some(semantic) = &session.semantic {
-        semantic.invalidate();
-    }
-    Ok(ActOutput {
-        ok: true,
-        detail: result?,
-    })
+    let _after = InvalidateOnDrop(session.semantic.as_ref());
+    let detail = dispatch(session.driver(), planned).await?;
+    Ok(ActOutput { ok: true, detail })
 }
 
 async fn by_ref(session: &Arc<Session>, req: &ActInput, verb: Verb) -> Result<ActOutput, Error> {
@@ -562,5 +568,103 @@ mod tests {
         );
         assert!(t.actions().is_empty());
         assert_eq!(d.inputs.load(Ordering::SeqCst), 0);
+    }
+
+    /// The `Salvar` ref of a fresh tree-only observe (reads take no act lock,
+    /// so this runs while a click holds the desktop).
+    async fn observed_salvar(s: &Arc<crate::session::Session>) -> String {
+        let out = crate::functions::observe::handle(
+            s,
+            serde_json::from_value(serde_json::json!({
+                "session_id": s.id, "include_image": false, "include_a11y": true
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let text = out.content[0].text.clone().unwrap();
+        let line = text.lines().find(|l| l.contains("Salvar")).unwrap();
+        line.trim_start()
+            .strip_prefix("[ref=")
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    /// A click held inside the driver until `d.hold` clears.
+    async fn click_in_flight(
+        s: &Arc<crate::session::Session>,
+        d: &Arc<crate::test_support::FakeDesktop>,
+    ) -> tokio::task::JoinHandle<Result<ActOutput, Error>> {
+        d.hold.store(true, Ordering::SeqCst);
+        let bg = s.clone();
+        let click = tokio::spawn(async move {
+            handle(
+                &bg,
+                req(serde_json::json!({"session_id":"c1","action":"click","x":1,"y":1})),
+            )
+            .await
+        });
+        while d.inputs.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        click
+    }
+
+    #[tokio::test]
+    async fn a_walk_during_the_input_is_stale_once_the_input_returns() {
+        let (s, d, t, _) = semantic_session().await;
+        let click = click_in_flight(&s, &d).await;
+        let r = observed_salvar(&s).await;
+        d.hold.store(false, Ordering::SeqCst);
+        click.await.unwrap().unwrap();
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","action":"invoke","ref":r})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "stale_ref");
+        assert!(t.actions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_walk_during_a_cancelled_input_is_stale_too() {
+        let (s, d, t, _) = semantic_session().await;
+        let click = click_in_flight(&s, &d).await;
+        let r = observed_salvar(&s).await;
+        click.abort();
+        let _ = click.await;
+        d.hold.store(false, Ordering::SeqCst);
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","action":"invoke","ref":r})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "stale_ref");
+        assert!(t.actions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_input_still_invalidates() {
+        let (s, d, t, r) = semantic_session().await;
+        d.fail_input.store(true, Ordering::SeqCst);
+        handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","action":"click","x":1,"y":1})),
+        )
+        .await
+        .unwrap_err();
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","action":"invoke","ref":r})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "stale_ref");
+        assert!(t.actions().is_empty());
     }
 }
