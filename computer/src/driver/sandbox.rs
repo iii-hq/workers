@@ -33,7 +33,7 @@ const BOOT_TIMEOUT_MS: u64 = 300_000;
 /// The virtual display the desktop renders to.
 const DISPLAY: &str = ":0";
 /// Most wheel notches one scroll call will send.
-const MAX_WHEEL_NOTCHES: i64 = 50;
+pub(crate) const MAX_WHEEL_NOTCHES: i64 = 50;
 
 /// One live desktop inside an iii-sandbox microVM.
 pub struct IiiSandboxHost {
