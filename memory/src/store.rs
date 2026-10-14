@@ -86,14 +86,13 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
-/// Function words dropped from QUERIES before lexical scoring (the index
-/// keeps every token), as Hindsight's lexical arm gets from Postgres's
-/// tsvector. Without it a natural-language question matches every memory
-/// through "the/do/my/qual/é", and that BM25 noise outscores a paraphrase's
-/// semantic match (recall eval: hybrid hit@3 0.68 -> 0.89). "us" is kept
-/// (US), as Snowball's English list does.
+/// English function words dropped from QUERIES before lexical scoring (the
+/// index keeps every token), as Hindsight's lexical arm gets from Postgres's
+/// `english` tsvector. Without it a natural-language question matches every
+/// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
+/// semantic match. "us" is kept (US), as Snowball's English list does.
 #[rustfmt::skip]
-const STOPWORDS_EN: &[&str] = &[
+const STOPWORDS: &[&str] = &[
     "a", "about", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
     "been", "being", "but", "by", "can", "could", "d", "did", "do", "does", "doing", "for",
     "from", "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how",
@@ -105,26 +104,6 @@ const STOPWORDS_EN: &[&str] = &[
     "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
 ];
 
-/// Portuguese function words that are never English content words.
-#[rustfmt::skip]
-const STOPWORDS_PT: &[&str] = &[
-    "à", "às", "ainda", "ao", "aos", "aqui", "até", "como", "das", "dela", "dele", "do", "e",
-    "é", "ela", "elas", "ele", "eles", "essa", "esse", "esta", "está", "estão", "este", "estou",
-    "foi", "há", "isso", "isto", "já", "lá", "lhe", "mais", "mas", "mesmo", "meu", "meus",
-    "minha", "minhas", "muito", "no", "nos", "nós", "nossa", "nosso", "numa", "o", "onde", "ou",
-    "para", "pela", "pelas", "pelo", "pelos", "por", "porque", "pra", "qual", "quais", "quando",
-    "que", "quem", "são", "ser", "seu", "seus", "só", "sobre", "sua", "suas", "também", "te",
-    "tem", "tenho", "ter", "teu", "tu", "tua", "um", "uma", "umas", "uns", "você", "vocês",
-];
-
-/// Portuguese function words that are also English words or acronyms (OS,
-/// EU, DOS, NAS, era, em, .com): dropped only from a query that reads as
-/// Portuguese, so "which OS do I use?" keeps its one distinctive token.
-#[rustfmt::skip]
-const STOPWORDS_PT_AMBIGUOUS: &[&str] = &[
-    "com", "da", "de", "dos", "em", "era", "eu", "na", "nas", "num", "os", "se", "sem",
-];
-
 /// Query tokens without stopwords (all kept when nothing else is left), with
 /// first-person pronouns expanded to the `user` entity handle so identity
 /// questions reach memories phrased about the user.
@@ -133,25 +112,8 @@ fn query_tokens(query: &str) -> Vec<String> {
     let first_person = tokens
         .iter()
         .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
-    // Portuguese = two distinct Portuguese-only function words, so one place
-    // name ("São Paulo", "Como") doesn't flip an English query. "o"/"e" are
-    // too weak a signal (byte length, so "é" still counts).
-    let mut markers: Vec<&str> = tokens
-        .iter()
-        .map(String::as_str)
-        .filter(|t| t.len() > 1 && STOPWORDS_PT.contains(t) && !STOPWORDS_EN.contains(t))
-        .collect();
-    markers.sort_unstable();
-    markers.dedup();
-    let portuguese = markers.len() >= 2;
-    let stop = |t: &String| {
-        let t = t.as_str();
-        STOPWORDS_EN.contains(&t)
-            || STOPWORDS_PT.contains(&t)
-            || (portuguese && STOPWORDS_PT_AMBIGUOUS.contains(&t))
-    };
-    if tokens.iter().any(|t| !stop(t)) {
-        tokens.retain(|t| !stop(t));
+    if tokens.iter().any(|t| !STOPWORDS.contains(&t.as_str())) {
+        tokens.retain(|t| !STOPWORDS.contains(&t.as_str()));
     }
     if first_person && !tokens.iter().any(|t| t == "user") {
         tokens.push("user".to_string());
@@ -802,24 +764,13 @@ mod tests {
             query_tokens("what is my dog's name"),
             ["dog", "name", "user"]
         );
-        assert_eq!(
-            query_tokens("qual é o nome do cachorro"),
-            ["nome", "cachorro"]
-        );
-        // English acronyms that are Portuguese function words survive in an
-        // English query, and are dropped in a Portuguese one.
         assert_eq!(query_tokens("which OS do I use"), ["os", "use", "user"]);
         assert_eq!(
             query_tokens("does the user live in the US"),
             ["user", "live", "us"]
         );
-        assert_eq!(query_tokens("quais os meus dados na EU"), ["dados"]);
-        assert_eq!(
-            query_tokens("Which OS is used in São Paulo?"),
-            ["os", "used", "paulo"]
-        );
         // An all-stopword query keeps its tokens rather than matching nothing.
-        assert_eq!(query_tokens("o que é isso"), ["o", "que", "é", "isso"]);
+        assert_eq!(query_tokens("what is it"), ["what", "is", "it"]);
     }
 
     #[tokio::test]
