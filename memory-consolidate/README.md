@@ -38,7 +38,7 @@ All fields hot-reload through the `configuration` worker: `enabled`, `interval_h
 - **Reorder groups** — word-order matches the deterministic pass surfaces report-only ("The deploy runs on Fridays" vs "On Fridays the deploy runs") are merged only when the judge confirms the meaning is identical; role swaps ("Alice manages Bob") stay untouched.
 - **Rule promotion** — memories re-observed `promote_corroboration_threshold`+ times are offered as candidates; ones the judge classifies as standing instructions land as one-line entries in the bank's auto-managed `learned` rule, fingerprint-deduped, append-only. Hand-authored rules are never touched, and the judge can only act on candidates it was offered — it cannot invent targets.
 
-Fail-soft: no router or a malformed reply just skips the tier (named in the report's errors); the deterministic pass has already completed.
+Fail-soft: an unavailable router just skips the tier (named in the report's `notes`, so it never blocks the checkpoint), and a malformed reply is treated as "no merges, no promotions". Either way, the deterministic pass has already completed.
 
 ## What counts as a duplicate
 
@@ -46,6 +46,6 @@ v1 is deterministic and deliberately conservative: two live memories merge only 
 
 ## Boundaries
 
-- Never touches memory's files; every mutation goes through `memory::supersede` and `memory::save` — the same append-only, last-wins contract as everything else.
+- Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call) — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::item-changed` events.
 - Pinned memories are never superseded, even inside a duplicate group.
 - Not extraction (the memory worker captures), not recall, not rule management. One job: keep banks clean.

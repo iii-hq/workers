@@ -21,7 +21,7 @@ pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 pub const RUN_ID: &str = "memory-consolidate::run";
 pub const RUN_DESC: &str =
     "Run one consolidation pass now (all configured banks, or one bank). Deterministic \
-     near-duplicate dedup applied strictly through memory::supersede + memory::save; pinned \
+     near-duplicate dedup applied strictly through memory::supersede (reinforce on merge); pinned \
      memories are untouchable. dry_run plans without writing.";
 
 pub const STATUS_ID: &str = "memory-consolidate::status";
@@ -422,5 +422,18 @@ mod tests {
         assert!(should_checkpoint(std::slice::from_ref(&clean)));
         assert!(should_checkpoint(&[]));
         assert!(!should_checkpoint(&[clean, dirty]));
+    }
+
+    #[test]
+    fn notes_never_block_the_checkpoint() {
+        // Pins only the checkpoint POLICY: notes are telemetry, errors block.
+        // (Routing soft skips into notes is untested until the router call
+        // has a test seam — see run_llm_tier.)
+        let mut noted = crate::consolidate::BankReport {
+            bank: "a".into(),
+            ..Default::default()
+        };
+        noted.notes.push("llm tier skipped: router absent".into());
+        assert!(should_checkpoint(&[noted]));
     }
 }

@@ -66,11 +66,11 @@ the trigger type registers. On older engines the binds are silently dropped.
 | `memory::bank::create / list / delete` | Banks as first-class named scopes ("blog" vs "coding" vs "personal"); delete moves to `.trash/` |
 | `memory::save` | Explicit save ("remember this"): fingerprinted, reinforces on repeat |
 | `memory::get / list / update / delete / pin` | Memory CRUD; delete tombstones; update bumps a revision in the log |
-| `memory::recall` | The exact scorer the hook uses: preview what a turn would be given; `tag` narrows to one label |
+| `memory::recall` | The exact scorer the hook uses: preview what a turn would be given; `tag` narrows to one label; `mode: lexical \| semantic` returns one raw arm (plain BM25, or cosine) for callers that fuse arms themselves |
 | `memory::tags` | Distinct tags across a bank's live memories with counts (the filter source) |
 | `memory::preview` | Full injection dry-run for a hypothetical chat message: rules section (budgets applied), memories post ambient floor and token budget, appended message verbatim — the hook's exact code path |
 | `memory::rule::list / set` | The always-injected markdown rules; empty content removes |
-| `memory::supersede` | Retire one memory in favor of another (tombstone + pointer) — the consolidation seam |
+| `memory::supersede` | Retire one memory in favor of another (tombstone + pointer) — the consolidation seam; `reinforce` makes it a merge (a non-pinned survivor absorbs the retired record's observations), `reason` rides the events |
 | `memory::doctor` | End-to-end self-test (roundtrip + sibling reachability) |
 | `memory::reload` | Reload every bank from disk after hand-editing files |
 
@@ -78,7 +78,7 @@ the trigger type registers. On older engines the binds are silently dropped.
 
 Bind live views here instead of polling; both are filterable by `bank` in the binding config, delivery is fire-and-forget, at-least-once, unordered.
 
-- `memory::item-changed` — a memory was created / updated / superseded / deleted. Payload: `{event_type, bank, memory}`.
+- `memory::item-changed` — a memory was created / updated / superseded / deleted. Payload: `{event_type, bank, memory, reason?}` (`reason` on consolidation changes).
 - `memory::bank-changed` — a bank was created / trashed, or its rules changed. Payload: `{event_type, bank}`.
 
 ## Storage layout

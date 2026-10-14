@@ -69,7 +69,9 @@ pub const PIN_DESC: &str =
 pub const SUPERSEDE_ID: &str = "memory::supersede";
 pub const SUPERSEDE_DESC: &str =
     "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
-     plain delete. The consolidation seam; pinned memories cannot be superseded.";
+     plain delete. The consolidation seam; pinned memories cannot be superseded. reinforce \
+     makes it a merge (the non-pinned survivor absorbs the retired record's observations); \
+     reason is carried on the item-changed events.";
 
 pub const TAGS_ID: &str = "memory::tags";
 pub const TAGS_DESC: &str =
@@ -88,7 +90,7 @@ pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =
     "Search a bank's memories relevant to a query (BM25 + entities + corroboration + \
      recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an \
-     injection.";
+     injection. mode lexical/semantic returns one raw arm (plain BM25, or cosine).";
 
 pub const RULE_LIST_ID: &str = "memory::rule::list";
 pub const RULE_LIST_DESC: &str =
@@ -308,7 +310,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<items::UpdateRequest, items::MemoryResponse>(UPDATE_ID, UPDATE_DESC),
         spec::<items::DeleteRequest, items::MemoryResponse>(DELETE_ID, DELETE_DESC),
         spec::<items::PinRequest, items::MemoryResponse>(PIN_ID, PIN_DESC),
-        spec::<items::SupersedeRequest, items::MemoryResponse>(SUPERSEDE_ID, SUPERSEDE_DESC),
+        spec::<items::SupersedeRequest, items::SupersedeResponse>(SUPERSEDE_ID, SUPERSEDE_DESC),
         spec::<items::TagsRequest, items::TagsResponse>(TAGS_ID, TAGS_DESC),
         spec::<preview::PreviewRequest, preview::PreviewResponse>(PREVIEW_ID, PREVIEW_DESC),
         spec::<recall::RecallRequest, recall::RecallResponse>(RECALL_ID, RECALL_DESC),

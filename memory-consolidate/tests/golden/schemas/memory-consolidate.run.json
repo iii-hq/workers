@@ -1,5 +1,5 @@
 {
-  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup applied strictly through memory::supersede + memory::save; pinned memories are untouchable. dry_run plans without writing.",
+  "description": "Run one consolidation pass now (all configured banks, or one bank). Deterministic near-duplicate dedup applied strictly through memory::supersede (reinforce on merge); pinned memories are untouchable. dry_run plans without writing.",
   "function_id": "memory-consolidate::run",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -39,6 +39,7 @@
             "type": "integer"
           },
           "errors": {
+            "description": "Real failures (reads, writes). Any error keeps the pass due.",
             "items": {
               "type": "string"
             },
@@ -55,6 +56,13 @@
             "format": "uint",
             "minimum": 0.0,
             "type": "integer"
+          },
+          "notes": {
+            "description": "Soft skips (an optional tier unavailable, a sibling too old) — telemetry only: they never block the checkpoint, so an absent router cannot re-run the whole pass on every heartbeat.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "promoted": {
             "description": "Standing-instruction lines the judge promoted into the bank's `learned` rule.",

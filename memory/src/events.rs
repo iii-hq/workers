@@ -22,7 +22,8 @@ use crate::types::Memory;
 pub const ITEM_CHANGED: &str = "memory::item-changed";
 pub const ITEM_CHANGED_DESC: &str =
     "A memory was created, updated, superseded, or deleted in a memory bank. \
-     Payload: { event_type, bank, memory }. Bind console/live views here.";
+     Payload: { event_type, bank, memory, reason? } (reason on consolidation changes). Bind \
+     console/live views here.";
 
 pub const BANK_CHANGED: &str = "memory::bank-changed";
 pub const BANK_CHANGED_DESC: &str =
@@ -173,6 +174,20 @@ impl ItemEvent {
     }
 }
 
+/// The `memory::item-changed` payload: `{event_type, bank, memory, reason?}`
+/// — `reason` only when the change carries one.
+fn item_payload(event: ItemEvent, bank: &str, memory: &Memory, reason: Option<&str>) -> Value {
+    let mut payload = json!({
+        "event_type": event.as_str(),
+        "bank": bank,
+        "memory": memory,
+    });
+    if let Some(reason) = reason {
+        payload["reason"] = json!(reason);
+    }
+    payload
+}
+
 /// Filtered fire-and-forget fan-out to every matching binding.
 pub struct Emitter {
     sets: TriggerSets,
@@ -185,11 +200,19 @@ impl Emitter {
     }
 
     pub async fn item(&self, event: ItemEvent, bank: &str, memory: &Memory) {
-        let payload = json!({
-            "event_type": event.as_str(),
-            "bank": bank,
-            "memory": memory,
-        });
+        self.item_with(event, bank, memory, None).await;
+    }
+
+    /// `item` plus the why (`memory::supersede`'s `reason`), carried on the
+    /// event so consumers can explain automatic changes.
+    pub async fn item_with(
+        &self,
+        event: ItemEvent,
+        bank: &str,
+        memory: &Memory,
+        reason: Option<&str>,
+    ) {
+        let payload = item_payload(event, bank, memory, reason);
         self.fan_out(&self.sets.items, bank, payload).await;
     }
 
@@ -255,5 +278,31 @@ mod tests {
         })
         .unwrap();
         assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
+    }
+
+    #[test]
+    fn item_payload_carries_reason_only_when_given() {
+        let m = Memory {
+            id: "fp1".into(),
+            text: "t".into(),
+            entities: vec![],
+            tags: vec![],
+            confidence: crate::types::Confidence::Stated,
+            corroboration: 0,
+            pinned: false,
+            source: None,
+            created_at: 1,
+            updated_at: 1,
+            invalid_at: None,
+            superseded_by: None,
+            revision: 0,
+        };
+        let with = item_payload(ItemEvent::Superseded, "b", &m, Some("same fact"));
+        assert_eq!(with["event_type"], "superseded");
+        assert_eq!(with["bank"], "b");
+        assert_eq!(with["memory"]["id"], "fp1");
+        assert_eq!(with["reason"], "same fact");
+        let without = item_payload(ItemEvent::Updated, "b", &m, None);
+        assert!(without.get("reason").is_none());
     }
 }

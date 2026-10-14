@@ -1,8 +1,18 @@
 {
-  "description": "Search a bank's memories relevant to a query (BM25 + entities + corroboration + recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an injection.",
+  "description": "Search a bank's memories relevant to a query (BM25 + entities + corroboration + recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an injection. mode lexical/semantic returns one raw arm (plain BM25, or cosine).",
   "function_id": "memory::recall",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "RecallMode": {
+        "enum": [
+          "hybrid",
+          "lexical",
+          "semantic"
+        ],
+        "type": "string"
+      }
+    },
     "properties": {
       "bank": {
         "default": null,
@@ -29,6 +39,14 @@
           "integer",
           "null"
         ]
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/RecallMode"
+          }
+        ],
+        "description": "`hybrid` (default) is the fused scorer the hook uses. `lexical` and `semantic` return ONE raw arm (plain BM25, or cosine as the score) for callers that fuse arms themselves — consolidation interleaves both so a near-duplicate is never buried by the fused rank."
       },
       "query": {
         "type": "string"
@@ -224,7 +242,7 @@
         "type": "array"
       },
       "retrieval": {
-        "description": "Retrieval mode actually used — degradation is explicit, never silent: `bm25-entity`, or `bm25-entity-semantic` when the query was embedded through `router::embed`.",
+        "description": "Retrieval mode actually used — degradation is explicit, never silent. `hybrid`: `bm25-entity`, or `bm25-entity-semantic` when the query was embedded through `router::embed`. `lexical`: `lexical`. `semantic`: `semantic`, or `semantic-unavailable` (empty result — NOT \"no matches\") when the query could not be embedded.",
         "type": "string"
       }
     },

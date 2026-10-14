@@ -86,6 +86,31 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
+/// Query tokens, with first-person pronouns expanded to the `user` entity
+/// handle so identity questions reach memories phrased about the user.
+fn query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = crate::index::tokenize(query);
+    if tokens
+        .iter()
+        .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"))
+        && !tokens.iter().any(|t| t == "user")
+    {
+        tokens.push("user".to_string());
+    }
+    tokens
+}
+
+/// Score descending, ties by id (HashMap iteration order would otherwise
+/// rank equal scores differently per process), then cap.
+fn rank_desc(scored: &mut Vec<(Memory, f32)>, limit: usize) {
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    scored.truncate(limit);
+}
+
 /// Run blocking filesystem work without stalling the async worker thread:
 /// `block_in_place` on the multi-thread runtime, inline on current-thread
 /// runtimes (tests), which cannot yield this way.
@@ -500,14 +525,7 @@ impl Bank {
         half_life_days: u64,
         include_superseded: bool,
     ) -> Vec<(Memory, f32)> {
-        let mut query_tokens = crate::index::tokenize(query);
-        if query_tokens
-            .iter()
-            .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"))
-            && !query_tokens.iter().any(|t| t == "user")
-        {
-            query_tokens.push("user".to_string());
-        }
+        let query_tokens = query_tokens(query);
         if query_tokens.is_empty() && query_vec.is_none() {
             return Vec::new();
         }
@@ -551,14 +569,63 @@ impl Bank {
                 (f, fused)
             })
             .collect();
-        // Ties break by id: HashMap iteration order would make equal scores
-        // rank differently per process (and the eval flaky).
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.id.cmp(&b.0.id))
-        });
-        scored.truncate(limit);
+        rank_desc(&mut scored, limit);
+        scored
+    }
+
+    /// The raw lexical arm: plain BM25 order (entity handles are part of
+    /// the indexed text) with no recency, pin, or corroboration fusion — an
+    /// old exact twin must not sink below fresh weak matches. Consolidation
+    /// interleaves this with [`Bank::semantic`], as Hindsight's consolidator
+    /// does, because a fused rank buries the twin.
+    pub async fn lexical(
+        &self,
+        query: &str,
+        limit: usize,
+        include_superseded: bool,
+    ) -> Vec<(Memory, f32)> {
+        let tokens = query_tokens(query);
+        let inner = self.inner.read().await;
+        let mut bm25 = inner.index.score(&tokens);
+        // The index only holds live records; history seeds non-live ones.
+        if include_superseded {
+            for (id, m) in &inner.memories {
+                if !m.is_live() {
+                    bm25.entry(id.clone()).or_insert(0.0);
+                }
+            }
+        }
+        let mut scored: Vec<(Memory, f32)> = bm25
+            .into_iter()
+            .filter_map(|(id, s)| inner.memories.get(&id).map(|m| (m.clone(), s)))
+            .filter(|(m, _)| include_superseded || m.is_live())
+            .collect();
+        rank_desc(&mut scored, limit);
+        scored
+    }
+
+    /// The raw semantic arm: cosine against the vector sidecar, above
+    /// `SEMANTIC_FLOOR`, same model-acceptance rule as [`Bank::recall`].
+    /// Scores are the cosine itself, so callers can reason about them.
+    pub async fn semantic(
+        &self,
+        query_vec: &[f32],
+        embedding_model: &str,
+        limit: usize,
+        include_superseded: bool,
+    ) -> Vec<(Memory, f32)> {
+        let inner = self.inner.read().await;
+        let mut scored: Vec<(Memory, f32)> = inner
+            .vectors
+            .iter()
+            .filter(|(_, (model, _))| embedding_model.is_empty() || model == embedding_model)
+            .filter_map(|(id, (_, v))| {
+                let c = cosine(query_vec, v);
+                let m = inner.memories.get(id)?;
+                (c > SEMANTIC_FLOOR && (include_superseded || m.is_live())).then(|| (m.clone(), c))
+            })
+            .collect();
+        rank_desc(&mut scored, limit);
         scored
     }
 
@@ -860,6 +927,86 @@ mod tests {
                 .expect("both memories are semantic hits")
         };
         assert!(score(&fresh.id) > score(&old.id), "{hits:?}");
+    }
+
+    #[tokio::test]
+    async fn lexical_is_raw_bm25_unaffected_by_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        // The old exact twin must lead the raw lexical arm even though the
+        // fused recall would decay it to the recency floor.
+        let mut old = memory("kiwi mango smoothie recipe");
+        old.updated_at = now_ms() - 400 * 86_400_000;
+        bank.commit(old.clone()).await.unwrap();
+        for w in ["one", "two", "three", "four"] {
+            bank.commit(memory(&format!("kiwi {w} extra filler words")))
+                .await
+                .unwrap();
+        }
+        let hits = bank.lexical("kiwi mango smoothie recipe", 3, false).await;
+        assert_eq!(hits[0].0.id, old.id, "{hits:?}");
+        assert!(hits.len() <= 3);
+        // The SCORE is raw BM25: fusion would decay the 400-day-old twin to
+        // the recency floor, so a fused lexical arm fails this.
+        let fused = bank
+            .recall("kiwi mango smoothie recipe", None, "", 3, 30, false)
+            .await;
+        let fused_old = fused.iter().find(|(m, _)| m.id == old.id).unwrap().1;
+        assert!(
+            hits[0].1 > 2.0 * fused_old,
+            "raw BM25, not recency-fused: {hits:?} vs {fused:?}"
+        );
+        // Tombstoned records stay out unless history is asked for.
+        let mut gone = old.clone();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone).await.unwrap();
+        let live = bank.lexical("kiwi mango smoothie recipe", 10, false).await;
+        assert!(live.iter().all(|(m, _)| m.id != old.id));
+        let history = bank.lexical("kiwi mango smoothie recipe", 10, true).await;
+        assert!(history.iter().any(|(m, _)| m.id == old.id));
+    }
+
+    #[tokio::test]
+    async fn semantic_ranks_raw_cosine_with_floor_model_and_liveness() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let near = memory("near");
+        let mid = memory("mid");
+        let far = memory("far");
+        let other = memory("other model");
+        for m in [&near, &mid, &far, &other] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.set_vector(&near.id, "m", vec![1.0, 0.0])
+            .await
+            .unwrap();
+        bank.set_vector(&mid.id, "m", vec![0.6, 0.8]).await.unwrap();
+        bank.set_vector(&far.id, "m", vec![0.0, 1.0]).await.unwrap();
+        bank.set_vector(&other.id, "x", vec![1.0, 0.0])
+            .await
+            .unwrap();
+
+        let hits = bank.semantic(&[1.0, 0.0], "m", 10, false).await;
+        let ids: Vec<&str> = hits.iter().map(|(m, _)| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![near.id.as_str(), mid.id.as_str()],
+            "far is under the floor, other is another model"
+        );
+        assert!(
+            (hits[0].1 - 1.0).abs() < 1e-6 && (hits[1].1 - 0.6).abs() < 1e-6,
+            "raw cosine scores"
+        );
+
+        let mut retired = near.clone();
+        retired.invalid_at = Some(now_ms());
+        retired.revision += 1;
+        bank.commit(retired).await.unwrap();
+        let live = bank.semantic(&[1.0, 0.0], "m", 10, false).await;
+        assert!(live.iter().all(|(m, _)| m.id != near.id));
     }
 
     #[tokio::test]

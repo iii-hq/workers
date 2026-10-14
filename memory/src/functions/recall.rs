@@ -26,6 +26,21 @@ pub struct RecallRequest {
     /// Only rank memories carrying this tag.
     #[serde(default)]
     pub tag: Option<String>,
+    /// `hybrid` (default) is the fused scorer the hook uses. `lexical` and
+    /// `semantic` return ONE raw arm (plain BM25, or cosine as the score)
+    /// for callers that fuse arms themselves — consolidation interleaves
+    /// both so a near-duplicate is never buried by the fused rank.
+    #[serde(default)]
+    pub mode: RecallMode,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RecallMode {
+    #[default]
+    Hybrid,
+    Lexical,
+    Semantic,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -39,8 +54,10 @@ pub struct RecallResponse {
     pub bank: String,
     pub memories: Vec<ScoredMemory>,
     /// Retrieval mode actually used — degradation is explicit, never
-    /// silent: `bm25-entity`, or `bm25-entity-semantic` when the query
-    /// was embedded through `router::embed`.
+    /// silent. `hybrid`: `bm25-entity`, or `bm25-entity-semantic` when the
+    /// query was embedded through `router::embed`. `lexical`: `lexical`.
+    /// `semantic`: `semantic`, or `semantic-unavailable` (empty result —
+    /// NOT "no matches") when the query could not be embedded.
     pub retrieval: String,
 }
 
@@ -49,18 +66,26 @@ pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, M
     let bank_name = req.bank.clone().unwrap_or_else(|| cfg.default_bank.clone());
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
-    let query_vec = crate::embed_client::query_vector(deps, &req.query).await;
-    let retrieval = if query_vec.is_some() {
-        "bm25-entity-semantic"
-    } else {
-        "bm25-entity"
+    let query_vec = match req.mode {
+        RecallMode::Lexical => None,
+        _ => crate::embed_client::query_vector(deps, &req.query).await,
     };
     let memories = rank(&bank, &req, query_vec.as_deref(), &cfg).await;
     Ok(RecallResponse {
         bank: bank_name,
         memories,
-        retrieval: retrieval.into(),
+        retrieval: retrieval_label(req.mode, query_vec.is_some()).into(),
     })
+}
+
+fn retrieval_label(mode: RecallMode, embedded: bool) -> &'static str {
+    match (mode, embedded) {
+        (RecallMode::Hybrid, true) => "bm25-entity-semantic",
+        (RecallMode::Hybrid, false) => "bm25-entity",
+        (RecallMode::Lexical, _) => "lexical",
+        (RecallMode::Semantic, true) => "semantic",
+        (RecallMode::Semantic, false) => "semantic-unavailable",
+    }
 }
 
 /// Score, tag-filter, then cap — in that order: capping first would drop
@@ -73,24 +98,37 @@ async fn rank(
 ) -> Vec<ScoredMemory> {
     let limit = req.limit.unwrap_or(cfg.recall_limit).min(100);
     let fetch = if req.tag.is_some() { usize::MAX } else { limit };
-    bank.recall(
-        &req.query,
-        query_vec,
-        &cfg.embedding_model,
-        fetch,
-        cfg.decay_half_life_days,
-        req.include_superseded.unwrap_or(false),
-    )
-    .await
-    .into_iter()
-    .filter(|(m, _)| {
-        req.tag
-            .as_deref()
-            .is_none_or(|t| m.tags.iter().any(|x| x == t))
-    })
-    .take(limit)
-    .map(|(memory, score)| ScoredMemory { memory, score })
-    .collect()
+    let include = req.include_superseded.unwrap_or(false);
+    let hits = match req.mode {
+        RecallMode::Hybrid => {
+            bank.recall(
+                &req.query,
+                query_vec,
+                &cfg.embedding_model,
+                fetch,
+                cfg.decay_half_life_days,
+                include,
+            )
+            .await
+        }
+        RecallMode::Lexical => bank.lexical(&req.query, fetch, include).await,
+        RecallMode::Semantic => match query_vec {
+            Some(qv) => {
+                bank.semantic(qv, &cfg.embedding_model, fetch, include)
+                    .await
+            }
+            None => Vec::new(),
+        },
+    };
+    hits.into_iter()
+        .filter(|(m, _)| {
+            req.tag
+                .as_deref()
+                .is_none_or(|t| m.tags.iter().any(|x| x == t))
+        })
+        .take(limit)
+        .map(|(memory, score)| ScoredMemory { memory, score })
+        .collect()
 }
 
 #[cfg(test)]
@@ -144,5 +182,63 @@ mod tests {
         // Untagged: `limit` still caps.
         let req = request(serde_json::json!({"query": "coffee", "limit": 2}));
         assert_eq!(rank(&bank, &req, None, &cfg).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn modes_pick_the_raw_lexical_or_semantic_arm() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let old_twin = memory("kiwi mango smoothie recipe", &[], 400);
+        let fresh = memory("kiwi with extra filler words here", &[], 0);
+        bank.commit(old_twin.clone()).await.unwrap();
+        bank.commit(fresh.clone()).await.unwrap();
+        bank.set_vector(&fresh.id, "", vec![1.0, 0.0])
+            .await
+            .unwrap();
+        let cfg = WorkerConfig::default();
+
+        let lexical =
+            request(serde_json::json!({"query": "kiwi mango smoothie recipe", "mode": "lexical"}));
+        let hits = rank(&bank, &lexical, None, &cfg).await;
+        assert_eq!(
+            hits[0].memory.id, old_twin.id,
+            "raw BM25: age does not sink the twin"
+        );
+        // Wired to the raw arm, not the fused scorer: hybrid decays the
+        // 400-day-old twin's score to the recency floor.
+        let hybrid =
+            request(serde_json::json!({"query": "kiwi mango smoothie recipe", "mode": "hybrid"}));
+        let fused = rank(&bank, &hybrid, None, &cfg).await;
+        let fused_twin = fused.iter().find(|h| h.memory.id == old_twin.id).unwrap();
+        assert!(
+            hits[0].score > 2.0 * fused_twin.score,
+            "lexical mode must not route through the fused scorer"
+        );
+
+        let semantic = request(serde_json::json!({"query": "anything", "mode": "semantic"}));
+        assert!(
+            rank(&bank, &semantic, None, &cfg).await.is_empty(),
+            "no vector, no semantic arm"
+        );
+        let hits = rank(&bank, &semantic, Some(&[1.0, 0.0]), &cfg).await;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].memory.id, fresh.id);
+        assert!(
+            (hits[0].score - 1.0).abs() < 1e-6,
+            "semantic scores are raw cosine"
+        );
+
+        assert_eq!(retrieval_label(RecallMode::Lexical, false), "lexical");
+        assert_eq!(retrieval_label(RecallMode::Semantic, true), "semantic");
+        assert_eq!(
+            retrieval_label(RecallMode::Semantic, false),
+            "semantic-unavailable"
+        );
+        assert_eq!(
+            retrieval_label(RecallMode::Hybrid, true),
+            "bm25-entity-semantic"
+        );
+        assert_eq!(retrieval_label(RecallMode::Hybrid, false), "bm25-entity");
     }
 }

@@ -74,7 +74,8 @@ rule; point-in-time information belongs in memories.
 - `memory::rule::list / set` — always-injected markdown rules; empty content
   removes a rule.
 - `memory::supersede` — retire one memory in favor of another (tombstone +
-  pointer); the consolidation seam, agent-denied by default.
+  pointer); the consolidation seam, agent-denied by default. `reinforce`
+  makes it a merge; `reason` rides the item-changed events.
 - `memory::doctor` — end-to-end self-test plus sibling reachability.
 - `memory::reload` — re-read every bank from disk after hand-editing files.
 
@@ -84,7 +85,7 @@ The worker emits two trigger types; bind to them for live views instead of
 polling `memory::list` / `memory::bank::list`.
 
 1. **Why bind** — `memory::item-changed` fires on every memory create / update /
-   supersede / delete (`{ event_type, bank, memory }`); `memory::bank-changed`
+   supersede / delete (`{ event_type, bank, memory, reason? }`); `memory::bank-changed`
    fires on bank create / trash and rule changes (`{ event_type, bank }`). A
    consumer that mutates memory already has the new record in its return
    payload — bind only when you need to observe changes made by OTHERS

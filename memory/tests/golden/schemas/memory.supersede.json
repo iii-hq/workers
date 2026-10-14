@@ -1,5 +1,5 @@
 {
-  "description": "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a plain delete. The consolidation seam; pinned memories cannot be superseded.",
+  "description": "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a plain delete. The consolidation seam; pinned memories cannot be superseded. reinforce makes it a merge (the non-pinned survivor absorbs the retired record's observations); reason is carried on the item-changed events.",
   "function_id": "memory::supersede",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -14,6 +14,19 @@
       "id": {
         "description": "Memory to retire.",
         "type": "string"
+      },
+      "reason": {
+        "default": null,
+        "description": "Why — carried on the `memory::item-changed` events this call emits (not persisted on the record). Trimmed, capped at 500 chars.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "reinforce": {
+        "default": false,
+        "description": "Merge semantics: the survivor absorbs the retired record's observations (corroboration += retired + 1) in the same call. A pinned survivor is never written. Default false (a state change: the new record replaces the old, nothing to absorb).",
+        "type": "boolean"
       },
       "superseded_by": {
         "description": "Live memory that replaces it.",
@@ -176,16 +189,25 @@
         "type": "object"
       }
     },
-    "description": "Shared response for update/delete/pin.",
     "properties": {
       "memory": {
-        "$ref": "#/definitions/Memory"
+        "allOf": [
+          {
+            "$ref": "#/definitions/Memory"
+          }
+        ],
+        "description": "The retired record."
+      },
+      "reinforced": {
+        "description": "True when the survivor was reinforced (`reinforce` asked and the survivor is not pinned).",
+        "type": "boolean"
       }
     },
     "required": [
-      "memory"
+      "memory",
+      "reinforced"
     ],
-    "title": "MemoryResponse",
+    "title": "SupersedeResponse",
     "type": "object"
   }
 }

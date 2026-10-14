@@ -346,12 +346,70 @@ pub struct SupersedeRequest {
     pub id: String,
     /// Live memory that replaces it.
     pub superseded_by: String,
+    /// Merge semantics: the survivor absorbs the retired record's
+    /// observations (corroboration += retired + 1) in the same call. A
+    /// pinned survivor is never written. Default false (a state change:
+    /// the new record replaces the old, nothing to absorb).
+    #[serde(default)]
+    pub reinforce: bool,
+    /// Why — carried on the `memory::item-changed` events this call emits
+    /// (not persisted on the record). Trimmed, capped at 500 chars.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SupersedeResponse {
+    /// The retired record.
+    pub memory: Memory,
+    /// True when the survivor was reinforced (`reinforce` asked and the
+    /// survivor is not pinned).
+    pub reinforced: bool,
+}
+
+const MAX_REASON_CHARS: usize = 500;
+
+fn clamp_reason(reason: Option<String>) -> Option<String> {
+    let reason: String = reason?.trim().chars().take(MAX_REASON_CHARS).collect();
+    (!reason.is_empty()).then_some(reason)
+}
+
+/// The two records a supersede writes: the retired loser and, when
+/// reinforcing a non-pinned survivor, the survivor absorbing the loser's
+/// observations — `(s+1) + (r+1)` total, so corroboration `s + r + 1`,
+/// stamped with the LATEST of the two `updated_at` (a merge is not a fresh
+/// restatement; Hindsight keeps the latest source `mentioned_at`).
+fn supersede_transition(
+    mut loser: Memory,
+    mut winner: Memory,
+    reinforce: bool,
+    now: u64,
+) -> (Memory, Option<Memory>) {
+    let loser_updated_at = loser.updated_at;
+    let loser_corroboration = loser.corroboration;
+    loser.invalid_at = Some(now);
+    loser.superseded_by = Some(winner.id.clone());
+    loser.updated_at = now;
+    loser.revision += 1;
+    if !reinforce || winner.pinned {
+        return (loser, None);
+    }
+    winner.corroboration = winner
+        .corroboration
+        .saturating_add(loser_corroboration)
+        .saturating_add(1);
+    winner.updated_at = winner.updated_at.max(loser_updated_at);
+    winner.revision += 1;
+    (loser, Some(winner))
 }
 
 /// Retire one memory in favor of another: tombstone with a pointer, never a
 /// plain delete. The consolidation seam — siblings merge duplicates through
 /// this instead of touching files. Pinned memories cannot be superseded.
-pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryResponse, MemoryError> {
+pub async fn supersede(
+    deps: &Deps,
+    req: SupersedeRequest,
+) -> Result<SupersedeResponse, MemoryError> {
     if req.id == req.superseded_by {
         return Err(MemoryError::InvalidInput(
             "a memory cannot supersede itself".into(),
@@ -371,7 +429,7 @@ pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryRespo
             req.superseded_by
         )));
     }
-    let mut memory = bank
+    let memory = bank
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
@@ -390,15 +448,30 @@ pub async fn supersede(deps: &Deps, req: SupersedeRequest) -> Result<MemoryRespo
             req.id, memory.superseded_by
         )));
     }
-    memory.invalid_at = Some(now_ms());
-    memory.superseded_by = Some(req.superseded_by);
-    memory.updated_at = now_ms();
-    memory.revision += 1;
-    bank.commit(memory.clone()).await?;
+    let reason = clamp_reason(req.reason);
+    let (retired, survivor) = supersede_transition(memory, winner, req.reinforce, now_ms());
+    // Loser first: a retry after a failed survivor write then fails as
+    // "already retired" instead of double-reinforcing.
+    bank.commit(retired.clone()).await?;
     deps.emitter
-        .item(ItemEvent::Superseded, &bank_name, &memory)
+        .item_with(
+            ItemEvent::Superseded,
+            &bank_name,
+            &retired,
+            reason.as_deref(),
+        )
         .await;
-    Ok(MemoryResponse { memory })
+    let reinforced = survivor.is_some();
+    if let Some(survivor) = survivor {
+        bank.commit(survivor.clone()).await?;
+        deps.emitter
+            .item_with(ItemEvent::Updated, &bank_name, &survivor, reason.as_deref())
+            .await;
+    }
+    Ok(SupersedeResponse {
+        memory: retired,
+        reinforced,
+    })
 }
 
 #[cfg(test)]
@@ -509,6 +582,55 @@ mod tests {
         );
         assert!(m.invalid_at.is_none());
         assert!(m.superseded_by.is_none());
+    }
+
+    #[test]
+    fn supersede_retires_and_reinforce_carries_the_retired_count() {
+        let mut loser = record("fpl", 3, true, false);
+        loser.corroboration = 6;
+        loser.updated_at = 50;
+        let mut winner = record("fpw", 1, true, false);
+        winner.corroboration = 0;
+        winner.updated_at = 40;
+        let (retired, survivor) = supersede_transition(loser, winner.clone(), true, 99);
+        assert_eq!(retired.invalid_at, Some(99));
+        assert_eq!(retired.superseded_by.as_deref(), Some("fpw"));
+        assert_eq!(retired.revision, 4);
+        let survivor = survivor.expect("reinforced");
+        // (0+1) + (6+1) observations = corroboration 7: the survivor never
+        // ends below the record it absorbed.
+        assert_eq!(survivor.corroboration, 7);
+        // Latest of the two, NOT now: a merge is not a fresh restatement.
+        assert_eq!(survivor.updated_at, 50);
+        assert_eq!(survivor.revision, 2);
+
+        let (_, none) = supersede_transition(record("fpl", 0, true, false), winner, false, 99);
+        assert!(none.is_none(), "reinforce off leaves the survivor alone");
+    }
+
+    #[test]
+    fn supersede_never_writes_a_pinned_survivor() {
+        let pinned = record("fpw", 1, true, true);
+        let (retired, survivor) =
+            supersede_transition(record("fpl", 0, true, false), pinned, true, 99);
+        assert!(retired.invalid_at.is_some(), "the loser still retires");
+        assert!(
+            survivor.is_none(),
+            "pinned is untouchable by automatic paths"
+        );
+    }
+
+    #[test]
+    fn reason_is_trimmed_capped_in_chars_and_empty_is_none() {
+        assert_eq!(
+            clamp_reason(Some("  same fact  ".into())).as_deref(),
+            Some("same fact")
+        );
+        assert_eq!(clamp_reason(Some("   ".into())), None);
+        assert_eq!(clamp_reason(None), None);
+        let long = "ção".repeat(300); // 900 chars, multibyte
+        let clamped = clamp_reason(Some(long)).unwrap();
+        assert_eq!(clamped.chars().count(), 500);
     }
 }
 
