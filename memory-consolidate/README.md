@@ -40,9 +40,9 @@ All fields hot-reload through the `configuration` worker: `enabled`, `interval_h
 
 Fail-soft: an unavailable router just skips the tier (named in the report's `notes`, so it never blocks the checkpoint), and a malformed reply is treated as "no merges, no promotions". Either way, the deterministic pass has already completed.
 
-## The semantic tier (optional)
+## The semantic tier (on by default)
 
-`semantic_enabled` (off by default) runs one more tier, last, on a fresh fetch. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
+`semantic_enabled` (on by default; set it to `false` to run without model calls) runs one more tier, last, on a fresh fetch. It costs one `router::complete` call per 8 new memories, capped at `semantic_max_per_run` per bank per pass. Without a router or an embed provider, it stops with a note and never blocks the pass. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
 
 - **merge**: both state the same fact (paraphrase, another language). The duplicate retires and the survivor absorbs its observations. The survivor must keep every detail; when both are equally complete, the older one survives.
 - **supersede**: a state change ("moved to", "switched to", a rescheduled date). The outdated record retires in favour of the current one, which is the one stated last.

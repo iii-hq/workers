@@ -58,8 +58,10 @@ pub struct WorkerConfig {
     /// written since the last pass are compared with their nearest
     /// neighbours (raw BM25 and raw cosine, interleaved) and a
     /// `router::complete` judge merges paraphrases and supersedes outdated
-    /// states, each with a reason. Off by default — one LLM call per batch.
-    #[serde(default)]
+    /// states, each with a reason. On by default; costs one LLM call per
+    /// batch of new memories, and stops with a note (never an error) when
+    /// no router or embeddings are available. Off = no model calls.
+    #[serde(default = "default_true")]
     pub semantic_enabled: bool,
 
     /// New memories judged per LLM call by the semantic tier.
@@ -187,6 +189,8 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.interval_hours, 24);
         assert!(!cfg.dry_run);
+        // The semantic tier is on by default (fail-soft without a router).
+        assert!(cfg.semantic_enabled);
     }
 
     #[test]

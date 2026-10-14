@@ -28,7 +28,7 @@ pub fn build_manifest() -> ModuleManifest {
             "llm_assist_enabled": false,
             "llm_model": "",
             "promote_corroboration_threshold": 4,
-            "semantic_enabled": false,
+            "semantic_enabled": true,
             "semantic_batch": 8,
             "semantic_candidates": 4,
             "semantic_max_per_run": 48,
