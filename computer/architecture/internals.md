@@ -191,9 +191,25 @@ deliberately with `UPDATE_GOLDENS=1 cargo test` — a diff there is a change to
 what every agent sees. `src/ui.rs` tests assert the embedded console assets are
 present and scoped.
 
-The semantic layer is tested on Linux against `semantic::fake::FakeTree`, a
+The semantic layer is unit-tested against `semantic::fake::FakeTree`, a
 provider the test shapes. `tests/semantic_live.rs` runs the same layer
-against a real AccessKit window (`tests/fixture`); CI runs it on Windows.
+against a real AccessKit window (`tests/fixture`); CI runs it on Windows and
+Linux.
+
+On Linux, run the live tests only through `tests/run-linux-live.sh`, from
+`computer/` after `cargo build --locked --manifest-path
+tests/fixture/Cargo.toml`. It starts a private Xvfb,
+D-Bus session and AT-SPI bus and runs the ignored X11 driver test and
+`semantic_live` there; arguments after it pick one test
+(`--test semantic_live <name>`). Never run the Linux `--ignored` tests directly
+on your own desktop session: they type CJK text and ctrl+a into the focused
+window and toggle Caps Lock, and the script's `IsEnabled` write would persist
+`toolkit-accessibility=true` in your dconf. CI runs the e2e on ubuntu (through
+the script) and Windows; the `rust` job also runs the vendored crate's tests
+(`cargo test --locked --manifest-path vendor/xa11y-linux/Cargo.toml --lib`)
+and a `x86_64-unknown-linux-musl` build, which fails if anything links a
+system C library.
+
 On a Mac, from `computer/` in a terminal with Accessibility and Screen
 Recording:
 

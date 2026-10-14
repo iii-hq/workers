@@ -51,7 +51,10 @@ They also report `coordinates: { supported, reason? }`: false only on a native
 Linux session on Wayland, where every screenshot and coordinate action
 (including `type`, `press`, `hotkey` and the console screencast) is refused
 with `unsupported_session`. On a native Linux session `semantic.reason` can be
-set while `supported` is true: a warning that accessibility is off. Remote and sandbox sessions no longer return a tree:
+set while `supported` is true: a warning that accessibility is off. There
+`semantic.supported` is false when the AT-SPI bus is missing or did not answer
+within 1.5 s; every `sessions::list` asks the bus again, so tell the user and
+re-check with it. Remote and sandbox sessions no longer return a tree:
 `observe` with `include_a11y` appends
 `a11y tree unavailable: unsupported_session` (or fails with that code when
 `include_image` is false).
