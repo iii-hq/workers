@@ -7,6 +7,7 @@ use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::invalid;
 use super::screenshot::ContentBlock;
 use crate::driver::Screen;
 use crate::semantic::{Code, Query, Scope, SemanticError, DEFAULT_MAX_DEPTH, MAX_DEPTH, MAX_NODES};
@@ -135,7 +136,6 @@ pub(crate) async fn handle(
 ) -> Result<ObserveOutput, Error> {
     let include_image = req.include_image.unwrap_or(true);
     let include_a11y = req.include_a11y.unwrap_or(false);
-    let invalid = |m: &str| SemanticError::new(Code::InvalidInput, m).into_iii();
     if !include_image && !include_a11y {
         return Err(invalid("include_image=false needs include_a11y=true"));
     }
@@ -169,10 +169,7 @@ pub(crate) async fn handle(
     if let Some(query) = query {
         let result = match &session.semantic {
             Some(layer) => layer.snapshot(query, true).await,
-            None => Err(SemanticError::new(
-                Code::UnsupportedSession,
-                "this session drives a remote or sandboxed desktop by coordinates only",
-            )),
+            None => Err(SemanticError::coordinates_only()),
         };
         match result {
             Ok(out) => {
@@ -180,7 +177,18 @@ pub(crate) async fn handle(
                 text.push('\n');
                 text.push_str(&out.text);
             }
-            Err(e) if shot.is_some() => {
+            // Only "no tree here right now" degrades to a line beside the
+            // image (spec §4.1); a wrong request is an error either way.
+            Err(e)
+                if shot.is_some()
+                    && matches!(
+                        e.code,
+                        Code::UnsupportedSession
+                            | Code::PermissionDenied
+                            | Code::BackendError
+                            | Code::Busy
+                    ) =>
+            {
                 text.push_str(&format!(
                     "\na11y tree unavailable: {}: {}",
                     e.code.as_str(),
@@ -211,17 +219,11 @@ mod tests {
     use super::*;
     use crate::semantic::fake::FakeTree;
     use crate::semantic::{outline_marker, SemanticSession};
-    use crate::test_support::session_with;
+    use crate::test_support::{code, session_with};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::time::Duration;
     use xa11y_core::{Error as X, Role};
-
-    fn code(e: iii_sdk::errors::Error) -> String {
-        match e {
-            iii_sdk::errors::Error::Remote { code, .. } => code,
-            other => format!("handler: {other}"),
-        }
-    }
 
     fn req(v: serde_json::Value) -> ObserveInput {
         serde_json::from_value(v).unwrap()
@@ -373,5 +375,81 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(t.children_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_request_is_an_error_even_with_an_image() {
+        let t = tree();
+        let (s, d) = session_with(Some(SemanticSession::new(t.factory())));
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","include_a11y":true,"app_name":"Nope"})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "invalid_input");
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","include_a11y":true,"root_ref":"e1"})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "stale_ref");
+        // The capture ran first (spec order); only the reply is an error.
+        assert_eq!(d.shots.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_busy_tree_keeps_the_image() {
+        let t = tree();
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        t.block_reads.store(true, Ordering::SeqCst);
+        let bg = s.clone();
+        let first = tokio::spawn(async move {
+            handle(
+                &bg,
+                req(serde_json::json!({"session_id":"c1","include_image":false,"include_a11y":true})),
+            )
+            .await
+        });
+        while t.children_calls() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let out = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","include_a11y":true})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content[0].r#type, "image");
+        assert!(
+            out.content[1]
+                .text
+                .as_deref()
+                .unwrap()
+                .contains("a11y tree unavailable: busy"),
+            "{:?}",
+            out.content[1].text
+        );
+        t.block_reads.store(false, Ordering::SeqCst);
+        first.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stopped_layer_keeps_the_image() {
+        let t = tree();
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        s.semantic.as_ref().unwrap().close();
+        let out = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","include_a11y":true})),
+        )
+        .await
+        .unwrap();
+        assert!(out.content[1]
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("a11y tree unavailable: unsupported_session"));
     }
 }

@@ -8,8 +8,9 @@ use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::invalid;
 use crate::driver::{Driver, Screen};
-use crate::semantic::{Code, SemanticError, Verb, MAX_SET_VALUE_CHARS};
+use crate::semantic::{SemanticError, Verb, MAX_SET_VALUE_CHARS};
 use crate::session::Session;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -63,10 +64,6 @@ pub struct ActOutput {
     pub detail: String,
 }
 
-fn invalid(msg: impl Into<String>) -> Error {
-    SemanticError::new(Code::InvalidInput, msg).into_iii()
-}
-
 /// A validated coordinate action, ready to dispatch.
 enum Physical {
     Click(i64, i64),
@@ -96,6 +93,25 @@ fn require_xy(req: &ActInput) -> Result<(i64, i64), Error> {
             req.action
         ))),
     }
+}
+
+/// The actions `plan` dispatches by coordinate.
+fn is_coordinate(action: &str) -> bool {
+    matches!(
+        action,
+        "click"
+            | "left_click"
+            | "right_click"
+            | "double_click"
+            | "move"
+            | "move_cursor"
+            | "scroll"
+            | "drag"
+            | "type"
+            | "press"
+            | "hotkey"
+            | "key"
+    )
 }
 
 fn plan(req: &ActInput, screen: Screen) -> Result<Physical, Error> {
@@ -194,10 +210,17 @@ pub(crate) async fn handle(session: &Arc<Session>, req: ActInput) -> Result<ActO
         return by_ref(session, &req, verb).await;
     }
     if req.r#ref.is_some() {
-        return Err(invalid(format!(
-            "action '{}' acts by coordinates; `ref` is only for invoke, set_value, toggle and select",
-            req.action
-        )));
+        return Err(invalid(if is_coordinate(&req.action) {
+            format!(
+                "action '{}' acts by coordinates; `ref` is only for invoke, set_value, toggle and select",
+                req.action
+            )
+        } else {
+            format!(
+                "unknown action '{}'; with `ref` use invoke, set_value, toggle or select",
+                req.action
+            )
+        }));
     }
     let planned = plan(&req, session.screen)?;
     let _guard = session.act_lock.lock().await;
@@ -262,11 +285,7 @@ async fn by_ref(session: &Arc<Session>, req: &ActInput, verb: Verb) -> Result<Ac
         (_, None) => None,
     };
     let Some(layer) = &session.semantic else {
-        return Err(SemanticError::new(
-            Code::UnsupportedSession,
-            "this session drives a remote or sandboxed desktop by coordinates only",
-        )
-        .into_iii());
+        return Err(SemanticError::coordinates_only().into_iii());
     };
     let _guard = session.act_lock.lock().await;
     session.touch();
@@ -282,17 +301,10 @@ mod tests {
     use super::*;
     use crate::semantic::fake::FakeTree;
     use crate::semantic::{Query, Scope, SemanticSession};
-    use crate::test_support::session_with;
+    use crate::test_support::{code, session_with};
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use xa11y_core::Role;
-
-    fn code(e: iii_sdk::errors::Error) -> String {
-        match e {
-            iii_sdk::errors::Error::Remote { code, .. } => code,
-            other => format!("handler: {other}"),
-        }
-    }
 
     fn req(v: serde_json::Value) -> ActInput {
         serde_json::from_value(v).unwrap()
@@ -528,5 +540,27 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(t.actions().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_misspelled_ref_action_is_named_unknown() {
+        let (s, d, t, r) = semantic_session().await;
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","action":"clik","ref":r})),
+        )
+        .await
+        .unwrap_err();
+        let iii_sdk::errors::Error::Remote { code, message, .. } = e else {
+            panic!("expected Error::Remote");
+        };
+        assert_eq!(code, "invalid_input");
+        assert!(
+            message.contains("unknown action 'clik'")
+                && message.contains("invoke, set_value, toggle or select"),
+            "{message}"
+        );
+        assert!(t.actions().is_empty());
+        assert_eq!(d.inputs.load(Ordering::SeqCst), 0);
     }
 }

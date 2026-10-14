@@ -83,6 +83,14 @@ impl SemanticError {
         }
     }
 
+    /// What every semantic call gets on a remote or sandboxed session.
+    pub fn coordinates_only() -> Self {
+        Self::new(
+            Code::UnsupportedSession,
+            "this session drives a remote or sandboxed desktop by coordinates only",
+        )
+    }
+
     pub fn into_iii(self) -> Error {
         Error::Remote {
             code: self.code.as_str().to_string(),

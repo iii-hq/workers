@@ -123,3 +123,11 @@ pub(crate) fn session_on(
 pub(crate) fn session_with(semantic: Option<SemanticSession>) -> (Arc<Session>, Arc<FakeDesktop>) {
     session_on(&FrameNotifier::new(Arc::new(NullSink)), "c1", semantic)
 }
+
+/// The wire code of a semantic refusal, or "handler: …" for any other error.
+pub(crate) fn code(e: iii_sdk::errors::Error) -> String {
+    match e {
+        iii_sdk::errors::Error::Remote { code, .. } => code,
+        other => format!("handler: {other}"),
+    }
+}

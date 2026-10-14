@@ -9,6 +9,7 @@ use iii_sdk::errors::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::invalid;
 use super::observe::TreeScope;
 use crate::semantic::{
     parse_selector, Code, SemanticError, SnapshotOut, FIND_POLL, MAX_FIND_TIMEOUT_MS,
@@ -54,7 +55,6 @@ fn output(out: SnapshotOut, start: Instant) -> FindOutput {
 }
 
 pub(crate) async fn handle(session: &Arc<Session>, req: FindInput) -> Result<FindOutput, Error> {
-    let invalid = |m: String| SemanticError::new(Code::InvalidInput, m).into_iii();
     let timeout_ms = req.timeout_ms.unwrap_or(0);
     if timeout_ms > MAX_FIND_TIMEOUT_MS {
         return Err(invalid(format!(
@@ -74,11 +74,7 @@ pub(crate) async fn handle(session: &Arc<Session>, req: FindInput) -> Result<Fin
         .query(Some(group))
         .map_err(SemanticError::into_iii)?;
     let Some(layer) = &session.semantic else {
-        return Err(SemanticError::new(
-            Code::UnsupportedSession,
-            "this session drives a remote or sandboxed desktop by coordinates only",
-        )
-        .into_iii());
+        return Err(SemanticError::coordinates_only().into_iii());
     };
     let start = Instant::now();
     let limit = Duration::from_millis(timeout_ms as u64);
@@ -112,17 +108,10 @@ mod tests {
     use super::*;
     use crate::semantic::fake::FakeTree;
     use crate::semantic::SemanticSession;
-    use crate::test_support::session_with;
+    use crate::test_support::{code, session_with};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use xa11y_core::Role;
-
-    fn code(e: iii_sdk::errors::Error) -> String {
-        match e {
-            iii_sdk::errors::Error::Remote { code, .. } => code,
-            other => format!("handler: {other}"),
-        }
-    }
 
     fn req(v: serde_json::Value) -> FindInput {
         serde_json::from_value(v).unwrap()

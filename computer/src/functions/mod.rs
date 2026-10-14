@@ -139,6 +139,11 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 // Handler helpers
 // ---------------------------------------------------------------------------
 
+/// The `invalid_input` refusal a handler gives a malformed request.
+pub(crate) fn invalid(msg: impl Into<String>) -> Error {
+    crate::semantic::SemanticError::new(crate::semantic::Code::InvalidInput, msg).into_iii()
+}
+
 /// Capture the desktop, refusing anything that is not a real image. An
 /// undetectable encoding would otherwise reach the model inside an image
 /// content block, where it renders as nothing with no explanation.
