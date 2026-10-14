@@ -73,8 +73,13 @@ import type {
 } from '@/lib/backend/types'
 import {
   AskInSideChatContext,
+  findSideChat,
+  type SideChatQuote,
+  SideChatQuotesContext,
   sideChatMessages,
   sideChatQuote,
+  sideChatQuotes,
+  useQuoteHighlights,
 } from '@/lib/chat-aside'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
@@ -155,7 +160,12 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { idleComposerPlaceholder } from './agent-defaults'
-import { type AsideRequest, type AsideTab, ChatAside } from './ChatAside'
+import {
+  type AsideRequest,
+  type AsideTab,
+  ChatAside,
+  QuoteChip,
+} from './ChatAside'
 import {
   Composer,
   type ComposerSubmitPayload,
@@ -268,7 +278,20 @@ interface ChatViewProps {
    * messages, and a composer that ignores inserts meant for the main chat
    * and takes the caret only when `autoFocus` asks for it.
    */
-  side?: { since: number; empty: ReactNode; autoFocus?: boolean }
+  side?: {
+    since: number
+    /** The fork's copy of the entry it was cut at: messages after it are the side chat's. */
+    fromEntry?: string | null
+    empty: ReactNode
+    autoFocus?: boolean
+    /** The quote waiting in the composer: sent as a blockquote ahead of the question. */
+    quote?: SideChatQuote | null
+    onRemoveQuote?: () => void
+    onQuoteSent?: (quote: SideChatQuote) => void
+    /** Quotes this side chat sent: cards in its transcript, and the way back. */
+    quotes?: readonly SideChatQuote[]
+    onJumpToQuote?: (quote: SideChatQuote) => void
+  }
   /** The pane edge the side panel hugs: opposite the conversation list. */
   asideSide?: 'left' | 'right'
 }
@@ -355,25 +378,61 @@ export function ChatView({
   const [asideRequest, setAsideRequest] = useState<AsideRequest | null>(null)
   const [asideSheetOpen, setAsideSheetOpen] = useState(false)
   const showAside = useCallback(
-    (tab: AsideTab, quote?: string) =>
+    (tab: AsideTab, quote?: SideChatQuote) =>
       setAsideRequest((current) => ({
         seq: (current?.seq ?? 0) + 1,
         tab,
-        ...(quote ? { quote: sideChatQuote(quote) } : {}),
+        ...(quote ? { quote } : {}),
       })),
     [],
   )
+  // The quote waiting in the side chat's composer, and the ones it sent:
+  // their source messages stay marked here while the side chat holds them.
+  const [pendingQuote, setPendingQuote] = useState<SideChatQuote | null>(null)
   const askInSideChat = useCallback(
-    (text: string) => showAside('side-chat', text),
+    (quote: SideChatQuote) => {
+      setPendingQuote(quote)
+      showAside('side-chat', quote)
+    },
     [showAside],
   )
+  const heldQuotes = useMemo(() => {
+    if (!asideEnabled || !conversationsCtx) return []
+    const sent = sideChatQuotes(
+      findSideChat(conversationsCtx.conversations, conversation.id),
+    )
+    return pendingQuote ? [...sent, pendingQuote] : sent
+  }, [asideEnabled, conversationsCtx, conversation.id, pendingQuote])
+  const sideChatValue = useMemo(
+    () =>
+      asideEnabled
+        ? {
+            ask: askInSideChat,
+            quotedIds: new Set(heldQuotes.map((quote) => quote.messageId)),
+          }
+        : null,
+    [asideEnabled, askInSideChat, heldQuotes],
+  )
+  // A quote card's way back: land this transcript on its source message.
+  const [quoteFocusId, setQuoteFocusId] = useState<string | null>(null)
+  const sideQuotesValue = useMemo(
+    () =>
+      side
+        ? {
+            quotes: side.quotes ?? [],
+            jump: (quote: SideChatQuote) => side.onJumpToQuote?.(quote),
+          }
+        : null,
+    [side],
+  )
   const sideSince = side?.since
+  const sideFrom = side?.fromEntry
   const shownMessages = useMemo(
     () =>
       sideSince === undefined
         ? conversation.messages
-        : sideChatMessages(conversation.messages, sideSince),
-    [conversation.messages, sideSince],
+        : sideChatMessages(conversation.messages, sideSince, sideFrom),
+    [conversation.messages, sideSince, sideFrom],
   )
   const workingDirEnabled =
     !readOnly &&
@@ -2323,7 +2382,25 @@ export function ChatView({
 
   // Includes session creation, attachment preparation/uploads, queue sends
   // and /compact, before any server working/streaming event can arrive.
-  const handleSubmit = useMemo(() => withScreenWakeLock(submit), [submit])
+  // A side chat's pending quote goes out ahead of the question, in the
+  // blockquote its transcript later shows as a card.
+  const sideQuote = side?.quote ?? null
+  const onQuoteSent = side?.onQuoteSent
+  const submitWithQuote = useCallback(
+    async (payload: ComposerSubmitPayload) => {
+      if (!sideQuote) return submit(payload)
+      await submit({
+        ...payload,
+        text: sideChatQuote(sideQuote.text) + payload.text,
+      })
+      onQuoteSent?.(sideQuote)
+    },
+    [submit, sideQuote, onQuoteSent],
+  )
+  const handleSubmit = useMemo(
+    () => withScreenWakeLock(submitWithQuote),
+    [submitWithQuote],
+  )
 
   const handleStop = useCallback(() => {
     if (readOnly || stopRequestedRef.current) return
@@ -2648,6 +2725,7 @@ export function ChatView({
   // Chat's keyboard, through the same contract a worker page uses, so the
   // palette lists these rows under "Chat" with their keys.
   const viewRef = useRef<HTMLElement>(null)
+  useQuoteHighlights(viewRef, heldQuotes, conversation.messages)
   const working = conversation.status === 'working'
   useEffect(() => {
     if (!commands) return
@@ -2813,13 +2891,31 @@ export function ChatView({
               run: () => {
                 const selection = window.getSelection()
                 const node = selection?.anchorNode ?? null
-                const quote =
-                  selection && !selection.isCollapsed && node
-                    ? viewRef.current?.contains(node)
-                      ? selection.toString()
-                      : ''
-                    : ''
-                showAside('side-chat', quote || undefined)
+                const element =
+                  node instanceof Element ? node : (node?.parentElement ?? null)
+                const messageId =
+                  selection && !selection.isCollapsed && element
+                    ? viewRef.current?.contains(element)
+                      ? element
+                          .closest('[data-message-row]')
+                          ?.getAttribute('data-message-row')
+                      : null
+                    : null
+                const source = messageId
+                  ? messagesRef.current.find((m) => m.id === messageId)
+                  : undefined
+                if (selection && messageId) {
+                  askInSideChat({
+                    messageId,
+                    text: selection.toString(),
+                    agent:
+                      source?.role === 'assistant'
+                        ? source.agent || conversation.agentProfile?.name
+                        : undefined,
+                  })
+                } else {
+                  showAside('side-chat')
+                }
               },
             },
           ]
@@ -2834,6 +2930,8 @@ export function ChatView({
     readOnly,
     asideEnabled,
     showAside,
+    askInSideChat,
+    conversation.agentProfile?.name,
   ])
 
   const view = (
@@ -2965,53 +3063,56 @@ export function ChatView({
           loaded={triggersSnapshotSessionId === conversation.id}
           triggersById={triggersById}
         >
-          <AskInSideChatContext.Provider
-            value={asideEnabled ? askInSideChat : null}
-          >
-            <MessageList
-              messages={shownMessages}
-              header={
-                side && shownMessages.length === 0 ? side.empty : undefined
-              }
-              agentName={conversation.agentProfile?.name}
-              sessionId={conversation.id}
-              spawnContext={{
-                title: conversation.title,
-                model: effectiveModel,
-                appearance: conversation.subagentAppearance,
-              }}
-              transcriptHydrated={conversation.hydrated !== false}
-              isThinking={isThinking}
-              turnVisualPhase={turnVisualState.phase}
-              turnKey={turnVisualState.turnKey}
-              thinkingDetail={
-                conversation.status === 'working' && conversation.statusReason
-                  ? conversation.statusReason
-                  : (phaseDetail ?? waitingFallback)
-              }
-              density={density}
-              onResolveApproval={resolveApproval}
-              onAlwaysAllow={handleAlwaysAllow}
-              onResolveFilesystemAccess={handleFilesystemResolve}
-              onManageFilesystemAccess={handleManageFilesystemAccess}
-              onConfigureProvider={handleConfigureProvider}
-              workingDir={conversation.workingDir ?? null}
-              onWorkingDirChange={
-                workingDirEnabled ? handleWorkingDirChange : undefined
-              }
-              defaultWorkingDir={defaultWorkingDir}
-              worktreePicker={
-                worktreeEnabled
-                  ? { enabled: true, onPick: handlePickWorktree }
-                  : undefined
-              }
-              triggersById={triggersById}
-              focusMessageId={focusMessageId}
-              onFocusMessageHandled={handleFocusMessageHandled}
-              history={side ? undefined : conversation.history}
-              onLoadOlder={side ? undefined : handleLoadOlder}
-              onLoadActivityEntries={handleLoadActivityEntries}
-            />
+          <AskInSideChatContext.Provider value={sideChatValue}>
+            <SideChatQuotesContext.Provider value={sideQuotesValue}>
+              <MessageList
+                messages={shownMessages}
+                header={
+                  side && shownMessages.length === 0 ? side.empty : undefined
+                }
+                agentName={conversation.agentProfile?.name}
+                sessionId={conversation.id}
+                spawnContext={{
+                  title: conversation.title,
+                  model: effectiveModel,
+                  appearance: conversation.subagentAppearance,
+                }}
+                transcriptHydrated={conversation.hydrated !== false}
+                isThinking={isThinking}
+                turnVisualPhase={turnVisualState.phase}
+                turnKey={turnVisualState.turnKey}
+                thinkingDetail={
+                  conversation.status === 'working' && conversation.statusReason
+                    ? conversation.statusReason
+                    : (phaseDetail ?? waitingFallback)
+                }
+                density={density}
+                onResolveApproval={resolveApproval}
+                onAlwaysAllow={handleAlwaysAllow}
+                onResolveFilesystemAccess={handleFilesystemResolve}
+                onManageFilesystemAccess={handleManageFilesystemAccess}
+                onConfigureProvider={handleConfigureProvider}
+                workingDir={conversation.workingDir ?? null}
+                onWorkingDirChange={
+                  workingDirEnabled ? handleWorkingDirChange : undefined
+                }
+                defaultWorkingDir={defaultWorkingDir}
+                worktreePicker={
+                  worktreeEnabled
+                    ? { enabled: true, onPick: handlePickWorktree }
+                    : undefined
+                }
+                triggersById={triggersById}
+                focusMessageId={quoteFocusId ?? focusMessageId}
+                onFocusMessageHandled={() => {
+                  setQuoteFocusId(null)
+                  handleFocusMessageHandled()
+                }}
+                history={side ? undefined : conversation.history}
+                onLoadOlder={side ? undefined : handleLoadOlder}
+                onLoadActivityEntries={handleLoadActivityEntries}
+              />
+            </SideChatQuotesContext.Provider>
           </AskInSideChatContext.Provider>
         </RegisteredTriggerStatusProvider>
       </ChatFileNavigation>
@@ -3212,6 +3313,11 @@ export function ChatView({
                 !harnessBlocked
               }
               externalInput={!side}
+              header={
+                side?.quote ? (
+                  <QuoteChip quote={side.quote} onRemove={side.onRemoveQuote} />
+                ) : undefined
+              }
               idlePlaceholder={idleComposerPlaceholder(
                 conversation.agentProfile,
                 conversation.messages.length > 0,
@@ -3256,6 +3362,9 @@ export function ChatView({
         triggers={mergedTriggers}
         onUnregisterTrigger={handleUnregisterTrigger}
         landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
+        pendingQuote={pendingQuote}
+        onPendingQuoteChange={setPendingQuote}
+        onJumpToMessage={setQuoteFocusId}
       />
     </div>
   )

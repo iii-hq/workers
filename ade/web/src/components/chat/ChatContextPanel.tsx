@@ -10,6 +10,7 @@ import {
   GitBranch,
   GitPullRequest,
   Globe,
+  ImageIcon,
   SquareTerminal,
   TriangleAlert,
   X,
@@ -33,15 +34,24 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
+import {
+  ImageThumbnailButton,
+  ImageViewer,
+  useImageViewer,
+} from '@/components/ui/ImageViewer'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
+import { useLazyAttachment } from '@/hooks/use-lazy-attachment'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
   capRows,
+  collectChatImages,
   collectChatLinks,
   type GitSummary,
+  ghCliSource,
+  githubWorkerSource,
   type PullRequestRow,
   readGitSummary,
   readPullRequests,
@@ -50,8 +60,9 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
-import type { Conversation } from '@/types/chat'
+import type { Attachment, Conversation } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
+import { isLazyImage } from './AttachmentChip'
 import {
   collectSubagentDescendants,
   deriveSubagentVisualStatus,
@@ -69,6 +80,8 @@ const deltaClassName = 'font-mono text-[11px] leading-4 tabular-nums'
 /** Sub-agents are what people come here for; every other section shows less. */
 const SUBAGENT_CAP = 5
 const SECTION_CAP = 3
+/** Two rows of the three-across image grid. */
+const IMAGE_CAP = 6
 
 interface ChatContextPanelProps {
   conversation: Conversation
@@ -171,14 +184,23 @@ export function ChatContextPanel({
   // biome-ignore lint/correctness/useExhaustiveDependencies: mentionedKey stands for `mentioned`; status re-reads after a turn
   useEffect(() => {
     if (!active) return
-    if (!githubAvailable || (!(repo && branch) && mentioned.length === 0)) {
+    // The github worker when it is there; otherwise `gh` in the folder.
+    const viaGh = !githubAvailable && shellAvailable && workingDir
+    if (
+      (!githubAvailable && !viaGh) ||
+      (!(repo && branch) && mentioned.length === 0)
+    ) {
       setPullRequests([])
       return
     }
     let alive = true
     void (async () => {
       const client = await getIiiClient()
-      const rows = await readPullRequests(client.trigger.bind(client), {
+      const trigger = client.trigger.bind(client)
+      const source = viaGh
+        ? ghCliSource(trigger, viaGh)
+        : githubWorkerSource(trigger)
+      const rows = await readPullRequests(source, {
         repo,
         branch,
         mentioned,
@@ -188,7 +210,21 @@ export function ChatContextPanel({
     return () => {
       alive = false
     }
-  }, [active, githubAvailable, repo, branch, mentionedKey, conversation.status])
+  }, [
+    active,
+    githubAvailable,
+    shellAvailable,
+    workingDir,
+    repo,
+    branch,
+    mentionedKey,
+    conversation.status,
+  ])
+
+  const images = useMemo(
+    () => collectChatImages(conversation.messages),
+    [conversation.messages],
+  )
 
   const subagents = useMemo(() => {
     const { descendants } = collectSubagentDescendants(
@@ -231,6 +267,7 @@ export function ChatContextPanel({
   const subagentRows = capRows(subagents, SUBAGENT_CAP, !!expanded.subagents)
   const triggerRows = capRows(liveTriggers, SECTION_CAP, !!expanded.triggers)
   const linkRows = capRows(links, SECTION_CAP, !!expanded.links)
+  const imageRows = capRows(images, IMAGE_CAP, !!expanded.images)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-2 pt-1 pb-3">
@@ -280,13 +317,16 @@ export function ChatContextPanel({
                     })
                   }
                 >
-                  <SquareTerminal aria-hidden />
+                  <SquareTerminal
+                    aria-hidden
+                    className="size-4 text-ink-faint"
+                  />
                   Open in terminal
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => void copyTextToClipboard(workingDir)}
                 >
-                  <Copy aria-hidden />
+                  <Copy aria-hidden className="size-4 text-ink-faint" />
                   Copy path
                 </DropdownMenuItem>
                 {repo ? (
@@ -297,7 +337,10 @@ export function ChatContextPanel({
                         openExternal(`https://github.com/${repo}`)
                       }
                     >
-                      <ExternalLink aria-hidden />
+                      <ExternalLink
+                        aria-hidden
+                        className="size-4 text-ink-faint"
+                      />
                       Open repository on GitHub
                     </DropdownMenuItem>
                   </>
@@ -334,7 +377,7 @@ export function ChatContextPanel({
                   <DropdownMenuItem
                     onSelect={() => void copyTextToClipboard(branch)}
                   >
-                    <Copy aria-hidden />
+                    <Copy aria-hidden className="size-4 text-ink-faint" />
                     Copy branch name
                   </DropdownMenuItem>
                   {repo ? (
@@ -345,7 +388,10 @@ export function ChatContextPanel({
                         )
                       }
                     >
-                      <ExternalLink aria-hidden />
+                      <ExternalLink
+                        aria-hidden
+                        className="size-4 text-ink-faint"
+                      />
                       Open branch on GitHub
                     </DropdownMenuItem>
                   ) : null}
@@ -405,6 +451,27 @@ export function ChatContextPanel({
             total={pullRequests.length}
             cap={SECTION_CAP}
             onToggle={() => toggle('prs')}
+          />
+        </Section>
+      ) : null}
+
+      {images.length > 0 ? (
+        <Section label="Images" count={images.length}>
+          <div className="grid grid-cols-3 gap-1.5 px-2.5 pt-1">
+            {imageRows.shown.map((image) => (
+              <ImageTile
+                key={image.id}
+                image={image}
+                sessionId={conversation.id}
+              />
+            ))}
+          </div>
+          <ShowMore
+            hidden={imageRows.hidden}
+            expanded={!!expanded.images}
+            total={images.length}
+            cap={IMAGE_CAP}
+            onToggle={() => toggle('images')}
           />
         </Section>
       ) : null}
@@ -832,5 +899,50 @@ function ShowMore({
         />
       </span>
     </button>
+  )
+}
+
+/**
+ * One picture of the conversation, square-cropped; opens in the viewer. A
+ * picture whose bytes stayed in the session store loads when it scrolls into
+ * view, the same way its chip in the transcript does.
+ */
+function ImageTile({
+  image,
+  sessionId,
+}: {
+  image: Attachment
+  sessionId: string
+}) {
+  const lazy = isLazyImage(image, sessionId)
+  const stored = useLazyAttachment(sessionId, image.attachmentId, lazy)
+  const viewer = useImageViewer()
+  const src =
+    image.dataUrl ??
+    (stored.state.phase === 'ready' ? stored.state.dataUrl : undefined)
+  return (
+    <div
+      ref={lazy ? stored.ref : undefined}
+      className="aspect-square min-w-0 overflow-hidden rounded-sm bg-surface"
+    >
+      <ImageThumbnailButton
+        title={image.name}
+        onClick={() => (src ? viewer.show() : stored.request())}
+        className="flex size-full items-center justify-center"
+      >
+        {src ? (
+          <img src={src} alt="" className="size-full object-cover" />
+        ) : (
+          <ImageIcon aria-hidden className="size-4 text-ink-faint" />
+        )}
+      </ImageThumbnailButton>
+      <ImageViewer
+        open={viewer.open}
+        onOpenChange={viewer.setOpen}
+        src={src}
+        alt={image.name}
+        title={image.name}
+      />
+    </div>
   )
 }

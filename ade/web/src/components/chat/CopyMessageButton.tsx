@@ -75,15 +75,20 @@ function selectionWithin(button: HTMLElement): string {
  */
 export function AskInSideChatButton({
   text,
+  messageId,
+  agent,
   className,
 }: {
   text: string
+  /** The message's transcript row id: where the side chat's card leads back. */
+  messageId: string
+  agent?: string
   className?: string
 }) {
-  const ask = useContext(AskInSideChatContext)
+  const sideChat = useContext(AskInSideChatContext)
   // Pressing the button can collapse the selection before the click lands.
   const pressedSelection = useRef('')
-  if (!ask) return null
+  if (!sideChat) return null
   return (
     <button
       data-message-action="ask-side-chat"
@@ -95,7 +100,7 @@ export function AskInSideChatButton({
         const quote =
           pressedSelection.current || selectionWithin(event.currentTarget)
         pressedSelection.current = ''
-        ask(quote || text)
+        sideChat.ask({ messageId, text: quote || text, agent })
       }}
       className={cn(actionClassName, className)}
       aria-label="Ask in side chat"

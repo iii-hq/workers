@@ -82,7 +82,12 @@ async function render(
   {
     conversations = [main],
     active = true,
-  }: { conversations?: Conversation[]; active?: boolean } = {},
+    githubAvailable = true,
+  }: {
+    conversations?: Conversation[]
+    active?: boolean
+    githubAvailable?: boolean
+  } = {},
 ) {
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -98,7 +103,7 @@ async function render(
           onUnregisterTrigger={() => {}}
           onOpenConversation={() => {}}
           shellAvailable
-          githubAvailable
+          githubAvailable={githubAvailable}
           active={active}
         />
       </TooltipProvider>,
@@ -222,6 +227,65 @@ describe('ChatContextPanel', () => {
   it('reads nothing while the panel is out of sight', async () => {
     await render(chat('main', { workingDir: '/work/repo' }), { active: false })
     expect(mocks.trigger).not.toHaveBeenCalled()
+  })
+
+  it('reads the branch PR with gh when the github worker is absent', async () => {
+    mocks.trigger.mockImplementation(
+      (fn: string, payload: Record<string, unknown> = {}) => {
+        if (fn === 'shell::exec' && payload.command === 'gh') {
+          return Promise.resolve({
+            exit_code: 0,
+            stdout: JSON.stringify([
+              {
+                number: 12,
+                title: 'Via gh',
+                url: 'https://github.com/o/r/pull/12',
+                state: 'MERGED',
+                headRefName: 'feat/x',
+              },
+            ]),
+          })
+        }
+        return respond(fn, payload)
+      },
+    )
+    const view = await render(chat('main', { workingDir: '/work/repo' }), {
+      githubAvailable: false,
+    })
+    expect(view.textContent).toContain('Via gh')
+    expect(
+      mocks.trigger.mock.calls.some(([fn]) => fn.startsWith('github::')),
+    ).toBe(false)
+  })
+
+  it('shows the pictures of the chat as a grid that opens them', async () => {
+    const view = await render(
+      chat('main', {
+        messages: [
+          {
+            id: 'u1',
+            role: 'user',
+            content: 'see',
+            createdAt: 1,
+            attachments: [
+              {
+                id: 'a1',
+                name: 'shot.png',
+                size: 3,
+                type: 'image/png',
+                dataUrl: 'data:image/png;base64,AAAA',
+              },
+            ],
+          },
+        ],
+      }),
+    )
+    expect(view.textContent).toContain('Images')
+    const img = view.querySelector('img[src="data:image/png;base64,AAAA"]')
+    expect(img).not.toBeNull()
+    expect(img?.closest('button')?.getAttribute('aria-label')).toBe(
+      'View shot.png',
+    )
   })
 
   it('asks for a folder when the chat has none', async () => {

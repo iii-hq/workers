@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AskInSideChatContext } from '@/lib/chat-aside'
+import { AskInSideChatContext, type SideChatQuote } from '@/lib/chat-aside'
 import { AskInSideChatButton } from './CopyMessageButton'
 
 ;(
@@ -13,16 +13,22 @@ import { AskInSideChatButton } from './CopyMessageButton'
 let root: Root | null = null
 let container: HTMLElement | null = null
 
-function render(ask: ((text: string) => void) | null) {
+function render(ask: ((quote: SideChatQuote) => void) | null) {
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
   act(() =>
     root?.render(
-      <AskInSideChatContext.Provider value={ask}>
+      <AskInSideChatContext.Provider
+        value={ask ? { ask, quotedIds: new Set() } : null}
+      >
         <article>
           <p data-prose>first sentence. second sentence.</p>
-          <AskInSideChatButton text="the whole message" />
+          <AskInSideChatButton
+            text="the whole message"
+            messageId="m1"
+            agent="Frontend"
+          />
         </article>
         <p data-outside>elsewhere</p>
       </AskInSideChatContext.Provider>,
@@ -60,7 +66,11 @@ describe('AskInSideChatButton', () => {
     const ask = vi.fn()
     render(ask)
     act(() => askButton()?.click())
-    expect(ask).toHaveBeenCalledWith('the whole message')
+    expect(ask).toHaveBeenCalledWith({
+      messageId: 'm1',
+      text: 'the whole message',
+      agent: 'Frontend',
+    })
   })
 
   it('asks about the selection inside the message', () => {
@@ -68,7 +78,11 @@ describe('AskInSideChatButton', () => {
     const view = render(ask)
     select(view.querySelector('[data-prose]') as Element)
     act(() => askButton()?.click())
-    expect(ask).toHaveBeenCalledWith('first sentence. second sentence.')
+    expect(ask).toHaveBeenCalledWith({
+      messageId: 'm1',
+      text: 'first sentence. second sentence.',
+      agent: 'Frontend',
+    })
   })
 
   it('ignores a selection outside the message', () => {
@@ -76,6 +90,10 @@ describe('AskInSideChatButton', () => {
     const view = render(ask)
     select(view.querySelector('[data-outside]') as Element)
     act(() => askButton()?.click())
-    expect(ask).toHaveBeenCalledWith('the whole message')
+    expect(ask).toHaveBeenCalledWith({
+      messageId: 'm1',
+      text: 'the whole message',
+      agent: 'Frontend',
+    })
   })
 })

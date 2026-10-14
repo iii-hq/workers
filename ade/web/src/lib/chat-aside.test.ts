@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest'
 import type { Conversation, Message } from '@/types/chat'
 import {
   capRows,
+  collectChatImages,
   collectChatLinks,
   findSideChat,
+  ghCliSource,
+  githubWorkerSource,
   hideSideChats,
+  lastSpokenEntry,
   parseGithubRemote,
   parseNumstat,
   parseStatusHeader,
@@ -13,7 +17,10 @@ import {
   sideChatMessages,
   sideChatMetadata,
   sideChatQuote,
+  sideChatQuotes,
+  splitQuotedMessage,
   summarizeChecks,
+  withSideChatQuote,
 } from './chat-aside'
 
 const chat = (
@@ -211,8 +218,8 @@ describe('pull requests', () => {
         }
       if (fn === 'github::pr::checks') return { value: [{ bucket: 'fail' }] }
       throw new Error(fn)
-    }) as Parameters<typeof readPullRequests>[0]
-    const rows = await readPullRequests(trigger, {
+    }) as Parameters<typeof githubWorkerSource>[0]
+    const rows = await readPullRequests(githubWorkerSource(trigger), {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [
@@ -314,14 +321,14 @@ describe('review fixes', () => {
         }
       }
       return { value: [] }
-    }) as Parameters<typeof readPullRequests>[0]
-    const rows = await readPullRequests(trigger, {
+    }) as Parameters<typeof githubWorkerSource>[0]
+    const rows = await readPullRequests(githubWorkerSource(trigger), {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [],
     })
     expect(rows.map((r) => r.number)).toEqual([1])
-    await readPullRequests(trigger, {
+    await readPullRequests(githubWorkerSource(trigger), {
       repo: 'o/r',
       branch: 'main',
       mentioned: [],
@@ -329,7 +336,7 @@ describe('review fixes', () => {
     expect(searched).toEqual(['head:feat/x'])
   })
 
-  it('reads git with fsmonitor off and untracked dirs collapsed', async () => {
+  it('reads git with fsmonitor off, counting untracked files like the IDE', async () => {
     const calls: string[][] = []
     const trigger = (async (_fn: string, payload?: Record<string, unknown>) => {
       calls.push(payload?.args as string[])
@@ -342,6 +349,208 @@ describe('review fixes', () => {
         '-c',
         'core.fsmonitor=false',
       ])
-    expect(calls[0]).toContain('--untracked-files=normal')
+    expect(calls[0]).toContain('--untracked-files=all')
+  })
+})
+
+describe('side chat quotes', () => {
+  it('reads recorded quotes and skips malformed ones', () => {
+    expect(
+      sideChatQuotes({
+        sessionMetadata: {
+          side_chat_quotes: [
+            { message_id: 'm1', text: 'a', agent: 'Bot' },
+            { message_id: 2, text: 'bad' },
+            'junk',
+            { message_id: 'm3', text: 'c' },
+          ],
+        },
+      }),
+    ).toEqual([
+      { messageId: 'm1', text: 'a', agent: 'Bot' },
+      { messageId: 'm3', text: 'c' },
+    ])
+    expect(sideChatQuotes(null)).toEqual([])
+  })
+
+  it('records a quote last and keeps the newest twenty', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      messageId: `m${i}`,
+      text: `t${i}`,
+    }))
+    const stored = withSideChatQuote(many, {
+      messageId: 'new',
+      text: 'n',
+      agent: 'A',
+    })
+    expect(stored).toHaveLength(20)
+    expect(stored[0]).toEqual({ message_id: 'm1', text: 't1' })
+    expect(stored.at(-1)).toEqual({ message_id: 'new', text: 'n', agent: 'A' })
+  })
+
+  it('splits only the exact quote the side chat sent', () => {
+    const quote = { messageId: 'm1', text: 'line one\nline two' }
+    expect(
+      splitQuotedMessage(`${sideChatQuote(quote.text)}why?`, [quote]),
+    ).toEqual({ quote, rest: 'why?' })
+    expect(splitQuotedMessage('> other\n\nwhy?', [quote])).toBeNull()
+  })
+})
+
+describe('side chat anchor', () => {
+  const copiedNote: Message = {
+    id: 'c-note',
+    role: 'system',
+    kind: 'model-note',
+    tone: 'info',
+    content: 'Note to the model',
+    // A transcript page gives notes no time; they are stamped at load.
+    createdAt: 9_999,
+  }
+  const anchorText = say('assistant', 'last copied reply', 5)
+  const anchored = [
+    say('user', 'copied question', 4),
+    copiedNote,
+    { ...anchorText, id: 'f1:0' },
+    say('user', 'own question', 30),
+  ]
+
+  it('shows only what follows the copied entry, notes included', () => {
+    expect(sideChatMessages(anchored, 20, 'f1').map((m) => m.id)).toEqual([
+      anchored[3].id,
+    ])
+  })
+
+  it('falls back to the fork time without an anchor in the window', () => {
+    expect(sideChatMessages(anchored, 20, 'gone').map((m) => m.id)).toEqual([
+      'c-note',
+      anchored[3].id,
+    ])
+  })
+
+  it('cuts at the last user or assistant entry', () => {
+    expect(
+      lastSpokenEntry([
+        { entry_id: 'a', message: { role: 'user' } },
+        { entry_id: 'b', message: { role: 'assistant' } },
+        { entry_id: 'c', message: { role: 'function_result' } },
+      ]),
+    ).toBe('b')
+    expect(
+      lastSpokenEntry([
+        { entry_id: 'c', message: { role: 'function_result' } },
+      ]),
+    ).toBeNull()
+  })
+
+  it('records the anchor next to the tag', () => {
+    expect(sideChatMetadata({}, 'main', 'f1')).toEqual({
+      side_chat_of: 'main',
+      side_chat_from: 'f1',
+    })
+  })
+})
+
+describe('pull requests through gh in the folder', () => {
+  it('asks gh for the branch head and reads checks whatever the exit code', async () => {
+    const calls: string[][] = []
+    const trigger = (async (_fn: string, payload?: Record<string, unknown>) => {
+      const args = payload?.args as string[]
+      calls.push(args)
+      expect(payload?.command).toBe('gh')
+      expect(payload?.cwd).toBe('/repo')
+      if (args[1] === 'list')
+        return {
+          exit_code: 0,
+          stdout: JSON.stringify([
+            {
+              number: 3,
+              title: 'Mine',
+              url: 'u3',
+              state: 'OPEN',
+              headRefName: 'feat/x',
+            },
+          ]),
+        }
+      // `gh pr checks` exits 8 while checks are pending.
+      return { exit_code: 8, stdout: '[{"bucket":"pending"}]' }
+    }) as Parameters<typeof ghCliSource>[0]
+    const rows = await readPullRequests(ghCliSource(trigger, '/repo'), {
+      repo: 'o/r',
+      branch: 'feat/x',
+      mentioned: [],
+    })
+    expect(rows.map((r) => [r.number, r.checks])).toEqual([[3, 'pending']])
+    expect(calls[0]).toEqual([
+      'pr',
+      'list',
+      '-R',
+      'o/r',
+      '--head',
+      'feat/x',
+      '--state',
+      'all',
+      '--limit',
+      '5',
+      '--json',
+      'number,title,url,state,isDraft,headRefName',
+    ])
+  })
+
+  it('reads no pull requests when gh is missing or prints nothing', async () => {
+    const trigger = (async () => {
+      throw new Error('gh: not found')
+    }) as Parameters<typeof ghCliSource>[0]
+    expect(
+      await readPullRequests(ghCliSource(trigger, '/repo'), {
+        repo: 'o/r',
+        branch: 'feat/x',
+        mentioned: [],
+      }),
+    ).toEqual([])
+  })
+})
+
+describe('collectChatImages', () => {
+  it('lists attached and tool images, newest first', () => {
+    const attached: Message = {
+      id: 'u1',
+      role: 'user',
+      content: 'look',
+      createdAt: 1,
+      attachments: [
+        {
+          id: 'a1',
+          name: 'shot.png',
+          size: 10,
+          type: 'image/png',
+          attachmentId: 'a1',
+        },
+        { id: 'a2', name: 'notes.md', size: 10, type: 'text/markdown' },
+      ],
+    }
+    const tool: Message = {
+      id: 'c1',
+      role: 'function-trigger',
+      functionId: 'browser::screenshot',
+      input: {},
+      output: {
+        content: [
+          { type: 'text', text: 'done' },
+          { type: 'image', data: 'AAAA', mimeType: 'image/jpeg' },
+        ],
+        details: { preview: 'data:image/webp;base64,BBBB' },
+      },
+      createdAt: 2,
+    }
+    const images = collectChatImages([attached, tool])
+    expect(images.map((i) => [i.id, i.type])).toEqual([
+      ['c1:image-1', 'image/jpeg'],
+      ['c1:image-2', 'image/webp'],
+      ['a1', 'image/png'],
+    ])
+    expect(images[0].dataUrl).toBe('data:image/jpeg;base64,AAAA')
+    // Cached by message: the same objects come back.
+    expect(collectChatImages([attached, tool])[2]).toBe(images[2])
   })
 })

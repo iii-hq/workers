@@ -4,12 +4,14 @@ import {
   Layers,
   MessagesSquare,
   Trash2,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { IconButton } from '@/components/ui/IconButton'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
 import { PageSidebar } from '@/components/ui/PageChrome'
@@ -18,20 +20,22 @@ import { StatusPanel } from '@/components/ui/StatusPanel'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
   findSideChat,
+  lastSpokenEntry,
   SIDE_CHAT_KEY,
+  SIDE_CHAT_QUOTES_KEY,
+  type SideChatQuote,
+  sideChatFrom,
   sideChatMessages,
   sideChatMetadata,
+  sideChatQuotes,
   sideChatsMadeHere,
+  withSideChatQuote,
 } from '@/lib/chat-aside'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
-import {
-  deleteSession,
-  fetchTranscriptTail,
-  setSessionMeta,
-} from '@/lib/sessions/api'
-import type { SessionMeta } from '@/lib/sessions/types'
+import { deleteSession, setSessionMeta } from '@/lib/sessions/api'
+import type { SessionMeta, TranscriptItem } from '@/lib/sessions/types'
 import type { Conversation } from '@/types/chat'
 import { ChatContextPanel } from './ChatContextPanel'
 import { ChatView } from './ChatView'
@@ -42,7 +46,8 @@ export type AsideTab = 'context' | 'side-chat'
 export interface AsideRequest {
   seq: number
   tab: AsideTab
-  quote?: string
+  /** A quote just handed over: the composer takes the caret to ask about it. */
+  quote?: SideChatQuote
 }
 
 const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
@@ -77,6 +82,11 @@ interface ChatAsideProps {
   triggers: readonly SessionTriggerInfo[]
   onUnregisterTrigger: (subscriptionId: string) => Promise<void> | void
   landBlocked?: boolean
+  /** The quote waiting in the side chat's composer (owned by the main chat). */
+  pendingQuote: SideChatQuote | null
+  onPendingQuoteChange: (quote: SideChatQuote | null) => void
+  /** Land the main chat on a message (a quote card's way back). */
+  onJumpToMessage: (messageId: string) => void
 }
 
 /**
@@ -95,6 +105,9 @@ export function ChatAside({
   triggers,
   onUnregisterTrigger,
   landBlocked,
+  pendingQuote,
+  onPendingQuoteChange,
+  onJumpToMessage,
 }: ChatAsideProps) {
   const ctx = useConversationsCtx()
   const [tab, setTabState] = useState<AsideTab>(readStoredTab)
@@ -173,22 +186,39 @@ export function ChatAside({
       setKept(null)
       let forkedId: string | null = null
       try {
-        const tail = await fetchTranscriptTail(conversation.id, { limit: 1 })
-        const last = tail.items[tail.items.length - 1]
-        if (!last) return null
         const client = await getIiiClient()
+        const tail = (sessionId: string, limit: number) =>
+          client.trigger<{ messages?: TranscriptItem[] }>(
+            'session::messages-tail',
+            {
+              session_id: sessionId,
+              limit,
+              include_custom: false,
+              include_image_data: false,
+            },
+          )
+        // Cut at the last spoken entry: its copy anchors the side chat.
+        const point = lastSpokenEntry(
+          (await tail(conversation.id, 20))?.messages ?? [],
+        )
+        if (!point) return null
         const forked = await client.trigger<{
           session_id: string
           meta: SessionMeta
         }>('session::fork', {
           session_id: conversation.id,
-          entry_id: last.entry_id,
+          entry_id: point,
           title: `Side chat · ${conversation.title}`,
         })
         forkedId = forked.session_id
+        const copied = (await tail(forked.session_id, 1))?.messages ?? []
         await setSessionMeta({
           session_id: forked.session_id,
-          metadata: sideChatMetadata(forked.meta.metadata, conversation.id),
+          metadata: sideChatMetadata(
+            forked.meta.metadata,
+            conversation.id,
+            copied.at(-1)?.entry_id,
+          ),
         })
         sideChatsMadeHere.add(forked.session_id)
         forkStartedAt.current = forked.meta.created_at
@@ -227,21 +257,19 @@ export function ChatAside({
     if (!request || request.seq === handledRequest.current) return
     handledRequest.current = request.seq
     show(request.tab)
-    const quote = request.quote
-    if (request.tab !== 'side-chat' || !quote) return
+    if (request.tab !== 'side-chat' || !request.quote) return
     void ensureFork().then((id) => {
-      if (!id) return
-      // The composer reads its draft on mount, so a remount seeds the quote,
-      // ahead of anything already typed there.
-      ctx.setDraftText(id, quote + (ctx.getDraftText(id) ?? ''))
-      setComposerKey((key) => key + 1)
+      // The composer takes the caret on mount: a remount aims it at the
+      // question about the quote, whatever was typed there stays.
+      if (id) setComposerKey((key) => key + 1)
     })
-  }, [request, show, ensureFork, ctx])
+  }, [request, show, ensureFork])
 
   const keep = () => {
     if (!fork) return
     ctx.setSessionMetadata(fork.id, { [SIDE_CHAT_KEY]: undefined })
     sideChatsMadeHere.delete(fork.id)
+    onPendingQuoteChange(null)
     setKept({ id: fork.id })
     setForkId(null)
   }
@@ -250,6 +278,7 @@ export function ChatAside({
     setConfirmDiscard(false)
     setForkId(null)
     setActionError(null)
+    onPendingQuoteChange(null)
     if (!target) return
     const hide = (on: boolean) =>
       setDiscarding((current) => {
@@ -267,7 +296,9 @@ export function ChatAside({
   }
 
   const since = fork ? (fork.createdAt ?? forkStartedAt.current ?? 0) : 0
-  const own = fork ? sideChatMessages(fork.messages, since) : []
+  const sent = sideChatQuotes(fork)
+  const from = sideChatFrom(fork)
+  const own = fork ? sideChatMessages(fork.messages, since, from) : []
 
   // A reply that lands while the side chat is out of sight marks its icon.
   const [seenCount, setSeenCount] = useState(0)
@@ -364,7 +395,9 @@ export function ChatAside({
               <IconButton
                 label="Discard side chat"
                 onClick={() =>
-                  own.length > 0 ? setConfirmDiscard(true) : discard()
+                  own.some((message) => message.role === 'user')
+                    ? setConfirmDiscard(true)
+                    : discard()
                 }
               >
                 <Trash2 aria-hidden />
@@ -373,7 +406,22 @@ export function ChatAside({
             <ChatView
               key={`${fork.id}:${composerKey}`}
               conversation={fork}
-              side={{ since, empty: <SideChatHint />, autoFocus: focusSide }}
+              side={{
+                since,
+                fromEntry: from,
+                empty: <SideChatHint />,
+                autoFocus: focusSide,
+                quote: pendingQuote,
+                onRemoveQuote: () => onPendingQuoteChange(null),
+                onQuoteSent: (quote) => {
+                  ctx.setSessionMetadata(fork.id, {
+                    [SIDE_CHAT_QUOTES_KEY]: withSideChatQuote(sent, quote),
+                  })
+                  onPendingQuoteChange(null)
+                },
+                quotes: sent,
+                onJumpToQuote: (quote) => onJumpToMessage(quote.messageId),
+              }}
               backend={ctx.backend}
               modelOptions={ctx.modelOptions}
               catalogLoading={ctx.catalogLoading}
@@ -519,5 +567,39 @@ function SideChatHint({
       description={description}
       action={action}
     />
+  )
+}
+
+/** The quote waiting in a side chat's composer, removable before it is sent. */
+export function QuoteChip({
+  quote,
+  onRemove,
+}: {
+  quote: SideChatQuote
+  onRemove?: () => void
+}) {
+  return (
+    <div
+      className="flex items-start gap-2 bg-surface px-3 py-2"
+      data-side-chat-quote=""
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <Eyebrow className="text-ink-ghost">
+          Quoted · {quote.agent || 'Agent'}
+        </Eyebrow>
+        <span className="line-clamp-2 text-[12px] leading-[18px] text-ink-faint">
+          {quote.text}
+        </span>
+      </div>
+      {onRemove ? (
+        <IconButton
+          label="Remove quote"
+          className="shrink-0"
+          onClick={onRemove}
+        >
+          <X aria-hidden />
+        </IconButton>
+      ) : null}
+    </div>
   )
 }

@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { ChatBackend } from '@/lib/backend'
+import { sideChatQuote } from '@/lib/chat-aside'
 import type { Conversation } from '@/types/chat'
 import { ChatView } from './ChatView'
 
@@ -22,7 +23,7 @@ const fork: Conversation = {
 
 function render(
   conversation: Conversation,
-  side?: { since: number; empty: React.ReactNode },
+  side?: React.ComponentProps<typeof ChatView>['side'],
 ) {
   const mutate = vi.fn()
   return renderToStaticMarkup(
@@ -68,5 +69,61 @@ describe('ChatView as a side chat', () => {
     const html = render(fork)
     expect(html).toContain('Copied from main')
     expect(html).toContain('class="sr-only">ready</span>')
+  })
+})
+
+describe('ChatView side chat quotes', () => {
+  const quote = {
+    messageId: 'source',
+    text: 'The views stay local.',
+    agent: 'Frontend Engineer',
+  }
+
+  it('shows the pending quote at the top of the composer, removable', () => {
+    const html = render(fork, {
+      since: 20,
+      empty: null,
+      quote,
+      onRemoveQuote: vi.fn(),
+    })
+    expect(html).toContain('data-side-chat-quote')
+    expect(html).toContain('Quoted · Frontend Engineer')
+    expect(html).toContain('aria-label="Remove quote"')
+  })
+
+  it('turns a quoted question into a card and the question', () => {
+    const asked: Conversation = {
+      ...fork,
+      messages: [
+        {
+          id: 'asked',
+          role: 'user',
+          content: `${sideChatQuote(quote.text)}Do they sync?`,
+          createdAt: 30,
+        },
+      ],
+    }
+    const html = render(asked, { since: 20, empty: null, quotes: [quote] })
+    expect(html).toContain('aria-label="Show the quoted message"')
+    expect(html).toContain('Quoted · Frontend Engineer')
+    expect(html).toContain('Do they sync?')
+    expect(html).not.toContain('<blockquote')
+  })
+
+  it('leaves a blockquote it did not send as plain markdown', () => {
+    const asked: Conversation = {
+      ...fork,
+      messages: [
+        {
+          id: 'asked',
+          role: 'user',
+          content: '> someone else\n\nhi',
+          createdAt: 30,
+        },
+      ],
+    }
+    const html = render(asked, { since: 20, empty: null, quotes: [quote] })
+    expect(html).not.toContain('Show the quoted message')
+    expect(html).toContain('<blockquote')
   })
 })

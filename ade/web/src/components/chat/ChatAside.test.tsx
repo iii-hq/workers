@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
-import { sideChatsMadeHere } from '@/lib/chat-aside'
+import { type SideChatQuote, sideChatsMadeHere } from '@/lib/chat-aside'
 import type { Conversation } from '@/types/chat'
 import type { AsideRequest } from './ChatAside'
 
@@ -15,7 +15,6 @@ import type { AsideRequest } from './ChatAside'
 const mocks = vi.hoisted(() => ({
   ctx: null as Record<string, unknown> | null,
   trigger: vi.fn(),
-  fetchTranscriptTail: vi.fn(),
   setSessionMeta: vi.fn(),
   deleteSession: vi.fn(),
 }))
@@ -27,7 +26,6 @@ vi.mock('@/lib/iii-client', () => ({
   getIiiClient: () => Promise.resolve({ trigger: mocks.trigger }),
 }))
 vi.mock('@/lib/sessions/api', () => ({
-  fetchTranscriptTail: mocks.fetchTranscriptTail,
   setSessionMeta: mocks.setSessionMeta,
   deleteSession: mocks.deleteSession,
 }))
@@ -37,12 +35,24 @@ vi.mock('./ChatView', () => ({
     side,
   }: {
     conversation: Conversation
-    side?: { autoFocus?: boolean }
+    side?: {
+      autoFocus?: boolean
+      quote?: SideChatQuote | null
+      onQuoteSent?: (quote: SideChatQuote) => void
+    }
   }) => (
     <div
       data-side-chat={conversation.id}
       data-autofocus={String(side?.autoFocus ?? false)}
-    />
+      data-quote={side?.quote?.text ?? ''}
+    >
+      <button
+        type="button"
+        onClick={() => side?.quote && side.onQuoteSent?.(side.quote)}
+      >
+        send quote
+      </button>
+    </div>
   ),
 }))
 vi.mock('./ChatContextPanel', () => ({
@@ -102,6 +112,9 @@ function makeCtx(conversations: Conversation[]) {
 let root: Root | null = null
 let container: HTMLElement | null = null
 
+const pending = vi.fn()
+let pendingQuote: SideChatQuote | null = null
+
 function render(request: AsideRequest | null = null) {
   if (!container) {
     container = document.createElement('div')
@@ -120,6 +133,9 @@ function render(request: AsideRequest | null = null) {
           request={request}
           triggers={[]}
           onUnregisterTrigger={() => {}}
+          pendingQuote={pendingQuote}
+          onPendingQuoteChange={pending}
+          onJumpToMessage={() => {}}
         />
       </TooltipProvider>,
     ),
@@ -140,17 +156,44 @@ const button = (label: string) =>
     (el) => el.getAttribute('aria-label') === label || el.textContent === label,
   ) as HTMLButtonElement | undefined
 
+/** The session worker: tails for the main chat and the fork, and the fork. */
+function route(fork: () => Promise<unknown>) {
+  mocks.trigger.mockImplementation(
+    (fn: string, payload: Record<string, unknown>) => {
+      if (fn === 'session::fork') return fork()
+      if (fn === 'session::messages-tail') {
+        return Promise.resolve(
+          payload.session_id === 'main'
+            ? {
+                messages: [
+                  { entry_id: 'e0', message: { role: 'user' } },
+                  { entry_id: 'e1', message: { role: 'assistant' } },
+                  { entry_id: 'e2', message: { role: 'function_result' } },
+                ],
+              }
+            : {
+                messages: [{ entry_id: 'f1', message: { role: 'assistant' } }],
+              },
+        )
+      }
+      return Promise.reject(new Error(fn))
+    },
+  )
+}
+
+const forked = (metadata: Record<string, unknown> = {}) => ({
+  session_id: 'fork-1',
+  meta: { created_at: 20, metadata },
+})
+
 beforeEach(() => {
+  pending.mockReset()
+  pendingQuote = null
   window.localStorage.clear()
   sideChatsMadeHere.clear()
   mocks.trigger.mockReset()
-  mocks.fetchTranscriptTail.mockReset()
   mocks.setSessionMeta.mockReset()
   mocks.deleteSession.mockReset()
-  mocks.fetchTranscriptTail.mockResolvedValue({
-    items: [{ entry_id: 'e1' }],
-    hasMore: false,
-  })
   mocks.setSessionMeta.mockResolvedValue({})
   mocks.deleteSession.mockResolvedValue({ deleted: true })
 })
@@ -162,10 +205,13 @@ afterEach(() => {
   container = null
 })
 
+const forkCalls = () =>
+  mocks.trigger.mock.calls.filter(([fn]) => fn === 'session::fork')
+
 describe('ChatAside side chat', () => {
-  it('forks once, tags the fork and drops its links to a parent', async () => {
+  it('forks once at the last spoken entry, tags, anchors and unlinks it', async () => {
     let resolveFork: (value: unknown) => void = () => {}
-    mocks.trigger.mockImplementation(
+    route(
       () =>
         new Promise((resolve) => {
           resolveFork = resolve
@@ -175,28 +221,28 @@ describe('ChatAside side chat', () => {
     render({ seq: 1, tab: 'side-chat' })
     render({ seq: 2, tab: 'side-chat' })
     await settle()
-    resolveFork({
-      session_id: 'fork-1',
-      meta: {
-        created_at: 20,
-        metadata: {
-          agent_profile: { id: 'p' },
-          parent_session_id: 'boss',
-          depth: 1,
-        },
-      },
-    })
+    resolveFork(
+      forked({
+        agent_profile: { id: 'p' },
+        parent_session_id: 'boss',
+        depth: 1,
+      }),
+    )
     await settle()
 
-    expect(mocks.trigger).toHaveBeenCalledTimes(1)
-    expect(mocks.trigger).toHaveBeenCalledWith('session::fork', {
-      session_id: 'main',
-      entry_id: 'e1',
-      title: 'Side chat · Main',
-    })
+    expect(forkCalls()).toEqual([
+      [
+        'session::fork',
+        { session_id: 'main', entry_id: 'e1', title: 'Side chat · Main' },
+      ],
+    ])
     expect(mocks.setSessionMeta).toHaveBeenCalledWith({
       session_id: 'fork-1',
-      metadata: { agent_profile: { id: 'p' }, side_chat_of: 'main' },
+      metadata: {
+        agent_profile: { id: 'p' },
+        side_chat_of: 'main',
+        side_chat_from: 'f1',
+      },
     })
     expect(sideChatsMadeHere.has('fork-1')).toBe(true)
     // The fork is not in the list yet: no second "Start" to click meanwhile.
@@ -208,10 +254,7 @@ describe('ChatAside side chat', () => {
   })
 
   it('deletes a fork whose tag could not be written, and says so', async () => {
-    mocks.trigger.mockResolvedValue({
-      session_id: 'fork-1',
-      meta: { created_at: 20, metadata: {} },
-    })
+    route(() => Promise.resolve(forked()))
     mocks.setSessionMeta.mockRejectedValue(new Error('set-meta down'))
     mocks.ctx = makeCtx([main])
     const view = render({ seq: 1, tab: 'side-chat' })
@@ -220,18 +263,65 @@ describe('ChatAside side chat', () => {
     expect(view.textContent).toContain('Side chat not started')
   })
 
-  it('puts a quote before what was already typed and focuses the composer', async () => {
-    const ctx = makeCtx([main, fork])
-    ctx.getDraftText = vi.fn(() => 'my words')
+  it('discards without asking when only copied notes are there', () => {
+    const ctx = makeCtx([
+      main,
+      {
+        ...fork,
+        messages: [
+          {
+            id: 'note',
+            role: 'system',
+            kind: 'model-note',
+            tone: 'info',
+            content: 'Note to the model',
+            createdAt: 99,
+          },
+        ],
+      },
+    ])
     mocks.ctx = ctx
-    const view = render({ seq: 1, tab: 'side-chat', quote: '> q\n\n' })
+    window.localStorage.setItem('iii-chat-aside-tab', 'side-chat')
+    render()
+    act(() => button('Discard side chat')?.click())
+    expect(ctx.remove).toHaveBeenCalledWith('fork-1')
+  })
+
+  it('hands a quote to the composer, leaves the draft alone and focuses it', async () => {
+    const ctx = makeCtx([main, fork])
+    mocks.ctx = ctx
+    pendingQuote = { messageId: 'm1', text: 'q', agent: 'A' }
+    const view = render({ seq: 1, tab: 'side-chat', quote: pendingQuote })
     await settle()
-    expect(ctx.setDraftText).toHaveBeenCalledWith('fork-1', '> q\n\nmy words')
-    expect(
-      view
-        .querySelector('[data-side-chat="fork-1"]')
-        ?.getAttribute('data-autofocus'),
-    ).toBe('true')
+    const sideChat = view.querySelector('[data-side-chat="fork-1"]')
+    expect(sideChat?.getAttribute('data-quote')).toBe('q')
+    expect(sideChat?.getAttribute('data-autofocus')).toBe('true')
+    expect(ctx.setDraftText).not.toHaveBeenCalled()
+  })
+
+  it('records a sent quote on the side chat and clears the pending one', () => {
+    const ctx = makeCtx([
+      main,
+      {
+        ...fork,
+        sessionMetadata: {
+          side_chat_of: 'main',
+          side_chat_quotes: [{ message_id: 'm0', text: 'older' }],
+        },
+      },
+    ])
+    mocks.ctx = ctx
+    pendingQuote = { messageId: 'm1', text: 'q', agent: 'A' }
+    window.localStorage.setItem('iii-chat-aside-tab', 'side-chat')
+    render()
+    act(() => button('send quote')?.click())
+    expect(ctx.setSessionMetadata).toHaveBeenCalledWith('fork-1', {
+      side_chat_quotes: [
+        { message_id: 'm0', text: 'older' },
+        { message_id: 'm1', text: 'q', agent: 'A' },
+      ],
+    })
+    expect(pending).toHaveBeenCalledWith(null)
   })
 
   it('does not take the caret when it just shows a side chat', () => {
@@ -253,6 +343,7 @@ describe('ChatAside side chat', () => {
     const view = render()
     act(() => button('Discard side chat')?.click())
     expect(ctx.remove).toHaveBeenCalledWith('fork-1')
+    expect(pending).toHaveBeenCalledWith(null)
     expect(view.querySelector('[data-side-chat]')).toBeNull()
   })
 

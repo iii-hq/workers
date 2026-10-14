@@ -245,6 +245,8 @@ interface ComposerProps {
    * chat.
    */
   externalInput?: boolean
+  /** Shown at the top of the card, above attachments: a side chat's quote. */
+  header?: ReactNode
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
   /**
@@ -366,6 +368,7 @@ export function Composer({
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
   externalInput = true,
+  header,
   initialContent,
   initialText,
   onTextChange,
@@ -749,6 +752,8 @@ export function Composer({
             drop to attach
           </div>
         ) : null}
+
+        {header}
 
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-2 border-b border-rule-2 p-3">

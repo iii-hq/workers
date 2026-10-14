@@ -1,6 +1,12 @@
-import { createContext } from 'react'
+import { createContext, type RefObject, useEffect } from 'react'
 import type { IiiClient } from '@/lib/iii-client'
-import type { Conversation, Message } from '@/types/chat'
+import { belongsToEntry } from '@/lib/sessions/entry-mapper'
+import type {
+  Attachment,
+  Conversation,
+  FunctionTriggerMessage,
+  Message,
+} from '@/types/chat'
 
 /**
  * Data behind the chat's side panel: which sessions are side chats, the
@@ -13,13 +19,114 @@ import type { Conversation, Message } from '@/types/chat'
 /** Session metadata key naming the conversation a side chat forked from. */
 export const SIDE_CHAT_KEY = 'side_chat_of'
 
+/** A passage of a main-chat message asked about in the side chat. */
+export interface SideChatQuote {
+  /** The main-chat message it came from (the transcript row id). */
+  messageId: string
+  text: string
+  /** Who wrote the message, for the card's label. */
+  agent?: string
+}
+
 /**
- * Set by a chat that has a side panel: asks about `text` in its side chat.
- * Messages read it to offer "Ask in side chat"; absent, they offer nothing.
+ * Set by a chat that has a side panel: asks about a quote in its side chat,
+ * and names the messages the side chat holds quotes of. Messages read it to
+ * offer "Ask in side chat" and to mark themselves; absent, they do neither.
  */
-export const AskInSideChatContext = createContext<
-  ((text: string) => void) | null
->(null)
+export const AskInSideChatContext = createContext<{
+  ask: (quote: SideChatQuote) => void
+  quotedIds: ReadonlySet<string>
+} | null>(null)
+
+/** Set by a side chat: the quotes it sent, and the way back to their source. */
+export const SideChatQuotesContext = createContext<{
+  quotes: readonly SideChatQuote[]
+  jump: (quote: SideChatQuote) => void
+} | null>(null)
+
+/** Session metadata key holding the quotes a side chat sent. */
+export const SIDE_CHAT_QUOTES_KEY = 'side_chat_quotes'
+const QUOTES_KEPT = 20
+
+/** The quotes recorded on a side chat (malformed entries are skipped). */
+export function sideChatQuotes(
+  conversation: Pick<Conversation, 'sessionMetadata'> | null | undefined,
+): SideChatQuote[] {
+  const raw = conversation?.sessionMetadata?.[SIDE_CHAT_QUOTES_KEY]
+  if (!Array.isArray(raw)) return []
+  const quotes: SideChatQuote[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const { message_id, text, agent } = entry as Record<string, unknown>
+    if (typeof message_id !== 'string' || typeof text !== 'string') continue
+    quotes.push({
+      messageId: message_id,
+      text,
+      ...(typeof agent === 'string' ? { agent } : {}),
+    })
+  }
+  return quotes
+}
+
+/** The metadata value after recording `quote`, newest last, bounded. */
+export function withSideChatQuote(
+  quotes: readonly SideChatQuote[],
+  quote: SideChatQuote,
+): Record<string, string>[] {
+  return [...quotes, quote].slice(-QUOTES_KEPT).map((q) => ({
+    message_id: q.messageId,
+    text: q.text,
+    ...(q.agent ? { agent: q.agent } : {}),
+  }))
+}
+
+/**
+ * A user message the side chat sent with a quote: the quote (its card) and
+ * the question under it. Matches the exact blockquote `sideChatQuote` built.
+ */
+export function splitQuotedMessage(
+  content: string,
+  quotes: readonly SideChatQuote[],
+): { quote: SideChatQuote; rest: string } | null {
+  for (let index = quotes.length - 1; index >= 0; index -= 1) {
+    const prefix = sideChatQuote(quotes[index].text)
+    if (content.startsWith(prefix)) {
+      return { quote: quotes[index], rest: content.slice(prefix.length) }
+    }
+  }
+  return null
+}
+
+/**
+ * The range of `text` inside `root`'s rendered text, ignoring whitespace (a
+ * selection joins blocks with newlines the DOM does not have), or null.
+ */
+export function findTextRange(root: Node, text: string): Range | null {
+  const wanted = text.replace(/\s+/g, '')
+  if (!wanted) return null
+  const chars: string[] = []
+  const at: Array<{ node: Text; offset: number }> = []
+  const walker = root.ownerDocument?.createTreeWalker(
+    root,
+    NodeFilter.SHOW_TEXT,
+  )
+  for (let node = walker?.nextNode(); node; node = walker?.nextNode()) {
+    const value = (node as Text).data
+    for (let offset = 0; offset < value.length; offset += 1) {
+      if (/\s/.test(value[offset])) continue
+      chars.push(value[offset])
+      at.push({ node: node as Text, offset })
+    }
+  }
+  const start = chars.join('').indexOf(wanted)
+  if (start < 0 || !root.ownerDocument) return null
+  const first = at[start]
+  const last = at[start + wanted.length - 1]
+  const range = root.ownerDocument.createRange()
+  range.setStart(first.node, first.offset)
+  range.setEnd(last.node, last.offset + 1)
+  return range
+}
 
 export function sideChatOf(
   conversation: Pick<Conversation, 'sessionMetadata'>,
@@ -52,15 +159,46 @@ const SPAWN_LINK_KEYS = [
   'root_session_id',
 ]
 
-/** The fork's metadata as a side chat of `mainId`: tagged, unlinked from any parent. */
+/** Session metadata key naming the fork's copy of the entry it was cut at. */
+export const SIDE_CHAT_FROM_KEY = 'side_chat_from'
+
+/**
+ * The fork's metadata as a side chat of `mainId`: tagged, unlinked from any
+ * parent, and anchored on `fromEntry`, its last copied entry.
+ */
 export function sideChatMetadata(
   source: Record<string, unknown> | undefined,
   mainId: string,
+  fromEntry?: string,
 ): Record<string, unknown> {
   const metadata: Record<string, unknown> = { ...(source ?? {}) }
   for (const key of SPAWN_LINK_KEYS) delete metadata[key]
   metadata[SIDE_CHAT_KEY] = mainId
+  if (fromEntry) metadata[SIDE_CHAT_FROM_KEY] = fromEntry
+  else delete metadata[SIDE_CHAT_FROM_KEY]
   return metadata
+}
+
+export function sideChatFrom(
+  conversation: Pick<Conversation, 'sessionMetadata'> | null | undefined,
+): string | null {
+  const value = conversation?.sessionMetadata?.[SIDE_CHAT_FROM_KEY]
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+/**
+ * Where to cut a side chat: the last user or assistant entry of a
+ * `session::messages-tail` page. Its copy is the fork's last entry, and a
+ * spoken row always renders, so the side chat can anchor on it.
+ */
+export function lastSpokenEntry(
+  items: readonly { entry_id: string; message?: { role?: string } }[],
+): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const role = items[index].message?.role
+    if (role === 'user' || role === 'assistant') return items[index].entry_id
+  }
+  return null
 }
 
 /** Conversations to list: no side chats, and nothing spawned inside one. */
@@ -81,6 +219,52 @@ export function hideSideChats<T extends Conversation>(
   return conversations.filter((c) => !hidden(c))
 }
 
+const QUOTE_HIGHLIGHT = 'side-chat-quote'
+
+/**
+ * Mark each quoted passage inside its message row under `root`, through the
+ * CSS Custom Highlight API: no DOM is touched, so React and the markdown
+ * renderer never see it. Without the API the message's own marker remains.
+ * `version` re-runs the search when the transcript re-renders.
+ */
+export function useQuoteHighlights(
+  rootRef: RefObject<HTMLElement | null>,
+  quotes: readonly SideChatQuote[],
+  version: unknown,
+): void {
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version is a re-run token for a re-rendered transcript
+  useEffect(() => {
+    const root = rootRef.current
+    if (
+      !root ||
+      quotes.length === 0 ||
+      typeof Highlight === 'undefined' ||
+      typeof CSS === 'undefined' ||
+      !CSS.highlights
+    ) {
+      return
+    }
+    let highlight = CSS.highlights.get(QUOTE_HIGHLIGHT)
+    if (!highlight) {
+      highlight = new Highlight()
+      CSS.highlights.set(QUOTE_HIGHLIGHT, highlight)
+    }
+    const added: Range[] = []
+    for (const quote of quotes) {
+      const row = root.querySelector(
+        `[data-message-row="${CSS.escape(quote.messageId)}"]`,
+      )
+      const range = row ? findTextRange(row, quote.text) : null
+      if (!range) continue
+      highlight.add(range)
+      added.push(range)
+    }
+    return () => {
+      for (const range of added) highlight?.delete(range)
+    }
+  }, [rootRef, quotes, version])
+}
+
 /** The newest side chat still attached to `mainId`. */
 export function findSideChat(
   conversations: readonly Conversation[],
@@ -97,15 +281,26 @@ export function findSideChat(
 }
 
 /**
- * A fork copies the history with its timestamps: what came after is the side
- * chat's own. ponytail: `since` is the server's clock and a not-yet-echoed
- * message carries the browser's; skew only misfiles a message sent within
- * that skew of the fork. Anchor on the copied leaf entry if that ever bites.
+ * The side chat's own messages: what comes after `fromEntry`, the copy of
+ * the entry the fork was cut at. Copied history renders before it, notes and
+ * markers included: a transcript page gives those no time of their own (they
+ * are stamped at load), so a time filter alone lets them through. With no
+ * anchor in the loaded window (the side chat outgrew it, or a fork from
+ * before anchors), fall back to the fork time, which every echoed message
+ * carries.
  */
 export function sideChatMessages(
   messages: readonly Message[],
   since: number,
+  fromEntry?: string | null,
 ): Message[] {
+  if (fromEntry) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (belongsToEntry(messages[index].id, fromEntry)) {
+        return messages.slice(index + 1)
+      }
+    }
+  }
   return messages.filter((message) => message.createdAt >= since)
 }
 
@@ -309,8 +504,9 @@ export async function readGitSummary(
       timeout_ms: 15_000,
     })
   const [status, diff, remote] = await Promise.allSettled([
-    // `normal` counts an untracked folder once instead of every file in it.
-    git(['status', '--porcelain=v1', '--branch', '--untracked-files=normal']),
+    // Files one by one, as the IDE's Source control (where the row leads)
+    // counts them.
+    git(['status', '--porcelain=v1', '--branch', '--untracked-files=all']),
     git(['diff', 'HEAD', '--numstat']),
     git(['remote', 'get-url', 'origin']),
   ])
@@ -345,7 +541,7 @@ export interface PullRequestRow extends PullRequestRef {
   mentioned: boolean
 }
 
-interface GhPullRequest {
+export interface GhPullRequest {
   number: number
   title: string
   url: string
@@ -381,12 +577,102 @@ export function summarizeChecks(
 
 const MENTIONED_PR_LIMIT = 3
 
+/** Where pull requests are read: the `github` worker, or `gh` in the folder. */
+export interface PullRequestSource {
+  list(repo: string, branch: string): Promise<GhPullRequest[] | null>
+  view(repo: string, number: number): Promise<GhPullRequest | null>
+  checks(repo: string, number: number): Promise<{ bucket?: string }[] | null>
+}
+
+/** Pull requests through the optional `github` worker. */
+export function githubWorkerSource(trigger: Trigger): PullRequestSource {
+  const value = async <T>(fn: string, payload: Record<string, unknown>) =>
+    (await trigger<{ value?: T }>(fn, payload).catch(() => null))?.value ?? null
+  return {
+    // `head:` matches by prefix and across forks; the caller filters.
+    list: (repo, branch) =>
+      value<GhPullRequest[]>('github::pr::list', {
+        repo,
+        state: 'all',
+        search: `head:${branch}`,
+        limit: 5,
+      }),
+    view: (repo, number) =>
+      value<GhPullRequest>('github::pr::view', { repo, number }),
+    checks: (repo, number) =>
+      value<{ bucket?: string }[]>('github::pr::checks', { repo, number }),
+  }
+}
+
+const PR_FIELDS = 'number,title,url,state,isDraft,headRefName'
+
 /**
- * The branch's pull requests (`head:<branch>` search) and up to three the
- * conversation names, open ones first, each with its checks while open.
+ * Pull requests through the `gh` CLI in the folder, over `shell::exec`, for a
+ * stack without the `github` worker. Read-only commands; `gh` keeps its own
+ * login. A failure (no `gh`, no login) reads as no pull requests.
+ */
+export function ghCliSource(trigger: Trigger, cwd: string): PullRequestSource {
+  const gh = async <T>(args: string[]): Promise<T | null> => {
+    const out = await trigger<ExecResult>('shell::exec', {
+      command: 'gh',
+      args,
+      cwd,
+      timeout_ms: 20_000,
+    }).catch(() => null)
+    // `gh pr checks` exits 1 or 8 on failing or pending checks: the JSON on
+    // stdout is the answer either way.
+    if (!out?.stdout?.trim()) return null
+    try {
+      return JSON.parse(out.stdout) as T
+    } catch {
+      return null
+    }
+  }
+  return {
+    list: (repo, branch) =>
+      gh<GhPullRequest[]>([
+        'pr',
+        'list',
+        '-R',
+        repo,
+        '--head',
+        branch,
+        '--state',
+        'all',
+        '--limit',
+        '5',
+        '--json',
+        PR_FIELDS,
+      ]),
+    view: (repo, number) =>
+      gh<GhPullRequest>([
+        'pr',
+        'view',
+        String(number),
+        '-R',
+        repo,
+        '--json',
+        PR_FIELDS,
+      ]),
+    checks: (repo, number) =>
+      gh<{ bucket?: string }[]>([
+        'pr',
+        'checks',
+        String(number),
+        '-R',
+        repo,
+        '--json',
+        'bucket',
+      ]),
+  }
+}
+
+/**
+ * The branch's pull requests and up to three the conversation names, open
+ * ones first, each with its checks while open.
  */
 export async function readPullRequests(
-  trigger: Trigger,
+  source: PullRequestSource,
   opts: {
     repo: string | null
     branch: string | null
@@ -409,17 +695,9 @@ export async function readPullRequests(
   }
   const branch = opts.branch
   if (opts.repo && branch && !DEFAULT_BRANCHES.has(branch)) {
-    const listed = await trigger<{ value?: GhPullRequest[] }>(
-      'github::pr::list',
-      {
-        repo: opts.repo,
-        state: 'all',
-        search: `head:${branch}`,
-        limit: 5,
-      },
-    ).catch(() => null)
-    // `head:` matches by prefix; keep the branch's own PRs only.
-    for (const pr of listed?.value ?? []) {
+    const listed = await source.list(opts.repo, branch)
+    // Keep the branch's own PRs only.
+    for (const pr of listed ?? []) {
       if (pr.headRefName === undefined || pr.headRefName === branch) {
         add(opts.repo, pr, false)
       }
@@ -432,30 +710,94 @@ export async function readPullRequests(
     )
     .slice(0, MENTIONED_PR_LIMIT)
   const viewed = await Promise.all(
-    mentioned.map((ref) =>
-      trigger<{ value?: GhPullRequest }>('github::pr::view', {
-        repo: ref.repo,
-        number: ref.number,
-      }).catch(() => null),
-    ),
+    mentioned.map((ref) => source.view(ref.repo, ref.number)),
   )
   viewed.forEach((view, index) => {
-    if (view?.value) add(mentioned[index].repo, view.value, true)
+    if (view) add(mentioned[index].repo, view, true)
   })
   await Promise.all(
     rows
       .filter((row) => row.state === 'open' || row.state === 'draft')
       .map(async (row) => {
-        const checks = await trigger<{ value?: { bucket?: string }[] }>(
-          'github::pr::checks',
-          { repo: row.repo, number: row.number },
-        ).catch(() => null)
-        row.checks = Array.isArray(checks?.value)
-          ? summarizeChecks(checks.value)
-          : null
+        const checks = await source.checks(row.repo, row.number)
+        row.checks = Array.isArray(checks) ? summarizeChecks(checks) : null
       }),
   )
   const rank = (row: PullRequestRow) =>
     row.state === 'open' || row.state === 'draft' ? 0 : 1
   return rows.sort((a, b) => rank(a) - rank(b))
+}
+
+/** Images found in one message, cached by message like its links. */
+const imagesByMessage = new WeakMap<Message, Attachment[]>()
+const IMAGE_SCAN_NODES = 400
+
+/**
+ * Image blocks a tool returned (`{ type: 'image', data, mime }`, any
+ * `mimeType`/`media_type` spelling) and `data:image/…` strings, as
+ * attachments the viewer can show. A bounded walk: outputs can be large.
+ */
+function outputImages(message: FunctionTriggerMessage): Attachment[] {
+  const found: Attachment[] = []
+  let budget = IMAGE_SCAN_NODES
+  const push = (dataUrl: string, type: string) =>
+    found.push({
+      id: `${message.id}:image-${found.length + 1}`,
+      name: `${message.functionId} image ${found.length + 1}`,
+      size: Math.floor(dataUrl.length * 0.75),
+      type,
+      dataUrl,
+    })
+  const walk = (value: unknown, depth: number) => {
+    if (budget-- <= 0 || depth > 6 || value === null) return
+    if (typeof value === 'string') {
+      const match = /^data:(image\/[\w.+-]+);base64,/.exec(value)
+      if (match) push(value, match[1])
+      return
+    }
+    if (typeof value !== 'object') return
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1)
+      return
+    }
+    const record = value as Record<string, unknown>
+    if (record.type === 'image' && typeof record.data === 'string') {
+      const mime = [record.mime, record.mimeType, record.media_type].find(
+        (candidate): candidate is string => typeof candidate === 'string',
+      )
+      const type = mime ?? 'image/png'
+      push(
+        record.data.startsWith('data:')
+          ? record.data
+          : `data:${type};base64,${record.data}`,
+        type,
+      )
+      return
+    }
+    for (const item of Object.values(record)) walk(item, depth + 1)
+  }
+  walk(message.output, 0)
+  return found
+}
+
+/** Pictures in the conversation, newest first: attached ones and tool output. */
+export function collectChatImages(messages: readonly Message[]): Attachment[] {
+  const images: Attachment[] = []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    let found = imagesByMessage.get(message)
+    if (!found) {
+      found =
+        message.role === 'user'
+          ? (message.attachments ?? []).filter((a) =>
+              a.type.startsWith('image/'),
+            )
+          : message.role === 'function-trigger'
+            ? outputImages(message)
+            : []
+      imagesByMessage.set(message, found)
+    }
+    images.push(...found)
+  }
+  return images
 }
