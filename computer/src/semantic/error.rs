@@ -179,9 +179,9 @@ pub fn map_act_error(e: &X, action: &str, advertised: bool) -> SemanticError {
     }
 }
 
-/// Classify a failed read (snapshot or find). `rooted` is whether the read
-/// started at a `root_ref`: only then does `ElementStale` mean the caller's
-/// ref is gone.
+/// Classify a failed read (snapshot or find). `rooted` is whether the element
+/// that vanished is the read's own `root_ref` root: only then does
+/// `ElementStale` mean the caller's ref is gone.
 pub fn map_read_error(e: &X, rooted: bool) -> SemanticError {
     match e {
         X::PermissionDenied { instructions } => SemanticError::new(
