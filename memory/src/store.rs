@@ -371,14 +371,23 @@ impl Bank {
         })
     }
 
-    /// Persist one memory's embedding (sidecar append + RAM). Best-effort
-    /// derived data: failures cost a re-embed, never memory integrity.
-    pub async fn set_vector(&self, id: &str, model: &str, v: Vec<f32>) -> Result<(), MemoryError> {
+    /// Persist one memory's embedding of `embedded_text` (sidecar append +
+    /// RAM); false when it was discarded. Best-effort derived data: failures
+    /// cost a re-embed, never memory integrity.
+    pub async fn set_vector(
+        &self,
+        id: &str,
+        model: &str,
+        embedded_text: &str,
+        v: Vec<f32>,
+    ) -> Result<bool, MemoryError> {
         let mut inner = self.inner.write().await;
         let revision = match inner.memories.get(id) {
-            Some(m) => m.revision,
-            // The record vanished between embed and store; nothing to attach.
-            None => return Ok(()),
+            Some(m) if m.text == embedded_text => m.revision,
+            // The record vanished, or its text was edited while the embed was
+            // in flight: this vector is of text the record no longer has, and
+            // the record stays listed by `unembedded` for the new text.
+            _ => return Ok(false),
         };
         let line = serde_json::to_string(&VectorRecord {
             id: id.to_string(),
@@ -394,7 +403,7 @@ impl Bank {
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         inner.vectors.insert(id.to_string(), (model.to_string(), v));
-        Ok(())
+        Ok(true)
     }
 
     /// Live memories that have no embedding yet (backfill work list).
@@ -884,7 +893,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let mut m = memory("the port is 3000");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "test-model", vec![0.1, 0.2])
+        bank.set_vector(&m.id, "test-model", &m.text, vec![0.1, 0.2])
             .await
             .unwrap();
         assert_eq!(bank.vector_count().await, 1);
@@ -905,7 +914,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let mut m = memory("stable memory");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "test-model", vec![0.5])
+        bank.set_vector(&m.id, "test-model", &m.text, vec![0.5])
             .await
             .unwrap();
         // Bump the record AFTER the vector was written.
@@ -929,7 +938,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let m = memory("model tracked");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "old-model", vec![0.5])
+        bank.set_vector(&m.id, "old-model", &m.text, vec![0.5])
             .await
             .unwrap();
 
@@ -950,7 +959,9 @@ mod tests {
         bank.commit(fresh.clone()).await.unwrap();
         bank.commit(old.clone()).await.unwrap();
         for m in [&fresh, &old] {
-            bank.set_vector(&m.id, "m", vec![1.0, 0.0]).await.unwrap();
+            bank.set_vector(&m.id, "m", &m.text, vec![1.0, 0.0])
+                .await
+                .unwrap();
         }
         // No lexical overlap: the identical semantic match is the only
         // relevance, so recency alone must separate the two.
@@ -1017,12 +1028,16 @@ mod tests {
         for m in [&near, &mid, &far, &other] {
             bank.commit(m.clone()).await.unwrap();
         }
-        bank.set_vector(&near.id, "m", vec![1.0, 0.0])
+        bank.set_vector(&near.id, "m", &near.text, vec![1.0, 0.0])
             .await
             .unwrap();
-        bank.set_vector(&mid.id, "m", vec![0.6, 0.8]).await.unwrap();
-        bank.set_vector(&far.id, "m", vec![0.0, 1.0]).await.unwrap();
-        bank.set_vector(&other.id, "x", vec![1.0, 0.0])
+        bank.set_vector(&mid.id, "m", &mid.text, vec![0.6, 0.8])
+            .await
+            .unwrap();
+        bank.set_vector(&far.id, "m", &far.text, vec![0.0, 1.0])
+            .await
+            .unwrap();
+        bank.set_vector(&other.id, "x", &other.text, vec![1.0, 0.0])
             .await
             .unwrap();
 
@@ -1077,7 +1092,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let m = memory("alpha beta");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "model-a", vec![1.0, 0.0])
+        bank.set_vector(&m.id, "model-a", &m.text, vec![1.0, 0.0])
             .await
             .unwrap();
         let q = [1.0, 0.0];

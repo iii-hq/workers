@@ -133,11 +133,13 @@ where
             break;
         };
         for (memory, v) in pending.iter().zip(vectors) {
-            if let Err(e) = bank.set_vector(&memory.id, model, v).await {
-                tracing::warn!(bank = %bank.name, error = %e, "vector write failed");
-                return total;
+            match bank.set_vector(&memory.id, model, &memory.text, v).await {
+                Ok(stored) => total += usize::from(stored),
+                Err(e) => {
+                    tracing::warn!(bank = %bank.name, error = %e, "vector write failed");
+                    return total;
+                }
             }
-            total += 1;
         }
     }
     total
@@ -237,6 +239,40 @@ mod tests {
         );
         assert_eq!(a + b, 1);
         assert_eq!(embedded.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_edit_during_the_embed_discards_the_old_texts_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-race").await;
+        let saved = memory("user lives in lisbon");
+        bank.commit(saved.clone()).await.unwrap();
+        let mut edited = saved.clone();
+        edited.text = "user lives in porto".into();
+        edited.revision += 1;
+        let edit_pending = std::sync::atomic::AtomicBool::new(true);
+        // One axis per city, so the stored vector tells which text it embeds.
+        // The edit lands while the provider is still embedding "lisbon".
+        let embed = |texts: Vec<String>| {
+            let edit = edit_pending
+                .swap(false, Ordering::SeqCst)
+                .then(|| (bank.clone(), edited.clone()));
+            async move {
+                if let Some((bank, edited)) = edit {
+                    bank.commit(edited).await.unwrap();
+                }
+                let axis = |t: &String| match t.contains("porto") {
+                    true => vec![0.0, 1.0],
+                    false => vec![1.0, 0.0],
+                };
+                Some(texts.iter().map(axis).collect())
+            }
+        };
+
+        // The stale "lisbon" vector is discarded; the next round embeds porto.
+        assert_eq!(backfill_pass(&bank, "m", embed).await, 1);
+        assert!(bank.semantic(&[1.0, 0.0], "m", 5, false).await.is_empty());
+        assert_eq!(bank.semantic(&[0.0, 1.0], "m", 5, false).await.len(), 1);
     }
 
     #[tokio::test]
