@@ -92,6 +92,15 @@ iii trigger kanban::board::get --json '{"statuses":["todo","in_progress","in_rev
 iii trigger kanban::ticket::list --json '{"status":"done","updated_since":"2026-09-10T00:00:00.000Z","compact":true}'
 ```
 
+The writes (`kanban::ticket::create`, `kanban::ticket::update`,
+`kanban::ticket::move`, `kanban::comment::create`) return the whole ticket,
+comments and activity included. An agent that writes in a loop passes
+`"compact": true` to get back only the compact row instead:
+
+```bash
+iii trigger kanban::ticket::move --json '{"id":"KAN-1","status":"in_review","actor":"backend-engineer","compact":true}'
+```
+
 `kanban::ticket::links` returns the tickets a ticket mentions and the
 tickets that mention it, found by key (`KAN-12`) in titles, descriptions and
 comments.

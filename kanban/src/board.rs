@@ -118,16 +118,20 @@ pub enum TicketRow {
     Brief(TicketBrief),
 }
 
+pub fn brief(ticket: &Ticket) -> TicketBrief {
+    TicketBrief {
+        key: ticket.key.clone(),
+        title: ticket.title.clone(),
+        status: ticket.status.clone(),
+        priority: ticket.priority.clone(),
+        assignee: ticket.assignee.clone(),
+        comment_count: ticket.comments.len() as u64,
+    }
+}
+
 pub fn row(ticket: &Ticket, compact: bool) -> TicketRow {
     if compact {
-        TicketRow::Brief(TicketBrief {
-            key: ticket.key.clone(),
-            title: ticket.title.clone(),
-            status: ticket.status.clone(),
-            priority: ticket.priority.clone(),
-            assignee: ticket.assignee.clone(),
-            comment_count: ticket.comments.len() as u64,
-        })
+        TicketRow::Brief(brief(ticket))
     } else {
         TicketRow::Summary(summarize(ticket))
     }

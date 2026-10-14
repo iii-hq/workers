@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::agents::{self, AgentList};
 use crate::board::{
     self, ActivityFilter, BoardContext, CommentFilter, CreateCommentInput, CreateTicketInput,
-    TicketFilter, TicketRow, UpdatePatch, row,
+    TicketBrief, TicketFilter, TicketRow, UpdatePatch, row,
 };
 use crate::config::KanbanConfig;
 use crate::config::{CONFIG_ID, Column};
@@ -97,6 +97,9 @@ pub struct TicketCreateInput {
     /// Who is making the change. Defaults to `user`.
     #[serde(default)]
     pub actor: Option<String>,
+    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -161,6 +164,9 @@ pub struct TicketUpdateInput {
     pub remove_labels: Option<Vec<String>>,
     #[serde(default)]
     pub actor: Option<String>,
+    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -174,6 +180,9 @@ pub struct TicketMoveInput {
     pub index: Option<u64>,
     #[serde(default)]
     pub actor: Option<String>,
+    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -196,6 +205,9 @@ pub struct CommentCreateInput {
     /// Agent profile id, or `user`. Defaults to `user`.
     #[serde(default)]
     pub author: Option<String>,
+    /// Return the ticket as its compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    #[serde(default)]
+    pub compact: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -291,10 +303,34 @@ pub struct TicketLinks {
     pub mentioned_by: Vec<TicketRow>,
 }
 
+/// What a ticket write returns: the full ticket, or its compact row when the
+/// request asked for `compact`.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum TicketWritten {
+    Full(Box<Ticket>),
+    Brief(TicketBrief),
+}
+
+pub fn written(ticket: Ticket, compact: bool) -> TicketWritten {
+    if compact {
+        TicketWritten::Brief(board::brief(&ticket))
+    } else {
+        TicketWritten::Full(Box::new(ticket))
+    }
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CommentCreated {
     pub comment: Comment,
-    pub ticket: Ticket,
+    pub ticket: TicketWritten,
+}
+
+pub fn comment_created(comment: Comment, ticket: Ticket, compact: bool) -> CommentCreated {
+    CommentCreated {
+        comment,
+        ticket: written(ticket, compact),
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -470,7 +506,7 @@ async fn board_get(ctx: Arc<Ctx>, input: BoardGetInput) -> Result<BoardView, Err
     Ok(board_view(&board, &config, &input))
 }
 
-async fn ticket_create(ctx: Arc<Ctx>, input: TicketCreateInput) -> Result<Ticket, Error> {
+async fn ticket_create(ctx: Arc<Ctx>, input: TicketCreateInput) -> Result<TicketWritten, Error> {
     let create = CreateTicketInput {
         title: input.title,
         description: input.description,
@@ -489,7 +525,7 @@ async fn ticket_create(ctx: Arc<Ctx>, input: TicketCreateInput) -> Result<Ticket
         })
     })
     .await?;
-    Ok(outcome.result)
+    Ok(written(outcome.result, input.compact))
 }
 
 async fn ticket_get(ctx: Arc<Ctx>, input: TicketGetInput) -> Result<Ticket, Error> {
@@ -535,7 +571,7 @@ async fn ticket_links(ctx: Arc<Ctx>, input: TicketLinksInput) -> Result<TicketLi
     })
 }
 
-async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<Ticket, Error> {
+async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<TicketWritten, Error> {
     let patch = UpdatePatch {
         title: input.title,
         description: input.description,
@@ -559,10 +595,13 @@ async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<Ticket
         Ok(ticket_outcome(before, updated.map(|result| result.ticket)))
     })
     .await?;
-    outcome.result.ok_or_else(|| not_found(&input.id))
+    outcome
+        .result
+        .map(|ticket| written(ticket, input.compact))
+        .ok_or_else(|| not_found(&input.id))
 }
 
-async fn ticket_move(ctx: Arc<Ctx>, input: TicketMoveInput) -> Result<Ticket, Error> {
+async fn ticket_move(ctx: Arc<Ctx>, input: TicketMoveInput) -> Result<TicketWritten, Error> {
     let outcome = apply(&ctx, "ticket.moved", |board, context, at| {
         let before = board::find_ticket(board, &input.id).cloned();
         let moved = board::move_ticket(
@@ -577,7 +616,10 @@ async fn ticket_move(ctx: Arc<Ctx>, input: TicketMoveInput) -> Result<Ticket, Er
         Ok(ticket_outcome(before, moved))
     })
     .await?;
-    outcome.result.ok_or_else(|| not_found(&input.id))
+    outcome
+        .result
+        .map(|ticket| written(ticket, input.compact))
+        .ok_or_else(|| not_found(&input.id))
 }
 
 fn actor_of(input: &TicketRefInput) -> String {
@@ -613,6 +655,7 @@ async fn ticket_restore(ctx: Arc<Ctx>, input: TicketRefInput) -> Result<Ticket, 
 }
 
 async fn comment_create(ctx: Arc<Ctx>, input: CommentCreateInput) -> Result<CommentCreated, Error> {
+    let compact = input.compact;
     let create = CreateCommentInput {
         ticket_id: input.ticket_id.clone(),
         body: input.body,
@@ -622,10 +665,11 @@ async fn comment_create(ctx: Arc<Ctx>, input: CommentCreateInput) -> Result<Comm
     let outcome = apply(&ctx, "comment.created", |board, _, at| {
         Ok(match board::create_comment(board, &create, at)? {
             Some(result) => Outcome {
-                result: Some(CommentCreated {
-                    comment: result.comment.clone(),
-                    ticket: result.ticket.clone(),
-                }),
+                result: Some(comment_created(
+                    result.comment.clone(),
+                    result.ticket.clone(),
+                    compact,
+                )),
                 ticket: Some(result.ticket),
                 comment: Some(result.comment),
             },
@@ -759,7 +803,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::create",
-        "Create a ticket on the board and return it.",
+        "Create a ticket on the board and return it; pass compact to get back only its compact row (key, title, status, priority, assignee, comment_count).",
         ticket_create,
     );
     register(
@@ -783,13 +827,13 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::update",
-        "Update a ticket field (title, description, status, priority, assignee, labels) and return the ticket. To change labels pass add_labels / remove_labels (they edit the current labels, so concurrent edits do not overwrite each other); labels replaces the whole set. A patch that changes nothing records and fires nothing.",
+        "Update a ticket field (title, description, status, priority, assignee, labels) and return the ticket (compact returns only its compact row). To change labels pass add_labels / remove_labels (they edit the current labels, so concurrent edits do not overwrite each other); labels replaces the whole set. A patch that changes nothing records and fires nothing.",
         ticket_update,
     );
     register(
         ctx,
         "kanban::ticket::move",
-        "Move a ticket to a column (and position inside it); used by the board drag and drop. Moving a ticket to where it already is changes nothing; a deleted ticket cannot be moved.",
+        "Move a ticket to a column (and position inside it); used by the board drag and drop. Moving a ticket to where it already is changes nothing; a deleted ticket cannot be moved. Returns the ticket, or only its compact row with compact.",
         ticket_move,
     );
     register(
@@ -807,7 +851,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::comment::create",
-        "Comment on a ticket, or reply to a comment by passing parent_id. Returns the new comment and the ticket.",
+        "Comment on a ticket, or reply to a comment by passing parent_id. Returns the new comment and the ticket (only its compact row with compact).",
         comment_create,
     );
     register(
