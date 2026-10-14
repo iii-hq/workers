@@ -385,16 +385,18 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         SCREENCAST_START_ID,
         RegisterFunction::new_async(move |req: frame::ScreencastStartInput| {
             let sessions = sessions.clone();
-            async move {
-                let session = get_session(&sessions, &req.session_id).await?;
-                require_coordinates(&session)?;
-                session.start_screencast().await;
-                Ok::<_, Error>(frame::AckOutput { ok: true })
-            }
+            async move { start_screencast(&get_session(&sessions, &req.session_id).await?).await }
         })
         .description(SCREENCAST_START_DESC)
         .metadata(serde_json::json!({ "internal": true })),
     );
+}
+
+/// A screencast is a stream of screenshots: refused where they are.
+async fn start_screencast(session: &Arc<Session>) -> Result<frame::AckOutput, Error> {
+    require_coordinates(session)?;
+    session.start_screencast().await;
+    Ok(frame::AckOutput { ok: true })
 }
 
 fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
@@ -473,7 +475,9 @@ mod tests {
         let mut errors = vec![
             capture(&s).await.unwrap_err(),
             require_coordinates(&s).unwrap_err(),
+            start_screencast(&s).await.unwrap_err(),
         ];
+        assert!(!s.screencast_active(), "a refused screencast never starts");
         // The defaults capture: still refused, never silently tree-only.
         for v in [
             json!({"session_id":"c1"}),
