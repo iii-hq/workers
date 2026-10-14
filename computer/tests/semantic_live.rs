@@ -108,10 +108,22 @@ impl Fixture {
             .collect()
     }
 
-    fn actions(&self) -> Vec<String> {
+    /// Every accessibility action request the fixture received, Focus included.
+    fn requests(&self) -> Vec<String> {
         self.lines()
             .into_iter()
             .filter(|l| l.starts_with("action "))
+            .collect()
+    }
+
+    /// The requests that are an act's effect: all but Focus. UI Automation
+    /// calls `IRawElementProviderFragment::SetFocus` on the element before
+    /// Invoke/Toggle/SetValue/Select, and AccessKit logs that as its own
+    /// Focus request; AX and AT-SPI send none.
+    fn effects(&self) -> Vec<String> {
+        self.requests()
+            .into_iter()
+            .filter(|l| !is_focus(l))
             .collect()
     }
 
@@ -217,12 +229,30 @@ async fn wait_matches(s: &SemanticSession, pid: u32, selector: &str, n: usize) {
     }
 }
 
-/// Exactly `n` actions logged: wait for the n-th, then make sure no extra
-/// one follows.
+/// `action <target> <Action> <data>`: the request's target element.
+fn target(request: &str) -> &str {
+    request.split(' ').nth(1).unwrap_or_default()
+}
+
+fn is_focus(request: &str) -> bool {
+    request.split(' ').nth(2) == Some("Focus")
+}
+
+/// Exactly `n` effect requests logged: wait for the n-th, then make sure no
+/// extra one follows. A Focus is allowed only directly before an effect on the
+/// same element, so a doubled Focus or a Focus without an act still fails.
 async fn exactly_actions(f: &Fixture, n: usize) {
-    wait_for(&format!("{n} fixture actions"), || f.actions().len() >= n).await;
+    wait_for(&format!("{n} fixture actions"), || f.effects().len() >= n).await;
     settle();
-    assert_eq!(f.actions().len(), n, "{:?}", f.actions());
+    let all = f.requests();
+    assert_eq!(f.effects().len(), n, "{all:?}");
+    for (i, r) in all.iter().enumerate().filter(|(_, r)| is_focus(r)) {
+        assert!(
+            all.get(i + 1)
+                .is_some_and(|next| !is_focus(next) && target(next) == target(r)),
+            "Focus without its act: {all:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -237,9 +267,9 @@ async fn invoke_dispatches_exactly_once() {
         .unwrap();
     exactly_actions(&f, 1).await;
     assert!(
-        f.actions()[0].starts_with("action Salvar Click"),
+        f.effects()[0].starts_with("action Salvar Click"),
         "{:?}",
-        f.actions()
+        f.requests()
     );
     wait_matches(&s, f.pid(), "[name^='Status: salvo 1']", 1).await;
 }
@@ -277,7 +307,7 @@ async fn toggle_and_select_change_observed_state() {
         .await
         .unwrap();
     // Counts, not names: how UIA/AX toggle and select map onto AccessKit
-    // actions is the platform's business; one request per act is ours.
+    // actions is the platform's business; one effect request per act is ours.
     exactly_actions(&f, 1).await;
     wait_matches(&s, f.pid(), "check_box[name='Ativo'][checked='on']", 1).await;
     let out = find(&s, f.pid(), "[name='Dois']").await;
@@ -296,7 +326,7 @@ async fn duplicates_are_listed_never_picked() {
     let out = find(&s, f.pid(), "button[name='OK']").await;
     assert_eq!(out.matches, 2, "{}", out.text);
     settle();
-    assert!(f.actions().is_empty());
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
 }
 
 #[tokio::test]
@@ -311,7 +341,7 @@ async fn a_disabled_button_is_refused_without_effect() {
         .unwrap_err();
     assert_eq!(err.code, Code::NotSupported);
     settle();
-    assert!(f.actions().is_empty());
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
     assert_eq!(
         find(&s, f.pid(), "[name^='Status: salvo 0']").await.matches,
         1
@@ -330,10 +360,11 @@ async fn a_removed_element_is_a_stale_ref() {
     // Wait on the log, not on a find: a find with matches would replace the
     // snapshot and make the next act stale for the wrong reason.
     exactly_actions(&f, 1).await;
+    let before = f.requests();
     let err = s.act(salvar, Verb::Invoke, None).await.unwrap_err();
     assert_eq!(err.code, Code::StaleRef, "{}", err.message);
     settle();
-    assert_eq!(f.actions().len(), 1, "{:?}", f.actions());
+    assert_eq!(f.requests(), before);
 }
 
 #[tokio::test]
@@ -348,7 +379,7 @@ async fn a_replaced_snapshot_is_a_stale_ref() {
         Code::StaleRef
     );
     settle();
-    assert!(f.actions().is_empty());
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
 }
 
 #[tokio::test]
@@ -374,7 +405,7 @@ async fn the_password_value_never_leaves() {
         Code::InvalidSelector
     );
     settle();
-    assert!(f.actions().is_empty());
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
 }
 
 /// Click the centre of the fixture window through the coordinate driver,
