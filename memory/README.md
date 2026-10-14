@@ -38,7 +38,7 @@ All fields hot-reload through the `configuration` worker and are editable in the
 - **Supersede, never delete.** Updates append revisions; deletes append tombstones; trashed banks move to `.trash/`. Any state is recoverable.
 - **Pinning.** A pinned memory ranks higher in recall and is untouchable by every automatic path.
 - **Tags.** Topical labels WITHIN a bank ("iii", "billing") for filtering — organization, not ranking. Set them on save/update, extraction suggests them automatically, and `memory::list`/`memory::recall` take a `tag` filter.
-- **One LLM call per turn, zero at query time.** Extraction runs in the background after a turn completes (ADD-only, content-fingerprinted so redelivery reinforces instead of duplicating). Recall is BM25 + entity match + corroboration + recency, plus a semantic signal when `router::embed` is available: sub-millisecond at this scale.
+- **One LLM call per turn, zero at query time.** Extraction runs in the background after a turn completes (ADD-only, content-fingerprinted so redelivery reinforces instead of duplicating). Recall is BM25 over the query's content words (English/Portuguese stopwords dropped) + entity match + corroboration + recency, plus a semantic signal when `router::embed` is available: sub-millisecond at this scale.
 - **Rules learn from corrections.** Extraction classifies standing instructions (style directives, workflow corrections) separately from memories and appends them to the bank's auto-managed `learned` rule — correcting the agent in chat reaches every later turn (new sessions in the system prompt, running ones as an appended rules update). Hand-authored rules are never touched; dedup by content fingerprint; `rule_learning_enabled` turns it off.
 - **Time-aware.** Extraction reads each message with its own date and writes dated events ("tomorrow", "next Friday") as absolute dates; every injected memory carries its last-updated date, and the block names the day it was recalled.
 - **Honest health.** `memory::doctor` runs a real save→recall→trash roundtrip and reports sibling reachability. `memory::recall` names the retrieval mode it ran. Degradation is explicit, never silent.
@@ -66,7 +66,7 @@ the trigger type registers. On older engines the binds are silently dropped.
 | `memory::bank::create / list / delete` | Banks as first-class named scopes ("blog" vs "coding" vs "personal"); delete moves to `.trash/` |
 | `memory::save` | Explicit save ("remember this"): fingerprinted, reinforces on repeat |
 | `memory::get / list / update / delete / pin` | Memory CRUD; delete tombstones; update bumps a revision in the log |
-| `memory::recall` | The exact scorer the hook uses: preview what a turn would be given; `tag` narrows to one label; `mode: lexical \| semantic` returns one raw arm (plain BM25, or cosine) for callers that fuse arms themselves |
+| `memory::recall` | The exact scorer the hook uses: preview what a turn would be given; `tag` narrows to one label; `mode: lexical \| semantic` returns one raw arm (plain BM25 over the content words, or cosine) for callers that fuse arms themselves |
 | `memory::tags` | Distinct tags across a bank's live memories with counts (the filter source) |
 | `memory::preview` | Full injection dry-run for a hypothetical chat message: rules section (budgets applied), memories post ambient floor and token budget, appended message verbatim — the hook's exact code path |
 | `memory::rule::list / set` | The always-injected markdown rules; empty content removes |
