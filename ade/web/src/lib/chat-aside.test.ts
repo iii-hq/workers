@@ -78,10 +78,10 @@ describe('capRows', () => {
 describe('collectChatLinks', () => {
   it('splits pull requests from other links, newest first, deduped', () => {
     const messages: Message[] = [
-      say('user', 'see https://iii.dev/docs/console.', 1),
+      say('user', 'see https://docs.example.com/console.', 1),
       say(
         'assistant',
-        'Opened https://github.com/iii-hq/workers/pull/1371 and https://iii.dev/docs/console',
+        'Opened https://github.com/iii-hq/workers/pull/1371 and https://docs.example.com/console',
         2,
       ),
       say(
@@ -100,9 +100,9 @@ describe('collectChatLinks', () => {
     ])
     expect(links).toEqual([
       {
-        url: 'https://iii.dev/docs/console',
-        host: 'iii.dev',
-        label: 'docs/console',
+        url: 'https://docs.example.com/console',
+        host: 'docs.example.com',
+        label: 'console',
       },
     ])
   })

@@ -166,7 +166,7 @@ describe('ChatContextPanel', () => {
     const view = await render(
       chat('main', {
         workingDir: '/work/repo',
-        messages: [say('see https://iii.dev/docs')],
+        messages: [say('see https://docs.example.com/guide')],
       }),
     )
     expect(view.querySelectorAll('[role="button"] button')).toHaveLength(0)
