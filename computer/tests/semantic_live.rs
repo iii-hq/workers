@@ -198,19 +198,20 @@ async fn find(s: &SemanticSession, pid: u32, selector: &str) -> computer::semant
     s.snapshot(query(pid, Some(selector)), false).await.unwrap()
 }
 
-/// Retry `find` until it reports `n` matches, for up to 5 s.
+/// Retry the read until it reports `n` matches, for up to 5 s. An `Err` (the
+/// fixture rebuilding after an act can make an element vanish mid-read) counts
+/// as "not yet"; the last outcome goes in the timeout message.
 async fn wait_matches(s: &SemanticSession, pid: u32, selector: &str, n: usize) {
     let start = Instant::now();
     loop {
-        let out = find(s, pid, selector).await;
-        if out.matches == n {
-            return;
-        }
+        let last = match s.snapshot(query(pid, Some(selector)), false).await {
+            Ok(out) if out.matches == n => return,
+            Ok(out) => format!("{} matches, want {n}\n{}", out.matches, out.text),
+            Err(e) => format!("read failed: {e:?}"),
+        };
         assert!(
             start.elapsed() < Duration::from_secs(5),
-            "{selector}: {} matches, want {n}\n{}",
-            out.matches,
-            out.text
+            "{selector}: {last}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
