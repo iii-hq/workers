@@ -38,6 +38,12 @@ mod desktop;
 use desktop as sys;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use desktop::preflight_screen_capture;
+#[cfg(target_os = "linux")]
+mod x11;
+#[cfg(target_os = "linux")]
+use x11 as sys;
+#[cfg(target_os = "linux")]
+pub use x11::{detect, Desktop, NO_DISPLAY, WAYLAND};
 
 pub use sys::list_displays;
 
@@ -324,8 +330,11 @@ impl Driver for NativeHost {
 
     async fn drag(&self, from: (i64, i64), to: (i64, i64), button: &str) -> Result<(), String> {
         let held = button_for(button)?;
-        let (c, f) = self.at(from.0, from.1);
-        let t = to_global(to.0, to.1, self.geom());
+        // One geometry snapshot for both ends: a capture between two loads
+        // would map them through different displays or scales.
+        let g = self.geom();
+        let c = self.conn.clone();
+        let (f, t) = (to_global(from.0, from.1, g), to_global(to.0, to.1, g));
         blocking(move || sys::drag(&c, f, t, held)).await
     }
 

@@ -39,10 +39,9 @@ base64 = "0.22"
 # the platform backends below are the only crates that touch OS APIs.
 xa11y-core = "=0.15.2"
 
-# Native host backend (screen capture + input injection). Only meaningful on a
-# desktop OS, and these pull system libraries (dbus/xcb/xdo) that headless Linux
-# servers and CI do not have, so they are gated to macOS/Windows. Other targets
-# build with the computer-server backend only.
+# Native host backend on macOS/Windows (screen capture + input injection).
+# These pull system libraries on Linux (libxdo, libxkbcommon, pipewire, xcb),
+# so Linux has its own driver below.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 enigo = "0.3"
 xcap = "0.9"
@@ -56,6 +55,14 @@ xa11y-macos = "=0.15.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 xa11y-windows = "=0.15.2"
+
+# Native host on Linux: our own X11 driver (src/driver/native/x11.rs) over
+# pure-Rust x11rb — GetImage capture, RandR monitors, XTest input — so every
+# Linux release triple (gnu and musl) still builds with no system C library.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.14", default-features = false, features = ["xtest", "randr"] }
+xkeysym = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [dev-dependencies]
 serde_json = "1"

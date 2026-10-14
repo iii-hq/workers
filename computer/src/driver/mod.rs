@@ -5,7 +5,7 @@
 //! - [`RemoteClient`] speaks the guest-executor wire (`{command, params}`
 //!   over a WebSocket) to a remote or sandboxed desktop.
 //! - [`NativeHost`] drives the local machine this worker runs on (macOS /
-//!   Windows), capturing and injecting input directly.
+//!   Windows / Linux X11), capturing and injecting input directly.
 //! - [`IiiSandboxHost`] boots a desktop inside an iii-sandbox microVM and
 //!   drives it through iii primitives (`sandbox::exec` / `sandbox::fs`), with
 //!   no executor and no socket into the guest.
@@ -13,7 +13,7 @@
 //!   screen or input (a Wayland compositor): every coordinate call is refused
 //!   with the reason, and only the accessibility layer works.
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod native;
 pub mod remote;
 pub mod sandbox;
@@ -25,7 +25,7 @@ use base64::Engine;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use native::NativeHost;
 pub use remote::RemoteClient;
 pub use sandbox::IiiSandboxHost;
@@ -47,9 +47,9 @@ pub struct DisplayInfo {
     pub name: String,
     pub primary: bool,
     pub builtin: bool,
-    /// Logical width in points.
+    /// Width: points on macOS, pixels on Windows and Linux.
     pub width: u32,
-    /// Logical height in points.
+    /// Height, in the same unit.
     pub height: u32,
 }
 
