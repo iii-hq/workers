@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iii_sdk::protocol::TriggerRequest;
@@ -73,17 +73,37 @@ fn native_driver(
     )
 }
 
-/// The accessibility layer for a native session on this OS.
+/// The accessibility layer for a native session on this OS, counting
+/// invalidations on the shared native desktop.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn native_semantic() -> Option<crate::semantic::SemanticSession> {
-    Some(crate::semantic::SemanticSession::new(
+fn native_semantic(invalidations: Arc<AtomicU64>) -> Option<crate::semantic::SemanticSession> {
+    Some(crate::semantic::SemanticSession::on_desktop(
         crate::semantic::platform::factory(),
+        invalidations,
     ))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn native_semantic() -> Option<crate::semantic::SemanticSession> {
+fn native_semantic(_: Arc<AtomicU64>) -> Option<crate::semantic::SemanticSession> {
     None
+}
+
+/// Every native session drives the same mouse, keyboard and windows, so all
+/// of them share one act lock and one ref-invalidation counter: input on any
+/// of them kills refs on all of them and never interleaves with another's
+/// action. A remote or sandboxed desktop gets its own lock and no
+/// accessibility layer.
+fn desktop_for(endpoint: &str) -> (Arc<Mutex<()>>, Option<crate::semantic::SemanticSession>) {
+    static NATIVE_ACT_LOCK: LazyLock<Arc<Mutex<()>>> = LazyLock::new(Default::default);
+    static NATIVE_INVALIDATIONS: LazyLock<Arc<AtomicU64>> = LazyLock::new(Default::default);
+    if endpoint == "native" {
+        (
+            NATIVE_ACT_LOCK.clone(),
+            native_semantic(NATIVE_INVALIDATIONS.clone()),
+        )
+    } else {
+        (Arc::new(Mutex::new(())), None)
+    }
 }
 
 /// The newest screencast frame, handed to `computer::frame` without a capture
@@ -131,10 +151,10 @@ pub struct Session {
     frames: Arc<FrameNotifier>,
     /// Accessibility layer: native macOS/Windows sessions only.
     pub semantic: Option<crate::semantic::SemanticSession>,
-    /// Serializes coordinate and semantic actions on this desktop, so a
-    /// coordinate action can never land between a semantic action's checks
-    /// and its dispatch.
-    pub act_lock: Mutex<()>,
+    /// Serializes coordinate and semantic actions on this desktop (one lock
+    /// for every native session), so a coordinate action can never land
+    /// between a semantic action's checks and its dispatch.
+    pub act_lock: Arc<Mutex<()>>,
 }
 
 impl Session {
@@ -148,6 +168,7 @@ impl Session {
         driver: Arc<dyn Driver>,
         config: SharedConfig,
         frames: Arc<FrameNotifier>,
+        act_lock: Arc<Mutex<()>>,
         semantic: Option<crate::semantic::SemanticSession>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -166,7 +187,7 @@ impl Session {
             config,
             frames,
             semantic,
-            act_lock: Mutex::new(()),
+            act_lock,
         })
     }
 
@@ -447,11 +468,7 @@ impl Sessions {
 
         let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
         let id = format!("c{seq}");
-        let semantic = if endpoint_used == "native" {
-            native_semantic()
-        } else {
-            None
-        };
+        let (act_lock, semantic) = desktop_for(&endpoint_used);
         let session = Session::new(
             id.clone(),
             endpoint_used,
@@ -461,6 +478,7 @@ impl Sessions {
             driver,
             self.config.clone(),
             self.frames.clone(),
+            act_lock,
             semantic,
         );
         // The slot this session claimed becomes the map entry; releasing the
@@ -635,11 +653,7 @@ impl Sessions {
             (Arc::new(client), label)
         };
         let screen = driver.screen_size().await?;
-        let semantic = if endpoint_used == "native" {
-            native_semantic()
-        } else {
-            None
-        };
+        let (act_lock, semantic) = desktop_for(&endpoint_used);
         Ok(Session::new(
             rec.session_id.clone(),
             endpoint_used,
@@ -649,6 +663,7 @@ impl Sessions {
             driver,
             self.config.clone(),
             self.frames.clone(),
+            act_lock,
             semantic,
         ))
     }
@@ -989,5 +1004,32 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, Code::UnsupportedSession);
+    }
+
+    #[test]
+    fn native_sessions_share_a_desktop_and_others_do_not() {
+        let (a, _) = desktop_for("native");
+        let (b, _) = desktop_for("native");
+        let (c, semantic) = desktop_for("ws://10.0.0.5:8765");
+        assert!(Arc::ptr_eq(&a, &b));
+        assert!(!Arc::ptr_eq(&a, &c));
+        assert!(semantic.is_none());
+    }
+
+    #[tokio::test]
+    async fn stopping_a_session_never_waits_for_the_shared_desktop() {
+        use crate::semantic::{fake::FakeTree, SemanticSession};
+        let lock = Arc::new(Mutex::new(()));
+        let tree = Arc::new(FakeTree::new("App", 1));
+        let (s1, _) = crate::test_support::session_sharing("c1", lock.clone(), None);
+        let (s2, _) = crate::test_support::session_sharing(
+            "c2",
+            lock.clone(),
+            Some(SemanticSession::new(tree.factory())),
+        );
+        let _held = s1.act_lock.lock().await;
+        tokio::time::timeout(Duration::from_secs(1), s2.shutdown())
+            .await
+            .expect("shutdown waited for the shared act lock");
     }
 }

@@ -87,19 +87,32 @@ impl Drop for PoisonOnDrop<'_> {
 }
 
 impl SemanticSession {
+    /// A layer with its own invalidation counter: tests, and any desktop no
+    /// other session drives.
     pub fn new(factory: ProviderFactory) -> Self {
-        Self::build(factory, WALK_DEADLINE, ACT_DEADLINE)
+        Self::on_desktop(factory, Arc::new(AtomicU64::new(0)))
+    }
+
+    /// A layer whose refs die with any physical input counted on
+    /// `invalidations`, whichever session on that desktop sent it.
+    pub fn on_desktop(factory: ProviderFactory, invalidations: Arc<AtomicU64>) -> Self {
+        Self::build(factory, invalidations, WALK_DEADLINE, ACT_DEADLINE)
     }
 
     #[cfg(test)]
     pub(crate) fn with_deadlines(factory: ProviderFactory, walk: Duration, act: Duration) -> Self {
-        Self::build(factory, walk, act)
+        Self::build(factory, Arc::new(AtomicU64::new(0)), walk, act)
     }
 
-    fn build(factory: ProviderFactory, walk_deadline: Duration, act_deadline: Duration) -> Self {
+    fn build(
+        factory: ProviderFactory,
+        invalidations: Arc<AtomicU64>,
+        walk_deadline: Duration,
+        act_deadline: Duration,
+    ) -> Self {
         Self {
             factory,
-            invalidations: Arc::new(AtomicU64::new(0)),
+            invalidations,
             op: Mutex::new(()),
             slot: StdMutex::new(Slot::default()),
             walk_deadline,
@@ -107,8 +120,8 @@ impl SemanticSession {
         }
     }
 
-    /// Coordinate input reached this session's desktop: every ref taken
-    /// before it is stale.
+    /// Physical input reached this desktop: every ref taken before it, by
+    /// any session on the desktop, is stale.
     pub fn invalidate(&self) {
         self.invalidations.fetch_add(1, Ordering::SeqCst);
     }

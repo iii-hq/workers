@@ -667,4 +667,61 @@ mod tests {
         assert_eq!(code(e), "stale_ref");
         assert!(t.actions().is_empty());
     }
+
+    #[tokio::test]
+    async fn native_sessions_share_one_desktop() {
+        use crate::test_support::session_sharing;
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let inv = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        t.add(w, Role::Button, "Salvar");
+        let t = Arc::new(t);
+        let (s1, _) = session_sharing(
+            "c1",
+            lock.clone(),
+            Some(SemanticSession::on_desktop(t.factory(), inv.clone())),
+        );
+        let (s2, d2) = session_sharing(
+            "c2",
+            lock.clone(),
+            Some(SemanticSession::on_desktop(t.factory(), inv.clone())),
+        );
+        let r = observed_salvar(&s1).await;
+        // A ref belongs to its session's table even on a shared desktop.
+        let e = handle(
+            &s2,
+            req(serde_json::json!({"session_id":"c2","action":"invoke","ref":r})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "stale_ref");
+        // While c1 holds the desktop, c2's click waits.
+        let held = s1.act_lock.lock().await;
+        let bg = s2.clone();
+        let click = tokio::spawn(async move {
+            handle(
+                &bg,
+                req(serde_json::json!({"session_id":"c2","action":"click","x":1,"y":1})),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            d2.inputs.load(Ordering::SeqCst),
+            0,
+            "c2 dispatched while c1 held the desktop"
+        );
+        drop(held);
+        click.await.unwrap().unwrap();
+        // c2's click killed c1's refs.
+        let e = handle(
+            &s1,
+            req(serde_json::json!({"session_id":"c1","action":"invoke","ref":r})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "stale_ref");
+        assert!(t.actions().is_empty());
+    }
 }

@@ -98,6 +98,35 @@ pub(crate) fn session_on(
     id: &str,
     semantic: Option<SemanticSession>,
 ) -> (Arc<Session>, Arc<FakeDesktop>) {
+    session_built(
+        notifier,
+        id,
+        Arc::new(tokio::sync::Mutex::new(())),
+        semantic,
+    )
+}
+
+/// A session on a desktop shared with others: the same `act_lock` (build
+/// `semantic` on the same invalidation counter to share refs' fate too).
+pub(crate) fn session_sharing(
+    id: &str,
+    act_lock: Arc<tokio::sync::Mutex<()>>,
+    semantic: Option<SemanticSession>,
+) -> (Arc<Session>, Arc<FakeDesktop>) {
+    session_built(
+        &FrameNotifier::new(Arc::new(NullSink)),
+        id,
+        act_lock,
+        semantic,
+    )
+}
+
+fn session_built(
+    notifier: &Arc<FrameNotifier>,
+    id: &str,
+    act_lock: Arc<tokio::sync::Mutex<()>>,
+    semantic: Option<SemanticSession>,
+) -> (Arc<Session>, Arc<FakeDesktop>) {
     let desktop = Arc::new(FakeDesktop {
         shots: AtomicU64::new(0),
         fail: AtomicBool::new(false),
@@ -121,6 +150,7 @@ pub(crate) fn session_on(
         desktop.clone(),
         cfg.into_shared(),
         notifier.clone(),
+        act_lock,
         semantic,
     );
     (session, desktop)
