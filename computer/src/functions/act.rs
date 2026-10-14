@@ -650,14 +650,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_input_still_invalidates() {
-        let (s, d, t, r) = semantic_session().await;
+        let (s, d, t, _) = semantic_session().await;
         d.fail_input.store(true, Ordering::SeqCst);
-        handle(
-            &s,
-            req(serde_json::json!({"session_id":"c1","action":"click","x":1,"y":1})),
-        )
-        .await
-        .unwrap_err();
+        // The ref is read while the failing input is held, so only the bump
+        // after the driver error can kill it.
+        let click = click_in_flight(&s, &d).await;
+        let r = observed_salvar(&s).await;
+        d.hold.store(false, Ordering::SeqCst);
+        click.await.unwrap().unwrap_err();
         let e = handle(
             &s,
             req(serde_json::json!({"session_id":"c1","action":"invoke","ref":r})),
