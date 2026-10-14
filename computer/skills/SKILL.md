@@ -61,6 +61,9 @@ after every action.
 - Acting by element (refs) is native only; remote and sandbox sessions act by
   coordinate. A native Linux session on Wayland is the reverse: refs only
   (`coordinates.supported` is false), so observe with `include_image: false`.
+- On a native Linux X11 session, run a window manager: on a bare X server a
+  click gives no keyboard focus, so toolkits that wait for focus (egui, Bevy,
+  Slint) ignore typed keys.
 
 ## Functions
 
