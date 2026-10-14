@@ -91,12 +91,23 @@ what changed:
 iii trigger kanban::board::get --json '{"statuses":["todo","in_progress","in_review"],"compact":true}'
 iii trigger kanban::ticket::list --json '{"status":"done","updated_since":"2026-09-10T00:00:00.000Z","compact":true}'
 ```
+
+`kanban::ticket::links` returns the tickets a ticket mentions and the
+tickets that mention it, found by key (`KAN-12`) in titles, descriptions and
+comments.
+
  Pass `actor` on writes and `author` on comments: the timeline
 reads honestly, and the comment filters key on exactly that string. Deleting
 a ticket (`kanban::ticket::delete`) is a soft delete — the row stays in the
 board file with `deleted_at` set and `kanban::ticket::restore` undoes it —
 and it is reserved for a person on the console's ticket screen; agents move
-a finished ticket to `in_review` or `done` instead.
+a finished ticket to `in_review` or `done` instead. Calls that change nothing
+(deleting a deleted ticket, restoring a live one, moving a ticket to where it
+already is, an update with no effect) record no activity and fire no trigger;
+a deleted ticket cannot be moved (nor have its status changed by an update;
+its other fields can still be edited). To change labels without overwriting a
+concurrent edit, `kanban::ticket::update` takes `add_labels` and
+`remove_labels` besides the whole-set `labels`.
 
 The full function list is in
 [`skills/SKILL.md`](skills/SKILL.md); request and response schemas come from
@@ -163,20 +174,28 @@ While the worker is connected it injects two pages into the console:
 
 - **Kanban** (page `kanban-board`) — the board: one lane per configured
   column, drag and drop between lanes, a new-ticket dialog, and a lane picker
-  when the pane is narrow. Clicking a card opens the ticket beside the
-  board; the card's **Open in this tab** action keeps it in the current pane
-  instead (the console reuses any tab that already shows a ticket pane), and
-  the inline view offers **Open in its own pane** to go the other way.
-- **Ticket** (page `kanban-ticket`) — one ticket: status, priority and
-  assignee (from `kanban::agent::list`), a Markdown description with an
-  editor, and the activity timeline with threaded comments. Delete and
-  restore live here, behind a confirmation.
+  when the pane is narrow. A filter bar narrows it by key or title, labels
+  (any or all of them), assignee, priority and last update, with a count per
+  option; a dot marks tickets changed since your last visit. Filters can be
+  saved as views (tabs above the bar), kept in this browser only. A **List**
+  layout shows the same tickets grouped by status, sortable, with bulk
+  status, priority, label, assignee and delete edits. Clicking a card opens
+  the ticket beside the board; the card's **Open in this tab** action keeps
+  it in the current pane instead (the console reuses any tab that already
+  shows a ticket pane), and the inline view offers **Open in its own pane**
+  to go the other way.
+- **Ticket** (page `kanban-ticket`) — one ticket: status, priority,
+  assignee (from `kanban::agent::list`) and editable labels, a Markdown
+  description with an editor, linked tickets (from `kanban::ticket::links`;
+  ticket keys in the text become links), and the activity timeline with
+  threaded comments, filterable to comments or changes. Delete and restore
+  live here, behind a confirmation.
 
 Both pages stay live over a `kanban:change` binding, and the Kanban
 settings form edits the configuration above. Chat renders `kanban::*`
 results as ticket cards and `kanban:*` trigger activity with the ticket and
-comment it carried. Command palette rows: New ticket, Refresh board, Refresh
-ticket, Edit description, Write a comment, Back to the board.
+comment it carried. Command palette rows: New ticket, Refresh board, Clear
+filters, Refresh ticket, Edit description, Write a comment, Back to the board.
 
 ## Chat mentions
 

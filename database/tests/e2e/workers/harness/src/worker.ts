@@ -1,4 +1,4 @@
-import { registerWorker, Logger } from 'iii-sdk';
+import { registerWorker } from 'iii-sdk';
 import { resolve } from 'node:path';
 import { Runner, type RunnerMode } from './runner.ts';
 import type { DriverKey } from './dialect.ts';
@@ -15,10 +15,9 @@ const MODE: RunnerMode =
   MODE_ENV === 'bypass-only' || MODE_ENV === 'no-bypass' ? MODE_ENV : 'full';
 
 const iii = registerWorker(URL);
-const logger = new Logger();
 const runner = new Runner({ iii, reportPath: REPORT_PATH, filterDriver: FILTER, mode: MODE });
 
-logger.info('harness: registered, kicking off suite', {
+console.info('harness: registered, kicking off suite', {
   url: URL,
   filter: FILTER ?? 'all',
   mode: MODE,

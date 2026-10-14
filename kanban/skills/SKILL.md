@@ -50,9 +50,10 @@ board page and a ticket page into the console.
 - `kanban::ticket::create` — create a ticket (title, description, status, priority, assignee, labels, actor).
 - `kanban::ticket::get` — one ticket with comments and activity, by uuid or key.
 - `kanban::ticket::list` — ticket summaries narrowed by column, assignee or `updated_since`; `compact` rows for catch-up reads.
-- `kanban::ticket::update` — change title, description, status, priority, assignee or labels.
-- `kanban::ticket::move` — move a ticket to a column and position (the board drag and drop).
-- `kanban::ticket::delete` / `kanban::ticket::restore` — soft delete and undo; human actions.
+- `kanban::ticket::links` — the tickets one ticket mentions and the tickets that mention it, by key in title, description or comments; summary rows, by uuid or key.
+- `kanban::ticket::update` — change title, description, status, priority, assignee or labels; `add_labels` / `remove_labels` edit the current labels (ASCII case ignored, applied after `labels`, remove before add) so concurrent label edits do not overwrite each other. A patch that changes nothing records and fires nothing. A deleted ticket's other fields can be edited, but its status cannot be changed: restore it first.
+- `kanban::ticket::move` — move a ticket to a column and position (the board drag and drop); moving to where it already is changes nothing, and a deleted ticket cannot be moved.
+- `kanban::ticket::delete` / `kanban::ticket::restore` — soft delete and undo; human actions. Deleting a deleted ticket or restoring a live one changes nothing.
 - `kanban::comment::create` — comment or reply (`parent_id`); replies stay one level deep.
 - `kanban::comment::list` — comments filtered by author, excluded author, root only, or since a timestamp.
 - `kanban::activity::list` — the ticket's timeline, oldest first, optionally narrowed by type or time.

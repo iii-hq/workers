@@ -4,7 +4,15 @@ import {
   usePaneState,
   useWorkerLive,
 } from '@iii-dev/console-ui/hooks'
-import { Boxes, ChevronLeft, Layers, Plus, X } from 'lucide-react'
+import {
+  Boxes,
+  Check,
+  ChevronLeft,
+  CircleAlert,
+  Layers,
+  Plus,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -40,9 +48,13 @@ import {
   type OperationSnapshot,
   type Snapshot,
 } from './compose-api'
-import { ContainerView, WorkerView } from './container'
+import {
+  type ContainerSettingsState,
+  ContainerView,
+  WorkerView,
+} from './container'
 import { followOperation } from './follow-operation'
-import { groupContainers, toneFor } from './model'
+import { groupContainers, hasSettingsChanges, toneFor } from './model'
 import { takePendingWorkerSearch } from './pending-selection'
 import { ProjectView } from './project'
 import './workers.css'
@@ -68,6 +80,9 @@ export type Activity = {
   operationId?: string
   snapshot?: OperationSnapshot
   detail?: string
+  localResult?: boolean
+  settingsWorker?: string
+  resultHeadline?: string
 }
 
 /** Everything a view needs to change the project and follow the result. */
@@ -79,10 +94,14 @@ export type Actions = {
    * An operation the daemon accepts and runs in the background (add, update,
    * remove, edit), followed by its pushed progress. `start` must submit it
    * under `operationId`: its progress is bound before it is submitted.
+   * A caller handling failure locally owns the detailed result; project
+   * activity keeps a concise notice instead of duplicating that result.
    */
   track: (
     label: string,
     start: (operationId: string) => Promise<Accepted>,
+    onFailure?: (detail: string | undefined) => void,
+    settingsWorker?: string,
   ) => Promise<boolean>
   confirm: ReturnType<typeof useConfirm>['confirm']
   /** Declared containers that are stopped or failed: an add or remove starts them. */
@@ -97,6 +116,19 @@ function progressDetail(
   return snapshot.total > 1
     ? `${detail} · ${snapshot.completed} of ${snapshot.total}`
     : detail
+}
+
+function completedActivity(label: string) {
+  const verbs: Record<string, string> = {
+    Saving: 'Saved',
+    Restarting: 'Restarted',
+    Starting: 'Started',
+    Stopping: 'Stopped',
+    Updating: 'Updated',
+    Removing: 'Removed',
+    Adding: 'Added',
+  }
+  return label.replace(/^\w+/, (verb) => verbs[verb] ?? verb)
 }
 
 /** The console's Workers screen: every worker the compose daemon runs or the engine sees. */
@@ -176,14 +208,37 @@ function WorkersPage({
   const [drilled, setDrilled] = useState(false)
   const [query, setQuery] = useState('')
   const [adding, setAdding] = useState(false)
+  // Draft credentials stay in memory, scoped to this pane and worker.
+  const [settingsByWorker, setSettingsByWorker] = useState(
+    () => new Map<string, ContainerSettingsState>(),
+  )
   const [activity, setActivity] = useState<Activity | null>(null)
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(
     null,
   )
   const { confirm, dialog } = useConfirm()
-  const { ref: bodyRef, narrow } = useContainerNarrow()
+  const { ref: bodyRef, narrow } = useContainerNarrow({ below: 840 })
   const filterRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const alive = useRef(true)
+  const dirtyWorkers = [...settingsByWorker]
+    .filter(([, settings]) => {
+      const baseline = settings.submittedEntry ?? settings.entry
+      return baseline && settings.draft
+        ? hasSettingsChanges(baseline, settings.draft)
+        : false
+    })
+    .map(([name]) => name)
+  const awaitingVerificationWorkers = [...settingsByWorker]
+    .filter(([, settings]) => !!settings.submittedEntry)
+    .map(([name]) => name)
+  const dirtyLabel = dirtyWorkers.length
+    ? `Unsaved settings: ${dirtyWorkers.join(', ')}`
+    : false
+  useEffect(() => {
+    setDirty?.(dirtyLabel)
+  }, [dirtyLabel, setDirty])
+  useEffect(() => () => setDirty?.(false), [setDirty])
   // Operations this page follows: leaving it unbinds their progress.
   const following = useRef(new Set<AbortController>())
   useEffect(() => {
@@ -216,7 +271,11 @@ function WorkersPage({
       if (!alive.current) return
       setActivity(next)
       announce(
-        next.state === 'failed' ? `${next.label} failed` : `${next.label} done`,
+        next.state === 'failed'
+          ? next.localResult
+            ? `The settings operation${next.settingsWorker ? ` for ${next.settingsWorker}` : ''} ended with an error. Check the worker's Settings result.`
+            : `${next.label} failed`
+          : completedActivity(next.label),
         next.state === 'failed' ? 'assertive' : 'polite',
       )
       live.refresh()
@@ -224,7 +283,9 @@ function WorkersPage({
     [announce, live],
   )
 
-  const busy = activity?.state === 'running'
+  const busy =
+    activity?.state === 'running' ||
+    [...settingsByWorker.values()].some((settings) => settings.saving)
   const idle = useMemo(
     () =>
       (data?.status.containers ?? [])
@@ -254,7 +315,7 @@ function WorkersPage({
           return false
         }
       },
-      async track(label, start) {
+      async track(label, start, onFailure, settingsWorker) {
         setActivity({ label, state: 'running' })
         const controller = new AbortController()
         following.current.add(controller)
@@ -277,17 +338,29 @@ function WorkersPage({
           })
           if (snapshot === null || !alive.current) return false
           const ok = snapshot.status === 'succeeded'
+          const detail = ok ? undefined : snapshot.last_event?.detail
           finish({
             label:
               snapshot.status === 'cancelled' ? `${label} (cancelled)` : label,
             state: ok ? 'succeeded' : 'failed',
             operationId: snapshot.operation_id,
             snapshot,
-            detail: ok ? undefined : snapshot.last_event?.detail,
+            detail,
+            localResult: !!onFailure,
+            settingsWorker,
           })
+          if (!ok) onFailure?.(detail)
           return ok
         } catch (cause) {
-          finish({ label, state: 'failed', detail: errorMessage(cause) })
+          const detail = errorMessage(cause)
+          finish({
+            label,
+            state: 'failed',
+            detail,
+            localResult: !!onFailure,
+            settingsWorker,
+          })
+          onFailure?.(detail)
           return false
         } finally {
           following.current.delete(controller)
@@ -296,6 +369,26 @@ function WorkersPage({
     }),
     [api, busy, confirm, finish, idle, iii],
   )
+
+  const settingsResultHeadline =
+    activity?.resultHeadline ??
+    (activity?.state === 'failed' &&
+    activity.localResult &&
+    activity.settingsWorker
+      ? settingsByWorker.get(activity.settingsWorker)?.notice?.headline
+      : undefined)
+  const settingsAttention = settingsResultHeadline
+    ? `${activity?.settingsWorker}: ${settingsResultHeadline}. See the worker's Settings result.`
+    : `The settings operation${activity?.settingsWorker ? ` for ${activity.settingsWorker}` : ''} ended with an error. See the worker's Settings result.`
+  useEffect(() => {
+    if (!activity || activity.resultHeadline || !settingsResultHeadline) return
+    setActivity((current) =>
+      current === activity
+        ? { ...current, resultHeadline: settingsResultHeadline }
+        : current,
+    )
+    announce(settingsAttention, 'assertive')
+  }, [activity, announce, settingsAttention, settingsResultHeadline])
 
   const declared = useMemo(
     () => new Map((data?.project?.containers ?? []).map((c) => [c.name, c])),
@@ -401,6 +494,23 @@ function WorkersPage({
   const updates = containers.filter((c) => latest.outdated(c.container)).length
   const showMain = !narrow || drilled
   const showSide = !narrow || !drilled
+  const listLoaded = !!data
+  useEffect(() => {
+    if (
+      !listLoaded ||
+      !showSide ||
+      (query &&
+        selection !== PROJECT &&
+        !selection.toLowerCase().includes(query.trim().toLowerCase()))
+    )
+      return
+    const frame = window.requestAnimationFrame(() => {
+      listRef.current
+        ?.querySelector<HTMLElement>('[aria-current="page"]')
+        ?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [selection, showSide, query, listLoaded])
 
   const sidebar = (
     <PageSidebar
@@ -434,7 +544,7 @@ function WorkersPage({
             ))}
           </div>
         ) : (
-          <List aria-label="Project and workers">
+          <List ref={listRef} aria-label="Project and workers">
             {data.composed ? (
               <ListItem
                 selected={selection === PROJECT}
@@ -474,7 +584,6 @@ function WorkersPage({
                         <StatusDot
                           tone={tone.dot}
                           pulse={item.state === 'starting'}
-                          aria-label={item.state}
                         />
                       }
                       label={<span className="wk-mono">{item.name}</span>}
@@ -482,18 +591,28 @@ function WorkersPage({
                         <span
                           className={item.failed ? 'wk-alert-text' : undefined}
                         >
-                          {item.detail}
+                          {item.detail === item.state
+                            ? item.state
+                            : `${item.state} · ${item.detail}`}
                         </span>
                       }
                       trailing={
-                        update ? (
-                          <Badge
-                            variant="accent"
-                            aria-label={`Update available: ${update}`}
-                          >
-                            {update}
-                          </Badge>
-                        ) : undefined
+                        <span className="wk-row-meta">
+                          {dirtyWorkers.includes(item.name) ? (
+                            <Badge>unsaved</Badge>
+                          ) : null}
+                          {awaitingVerificationWorkers.includes(item.name) ? (
+                            <Badge>awaiting verification</Badge>
+                          ) : null}
+                          {update ? (
+                            <Badge
+                              variant="accent"
+                              aria-label={`Update available: ${update}`}
+                            >
+                              {update}
+                            </Badge>
+                          ) : null}
+                        </span>
                       }
                       onClick={() => select(item.name)}
                     />
@@ -519,6 +638,7 @@ function WorkersPage({
   return (
     <PageShell className="wk-shell" aria-label="workers">
       <PageHeader
+        className="wk-header"
         icon={<Layers />}
         title="Workers"
         description={
@@ -540,7 +660,12 @@ function WorkersPage({
                   ? 'live'
                   : 'polling'}
             </span>
-            <Button variant="ghost" size="sm" onClick={() => setAdding(true)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="wk-add-worker"
+              onClick={() => setAdding(true)}
+            >
               <Plus />
               Add worker
             </Button>
@@ -583,7 +708,32 @@ function WorkersPage({
                   }
                 />
               ) : null}
-              {activity ? (
+              {activity?.state === 'succeeded' ||
+              (activity?.state === 'failed' && activity.localResult) ? (
+                <div className="wk-activity-complete">
+                  {activity.state === 'succeeded' ? (
+                    <Check aria-hidden className="size-4" />
+                  ) : (
+                    <CircleAlert aria-hidden className="size-4 wk-alert-text" />
+                  )}
+                  <span>
+                    {activity.state === 'succeeded'
+                      ? `Project activity: ${completedActivity(activity.label)}`
+                      : settingsAttention}
+                  </span>
+                  <IconButton
+                    label={
+                      activity.state === 'succeeded'
+                        ? 'Dismiss completed activity'
+                        : 'Dismiss activity notice'
+                    }
+                    variant="ghost"
+                    onClick={() => setActivity(null)}
+                  >
+                    <X />
+                  </IconButton>
+                </div>
+              ) : activity ? (
                 <StatusPanel
                   variant={
                     activity.state === 'running'
@@ -650,8 +800,29 @@ function WorkersPage({
                   status={data.status}
                   latest={latest.of(selected.container)}
                   onSelect={select}
-                  onRemoved={() => select(PROJECT)}
-                  setDirty={setDirty}
+                  onRemoved={() => {
+                    setSettingsByWorker((previous) => {
+                      const next = new Map(previous)
+                      next.delete(selected.container)
+                      return next
+                    })
+                    select(PROJECT)
+                  }}
+                  settings={settingsByWorker.get(selected.container)}
+                  onSettingsChange={(next) =>
+                    setSettingsByWorker((previous) => {
+                      const updated = new Map(previous)
+                      const current: ContainerSettingsState = previous.get(
+                        selected.container,
+                      ) ?? { tab: 'log', entry: null, draft: null }
+                      updated.set(selected.container, {
+                        ...current,
+                        ...(typeof next === 'function' ? next(current) : next),
+                      })
+                      return updated
+                    })
+                  }
+                  commands={commands}
                   connected={workers.some(
                     (w) =>
                       w.name === selected.container && w.status === 'connected',

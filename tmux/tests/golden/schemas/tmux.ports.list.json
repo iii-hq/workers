@@ -1,0 +1,331 @@
+{
+  "description": "Every TCP port this user's processes listen on, with process, iii role (engine / worker / compose), worker name, compose namespace and the tmux pane the process runs in; plus each running `iii compose` stack with its engine WebSocket port and workers' ports.",
+  "function_id": "tmux::ports::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "No parameters.",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AddressFamily": {
+        "enum": [
+          "ipv4",
+          "ipv6"
+        ],
+        "type": "string"
+      },
+      "ComposeEngine": {
+        "properties": {
+          "pid": {
+            "description": "Engine pid.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "ports": {
+            "description": "Ports the engine listens on.",
+            "items": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "ws_port": {
+            "description": "The engine WebSocket port workers connect to.",
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pid",
+          "ports"
+        ],
+        "type": "object"
+      },
+      "ComposeStack": {
+        "properties": {
+          "compose_file": {
+            "description": "Compose file the daemon serves, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ComposeEngine"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The engine the daemon started, if it manages one."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PaneRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "tmux pane the daemon runs in."
+          },
+          "namespace": {
+            "description": "Daemon namespace (`iii:c:<namespace>`).",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Daemon pid.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "project_dir": {
+            "description": "Daemon working directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workers": {
+            "description": "Workers the daemon started.",
+            "items": {
+              "$ref": "#/definitions/ComposeWorker"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "namespace",
+          "pid",
+          "workers"
+        ],
+        "type": "object"
+      },
+      "ComposeWorker": {
+        "properties": {
+          "name": {
+            "description": "Worker name.",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Top-most pid of the worker's process tree.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "ports": {
+            "description": "Ports the worker's processes listen on.",
+            "items": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "pid",
+          "ports"
+        ],
+        "type": "object"
+      },
+      "Listener": {
+        "description": "One TCP socket in LISTEN state.",
+        "properties": {
+          "address": {
+            "description": "Bound address, e.g. `0.0.0.0` or `::1`.",
+            "type": "string"
+          },
+          "compose": {
+            "description": "Compose namespace the process belongs to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "family": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/AddressFamily"
+              }
+            ],
+            "description": "IPv4 or IPv6."
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PaneRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "tmux pane the process descends from."
+          },
+          "pid": {
+            "description": "Owning process.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "port": {
+            "description": "Port number.",
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "process": {
+            "description": "Owning process name.",
+            "type": "string"
+          },
+          "role": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ListenerRole"
+              }
+            ],
+            "description": "What kind of process owns the socket."
+          },
+          "worker": {
+            "description": "iii worker name, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "address",
+          "family",
+          "pid",
+          "port",
+          "process",
+          "role"
+        ],
+        "type": "object"
+      },
+      "ListenerRole": {
+        "oneOf": [
+          {
+            "description": "An iii engine (its WebSocket and built-in listeners).",
+            "enum": [
+              "engine"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An iii worker.",
+            "enum": [
+              "worker"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An `iii compose` daemon.",
+            "enum": [
+              "compose"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Anything else.",
+            "enum": [
+              "other"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PaneRef": {
+        "description": "Where a process runs in tmux.",
+        "properties": {
+          "pane_id": {
+            "description": "Pane id.",
+            "type": "string"
+          },
+          "session": {
+            "description": "Session name.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Session id.",
+            "type": "string"
+          },
+          "window_id": {
+            "description": "Window id.",
+            "type": "string"
+          },
+          "window_index": {
+            "description": "Window index.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pane_id",
+          "session",
+          "session_id",
+          "window_id",
+          "window_index"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Listening ports and the `iii compose` stacks that own them.",
+    "properties": {
+      "composes": {
+        "description": "Running `iii compose` daemons.",
+        "items": {
+          "$ref": "#/definitions/ComposeStack"
+        },
+        "type": "array"
+      },
+      "error": {
+        "description": "Why the scan failed, if it did.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "generated_at_ms": {
+        "description": "When the snapshot was taken.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "listeners": {
+        "description": "Every TCP listening socket of this user's processes, sorted by port.",
+        "items": {
+          "$ref": "#/definitions/Listener"
+        },
+        "type": "array"
+      },
+      "supported": {
+        "description": "This platform has a port scanner.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "composes",
+      "generated_at_ms",
+      "listeners",
+      "supported"
+    ],
+    "title": "PortsSnapshot",
+    "type": "object"
+  }
+}

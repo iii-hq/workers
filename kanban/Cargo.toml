@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-kanban"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2024"
 description = "Kanban worker for iii — file-backed tickets, comments and agent assignment, the kanban:change / kanban:comment trigger types, and an injectable console board"
 license = "Apache-2.0"
@@ -18,7 +18,7 @@ name = "kanban"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0"
+iii-sdk = "=0.24.5"
 # Configuration-worker client (seeding, NOT_FOUND-aware reads, serialized
 # reload) and the injectable console UI helper — both path-linked, never
 # published.

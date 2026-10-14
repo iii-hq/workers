@@ -1,0 +1,265 @@
+/* Ticket screen. Imported before styles.css, so every override here repeats the
+   `.kanban-shell` ancestor to outrank the same selector there. */
+
+/* The key in the page header: PageHeader sets the description in faint ink, the
+   design system wants it ghost, 12px. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-header-key {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink-ghost);
+}
+
+/* Masthead: 16px/600 record title, status word in ink beside its glyph. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-record__title {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-record__eyebrow {
+  flex-wrap: wrap;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-status-badge {
+  gap: 6px;
+  padding-left: 8px;
+}
+
+/* Status words are always ink; the variant (Deleted is alert) only tints the pill. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-status-badge {
+  color: var(--color-ink);
+}
+
+/* Properties rail: a Panel whose body carries the rows (12px body copy). */
+[data-iii-ui="kanban"] .kanban-shell .kanban-props {
+  gap: 2px;
+  padding: 8px 12px 12px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop__label {
+  font-size: 12px;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop__by {
+  color: var(--color-ink-faint);
+}
+
+/* The ticket id and its copy button share one row; the id gives way first. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop__copy {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop__copy .kanban-prop__value {
+  flex: 1;
+}
+
+/* The copy button's failure note: it takes its own width, the id gives way. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-copy-status {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-alert-strong);
+}
+
+/* Focus lands on the title when another ticket opens in this pane. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-record__title:focus-visible {
+  border-radius: var(--radius-md);
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 3px;
+}
+
+/* Every number and timestamp on this screen. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-record__meta,
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop__value,
+[data-iii-ui="kanban"] .kanban-shell .kanban-comment__time,
+[data-iii-ui="kanban"] .kanban-shell .kanban-event__time,
+[data-iii-ui="kanban"] .kanban-shell .kanban-link-row__meta {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A comment by an agent: one 16px Bot glyph in its identity tint, no margin. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-comment__agent {
+  margin: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop--labels {
+  align-items: start;
+  padding: 6px 0;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop--labels .kanban-prop__label {
+  padding-top: 5px;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop--labels[data-empty="true"] {
+  align-items: center;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop--labels[data-empty="true"] .kanban-prop__label {
+  padding-top: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prop__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-chip-x {
+  width: 20px;
+  height: 20px;
+  margin-right: -6px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-ink-ghost);
+}
+
+/* Section heads: the count sits beside the title; the activity filter takes the far end. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-section__head {
+  flex-wrap: wrap;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-section__count--inline {
+  margin-left: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-activity-filter {
+  margin-left: auto;
+}
+
+/* Linked tickets: one 44px button row per ticket. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 26px;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-links .kanban-section__head {
+  margin-bottom: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-links__list {
+  display: flex;
+  flex-direction: column;
+  margin: 4px -10px 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-link-row {
+  display: grid;
+  grid-template-columns: 16px 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-link-row:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-link-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-rule-focus);
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-link-row:disabled {
+  cursor: default;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-link-row__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-link-row__meta {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+
+/* Narrow panes: the status and relation drop under the title. */
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-link-row {
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  padding-block: 6px;
+}
+
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-link-row__meta {
+  grid-column: 2 / -1;
+}
+
+/* A label change in the timeline: the chips follow the sentence on the same line. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-event__chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: -3px 0;
+  vertical-align: middle;
+}
+
+/* Ticket keys that became links inside Markdown. */
+[data-iii-ui="kanban"] .kanban-shell .kanban-prose a[href^="#kanban-ticket/"] {
+  padding: 1px 5px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+[data-iii-ui="kanban"] .kanban-shell .kanban-prose a[href^="#kanban-ticket/"]:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+/* Under 880px of pane the grid stacks: head, properties, body, activity. */
+@container (max-width: 879.98px) {
+  [data-iii-ui="kanban"] .kanban-shell .kanban-record__grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'head' 'props' 'body' 'activity';
+    padding: 16px 14px 32px;
+  }
+
+  [data-iii-ui="kanban"] .kanban-shell .kanban-record__props {
+    position: static;
+  }
+}
+
+/* Narrow pane (< 720px, `data-narrow` on the shell): every control is a 44px
+   target. `min-*` so a console that already makes a control taller keeps it. */
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-touch,
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-pad button,
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-selector > button,
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-record__title-input {
+  min-height: 44px;
+}
+
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-touch {
+  min-width: 44px;
+}
+
+/* The remove-label cross is the whole 44px target; the chip grows around it. */
+[data-iii-ui="kanban"] .kanban-shell[data-narrow="true"] .kanban-chip-x {
+  width: 44px;
+  height: 44px;
+  margin: -3px -8px -3px 0;
+}

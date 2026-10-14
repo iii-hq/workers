@@ -4,7 +4,7 @@
 Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
     changed_workers               : all workers with any change
     source_changed                : workers whose change wasn't only metadata
-    rust / node / python          : language buckets (subset of changed_workers)
+    rust / go / node / python     : language buckets (subset of changed_workers)
     integration_changed          : bool, did an integration-stack input change
     llm_router_integration        : bool, must the live llm-router suite run
     provider_contract            : providers whose hermetic contract must run
@@ -213,6 +213,7 @@ def changed_files(base: str, head: str) -> list[str]:
 def language_of(spec: _lib.WorkerSpec) -> str | None:
     return {
         "rust-binary": "rust",
+        "go-binary": "go",
         "javascript-bundle": "node",
         "python-bundle": "python",
         # First-party OCI workers currently use Python packages.
@@ -379,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         (),
     )
     provider_contract = provider_contract_selection(files, workers)
-    by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
+    by_language: dict[str, list[str]] = {"rust": [], "go": [], "node": [], "python": []}
     for w in changed:
         lang = language_of(worker_specs[w])
         if lang in by_language:
@@ -404,8 +405,9 @@ def main(argv: list[str] | None = None) -> int:
         with open(gh_out, "a") as f:
             f.write(f"changed_workers={json.dumps(changed)}\n")
             f.write(f"source_changed={json.dumps(source_changed)}\n")
-            for lang in ("rust", "node", "python"):
+            for lang in ("rust", "go", "node", "python"):
                 f.write(f"{lang}={json.dumps(by_language[lang])}\n")
+            f.write(f"binary={json.dumps(sorted(by_language['rust'] + by_language['go']))}\n")
             f.write(
                 f"integration_changed={'true' if integration_changed else 'false'}\n"
             )

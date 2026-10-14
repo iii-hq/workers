@@ -6,6 +6,7 @@ pub const PROVIDER: &str = "typesafe";
 pub const EVALUATE_ID: &str = "judge-typesafe::evaluate";
 pub const MODELS_ID: &str = "judge-typesafe::models::list";
 pub const CANCEL_ID: &str = "judge-typesafe::cancel";
+pub const STATUS_ID: &str = "judge-typesafe::status";
 /// Evicts a cached `secret://` key when the `secrets` worker changes it.
 pub const SECRET_CHANGED_ID: &str = "judge-typesafe::on-secret-change";
 pub mod client;

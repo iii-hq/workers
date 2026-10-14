@@ -89,9 +89,12 @@ may not outlast, and the model is released after 10 idle minutes. Picking a
 provider in the composer starts that load. The composer's judge picker is
 laid out like the model picker: each provider shows the model its settings
 name, **Configure** edits a provider's settings (or the hub's) inside the
-picker, and **+** adds a judge worker from the registry. A new provider is a
+picker, and **+** adds a judge worker from the registry. A choice that would
+not be used (its worker is not running, or it has no usable key) shows a
+warning on the composer and beside it in the list. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
-`::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
+`::cancel` (plus `::status` when it needs a key) with the
+[`judge-contract`](../crates/judge-contract/) types,
 marked `metadata.internal: true` so default discovery shows only the hub, and
 accepts request ids up to 512 bytes; the hub needs no change. See
 [Configuration](reference.md#configuration) and

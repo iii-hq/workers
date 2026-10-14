@@ -1,7 +1,8 @@
 # Add a worker
 
-Use this checklist for every first-party worker. Rust daemon implementation
-details are in [`binary-worker.md`](binary-worker.md).
+Use this checklist for every first-party worker. Binary implementation details
+are in [`binary-worker.md`](binary-worker.md) for Rust and
+[`go-binary-worker.md`](go-binary-worker.md) for Go.
 
 ## Identity and files
 
@@ -9,7 +10,8 @@ details are in [`binary-worker.md`](binary-worker.md).
   `^[a-z0-9][a-z0-9_-]*$`.
 - Add the package manifest that owns the version: `Cargo.toml`, `package.json`,
   or `pyproject.toml`.
-- Add a consumer-facing `README.md` and a non-empty `tests/` directory.
+- Add a consumer-facing `README.md` and a non-empty `tests/` directory, or
+  adjacent `*_test.go` files for Go workers.
 - Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
 - Add an entry to the private
   [`.deploy/workers.yaml`](../../.deploy/workers.yaml) build catalog.
@@ -54,6 +56,8 @@ python3 .github/scripts/deployment_compiler.py compile-index \
 Run the language suite that CI will select:
 
 - Rust: `cargo fmt --all -- --check`, clippy, and locked tests.
+- Go: `gofmt` checks, `go vet -mod=readonly ./...`,
+  `go test -mod=readonly ./...`, and `make build` with `CGO_ENABLED=0`.
 - JavaScript: Biome and package tests.
 - Python: Ruff and pytest.
 
@@ -74,7 +78,7 @@ Commit the source metadata in `source.package_manifest`. The descriptor index
 workflow records its version at the merged source SHA, while Release Control
 selects the exact deployment target version independently. Prepare never edits
 the manifest. Ensure each declared
-bundle file exists, every Rust target is supported, and OCI Docker inputs are
+bundle file exists, every binary target is supported, and OCI Docker inputs are
 fully pinned before requesting a release.
 
 New release policy belongs in Release Control. Do not add another tag-triggered

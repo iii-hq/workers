@@ -2,6 +2,8 @@
 //! in-memory [`Board`] before the store writes it back. No I/O, no engine —
 //! this is the module the tests exercise directly.
 
+use std::collections::HashSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -11,6 +13,24 @@ use crate::store::{Activity, Board, Change, Comment, Ticket, default_actor};
 
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// The timestamp of the next write, taken under the store lock: the clock
+/// (`now_ms`, Unix milliseconds), or 1 ms past the newest `updated_at` on the
+/// board when the clock has not moved past it (same millisecond, or stepped
+/// back). Every write to a ticket therefore carries a strictly greater
+/// `updated_at`, which the console uses as the ticket's version.
+pub fn next_at(board: &Board, now_ms: i64) -> String {
+    let newest = board
+        .tickets
+        .values()
+        .filter_map(|ticket| chrono::DateTime::parse_from_rfc3339(&ticket.updated_at).ok())
+        .map(|updated| updated.timestamp_millis())
+        .max();
+    let ms = newest.map_or(now_ms, |newest| now_ms.max(newest + 1));
+    chrono::DateTime::from_timestamp_millis(ms)
+        .expect("a parsed RFC 3339 year plus 1 ms is in range")
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 pub fn new_id() -> String {
@@ -124,11 +144,16 @@ fn actor_or_user(actor: Option<&str>) -> String {
     trimmed(actor).unwrap_or_else(default_actor)
 }
 
+/// Trimmed, non-empty labels; a repeat in any ASCII case is dropped, the first spelling stays.
 fn clean_labels(labels: &[String]) -> Vec<String> {
-    labels
-        .iter()
-        .filter_map(|label| trimmed(Some(label)))
-        .collect()
+    let mut clean: Vec<String> = Vec::new();
+    for label in labels.iter().filter_map(|label| trimmed(Some(label))) {
+        // ponytail: linear scan; a ticket carries a handful of labels.
+        if !clean.iter().any(|seen| seen.eq_ignore_ascii_case(&label)) {
+            clean.push(label);
+        }
+    }
+    clean
 }
 
 /// Resolve the internal uuid or the human key (case-insensitive) to the
@@ -263,6 +288,104 @@ pub fn search_tickets<'a>(board: &'a Board, query: &str, limit: usize) -> Vec<&'
     });
     hits.truncate(limit);
     hits.into_iter().map(|(_, ticket)| ticket).collect()
+}
+
+/// Combining marks are part of the word they modify: `c` + U+0327 blocks a key like `ç` does.
+// ponytail: the five main combining blocks; marks of other scripts rely on `is_alphanumeric` (Other_Alphabetic), a full \p{M} table would need a crate.
+fn is_combining_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{300}'..='\u{36F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
+}
+
+/// Lowercased `<prefix>-` heads of every key on the board plus the configured
+/// prefix: a ticket keeps the prefix it was numbered with when `id_prefix`
+/// changes, so the configured one alone loses the links to older tickets.
+fn key_heads(board: &Board, configured: &str) -> HashSet<String> {
+    let configured = format!("{}-", configured.to_ascii_lowercase());
+    board
+        .tickets
+        .values()
+        .filter_map(|ticket| ticket.key.rsplit_once('-'))
+        .map(|(prefix, _)| format!("{}-", prefix.to_ascii_lowercase()))
+        .chain(std::iter::once(configured))
+        .collect()
+}
+
+/// Lowercased keys (`kan-12`) written as `<head><digits>` (`heads` from
+/// [`key_heads`]) in the ticket's title, description or comments:
+/// case-insensitive. Same boundary as the UI's link rewriter: the characters
+/// around a key must not be a Unicode letter, digit or combining mark, `/` or
+/// `-`, so `KAN-12` is not found inside `KAN-120`, `KAN-12x`, `XKAN-12`,
+/// `fix/KAN-12-login`, `KAN-12-2` or a `.../browse/KAN-12` URL.
+fn cited_keys(ticket: &Ticket, heads: &HashSet<String>) -> HashSet<String> {
+    let is_word = |c: char| c.is_alphanumeric() || is_combining_mark(c) || c == '/' || c == '-';
+    let mut keys = HashSet::new();
+    let texts = [&ticket.title, &ticket.description]
+        .into_iter()
+        .chain(ticket.comments.iter().map(|comment| &comment.body));
+    for text in texts {
+        // ASCII-only: keeps byte offsets and leaves accented letters intact (the prefix is ASCII).
+        let text = text.to_ascii_lowercase();
+        for head in heads {
+            for (at, _) in text.match_indices(head.as_str()) {
+                let rest = &text[at + head.len()..];
+                let digits = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                if digits > 0
+                    && !text[..at].chars().next_back().is_some_and(is_word)
+                    && !rest[digits..].chars().next().is_some_and(is_word)
+                {
+                    keys.insert(format!("{head}{}", &rest[..digits]));
+                }
+            }
+        }
+    }
+    keys
+}
+
+fn key_number(ticket: &Ticket) -> u64 {
+    ticket
+        .key
+        .rsplit_once('-')
+        .and_then(|(_, number)| number.parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// The live tickets the ticket cites by key and the live tickets that cite
+/// it, each by ticket number; `None` when the ticket does not exist.
+pub fn ticket_links<'a>(
+    board: &'a Board,
+    id_or_key: &str,
+    prefix: &str,
+) -> Option<(Vec<&'a Ticket>, Vec<&'a Ticket>)> {
+    let ticket = find_ticket(board, id_or_key)?;
+    let own_key = ticket.key.to_lowercase();
+    let heads = key_heads(board, prefix);
+    let cites = cited_keys(ticket, &heads);
+    let (mut mentions, mut mentioned_by) = (Vec::new(), Vec::new());
+    // ponytail: O(tickets x text x prefixes) per call; keep a key -> citing-tickets index updated on write if the board outgrows a scan.
+    for other in board
+        .tickets
+        .values()
+        .filter(|other| other.deleted_at.is_none() && other.id != ticket.id)
+    {
+        if cites.contains(&other.key.to_lowercase()) {
+            mentions.push(other);
+        }
+        if cited_keys(other, &heads).contains(&own_key) {
+            mentioned_by.push(other);
+        }
+    }
+    mentions.sort_by_key(|ticket| key_number(ticket));
+    mentioned_by.sort_by_key(|ticket| key_number(ticket));
+    Some((mentions, mentioned_by))
 }
 
 /// Next free position at the bottom of a column, ignoring `except`.
@@ -400,7 +523,10 @@ pub fn create_ticket(
 }
 
 /// Fields `kanban::ticket::update` accepts. `None` = leave alone;
-/// `assignee: Some(None)` = unassign.
+/// `assignee: Some(None)` = unassign. `labels` replaces the set; then
+/// `remove_labels` and `add_labels` edit it (in that order) on the labels the
+/// ticket has when the write runs, so concurrent label edits do not overwrite
+/// each other.
 #[derive(Debug, Clone, Default)]
 pub struct UpdatePatch {
     pub title: Option<String>,
@@ -409,6 +535,8 @@ pub struct UpdatePatch {
     pub assignee: Option<Option<String>>,
     pub status: Option<String>,
     pub labels: Option<Vec<String>>,
+    pub add_labels: Option<Vec<String>>,
+    pub remove_labels: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -469,11 +597,28 @@ pub fn update_ticket(
             if !context.has_column(&status) {
                 return Err(format!("unknown status: {status}"));
             }
+            if ticket.deleted_at.is_some() && ticket.status != status {
+                return Err("cannot move a deleted ticket".to_string());
+            }
             apply("status", json!(ticket.status), json!(status));
             ticket.status = status;
         }
-        if let Some(labels) = &patch.labels {
-            let labels = clean_labels(labels);
+        if patch.labels.is_some() || patch.add_labels.is_some() || patch.remove_labels.is_some() {
+            let mut labels = match &patch.labels {
+                Some(labels) => clean_labels(labels),
+                None => ticket.labels.clone(),
+            };
+            for gone in clean_labels(patch.remove_labels.as_deref().unwrap_or_default()) {
+                labels.retain(|label| !label.eq_ignore_ascii_case(&gone));
+            }
+            for added in clean_labels(patch.add_labels.as_deref().unwrap_or_default()) {
+                if !labels
+                    .iter()
+                    .any(|label| label.eq_ignore_ascii_case(&added))
+                {
+                    labels.push(added);
+                }
+            }
             apply("labels", json!(ticket.labels), json!(labels));
             ticket.labels = labels;
         }
@@ -502,6 +647,8 @@ pub fn update_ticket(
 
 /// Move a ticket to a column at an optional zero-based position. Reordering
 /// inside a lane records no activity; a lane change records `ticket.moved`.
+/// Moving a ticket to where it already is changes nothing (no `updated_at`
+/// bump), and a deleted ticket cannot be moved: restore it first.
 pub fn move_ticket(
     board: &mut Board,
     id_or_key: &str,
@@ -518,18 +665,28 @@ pub fn move_ticket(
     let Some(id) = resolve_id(board, id_or_key) else {
         return Ok(None);
     };
+    if board.tickets[&id].deleted_at.is_some() {
+        return Err("cannot move a deleted ticket".to_string());
+    }
     let actor = actor_or_user(actor);
     let previous = board.tickets[&id].status.clone();
 
-    let mut target: Vec<&Ticket> = board
+    let mut column: Vec<&Ticket> = board
         .tickets
         .values()
-        .filter(|row| row.status == status && row.deleted_at.is_none() && row.id != id)
+        .filter(|row| row.status == status && row.deleted_at.is_none())
         .collect();
-    target.sort_by(|a, b| by_order(a, b));
-    let position = index.unwrap_or(target.len()).min(target.len());
-    let mut ordered: Vec<String> = target.iter().map(|row| row.id.clone()).collect();
+    column.sort_by(|a, b| by_order(a, b));
+    let mut ordered: Vec<String> = column
+        .iter()
+        .filter(|row| row.id != id)
+        .map(|row| row.id.clone())
+        .collect();
+    let position = index.unwrap_or(ordered.len()).min(ordered.len());
     ordered.insert(position, id.clone());
+    if previous == status && column.iter().map(|row| &row.id).eq(&ordered) {
+        return Ok(Some(board.tickets[&id].clone()));
+    }
     for (offset, row_id) in ordered.into_iter().enumerate() {
         if let Some(row) = board.tickets.get_mut(&row_id) {
             row.order = offset as u64 + 1;

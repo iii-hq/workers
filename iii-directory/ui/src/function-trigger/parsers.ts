@@ -39,6 +39,12 @@ export const DIRECTORY_FUNCTION_IDS = [
   'directory::agents::functions::remove',
   'directory::registry::workers::list',
   'directory::registry::workers::info',
+  'directory::download-kit',
+  'directory::kits::apply',
+  'directory::kits::plan-update',
+  'directory::kits::remove',
+  'directory::kits::check-updates',
+  'directory::kits::list',
 ] as const
 
 export type DirectoryFunctionId = (typeof DIRECTORY_FUNCTION_IDS)[number]

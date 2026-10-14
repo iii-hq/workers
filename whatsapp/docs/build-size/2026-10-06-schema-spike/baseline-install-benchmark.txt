@@ -1,0 +1,12 @@
+goos: linux
+goarch: amd64
+pkg: github.com/iii-hq/workers/whatsapp
+cpu: Intel(R) Core(TM) i9-14900K
+BenchmarkSpikeRegistryInstall 	      55	   7204603 ns/op	 4137524 B/op	   26156 allocs/op
+BenchmarkSpikeRegistryInstall 	      58	   7265251 ns/op	 4137425 B/op	   26156 allocs/op
+BenchmarkSpikeRegistryInstall 	      58	   7266814 ns/op	 4137417 B/op	   26156 allocs/op
+BenchmarkSpikeRegistryInstall 	      55	   7131411 ns/op	 4137517 B/op	   26156 allocs/op
+BenchmarkSpikeRegistryInstall 	      56	   7209420 ns/op	 4137486 B/op	   26156 allocs/op
+BenchmarkSpikeRegistryInstall 	      57	   7477801 ns/op	 4137464 B/op	   26156 allocs/op
+PASS
+ok  	github.com/iii-hq/workers/whatsapp	2.737s

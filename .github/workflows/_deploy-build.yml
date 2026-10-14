@@ -128,6 +128,13 @@ jobs:
           toolchain: ${{ steps.metadata.outputs.toolchain_version }}
           targets: ${{ inputs.target }}
 
+      - name: Install descriptor-pinned Go toolchain
+        if: inputs.kind == 'go-binary'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ steps.metadata.outputs.toolchain_version }}
+          cache-dependency-path: ${{ steps.metadata.outputs.source_path }}/go.sum
+
       - name: Authorize cache access with GitHub OIDC
         if: inputs.kind == 'rust-binary'
         continue-on-error: true

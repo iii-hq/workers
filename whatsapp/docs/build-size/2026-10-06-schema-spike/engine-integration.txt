@@ -1,0 +1,10 @@
+=== RUN   TestEngineSmoke
+=== RUN   TestEngineSmoke/event_namespace
+--- PASS: TestEngineSmoke (5.91s)
+    --- PASS: TestEngineSmoke/event_namespace (0.14s)
+=== RUN   TestDatabaseWorkerPersistence
+--- PASS: TestDatabaseWorkerPersistence (3.29s)
+=== RUN   TestDatabaseWorkerLegacyMigration
+--- PASS: TestDatabaseWorkerLegacyMigration (3.52s)
+PASS
+ok  	github.com/iii-hq/workers/whatsapp	13.881s

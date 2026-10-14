@@ -125,7 +125,7 @@ def _image(descriptor: dict[str, Any], receipt: dict[str, Any]) -> dict[str, str
 def _registry_artifacts(kind: str, artifacts: list[dict[str, Any]], image: dict[str, str] | None) -> dict[str, Any]:
     """The `--artifacts-json` document build_publish_payload.py consumes, precomputed."""
     payload_artifacts = [artifact for artifact in artifacts if artifact["role"] != "checksum"]
-    if kind == "rust-binary":
+    if kind in {"rust-binary", "go-binary"}:
         binaries: dict[str, dict[str, str]] = {}
         for artifact in payload_artifacts:
             target = artifact["target"]

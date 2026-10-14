@@ -27,6 +27,10 @@ Each forwards to `judge-<provider>::evaluate`, `judge-<provider>::models::list`
 and `judge-<provider>::cancel`; provider workers register exactly those ids
 (`judge_contract::provider_function_id`) as internal functions, so
 `engine::functions::list` lists them only with `include_internal: true`.
+A provider that needs a key also registers `judge-<provider>::status`, which
+the hub does not forward: it answers `{"configured": bool, "reason"?: string}`
+with no network call, and the Console's judge picker reads it to warn that a
+chosen judge has no usable key.
 The [shared Rust contract](https://github.com/iii-hq/workers/blob/main/crates/judge-contract/src/lib.rs)
 defines their request and response types. The [worker skill](skills/SKILL.md)
 describes when an agent should invoke evaluation.

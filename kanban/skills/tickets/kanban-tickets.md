@@ -62,7 +62,11 @@ human reads.
 
 `kanban::ticket::update` also takes `title`, `description`, `priority` and
 `labels`; `priority` is one of the configured values (`low`, `medium`,
-`high`, `urgent` by default).
+`high`, `urgent` by default). `labels` replaces the whole set: to add or
+drop a label pass `add_labels` / `remove_labels` instead
+(`{ "id": "KAN-7", "add_labels": ["bug"], "remove_labels": ["triage"] }`),
+which edit the labels the ticket has when the write runs, so a person's or
+another agent's concurrent label edit is not overwritten.
 
 **Attribute yourself.** On a write `actor` defaults to the literal `user`,
 and on a comment so does `author`. Pass your own agent-profile id in both:

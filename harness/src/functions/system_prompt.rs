@@ -97,6 +97,10 @@ pub async fn handle(
         deps.filesystem_boundary("shell::exec").await,
         response_language,
         policy,
+        record
+            .as_ref()
+            .filter(|_| cfg.co_author)
+            .map(|record| record.options.model.as_str()),
         seeded,
     );
     let skills = record

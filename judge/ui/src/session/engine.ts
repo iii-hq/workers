@@ -26,6 +26,8 @@ export interface JudgeProvider {
   configurationId: string | null
   /** The model its settings name, when they name one. */
   model: string | null
+  /** Why it cannot answer, from its `status` (a hosted judge with no usable key); null when it can or does not say. */
+  problem: string | null
 }
 
 /** The hub's configuration entry and the default provider it stores. */
@@ -55,17 +57,34 @@ async function configuredModel(iii: Engine, configurationId: string): Promise<st
 }
 
 /**
- * Every registered judge provider with its configuration entry and model.
- * Nothing here asks a provider for its models: a local one would start
- * loading gigabytes just because the picker opened.
+ * Why `provider` cannot answer, from `judge-<provider>::status`: it resolves
+ * the key the way an evaluation would, with no network call and no model load.
+ */
+async function statusProblem(iii: Engine, provider: string): Promise<string | null> {
+  const status = await iii.trigger<{ configured?: unknown; reason?: unknown }>(
+    `judge-${provider}::status`,
+    {},
+    { timeoutMs: 5_000 },
+  )
+  if (status?.configured !== false) return null
+  return typeof status.reason === 'string' && status.reason.trim() ? status.reason : 'no usable key'
+}
+
+/**
+ * Every registered judge provider with its configuration entry, model and
+ * status. Nothing here asks a provider for its models: a local one would
+ * start loading gigabytes just because the picker opened.
  */
 export async function listJudges(iii: Engine): Promise<JudgeProvider[]> {
   const registered = await listProviders(iii)
   return Promise.all(
-    registered.map(async ({ provider, worker }) => {
-      const configurationId = await configurationIdOf(iii, `judge-${provider}::configuration-id`).catch(() => null)
+    registered.map(async ({ provider, worker, status }) => {
+      const [configurationId, problem] = await Promise.all([
+        configurationIdOf(iii, `judge-${provider}::configuration-id`).catch(() => null),
+        status ? statusProblem(iii, provider).catch(() => null) : null,
+      ])
       const model = configurationId ? await configuredModel(iii, configurationId).catch(() => null) : null
-      return { provider, worker, configurationId, model }
+      return { provider, worker, configurationId, model, problem }
     }),
   )
 }

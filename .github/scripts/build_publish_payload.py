@@ -319,7 +319,7 @@ def build_payload(
     deploy = registry_projection["type"]
     kind = artifacts.get("kind")
     expected_kind = {
-        "binary": "rust-binary",
+        "binary": {"rust-binary", "go-binary"},
         "bundle": {"javascript-bundle", "python-bundle"},
         "image": "oci-image",
     }.get(deploy)

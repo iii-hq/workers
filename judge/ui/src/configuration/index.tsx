@@ -15,12 +15,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 /** What the hub uses when the entry stores no provider. */
 export const BUILT_IN_PROVIDER = 'typesafe'
-const PROVIDER_FUNCTION = /^judge-([a-z0-9-]{1,64})::(evaluate|configuration-id)$/
+const PROVIDER_FUNCTION = /^judge-([a-z0-9-]{1,64})::(evaluate|configuration-id|status)$/
 
 export interface RegisteredProvider {
   provider: string
   worker: string
   namespace: string
+  /** It answers `judge-<provider>::status` (a hosted judge saying whether it holds a key). */
+  status: boolean
 }
 interface FunctionsList {
   functions?: { function_id: string; namespace?: string; worker_name?: string }[]
@@ -41,8 +43,10 @@ export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> 
   for (const fn of reply?.functions ?? []) {
     const match = PROVIDER_FUNCTION.exec(fn.function_id)
     if (!match) continue
-    const [, provider] = match
-    if (!seen.has(provider)) seen.set(provider, { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '' })
+    const [, provider, surface] = match
+    const entry = seen.get(provider) ?? { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '', status: false }
+    if (surface === 'status') entry.status = true
+    seen.set(provider, entry)
   }
   return [...seen.values()].sort((a, b) => a.provider.localeCompare(b.provider))
 }

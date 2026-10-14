@@ -1,0 +1,7 @@
+● Done. The parser now keeps the title field last.
+
+※ recap: The parser change is merged; nothing else is pending.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ draft of the next mess
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

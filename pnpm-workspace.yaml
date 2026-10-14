@@ -50,6 +50,8 @@ packages:
   - onboarding/ui
   - stories/ui
   - ios-simulator/ui
+  - whatsapp/ui
+  - tmux/ui
 
 # One pin per shared toolchain package; every worker UI and the shared
 # packages reference these as `"catalog:"` so a bump lands in one place.
@@ -74,6 +76,6 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@pierre/trees@1.0.0-beta.6'
-  - '@iii-dev/helpers@0.23.0'
-  - 'iii-browser-sdk@0.23.0'
-  - 'iii-sdk@0.23.0'
+  - '@iii-dev/helpers@0.24.5'
+  - 'iii-browser-sdk@0.24.5'
+  - 'iii-sdk@0.24.5'

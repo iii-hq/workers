@@ -30,7 +30,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       onChange={(e) => onChange(e.currentTarget.value)}
       className={cn(
         'h-12 w-full rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink sm:h-9 sm:text-[13px]',
-        'placeholder:text-ink-ghost',
+        'placeholder:text-ink',
         'hover:bg-surface-hover focus:outline-none focus:border-rule-focus focus:ring-[3px] focus:ring-accent/10 transition-[border-color,box-shadow,background-color]',
         'disabled:opacity-40 disabled:pointer-events-none',
         className,

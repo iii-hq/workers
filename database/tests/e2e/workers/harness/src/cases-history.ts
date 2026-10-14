@@ -1,4 +1,4 @@
-import type { ISdk } from 'iii-sdk'
+import type { IIIClient } from 'iii-sdk'
 import type { TestCase, CaseContext } from './cases.ts'
 import { expect, expectEqual } from './cases.ts'
 
@@ -57,7 +57,7 @@ interface MockState {
   unregister(): void
 }
 
-function registerMockState(iii: ISdk): MockState {
+function registerMockState(iii: IIIClient): MockState {
   const mock: MockState = {
     store: new Map(),
     gets: new Map(),

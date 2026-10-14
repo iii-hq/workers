@@ -9,7 +9,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0"
+    "iii-sdk": "0.24.5"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

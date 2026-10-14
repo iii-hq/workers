@@ -29,7 +29,8 @@ use std::time::{Duration, Instant};
 use crate::{PUBLISH_FUNCTION_ID, TRIGGER_TYPE};
 
 /// Public migration guide for iii-stream and pubsub.
-pub const MIGRATION_GUIDE_URL: &str = "https://iii.dev/docs/upgrading/migrate-from-streams";
+/// Pinned to the guide in iii-hq/iii#2281 until it is published on the docs site.
+pub const MIGRATION_GUIDE_URL: &str = "https://github.com/iii-hq/iii/blob/6901a589dd39d9c34f9d5b6bd8bc82170ee21548/docs/next/upgrading/migrate-from-streams.mdx";
 /// Minimum time between two warnings for the same `(entry point, caller)` key.
 pub const WARN_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Maximum number of distinct `(entry point, caller)` keys tracked.
@@ -230,7 +231,7 @@ mod tests {
             deprecation_message("publish"),
             "publish is deprecated (pubsub) and will be removed in an upcoming release. \
              Behavior is unchanged for now. Migration guide: \
-             https://iii.dev/docs/upgrading/migrate-from-streams"
+             https://github.com/iii-hq/iii/blob/6901a589dd39d9c34f9d5b6bd8bc82170ee21548/docs/next/upgrading/migrate-from-streams.mdx"
         );
     }
 

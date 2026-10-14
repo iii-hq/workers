@@ -454,6 +454,16 @@ rules:
   - '!vscode::ui-content'
   - vscode::start
   - vscode::instances::list
+  # tmux: reading sessions, agent states and ports is safe. Creating,
+  # renaming, selecting (switches the person's own terminal) and killing stay
+  # approval-gated. The Console terminal types into the person's sessions and
+  # is driven only by the page; config reload and Console asset are internal.
+  - '!tmux::terminal::*'
+  - '!tmux::on-config-change'
+  - '!tmux::ui-content'
+  - tmux::status
+  - tmux::sessions::list
+  - tmux::ports::list
   # tailscale: read-only status/configuration are safe; share publishes the
   # Console on a new listener and stop tears a route down, so both stay
   # approval-gated. Config-reload callback and Console asset are bus-internal.

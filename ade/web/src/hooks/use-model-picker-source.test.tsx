@@ -6,13 +6,17 @@ import type { ProviderListEntry } from '@/lib/models-catalog'
 import { useModelPickerSource } from './use-model-picker-source'
 
 const mocks = vi.hoisted(() => ({ providers: vi.fn(), catalog: vi.fn() }))
-vi.mock('@/lib/models-catalog', async (original) => ({
-  ...(await original<typeof import('@/lib/models-catalog')>()),
-  fetchProviderList: mocks.providers,
-  fetchModelsCatalog: mocks.catalog,
-  subscribeModelsChanged: async () => () => {},
-  subscribeProviderChanges: async () => () => {},
-}))
+vi.mock(
+  '@/lib/models-catalog',
+  async (original) =>
+    ({
+      ...(await original<typeof import('@/lib/models-catalog')>()),
+      fetchProviderList: mocks.providers,
+      fetchModelsCatalog: mocks.catalog,
+      subscribeModelChanges: async () => () => {},
+      subscribeProviderChanges: async () => () => {},
+    }) satisfies typeof import('@/lib/models-catalog'),
+)
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
@@ -22,10 +26,16 @@ it('an older provider/catalog snapshot cannot overwrite a newer retry result', a
   let second!: (providers: ProviderListEntry[]) => void
   mocks.providers
     .mockImplementationOnce(
-      () => new Promise((resolve) => { first = resolve }),
+      () =>
+        new Promise((resolve) => {
+          first = resolve
+        }),
     )
     .mockImplementationOnce(
-      () => new Promise((resolve) => { second = resolve }),
+      () =>
+        new Promise((resolve) => {
+          second = resolve
+        }),
     )
   mocks.catalog.mockResolvedValue([])
   let source!: ReturnType<typeof useModelPickerSource>
@@ -45,8 +55,13 @@ it('an older provider/catalog snapshot cannot overwrite a newer retry result', a
   try {
     await act(async () => root.render(<Probe />))
     let refresh!: Promise<void>
-    await act(async () => { refresh = source.refresh() })
-    await act(async () => { second([provider('success')]); await refresh })
+    await act(async () => {
+      refresh = source.refresh()
+    })
+    await act(async () => {
+      second([provider('success')])
+      await refresh
+    })
     expect(container.textContent).toBe('success')
     await act(async () => first([provider('billing')]))
     expect(container.textContent).toBe('success')

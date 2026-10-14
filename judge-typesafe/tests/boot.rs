@@ -112,6 +112,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
             "judge-typesafe::evaluate".to_owned(),
             "judge-typesafe::models::list".to_owned(),
             "judge-typesafe::cancel".to_owned(),
+            "judge-typesafe::status".to_owned(),
             "judge-typesafe::on-config-change".to_owned(),
             "judge-typesafe::on-secret-change".to_owned(),
         ]);

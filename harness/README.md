@@ -206,6 +206,7 @@ max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
 max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
+co_author: true                  # tell agents to end git commit messages with "Co-authored-by: iii harness (<model>) <noreply@iii.dev>"
 call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep

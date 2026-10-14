@@ -539,13 +539,13 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
                 raise ValueError(f"{catalog_path}: duplicate publishable worker name {catalog_id!r}")
             publish_names.add(catalog_id)
         artifact_kind = artifact.get("kind")
-        if artifact_kind not in {"rust-binary", "javascript-bundle", "python-bundle", "oci-image"}:
+        if artifact_kind not in {"rust-binary", "go-binary", "javascript-bundle", "python-bundle", "oci-image"}:
             raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.kind is unsupported")
         manifest = source.get("package_manifest")
         binary = artifact.get("binary")
         if not isinstance(manifest, str) or not manifest:
             raise ValueError(f"{catalog_path}: workers.{catalog_id}.source.package_manifest is required")
-        if artifact_kind == "rust-binary":
+        if artifact_kind in {"rust-binary", "go-binary"}:
             targets = artifact.get("targets")
             if not isinstance(targets, list) or not targets or not all(isinstance(target, str) for target in targets):
                 raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.targets must be non-empty")
@@ -554,7 +554,7 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
         public = read_iii_worker_yaml(worker_path)
         public_dependencies = public.raw.get("dependencies") or {}
         runtime = {
-            "exec": [binary or catalog_id] if artifact_kind == "rust-binary" else [],
+            "exec": [binary or catalog_id] if artifact_kind in {"rust-binary", "go-binary"} else [],
             "manifest": public.raw.get("runtime") or {},
             "scripts": public.raw.get("scripts") or {},
             "environment": public.raw.get("env") or {},

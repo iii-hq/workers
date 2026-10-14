@@ -5,8 +5,10 @@
  * `harness_context/<session id>`) on mount and per session change; stays live
  * over the state worker's own `state` trigger for that key (Message-path
  * binding, GC'd with the tab), which fires on every generate step. Click opens
- * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — with a
- * stacked segment bar, legend, and last-turn actuals.
+ * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — with the
+ * window (stacked bar, legend, last step), the conversation's usage from
+ * `harness::metrics` (plus a with-sub-agents column and one row per
+ * sub-agent when it spawned any), and the session id with copy.
  *
  * The chip answers to the PANE, not the viewport: under a 30rem-wide chat
  * pane (a phone, or a narrow split) it drops to its counts — the bar and the
@@ -27,22 +29,56 @@ import {
   DialogTitle,
   DialogTrigger,
   type Host,
+  IconButton,
+  KeyCombo,
+  type LiveAnnouncement,
+  ListItem,
+  LiveRegion,
+  Skeleton,
+  StatusPanel,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { ChevronDown } from 'lucide-react'
+import {
+  ArrowUpRight,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  CornerDownRight,
+  TriangleAlert,
+} from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { formatCost, formatTokens } from '../lib/format'
+import { COLOR_FREE, categories, type LegendEntry, legendRows, percentOf } from '../lib/legend'
 import {
   type ContextSnapshot,
+  type ConversationTree,
+  cacheHitPct,
+  conversationTree,
   isSnapshot,
-  type SnapshotUsage,
+  type MetricsResponse,
+  parseMetrics,
+  type SubAgentRow,
+  type UsageCounters,
 } from '../lib/metrics'
 import { TONE_COLOR, toneFor } from '../lib/tone'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
+const METRICS_FN = 'harness::metrics'
+/** `harness::metrics` re-reads every transcript of the tree; a big tree takes
+    seconds. Past this the skeleton gives way to the error and its retry. */
+const METRICS_TIMEOUT_MS = 30_000
 /** Phone chrome only (sheet vs dialog), the console's one viewport breakpoint. */
 const PHONE_QUERY = '(max-width: 639px)'
 
@@ -77,246 +113,141 @@ function usePhone(): boolean {
   return phone
 }
 
-const ink = (opacity: number) =>
-  `color-mix(in srgb, var(--color-ink) ${opacity}%, transparent)`
-const accent = (opacity: number) =>
-  `color-mix(in srgb, var(--color-accent) ${opacity}%, transparent)`
-
-const COLOR_FREE = 'var(--color-rule-2)'
-
-type CategoryKey =
-  | 'system'
-  | 'skills'
-  | 'tools'
-  | 'user'
-  | 'assistant'
-  | 'results'
-  | 'hooks'
-  | 'overhead'
-
-interface Category {
-  key: CategoryKey
-  label: string
-  color: string
-  tokens: number
-}
-
-/** The three categories the legend shows as one "Conversation" row. */
-const CONVERSATION_KEYS: CategoryKey[] = ['user', 'assistant', 'results']
+/**
+ * `harness::metrics` for the open dialog. `data` is the last good answer: it
+ * stays on screen while a refresh is in flight and when one fails. `key` is
+ * the session and turn it answered for.
+ */
+type MetricsState =
+  | { status: 'idle' }
+  | { status: 'loading'; data?: MetricsResponse; key?: string }
+  | { status: 'ready'; data: MetricsResponse; key: string }
+  | { status: 'error'; error: string; data?: MetricsResponse; key?: string }
 
 /**
- * Every category of the assembled window, in bar order. The single source
- * for both the stacked bar (which draws each entry) and the legend (which
- * merges the conversation entries into one row).
+ * Usage comes from `harness::metrics`, which re-reads every transcript of the
+ * session tree — too heavy for every generate step, or for every open. It is
+ * read when the breakdown opens on a turn it has no answer for yet, and again
+ * when a new turn lands while it stays open; Retry forces a read.
  */
-function categories(snapshot: ContextSnapshot): Category[] {
-  const cats = snapshot.categories
-  const messages = cats.messages
-  return [
-    {
-      key: 'system',
-      label: 'System prompt',
-      color: ink(80),
-      tokens: cats.system_prompt,
-    },
-    {
-      key: 'skills',
-      label: 'Skills',
-      color: ink(65),
-      tokens: cats.skills ?? 0,
-    },
-    {
-      key: 'tools',
-      label: 'Function schemas',
-      color: ink(55),
-      tokens: cats.tools,
-    },
-    { key: 'user', label: 'User', color: accent(95), tokens: messages.user },
-    {
-      key: 'assistant',
-      label: 'Assistant',
-      color: accent(70),
-      tokens: messages.assistant,
-    },
-    {
-      key: 'results',
-      label: 'Function results',
-      color: accent(45),
-      tokens: messages.function_result + messages.custom,
-    },
-    {
-      key: 'hooks',
-      label: 'Hook guidance',
-      color: ink(35),
-      // Optional on the wire (serde default): absent in snapshots written
-      // before the category existed.
-      tokens: cats.hook_guidance ?? 0,
-    },
-    {
-      key: 'overhead',
-      label: 'Overhead',
-      color: ink(20),
-      tokens: cats.overhead,
-    },
-  ]
-}
-
-/**
- * The prompt cache view of the last generation. Providers bill a cache read
- * at a fraction of fresh input and a cache write at a premium, so on a long
- * session the hit rate drives cost more than the window size does. `null`
- * when the provider reported no cache activity at all.
- */
-function cacheSummary(usage: SnapshotUsage | undefined) {
-  const read = usage?.cache_read ?? 0
-  const write = usage?.cache_write ?? 0
-  if (read === 0 && write === 0) return null
-  const prompt = (usage?.input ?? 0) + read + write
-  const hitPct = prompt > 0 ? Math.round((read / prompt) * 100) : 0
-  return {
-    read,
-    write,
-    hitPct,
-    // A cold or broken prefix means the whole prompt is re-billed at the
-    // write premium every turn, which is worth flagging rather than dimming.
-    tone: hitPct >= 70 ? 'ok' : hitPct < 30 ? 'warn' : 'plain',
-  }
-}
-
-interface LegendEntry {
-  key: string
-  label: string
-  /** `null` renders an invisible swatch — the row is not a bar segment. */
-  color: string | null
-  tokens: number
-  badge?: string
-}
-
-/**
- * The legend, derived from the same category array the bar draws: the three
- * conversation entries collapse into one row, empty optional rows are dropped,
- * and the two rows that are not bar segments (the compaction summary, free
- * space) take their place around the overhead row.
- */
-function legendRows(
-  snapshot: ContextSnapshot,
-  cats: Category[],
-): LegendEntry[] {
-  const conversation = cats.filter((c) => CONVERSATION_KEYS.includes(c.key))
-  const rows: LegendEntry[] = []
-  for (const category of cats) {
-    if (category.key === 'assistant') {
-      rows.push({
-        ...category,
-        label: 'Conversation',
-        tokens: conversation.reduce((sum, entry) => sum + entry.tokens, 0),
-      })
-      continue
-    }
-    if (CONVERSATION_KEYS.includes(category.key)) continue
-    if (
-      (category.key === 'hooks' || category.key === 'skills') &&
-      category.tokens <= 0
+function useConversationMetrics(
+  host: Host,
+  sessionId: string,
+  open: boolean,
+  turnId: string | undefined,
+) {
+  const [state, setState] = useState<MetricsState>({ status: 'idle' })
+  const [attempt, setAttempt] = useState(0)
+  const forced = useRef(0)
+  // Read by the fetch effect to skip a turn it already has an answer for.
+  const current = useRef(state)
+  current.current = state
+  const key = `${sessionId}\n${turnId ?? ''}`
+  useEffect(() => {
+    setState({ status: 'idle' })
+  }, [sessionId])
+  useEffect(() => {
+    if (!open) return
+    const force = forced.current !== attempt
+    forced.current = attempt
+    const known = current.current
+    if (known.status === 'ready' && known.key === key && !force) return
+    let cancelled = false
+    setState((prev) =>
+      prev.status === 'idle'
+        ? { status: 'loading' }
+        : { status: 'loading', data: prev.data, key: prev.key },
     )
-      continue
-    if (category.key === 'overhead' && snapshot.compacted) {
-      rows.push({
-        key: 'summary',
-        label: 'Summary',
-        color: null,
-        tokens: snapshot.summarized_head_tokens ?? 0,
-        badge: 'compacted',
+    host.iii
+      .trigger(METRICS_FN, { session_id: sessionId }, { timeoutMs: METRICS_TIMEOUT_MS })
+      .then((value) => {
+        if (cancelled) return
+        const data = parseMetrics(value)
+        setState((prev) =>
+          data
+            ? { status: 'ready', data, key }
+            : {
+                status: 'error',
+                error: `${METRICS_FN} returned an unexpected shape`,
+                data: prev.status === 'idle' ? undefined : prev.data,
+              },
+        )
       })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setState((prev) => ({
+          status: 'error',
+          error: errorMessage(err),
+          data: prev.status === 'idle' ? undefined : prev.data,
+        }))
+      })
+    return () => {
+      cancelled = true
     }
-    rows.push(category)
-  }
-  rows.push({
-    key: 'free',
-    label: 'Free',
-    color: COLOR_FREE,
-    tokens: snapshot.free,
-  })
-  return rows
+  }, [host, sessionId, open, key, attempt])
+  return { state, retry: () => setAttempt((n) => n + 1) }
 }
 
-function LegendRow({
-  color,
-  label,
-  tokens,
-  usable,
-  badge,
-}: {
-  color: string | null
-  label: string
-  tokens: number
-  usable: number
-  badge?: string
-}) {
-  const pct = usable > 0 ? Math.round((tokens / usable) * 100) : 0
+function LegendRow({ row, usable }: { row: LegendEntry; usable: number }) {
   return (
-    <div className="harness-ui-legend-row">
+    <div
+      className="harness-ui-legend-row"
+      data-group={row.group ? '' : undefined}
+      data-sub={row.sub ? '' : undefined}
+    >
       <span
         className="harness-ui-swatch"
-        style={color ? { background: color } : { visibility: 'hidden' }}
+        style={row.color ? { background: row.color } : { visibility: 'hidden' }}
       />
-      <span className="harness-ui-legend-label">{label}</span>
-      {badge ? <Badge variant="warn">{badge}</Badge> : null}
-      <span className="harness-ui-legend-val">{formatTokens(tokens)}</span>
-      <span className="harness-ui-legend-pct">{pct}%</span>
+      <span className="harness-ui-legend-label">{row.label}</span>
+      {row.badge ? <Badge variant="warn">{row.badge}</Badge> : null}
+      <span className="harness-ui-legend-val">{formatTokens(row.tokens)}</span>
+      <span className="harness-ui-legend-pct">{percentOf(row.tokens, usable)}</span>
     </div>
   )
 }
 
-/** Footer row: the session id (the `state::get` / session-store key),
-    truncated to fit the popover, with a copy affordance. */
-function SessionIdRow({ sessionId }: { sessionId: string }) {
-  const { state, copy } = useCopyFlash(sessionId, 1200)
+function SectionHead({ id, title, meta }: { id: string; title: string; meta?: ReactNode }) {
   return (
-    <span className="harness-ui-pop-session">
-      <span className="harness-ui-pop-session-id" title={sessionId}>
-        session {sessionId}
-      </span>
-      <Button variant="ghost" size="sm" onClick={copy} aria-label="copy session id">
-        {state === 'copied' ? 'copied' : 'copy'}
-      </Button>
-    </span>
-  )
-}
-
-/** The dialog's title and one-line descriptor: model, then usage. */
-function PopoverHead({ model, usage }: { model: string; usage: string }) {
-  return (
-    <div className="harness-ui-pop-head">
-      <DialogTitle>Context breakdown</DialogTitle>
-      <DialogDescription className="harness-ui-pop-usage">
-        {model} · {usage}
-      </DialogDescription>
+    <div className="harness-ui-section-head">
+      <h3 id={id} className="harness-ui-section-title">
+        {title}
+      </h3>
+      {meta ? <span className="harness-ui-section-meta">{meta}</span> : null}
     </div>
   )
 }
 
-function ContextPopover({
-  snapshot,
-  modelId,
-  sessionId,
-}: {
-  snapshot: ContextSnapshot
-  modelId?: string
-  sessionId: string
-}) {
+/** The window: provenance, stacked bar, legend, and the last step's actuals. */
+function WindowSection({ snapshot }: { snapshot: ContextSnapshot }) {
+  const headingId = useId()
   const usable = snapshot.usable
-  const pct =
-    usable > 0 ? Math.round(Math.min(1, snapshot.total / usable) * 100) : 0
   const cats = categories(snapshot)
   const usage = snapshot.usage
-  const hasActuals =
-    usage != null && (usage.input != null || usage.cache_read != null)
-  const cache = cacheSummary(usage)
+  const estimated = !snapshot.estimator || snapshot.estimator === 'heuristic'
+  const prompt = (usage?.input ?? 0) + (usage?.cache_read ?? 0) + (usage?.cache_write ?? 0)
+  const hasActuals = usage != null && (usage.input != null || usage.cache_read != null)
+  const hit =
+    usage && (usage.cache_read ?? 0) + (usage.cache_write ?? 0) > 0
+      ? cacheHitPct({
+          turns: 1,
+          function_calls: 0,
+          function_call_errors: 0,
+          input_tokens: usage.input ?? 0,
+          cache_read_tokens: usage.cache_read ?? 0,
+          cache_write_tokens: usage.cache_write,
+        })
+      : null
   return (
-    <div className="harness-ui-pop">
-      <PopoverHead
-        model={snapshot.model || modelId || 'model'}
-        usage={`${pct}% of ${formatTokens(usable)}`}
+    <section className="harness-ui-section" aria-labelledby={headingId}>
+      <SectionHead
+        id={headingId}
+        title="Context window"
+        meta={
+          estimated
+            ? `estimate · ${snapshot.estimator ?? 'unknown'}`
+            : `exact · ${snapshot.estimator === 'provider' ? 'provider tokenizer' : snapshot.estimator}`
+        }
       />
       <div className="harness-ui-stack">
         {cats
@@ -334,98 +265,470 @@ function ContextPopover({
       </div>
       <div className="harness-ui-legend">
         {legendRows(snapshot, cats).map((row) => (
-          <LegendRow
-            key={row.key}
-            color={row.color}
-            label={row.label}
-            tokens={row.tokens}
-            usable={usable}
-            badge={row.badge}
+          <LegendRow key={row.key} row={row} usable={usable} />
+        ))}
+      </div>
+      {hasActuals ? (
+        <div className="harness-ui-step">
+          <span className="harness-ui-step-label">Last step</span>
+          {/* `prompt` is the whole prompt the provider read (fresh input plus
+              cache read and write), unlike Usage's uncached input. */}
+          <span className="harness-ui-step-val">
+            {formatTokens(prompt)} prompt · {formatTokens(usage?.output ?? 0)} out
+            {hit != null ? (
+              <>
+                {' · '}
+                <span
+                  className="harness-ui-step-hit"
+                  title={
+                    'cache read is billed at a fraction of fresh input; cache write ' +
+                    'carries a premium. This is the cached share of the prompt.'
+                  }
+                >
+                  {hit}% cached
+                </span>
+              </>
+            ) : null}
+            {usage?.cost_usd != null ? <> · {formatCost(usage.cost_usd)}</> : null}
+          </span>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+interface UsageRowSpec {
+  key: string
+  label: string
+  value: (usage: UsageCounters) => ReactNode
+  strong?: boolean
+}
+
+const tokensOrDash = (n: number | undefined) => (n == null ? '—' : formatTokens(n))
+
+/** Cache hit tone: a cold or broken prefix re-bills the whole prompt at the
+    write premium every turn, which is worth a mark. */
+const hitTone = (pct: number) => (pct >= 70 ? 'ok' : pct < 30 ? 'warn' : undefined)
+
+/** `turns` on the wire counts assistant messages — model steps, not the
+    user's turns — so the label says steps. */
+const USAGE_ROWS: UsageRowSpec[] = [
+  {
+    key: 'cost',
+    label: 'Cost',
+    strong: true,
+    value: (u) => (u.cost_usd == null ? '—' : formatCost(u.cost_usd)),
+  },
+  { key: 'steps', label: 'Model steps', value: (u) => String(u.turns) },
+  {
+    key: 'calls',
+    label: 'Function calls',
+    value: (u) =>
+      u.function_call_errors > 0
+        ? `${u.function_calls} · ${u.function_call_errors} failed`
+        : String(u.function_calls),
+  },
+  { key: 'in', label: 'Uncached input', value: (u) => tokensOrDash(u.input_tokens) },
+  { key: 'out', label: 'Output', value: (u) => tokensOrDash(u.output_tokens) },
+  {
+    key: 'cache',
+    label: 'Cache read · write',
+    value: (u) => `${tokensOrDash(u.cache_read_tokens)} · ${tokensOrDash(u.cache_write_tokens)}`,
+  },
+  {
+    key: 'hit',
+    label: 'Cache hit',
+    value: (u) => {
+      const pct = cacheHitPct(u)
+      return pct == null ? (
+        '—'
+      ) : (
+        <span className="harness-ui-hit" data-tone={hitTone(pct)}>
+          {pct}%
+        </span>
+      )
+    },
+  },
+]
+
+/**
+ * The snapshot's running session cost moves on every generate step, while
+ * `harness::metrics` is read once per turn: the live figure wins for this
+ * conversation, and the subtree total moves with it.
+ */
+function withLiveCost(
+  tree: ConversationTree,
+  liveCost: number | null | undefined,
+): { self: UsageCounters; total: UsageCounters | null } {
+  if (liveCost == null) return { self: tree.self, total: tree.withSubAgents }
+  const self = { ...tree.self, cost_usd: liveCost }
+  const total = tree.withSubAgents
+  if (!total || total.cost_usd == null || tree.self.cost_usd == null) return { self, total }
+  return { self, total: { ...total, cost_usd: total.cost_usd - tree.self.cost_usd + liveCost } }
+}
+
+/**
+ * This conversation's usage, and — only when it spawned sub-agents — the
+ * same counters summed over its whole subtree in a second column.
+ */
+function UsageSection({
+  state,
+  tree,
+  liveCost,
+  onRetry,
+}: {
+  state: MetricsState
+  tree: ConversationTree | null
+  liveCost: number | null | undefined
+  onRetry: () => void
+}) {
+  const headingId = useId()
+  if (state.status === 'idle') return null
+  const failure =
+    state.status === 'error' ? (
+      <StatusPanel
+        variant="warn"
+        role="status"
+        icon={<TriangleAlert size={16} aria-hidden />}
+        headline={tree ? "Couldn't refresh usage" : 'Usage unavailable'}
+        detail={state.error}
+        action={
+          <Button variant="ghost" size="sm" onClick={onRetry}>
+            Retry
+          </Button>
+        }
+      />
+    ) : null
+  const costOnly =
+    liveCost != null ? (
+      <div className="harness-ui-usage-cost">
+        <span>Cost</span>
+        <span className="harness-ui-num">{formatCost(liveCost)}</span>
+      </div>
+    ) : null
+  // No tree to show: still loading (the skeleton, below), failed, or the
+  // answer does not carry this session (deleted mid-flight). The live cost
+  // is all there is.
+  if (!tree && state.status !== 'loading') {
+    if (!failure && !costOnly) return null
+    return (
+      <section className="harness-ui-section" aria-labelledby={headingId}>
+        <SectionHead id={headingId} title="Usage" />
+        {costOnly}
+        {failure}
+      </section>
+    )
+  }
+  if (tree && tree.self.turns === 0 && !tree.withSubAgents) {
+    return costOnly ? (
+      <section className="harness-ui-section" aria-labelledby={headingId}>
+        <SectionHead id={headingId} title="Usage" />
+        {costOnly}
+      </section>
+    ) : null
+  }
+  const shown = tree ? withLiveCost(tree, liveCost) : null
+  const self = shown?.self
+  const total = shown?.total ?? null
+  const subCount = tree?.subAgents.length ?? 0
+  return (
+    <section className="harness-ui-section" aria-labelledby={headingId} aria-busy={!tree}>
+      <SectionHead id={headingId} title="Usage" />
+      <TableViewport>
+        <Table className="harness-ui-usage">
+          {total ? (
+            <TableHeader>
+              <TableRow>
+                <TableHead>
+                  <span className="harness-ui-sr-only">Metric</span>
+                </TableHead>
+                <TableHead className="harness-ui-num">This conversation</TableHead>
+                <TableHead className="harness-ui-num">
+                  With {subCount} sub-agent{subCount === 1 ? '' : 's'}
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+          ) : null}
+          <TableBody>
+            {USAGE_ROWS.map((row) => (
+              <TableRow key={row.key} data-strong={row.strong ? '' : undefined}>
+                <TableHead scope="row">{row.label}</TableHead>
+                <TableCell className="harness-ui-num">
+                  {self ? (
+                    row.value(self)
+                  ) : row.key === 'cost' && liveCost != null ? (
+                    formatCost(liveCost)
+                  ) : (
+                    <Skeleton className="harness-ui-skeleton" />
+                  )}
+                </TableCell>
+                {total ? <TableCell className="harness-ui-num">{row.value(total)}</TableCell> : null}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableViewport>
+      {failure}
+    </section>
+  )
+}
+
+/** One row per descendant, depth-first; a click opens that conversation. */
+function SubAgentsSection({
+  tree,
+  totalCost,
+  onOpenSession,
+}: {
+  tree: ConversationTree
+  totalCost: number | undefined
+  onOpenSession?: (sessionId: string) => void
+}) {
+  const headingId = useId()
+  if (tree.subAgents.length === 0) return null
+  return (
+    <section className="harness-ui-section" aria-labelledby={headingId}>
+      <SectionHead id={headingId} title="Sub-agents" meta={tree.subAgents.length} />
+      <div className="harness-ui-subs">
+        {tree.subAgents.map((row) => (
+          <SubAgent
+            key={row.usage.session_id}
+            row={row}
+            totalCost={totalCost}
+            onOpenSession={onOpenSession}
           />
         ))}
       </div>
-      <div className="harness-ui-pop-foot">
-        <span>
-          {!snapshot.estimator || snapshot.estimator === 'heuristic'
-            ? `est. ${snapshot.estimator ?? 'unknown'}`
-            : `exact · ${
-                snapshot.estimator === 'provider'
-                  ? 'provider tokenizer'
-                  : snapshot.estimator
-              }`}
+    </section>
+  )
+}
+
+function SubAgent({
+  row,
+  totalCost,
+  onOpenSession,
+}: {
+  row: SubAgentRow
+  totalCost: number | undefined
+  onOpenSession?: (sessionId: string) => void
+}) {
+  const { usage, depth } = row
+  const context = usage.context
+  const meta = [
+    `${usage.turns} step${usage.turns === 1 ? '' : 's'}`,
+    `${usage.function_calls} call${usage.function_calls === 1 ? '' : 's'}`,
+  ]
+  if (usage.function_call_errors > 0) meta.push(`${usage.function_call_errors} failed`)
+  if (context && context.usable > 0) meta.push(`context ${percentOf(context.total, context.usable)}`)
+  const share =
+    usage.cost_usd != null && totalCost != null && totalCost > 0
+      ? `${Math.round((usage.cost_usd / totalCost) * 100)}% of cost`
+      : null
+  return (
+    <ListItem
+      as={onOpenSession ? 'button' : 'div'}
+      // Deeper levels indent under their parent row.
+      style={{ paddingLeft: `${12 + (depth - 1) * 16}px` }}
+      onClick={onOpenSession ? () => onOpenSession(usage.session_id) : undefined}
+      leading={<CornerDownRight size={16} aria-hidden />}
+      label={<span className="harness-ui-sub-id">{usage.session_id}</span>}
+      description={meta.join(' · ')}
+      trailing={
+        <span className="harness-ui-sub-trailing">
+          <span className="harness-ui-sub-cost">
+            <span>{usage.cost_usd == null ? '—' : formatCost(usage.cost_usd)}</span>
+            {share ? <span className="harness-ui-sub-share">{share}</span> : null}
+          </span>
+          {onOpenSession ? <ChevronRight className="harness-ui-sub-icon" size={16} aria-hidden /> : null}
         </span>
-        {hasActuals ? (
-          <span>
-            last step {formatTokens(usage?.input ?? 0)} in · output{' '}
-            {formatTokens(usage?.output ?? 0)}
-            {usage?.cost_usd != null ? (
-              <> · {formatCost(usage.cost_usd)}</>
-            ) : null}
-          </span>
-        ) : null}
-        {cache ? (
-          <span
-            title={
-              'cache read is billed at a fraction of fresh input; cache write ' +
-              'carries a premium. Hit rate is the cached share of the prompt.'
-            }
+      }
+    />
+  )
+}
+
+const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
+
+/**
+ * The session id (the `state::get` / session-store key) in a read-only field
+ * with a copy button. A failed copy — no clipboard access — selects the id so
+ * the keyboard shortcut finishes the job, and says so until a copy works.
+ */
+function SessionIdRow({ sessionId }: { sessionId: string }) {
+  const inputId = useId()
+  const input = useRef<HTMLInputElement>(null)
+  const { state, copy } = useCopyFlash(sessionId, 1400)
+  const [failed, setFailed] = useState(false)
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
+  useEffect(() => {
+    if (state === 'idle') return
+    if (state === 'failed') {
+      setFailed(true)
+      input.current?.focus()
+      input.current?.select()
+    } else {
+      setFailed(false)
+    }
+    setAnnouncement((prev) => ({
+      seq: (prev?.seq ?? 0) + 1,
+      text:
+        state === 'copied'
+          ? 'Session id copied'
+          : `Couldn't copy. The session id is selected, press ${MAC ? 'Command' : 'Control'} C.`,
+      urgency: state === 'copied' ? 'polite' : 'assertive',
+    }))
+  }, [state])
+  const copied = state === 'copied'
+  return (
+    <div className="harness-ui-field-block">
+      <div className="harness-ui-field-row">
+        <label htmlFor={inputId} className="harness-ui-field-label">
+          Session
+        </label>
+        <div className="harness-ui-field">
+          {/* Out of the tab order: the dialog focuses its first tabbable on
+              open, and a focused, fully selected id reads as an edit. The
+              copy button is the keyboard path; a failed copy focuses this
+              field itself. */}
+          <input
+            id={inputId}
+            ref={input}
+            className="harness-ui-field-input"
+            readOnly
+            tabIndex={-1}
+            value={sessionId}
+          />
+          <IconButton
+            label={copied ? 'Copied' : 'Copy session id'}
+            onClick={copy}
+            // The dialog may focus this button on open; a tooltip that pops
+            // up on that programmatic focus is noise. The label stays.
+            tooltip={false}
+            data-copy={state}
+            className="harness-ui-copy"
           >
-            cache {formatTokens(cache.read)} read · {formatTokens(cache.write)}{' '}
-            write ·{' '}
-            <span className="harness-ui-cache-hit" data-tone={cache.tone}>
-              {cache.hitPct}% hit
-            </span>
-          </span>
-        ) : null}
-        {snapshot.session_cost_usd != null ? (
-          <span
-            title={
-              'every generation step of this session summed. The per-step ' +
-              'cost on the line above swings with cache hits; this one only grows.'
-            }
-          >
-            session total {formatCost(snapshot.session_cost_usd)}
-          </span>
-        ) : null}
-        <SessionIdRow sessionId={sessionId} />
+            {copied ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
+          </IconButton>
+        </div>
       </div>
+      {failed ? (
+        <p className="harness-ui-copy-failed">
+          Couldn't copy. The id is selected — press{' '}
+          <KeyCombo binding="Mod+C" platform={MAC ? 'mac' : 'other'} />.
+        </p>
+      ) : null}
+      <LiveRegion announcement={announcement} />
     </div>
   )
 }
 
-function EmptyContextPopover({
-  modelId,
-  contextWindow,
-  sessionId,
+function ParentRow({
+  parentId,
+  onOpenSession,
 }: {
+  parentId: string
+  onOpenSession?: (sessionId: string) => void
+}) {
+  return (
+    <div className="harness-ui-field-row">
+      <span className="harness-ui-field-label">Spawned by</span>
+      {onOpenSession ? (
+        <button
+          type="button"
+          className="harness-ui-parent"
+          aria-label={`Open parent conversation ${parentId}`}
+          onClick={() => onOpenSession(parentId)}
+        >
+          <span className="harness-ui-parent-id">{parentId}</span>
+          <ArrowUpRight size={16} aria-hidden />
+        </button>
+      ) : (
+        <span className="harness-ui-parent">
+          <span className="harness-ui-parent-id">{parentId}</span>
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** The dialog's title and one-line descriptor: model, then usage. */
+function PopoverHead({ model, usage }: { model: string; usage: string }) {
+  return (
+    <div className="harness-ui-pop-head">
+      <DialogTitle>Context</DialogTitle>
+      <DialogDescription className="harness-ui-pop-usage">
+        {model} · {usage}
+      </DialogDescription>
+    </div>
+  )
+}
+
+interface ContextPopoverProps {
+  snapshot: ContextSnapshot | null
   modelId?: string
   contextWindow?: number
   sessionId: string
-}) {
-  const hasWindow = contextWindow !== undefined && contextWindow > 0
+  metrics: MetricsState
+  onRetry: () => void
+  onOpenSession?: (sessionId: string) => void
+}
+
+function ContextPopover({
+  snapshot,
+  modelId,
+  contextWindow,
+  sessionId,
+  metrics,
+  onRetry,
+  onOpenSession,
+}: ContextPopoverProps) {
+  const data = metrics.status === 'idle' ? undefined : metrics.data
+  const tree = data ? conversationTree(data, sessionId) : null
+  const live = snapshot && snapshot.usable > 0 ? snapshot : null
+  const liveCost = live?.session_cost_usd
+  const parentId = tree?.self.parent_session_id
+  let usage: string
+  if (live) {
+    const pct = Math.round(Math.min(1, live.total / live.usable) * 100)
+    const approx = !live.estimator || live.estimator === 'heuristic' ? '~' : ''
+    usage = `${approx}${formatTokens(live.total)} of ${formatTokens(live.usable)} · ${pct}%`
+  } else {
+    usage = 'waiting for the first step'
+  }
   return (
     <div className="harness-ui-pop">
-      <PopoverHead model={modelId || 'model'} usage="waiting for usage" />
-      {hasWindow ? (
-        <>
-          <div className="harness-ui-stack" />
-          <div className="harness-ui-legend">
-            <LegendRow
-              color={COLOR_FREE}
-              label="Free"
-              tokens={contextWindow}
-              usable={contextWindow}
-            />
-          </div>
-        </>
+      <PopoverHead model={live?.model || modelId || 'model'} usage={usage} />
+      {live ? (
+        <WindowSection snapshot={live} />
+      ) : (
+        <section className="harness-ui-section" aria-label="Context window">
+          {contextWindow && contextWindow > 0 ? (
+            <>
+              <div className="harness-ui-stack" />
+              <div className="harness-ui-legend">
+                <LegendRow
+                  row={{ key: 'free', label: 'Free', color: COLOR_FREE, tokens: contextWindow }}
+                  usable={contextWindow}
+                />
+              </div>
+            </>
+          ) : null}
+          <p className="harness-ui-note">
+            {contextWindow && contextWindow > 0
+              ? 'The breakdown appears after the first generation step.'
+              : 'The selected model did not report a context-window limit.'}
+          </p>
+        </section>
+      )}
+      <UsageSection state={metrics} tree={tree} liveCost={liveCost} onRetry={onRetry} />
+      {tree ? (
+        <SubAgentsSection
+          tree={tree}
+          totalCost={withLiveCost(tree, liveCost).total?.cost_usd}
+          onOpenSession={onOpenSession}
+        />
       ) : null}
       <div className="harness-ui-pop-foot">
-        <span>
-          {hasWindow
-            ? 'the breakdown appears after the first generation step'
-            : 'the selected model did not report a context-window limit'}
-        </span>
         <SessionIdRow sessionId={sessionId} />
+        {parentId ? <ParentRow parentId={parentId} onOpenSession={onOpenSession} /> : null}
       </div>
     </div>
   )
@@ -484,6 +787,14 @@ export function createContextChip(host: Host) {
   }: SessionChipProps) {
     const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
     const [open, setOpen] = useState(false)
+    const metrics = useConversationMetrics(host, sessionId, open, snapshot?.turn_id)
+    const selectConversation = host.chat?.selectConversation
+    const onOpenSession = selectConversation
+      ? (id: string) => {
+          setOpen(false)
+          selectConversation(id)
+        }
+      : undefined
 
     // Both the hydration read and the streamed trigger write this state;
     // keep whichever snapshot is newest so a slow state::get can never
@@ -545,6 +856,17 @@ export function createContextChip(host: Host) {
     const label = (
       <span className={`${uiClasses.eyebrow} harness-ui-chip-label`}>ctx</span>
     )
+    const popover = (
+      <ContextPopover
+        snapshot={snapshot}
+        modelId={modelId}
+        contextWindow={contextWindow}
+        sessionId={sessionId}
+        metrics={metrics.state}
+        onRetry={metrics.retry}
+        onOpenSession={onOpenSession}
+      />
+    )
 
     if (!snapshot || snapshot.usable <= 0) {
       if (contextWindow && contextWindow > 0) {
@@ -573,13 +895,7 @@ export function createContextChip(host: Host) {
                 {caret}
               </>
             }
-            popover={
-              <EmptyContextPopover
-                modelId={modelId}
-                contextWindow={contextWindow}
-                sessionId={sessionId}
-              />
-            }
+            popover={popover}
           />
         )
       }
@@ -595,7 +911,7 @@ export function createContextChip(host: Host) {
               {caret}
             </>
           }
-          popover={<EmptyContextPopover modelId={modelId} sessionId={sessionId} />}
+          popover={popover}
         />
       )
     }
@@ -639,13 +955,7 @@ export function createContextChip(host: Host) {
             {caret}
           </>
         }
-        popover={
-          <ContextPopover
-            snapshot={snapshot}
-            modelId={modelId}
-            sessionId={sessionId}
-          />
-        }
+        popover={popover}
       />
     )
   }

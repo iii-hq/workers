@@ -1,0 +1,26 @@
+{
+  "name": "@iii-workers/whatsapp-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "test": "vitest run",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "@iii-dev/console-ui": "workspace:*",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

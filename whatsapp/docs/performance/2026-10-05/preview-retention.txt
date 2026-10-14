@@ -1,0 +1,5 @@
+=== RUN   TestPerformanceCloudPreviewRetention
+    cloud_retention_performance_test.go:20: 16 parsed Cloud previews: current heap delta=16801192 bytes; clone-only experiment delta=163272 bytes; serialized preview text total=131072 bytes
+--- PASS: TestPerformanceCloudPreviewRetention (0.07s)
+PASS
+ok  	github.com/iii-hq/workers/whatsapp	0.084s

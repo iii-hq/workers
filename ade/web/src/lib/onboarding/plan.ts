@@ -147,10 +147,12 @@ export function registryChoices(
     )
     .map((row) => {
       const providerId = row.name.replace(/^provider-/, '')
-      const title = providerId
-        .split(/[-_]/)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(' ')
+      const title =
+        REGISTRY_TITLES[providerId] ??
+        providerId
+          .split(/[-_]/)
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(' ')
       return {
         kind: 'registry',
         providerId,
@@ -167,6 +169,13 @@ export function registryChoices(
         modelCount: 0,
       }
     })
+}
+
+/** Names a slug cannot spell: brand casing and punctuation. */
+const REGISTRY_TITLES: Record<string, string> = {
+  llamacpp: 'llama.cpp',
+  'llama-cpp': 'llama.cpp',
+  'opencode-go': 'OpenCode Go',
 }
 
 export interface ChoiceInputs {
@@ -328,6 +337,8 @@ export type PlanStep =
       workers: string[]
       why: Record<string, string>
     }
+  /** Unchecked in setup: take the worker out of the project again. */
+  | { kind: 'remove-workers'; workers: string[] }
   | {
       kind: 'store-secret'
       name: string
@@ -369,9 +380,15 @@ export function connectPlan(
   installedWorkers: ReadonlySet<string>,
   /** The secrets worker's env file, by name. */
   envFile: string = DEFAULT_ENV_FILE,
+  /** Connected providers the person unchecked: removed after everything else. */
+  removals: readonly ProviderChoice[] = [],
 ): PlanStep[] {
   const pending = selections.filter(({ choice }) => !choice.ready)
-  if (pending.length === 0) return []
+  const removing = removeStep(
+    removals.map((choice) => choice.worker),
+    installedWorkers,
+  )
+  if (pending.length === 0) return removing
   const why: Record<string, string> = {}
   const keyed = pending.filter(
     (selection) => selection.choice.kind === 'key' && selection.key,
@@ -423,7 +440,20 @@ export function connectPlan(
       title: choice.title,
     })
   }
-  return steps
+  return [...steps, ...removing]
+}
+
+/** One `remove-workers` step for the named workers that are running. */
+function removeStep(
+  workers: readonly string[],
+  installedWorkers: ReadonlySet<string>,
+): PlanStep[] {
+  const running = [...new Set(workers)].filter((worker) =>
+    installedWorkers.has(worker),
+  )
+  return running.length > 0
+    ? [{ kind: 'remove-workers', workers: running }]
+    : []
 }
 
 /** Why the secrets worker is added, when a key needs it. */
@@ -489,17 +519,51 @@ export function judgeWorkers(
   return why
 }
 
-/** The actions that set Judge up with one strategy. */
+export interface JudgeSelection {
+  option: JudgeOption
+  /** A hosted option not running yet needs one. */
+  key?: KeyInput
+}
+
+/**
+ * The actions that leave Judge answering with exactly the checked options:
+ * add the hub and every checked strategy not running yet (keys behind
+ * references), make the first checked one the hub's default, prove it
+ * answers, then remove the strategies that were unchecked — and the hub
+ * with them when nothing is left to answer.
+ */
 export function judgePlan(
-  option: JudgeOption,
-  key: KeyInput | undefined,
+  selections: readonly JudgeSelection[],
   installedWorkers: ReadonlySet<string>,
+  {
+    removals = [],
+    currentDefault = null,
+  }: {
+    /** Running strategies the user unchecked. */
+    removals?: readonly JudgeOption[]
+    /** The hub's `provider` setting now, when it is running. */
+    currentDefault?: string | null
+  } = {},
 ): PlanStep[] {
-  const why = judgeWorkers(option, installedWorkers, Boolean(key))
+  const hubRunning = installedWorkers.has(JUDGE_HUB_WORKER)
+  if (selections.length === 0) {
+    return removeStep(
+      [
+        ...removals.map((option) => option.worker),
+        ...(removals.length > 0 ? [JUDGE_HUB_WORKER] : []),
+      ],
+      installedWorkers,
+    )
+  }
+  const why: Record<string, string> = {}
+  for (const { option, key } of selections) {
+    Object.assign(why, judgeWorkers(option, installedWorkers, Boolean(key)))
+  }
   const steps: PlanStep[] = []
   const workers = Object.keys(why)
   if (workers.length > 0) steps.push({ kind: 'add-workers', workers, why })
-  if (option.envVar && key) {
+  for (const { option, key } of selections) {
+    if (!option.envVar || !key || installedWorkers.has(option.worker)) continue
     steps.push(
       keyStep(option.envVar, option.keyOwner ?? option.title, key, [
         option.worker,
@@ -513,19 +577,31 @@ export function judgePlan(
       owner: option.title,
     })
   }
-  steps.push({
-    kind: 'set-config',
-    configuration: JUDGE_HUB_WORKER,
-    path: ['provider'],
-    value: option.id,
-    owner: option.title,
-  })
-  steps.push({
-    kind: 'check-judge',
-    title: option.title,
-    hosted: option.envVar !== undefined,
-  })
-  return steps
+  const primary = selections[0].option
+  const changesDefault = !hubRunning || currentDefault !== primary.id
+  if (changesDefault) {
+    steps.push({
+      kind: 'set-config',
+      configuration: JUDGE_HUB_WORKER,
+      path: ['provider'],
+      value: primary.id,
+      owner: primary.title,
+    })
+  }
+  if (workers.length > 0 || changesDefault) {
+    steps.push({
+      kind: 'check-judge',
+      title: primary.title,
+      hosted: primary.envVar !== undefined,
+    })
+  }
+  return [
+    ...steps,
+    ...removeStep(
+      removals.map((option) => option.worker),
+      installedWorkers,
+    ),
+  ]
 }
 
 /**
@@ -539,6 +615,10 @@ export function describeStep(step: PlanStep): string {
       return step.workers.length === 1
         ? `Add the ${step.workers[0]} worker`
         : `Add ${step.workers.length} workers: ${joinNames(step.workers)}`
+    case 'remove-workers':
+      return step.workers.length === 1
+        ? `Remove the ${step.workers[0]} worker`
+        : `Remove ${step.workers.length} workers: ${joinNames(step.workers)}`
     case 'store-secret': {
       const envFile = step.envFile ?? DEFAULT_ENV_FILE
       if (step.input.mode === 'stored') {
@@ -559,6 +639,27 @@ export function describeStep(step: PlanStep): string {
       return `Check that ${step.title} models are ready`
     case 'check-judge':
       return `Check that ${step.title} answers`
+  }
+}
+
+/**
+ * The engine operation behind a step, as the setup log prints it under the
+ * sentence: the command a terminal would show.
+ */
+export function stepDetail(step: PlanStep): string {
+  switch (step.kind) {
+    case 'add-workers':
+      return `compose::add ${step.workers.join(' ')}`
+    case 'remove-workers':
+      return `compose::remove ${step.workers.join(' ')}`
+    case 'store-secret':
+      return `secrets::${step.input.mode === 'paste' ? 'set' : 'access'} ${step.name}`
+    case 'set-config':
+      return `configuration::set ${step.configuration} ${step.path.join('.')}`
+    case 'wait-models':
+      return `router::models::list provider=${step.providerId}`
+    case 'check-judge':
+      return 'judge::models::list'
   }
 }
 

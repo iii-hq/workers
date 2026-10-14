@@ -1,4 +1,5 @@
 import {
+  Check,
   Copy,
   ExternalLink,
   LoaderCircle,
@@ -20,6 +21,7 @@ import {
   pollDeviceLogin,
   startDeviceLogin,
 } from '@/lib/onboarding/device-login'
+import { cn } from '@/lib/utils'
 
 type Phase = 'idle' | 'fetching' | 'code' | 'waiting' | 'connected' | 'stopped'
 
@@ -28,6 +30,19 @@ const MESSAGES: Partial<Record<DevicePollStatus, string>> = {
   slow_down: 'Waiting for you to enter the code on GitHub.',
   expired: 'The code expired. Retry for a new one.',
   denied: 'GitHub sign-in was denied. Retry to start again.',
+}
+
+/** How long a copy shows as done. */
+const COPIED_MS = 2_000
+
+/** `https://github.com/login/device` as `github.com/login/device`. */
+function pageLabel(uri: string): string {
+  try {
+    const url = new URL(uri)
+    return `${url.host}${url.pathname.replace(/\/$/, '')}`
+  } catch {
+    return uri
+  }
 }
 
 /** A code GitHub has not used yet is replaced this long before it expires. */
@@ -61,11 +76,17 @@ function liveCode(providerId: string): DeviceCode | null {
 export function DeviceSignIn({
   provider,
   installed = true,
+  heading = true,
   onConnected,
 }: {
   provider: DeviceProvider
   /** The provider's worker runs, so a code can be fetched without asking. */
   installed?: boolean
+  /**
+   * Its own title and plan line. Off where the provider's row above already
+   * says both (the setup wizard).
+   */
+  heading?: boolean
   /** The sign-in landed; the provider's catalog fills next. */
   onConnected?: () => void
 }) {
@@ -76,6 +97,9 @@ export function DeviceSignIn({
   const [checking, setChecking] = useState(false)
   /** Checks in the current round that did not return the token. */
   const [failed, setFailed] = useState(0)
+  /** The code was just copied: the copy control shows it for a moment. */
+  const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const poller = useRef<LoginPoller | null>(null)
   const generation = useRef(0)
   const onConnectedRef = useRef(onConnected)
@@ -189,8 +213,23 @@ export function DeviceSignIn({
     next.begin()
   }
 
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current)
+    },
+    [],
+  )
+
+  const copy = async (current: DeviceCode) => {
+    const ok = await copyTextToClipboard(current.user_code)
+    if (!ok) return
+    if (copiedTimer.current) clearTimeout(copiedTimer.current)
+    setCopied(true)
+    copiedTimer.current = setTimeout(() => setCopied(false), COPIED_MS)
+  }
+
   const authenticate = (current: DeviceCode) => {
-    void copyTextToClipboard(current.user_code)
+    void copy(current)
     window.open(current.verification_uri, '_blank', 'noopener')
     watch(current)
   }
@@ -206,72 +245,99 @@ export function DeviceSignIn({
   }
 
   const started = phase === 'waiting' || phase === 'stopped'
+  const showCode =
+    code !== null && phase !== 'connected' && phase !== 'fetching'
+  const intro =
+    phase === 'idle'
+      ? `Uses ${provider.plan}, no API key. Get code adds ${provider.worker} and shows a one-time code for GitHub.`
+      : phase === 'connected'
+        ? `Signed in — uses ${provider.plan}. Its models appear in a few seconds.`
+        : heading
+          ? `Uses ${provider.plan}, no API key.`
+          : null
   return (
     <section
       aria-label={`${provider.title} sign-in`}
-      className="flex flex-col gap-2 rounded-md bg-surface p-3"
+      className="flex flex-col gap-3 rounded-lg border border-edge bg-surface p-3"
     >
-      <header className="flex items-center justify-between gap-2">
-        <span className="font-sans text-[13px] font-medium text-ink">
-          Sign in with GitHub
-        </span>
-        {phase === 'connected' ? <Chip tone="success">Signed in</Chip> : null}
-      </header>
-      <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
-        {phase === 'connected'
-          ? `Signed in — uses ${provider.plan}. Its models appear in a few seconds.`
-          : phase === 'idle'
-            ? `Uses ${provider.plan}, no API key. Get code adds ${provider.worker} and shows a one-time code for GitHub.`
-            : `Uses ${provider.plan}, no API key. Enter this code on GitHub: Authenticate copies it and opens the page.`}
-      </p>
-      {code && phase !== 'connected' && phase !== 'fetching' ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="sr-only">One-time code:</span>
-          <span className="rounded-sm bg-panel-raised px-2 py-1 font-mono text-[15px] font-medium tracking-[0.12em] text-ink">
-            {code.user_code}
+      {heading || phase === 'connected' ? (
+        <header className="flex items-center justify-between gap-2">
+          <span className="font-sans text-[13px] font-medium text-ink">
+            Sign in with GitHub
           </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void copyTextToClipboard(code.user_code)}
+          {phase === 'connected' ? <Chip tone="success">Signed in</Chip> : null}
+        </header>
+      ) : null}
+      {intro ? (
+        <p className="font-sans text-[13px] leading-relaxed text-ink-faint">
+          {intro}
+        </p>
+      ) : null}
+      {showCode && code ? (
+        <div className="flex flex-col gap-1.5">
+          <span className="font-sans text-[12px] font-medium text-ink-faint">
+            Your one-time code
+          </span>
+          <button
+            type="button"
+            onClick={() => void copy(code)}
+            aria-label={
+              copied
+                ? `Code ${code.user_code} copied`
+                : `Copy code ${code.user_code}`
+            }
+            className={cn(
+              'group flex h-12 items-center justify-between gap-3 rounded-md border bg-panel-raised pr-2 pl-4 text-left transition-[border-color,background-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+              copied
+                ? 'border-ok/50'
+                : 'border-edge hover:border-neutral-400 dark:hover:border-neutral-600',
+            )}
           >
-            <Copy aria-hidden />
-            Copy
-          </Button>
-          <Button
-            variant="icon"
-            size="icon"
-            aria-label="New code"
-            title="New code"
-            onClick={() => void fetchCode()}
-          >
-            <RefreshCw aria-hidden />
-          </Button>
-          {started ? (
-            <Button variant="ghost" size="sm" asChild>
-              <a
-                href={code.verification_uri}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <ExternalLink aria-hidden />
-                Open GitHub
-              </a>
-            </Button>
-          ) : null}
+            <span className="select-all font-mono text-[18px] font-semibold tracking-[0.18em] text-ink">
+              {code.user_code}
+            </span>
+            <span
+              className={cn(
+                'flex h-8 items-center gap-1.5 rounded-sm px-2.5 font-sans text-[13px] font-medium transition-colors duration-150',
+                copied
+                  ? 'text-ok'
+                  : 'text-ink-faint group-hover:bg-surface-hover group-hover:text-ink',
+              )}
+              aria-hidden
+            >
+              {copied ? (
+                <Check className="size-4 shrink-0" />
+              ) : (
+                <Copy className="size-4 shrink-0" />
+              )}
+              {copied ? 'Copied' : 'Copy'}
+            </span>
+          </button>
+          <span className="font-sans text-[12px] text-ink-faint">
+            Paste it at{' '}
+            <a
+              href={code.verification_uri}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-ink underline decoration-neutral-400 underline-offset-2 hover:decoration-ink dark:decoration-neutral-600"
+            >
+              {pageLabel(code.verification_uri)}
+            </a>
+            .
+          </span>
+          <span className="sr-only" role="status" aria-live="polite">
+            {copied ? 'Code copied to the clipboard.' : ''}
+          </span>
         </div>
       ) : null}
       {phase === 'fetching' || (message && phase !== 'connected') ? (
         <p
-          className="flex items-center gap-1.5 font-sans text-[12px] text-ink-faint"
+          className="flex items-center gap-1.5 font-sans text-[13px] text-ink-faint"
           role="status"
           aria-live="polite"
         >
           {phase === 'fetching' || (phase === 'waiting' && checking) ? (
-            <LoaderCircle
-              className="iii-ui-spin size-3.5 shrink-0"
-              aria-hidden
-            />
+            <LoaderCircle className="iii-ui-spin size-4 shrink-0" aria-hidden />
           ) : null}
           <span>
             {message ?? (phase === 'fetching' ? 'Getting a code…' : null)}
@@ -284,8 +350,8 @@ export function DeviceSignIn({
           </span>
         </p>
       ) : null}
-      {phase !== 'connected' ? (
-        <span className="flex items-center gap-2">
+      {phase !== 'connected' && phase !== 'fetching' ? (
+        <span className="flex flex-wrap items-center gap-2">
           {phase === 'idle' ? (
             <Button size="sm" onClick={() => void fetchCode()}>
               Get code
@@ -293,13 +359,37 @@ export function DeviceSignIn({
           ) : null}
           {phase === 'code' && code ? (
             <Button size="sm" onClick={() => authenticate(code)}>
-              Authenticate
+              Copy code &amp; open GitHub
+              <ExternalLink aria-hidden />
+            </Button>
+          ) : null}
+          {started && code ? (
+            <Button variant="pill" size="sm" asChild>
+              <a
+                href={code.verification_uri}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <ExternalLink aria-hidden />
+                Open GitHub
+              </a>
             </Button>
           ) : null}
           {started ? (
             <Button variant="pill" size="sm" onClick={retry}>
               <RotateCw aria-hidden />
               Retry
+            </Button>
+          ) : null}
+          {showCode ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto"
+              onClick={() => void fetchCode()}
+            >
+              <RefreshCw aria-hidden />
+              New code
             </Button>
           ) : null}
         </span>

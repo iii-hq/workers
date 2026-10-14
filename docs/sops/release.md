@@ -9,6 +9,10 @@ by hand.
 The selected source commit must contain the worker's `.deploy/workers.yaml`
 entry and public `iii.worker.yaml`. The package-manifest version is source
 metadata; Release Control owns the exact version being released.
+For Go binaries, `package.json` owns that metadata version while `go.mod`
+declares the toolchain and module dependencies. The release build stamps
+`main.version` from the descriptor's package version; see
+[`go-binary-worker.md`](go-binary-worker.md).
 
 [`deploy-descriptor-index.yml`](../../.github/workflows/deploy-descriptor-index.yml)
 compiles every worker at the source SHA with the Workers-owned compiler. Its

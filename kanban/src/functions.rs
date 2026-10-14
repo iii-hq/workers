@@ -28,12 +28,13 @@ use crate::events::{
 use crate::mentions;
 use crate::store::{Activity, Board, BoardStore, Comment, ConfigCell, Ticket, config_snapshot};
 
-pub const FUNCTION_IDS: [&str; 15] = [
+pub const FUNCTION_IDS: [&str; 16] = [
     "kanban::config::info",
     "kanban::board::get",
     "kanban::ticket::create",
     "kanban::ticket::get",
     "kanban::ticket::list",
+    "kanban::ticket::links",
     "kanban::ticket::update",
     "kanban::ticket::move",
     "kanban::ticket::delete",
@@ -104,6 +105,12 @@ pub struct TicketGetInput {
     pub id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TicketLinksInput {
+    /// Ticket uuid or human-readable key (KAN-1, case-insensitive).
+    pub id: String,
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TicketListInput {
     /// Column id.
@@ -143,8 +150,15 @@ pub struct TicketUpdateInput {
     /// Agent profile id, or null to unassign.
     #[serde(default, deserialize_with = "double_option")]
     pub assignee: Option<Option<String>>,
+    /// Replaces the whole label set. Prefer add_labels / remove_labels: they edit the labels the ticket has when the write runs, so concurrent label edits do not overwrite each other.
     #[serde(default)]
     pub labels: Option<Vec<String>>,
+    /// Labels to add to the current ones; one already present (ASCII case ignored) is skipped. Applied after `labels` and `remove_labels`.
+    #[serde(default)]
+    pub add_labels: Option<Vec<String>>,
+    /// Labels to drop from the current ones (ASCII case ignored). Applied after `labels`, before `add_labels`.
+    #[serde(default)]
+    pub remove_labels: Option<Vec<String>>,
     #[serde(default)]
     pub actor: Option<String>,
 }
@@ -270,6 +284,14 @@ pub struct TicketList {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
+pub struct TicketLinks {
+    /// Live tickets whose key appears in this ticket's title, description or comments, by ticket number.
+    pub mentions: Vec<TicketRow>,
+    /// Live tickets whose title, description or comments mention this ticket's key, by ticket number.
+    pub mentioned_by: Vec<TicketRow>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CommentCreated {
     pub comment: Comment,
     pub ticket: Ticket,
@@ -297,10 +319,11 @@ fn limit(value: Option<u64>) -> Option<usize> {
     value.map(|limit| limit as usize)
 }
 
-struct Outcome<T> {
-    result: T,
-    ticket: Option<Ticket>,
-    comment: Option<Comment>,
+pub struct Outcome<T> {
+    pub result: T,
+    /// The ticket to announce on `kanban:change`; `None` fires nothing.
+    pub ticket: Option<Ticket>,
+    pub comment: Option<Comment>,
 }
 
 /// Run one mutation under the store lock, then fan the result out to the
@@ -310,10 +333,13 @@ async fn apply<T>(
     event: &str,
     run: impl FnOnce(&mut Board, &BoardContext, &str) -> Result<Outcome<T>, String>,
 ) -> Result<Outcome<T>, Error> {
-    let at = board::now();
-    let outcome = ctx
+    let (outcome, at) = ctx
         .store
-        .update(|board, config| run(board, &BoardContext::from(config), &at))
+        .update(|board, config| {
+            let at = board::next_at(board, chrono::Utc::now().timestamp_millis());
+            let outcome = run(board, &BoardContext::from(config), &at)?;
+            Ok((outcome, at))
+        })
         .await
         .map_err(Error::Handler)?;
     if let Some(ticket) = &outcome.ticket {
@@ -349,10 +375,13 @@ async fn apply<T>(
     Ok(outcome)
 }
 
-fn ticket_outcome(ticket: Option<Ticket>) -> Outcome<Option<Ticket>> {
+/// The outcome of a mutation of one ticket. The event fans out only when the
+/// ticket differs from how it was before: a patch, move, delete or restore
+/// that changed nothing fires no trigger (its activity tail would be stale).
+pub fn ticket_outcome(before: Option<Ticket>, after: Option<Ticket>) -> Outcome<Option<Ticket>> {
     Outcome {
-        result: ticket.clone(),
-        ticket,
+        ticket: after.clone().filter(|_| before != after),
+        result: after,
         comment: None,
     }
 }
@@ -489,6 +518,23 @@ async fn ticket_list(ctx: Arc<Ctx>, input: TicketListInput) -> Result<TicketList
     })
 }
 
+async fn ticket_links(ctx: Arc<Ctx>, input: TicketLinksInput) -> Result<TicketLinks, Error> {
+    let config = config_snapshot(&ctx.config);
+    let board = read(&ctx).await?;
+    let (mentions, mentioned_by) = board::ticket_links(&board, &input.id, &config.id_prefix)
+        .ok_or_else(|| not_found(&input.id))?;
+    let rows = |tickets: Vec<&Ticket>| -> Vec<TicketRow> {
+        tickets
+            .into_iter()
+            .map(|ticket| row(ticket, false))
+            .collect()
+    };
+    Ok(TicketLinks {
+        mentions: rows(mentions),
+        mentioned_by: rows(mentioned_by),
+    })
+}
+
 async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<Ticket, Error> {
     let patch = UpdatePatch {
         title: input.title,
@@ -497,6 +543,8 @@ async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<Ticket
         assignee: input.assignee,
         status: input.status,
         labels: input.labels,
+        add_labels: input.add_labels,
+        remove_labels: input.remove_labels,
     };
     let actor = input
         .actor
@@ -506,8 +554,9 @@ async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<Ticket
         .unwrap_or("user")
         .to_string();
     let outcome = apply(&ctx, "ticket.updated", |board, context, at| {
+        let before = board::find_ticket(board, &input.id).cloned();
         let updated = board::update_ticket(board, &input.id, &patch, &actor, context, at)?;
-        Ok(ticket_outcome(updated.map(|result| result.ticket)))
+        Ok(ticket_outcome(before, updated.map(|result| result.ticket)))
     })
     .await?;
     outcome.result.ok_or_else(|| not_found(&input.id))
@@ -515,6 +564,7 @@ async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<Ticket
 
 async fn ticket_move(ctx: Arc<Ctx>, input: TicketMoveInput) -> Result<Ticket, Error> {
     let outcome = apply(&ctx, "ticket.moved", |board, context, at| {
+        let before = board::find_ticket(board, &input.id).cloned();
         let moved = board::move_ticket(
             board,
             &input.id,
@@ -524,7 +574,7 @@ async fn ticket_move(ctx: Arc<Ctx>, input: TicketMoveInput) -> Result<Ticket, Er
             context,
             at,
         )?;
-        Ok(ticket_outcome(moved))
+        Ok(ticket_outcome(before, moved))
     })
     .await?;
     outcome.result.ok_or_else(|| not_found(&input.id))
@@ -543,9 +593,9 @@ fn actor_of(input: &TicketRefInput) -> String {
 async fn ticket_delete(ctx: Arc<Ctx>, input: TicketRefInput) -> Result<Ticket, Error> {
     let actor = actor_of(&input);
     let outcome = apply(&ctx, "ticket.deleted", |board, _, at| {
-        Ok(ticket_outcome(board::delete_ticket(
-            board, &input.id, &actor, at,
-        )))
+        let before = board::find_ticket(board, &input.id).cloned();
+        let after = board::delete_ticket(board, &input.id, &actor, at);
+        Ok(ticket_outcome(before, after))
     })
     .await?;
     outcome.result.ok_or_else(|| not_found(&input.id))
@@ -554,9 +604,9 @@ async fn ticket_delete(ctx: Arc<Ctx>, input: TicketRefInput) -> Result<Ticket, E
 async fn ticket_restore(ctx: Arc<Ctx>, input: TicketRefInput) -> Result<Ticket, Error> {
     let actor = actor_of(&input);
     let outcome = apply(&ctx, "ticket.restored", |board, _, at| {
-        Ok(ticket_outcome(board::restore_ticket(
-            board, &input.id, &actor, at,
-        )))
+        let before = board::find_ticket(board, &input.id).cloned();
+        let after = board::restore_ticket(board, &input.id, &actor, at);
+        Ok(ticket_outcome(before, after))
     })
     .await?;
     outcome.result.ok_or_else(|| not_found(&input.id))
@@ -726,26 +776,32 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     );
     register(
         ctx,
+        "kanban::ticket::links",
+        "Cross-references of one ticket: the tickets it mentions and the tickets that mention it, found by key (KAN-12) in titles, descriptions and comments. Rows are the same summaries kanban::ticket::list returns. The id accepts the internal uuid or the human-readable key.",
+        ticket_links,
+    );
+    register(
+        ctx,
         "kanban::ticket::update",
-        "Update a ticket field (title, description, status, priority, assignee, labels) and return the ticket.",
+        "Update a ticket field (title, description, status, priority, assignee, labels) and return the ticket. To change labels pass add_labels / remove_labels (they edit the current labels, so concurrent edits do not overwrite each other); labels replaces the whole set. A patch that changes nothing records and fires nothing.",
         ticket_update,
     );
     register(
         ctx,
         "kanban::ticket::move",
-        "Move a ticket to a column (and position inside it); used by the board drag and drop.",
+        "Move a ticket to a column (and position inside it); used by the board drag and drop. Moving a ticket to where it already is changes nothing; a deleted ticket cannot be moved.",
         ticket_move,
     );
     register(
         ctx,
         "kanban::ticket::delete",
-        "Soft-delete a ticket: it leaves the board but stays in the board file.",
+        "Soft-delete a ticket: it leaves the board but stays in the board file. Deleting a deleted ticket changes nothing.",
         ticket_delete,
     );
     register(
         ctx,
         "kanban::ticket::restore",
-        "Put a soft-deleted ticket back on the board.",
+        "Put a soft-deleted ticket back on the board. Restoring a ticket that is not deleted changes nothing.",
         ticket_restore,
     );
     register(

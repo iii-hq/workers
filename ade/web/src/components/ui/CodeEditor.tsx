@@ -49,6 +49,9 @@ export interface CodeEditorProps {
   autoFocus?: boolean
   id?: string
   'aria-label'?: string
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
+  'aria-describedby'?: React.AriaAttributes['aria-describedby']
+  'aria-errormessage'?: React.AriaAttributes['aria-errormessage']
   /** Observes keys bubbling out of the editor (shortcuts like ⌘S) — keys
       Monaco consumes for editing never reach it. */
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>
@@ -157,6 +160,10 @@ const MONACO_OPTIONS: monacoNs.editor.IStandaloneEditorConstructionOptions = {
 /** Keyboard selections settle for this long before the bar shows. */
 const SELECTION_BAR_DELAY_MS = 160
 
+/** Monaco recognizes shorter, unmoved touches as taps. */
+const TOUCH_TAP_MAX_DISTANCE = 30
+const TOUCH_TAP_MAX_DURATION_MS = 700
+
 let selectionWidgetSeq = 0
 
 type PendingReveal =
@@ -188,6 +195,9 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       autoFocus,
       id,
       'aria-label': ariaLabel,
+      'aria-invalid': ariaInvalid,
+      'aria-describedby': ariaDescribedBy,
+      'aria-errormessage': ariaErrorMessage,
       onKeyDown,
       completions,
       fill = false,
@@ -207,6 +217,14 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     // reading the whole buffer back on each keystroke.
     const editorValueRef = React.useRef<string | null>(null)
     const pendingRevealRef = React.useRef<PendingReveal | null>(null)
+    const touchStartRef = React.useRef<{
+      pointerId: number
+      x: number
+      y: number
+      timeStamp: number
+    } | null>(null)
+    const browserTouchesRef = React.useRef(new Set<number>())
+    const browserPanPointersRef = React.useRef(new Set<number>())
     const [ready, setReady] = React.useState(false)
 
     /** Scroll the OUTER pane so `lineNumber` sits centered (growing mode). */
@@ -254,8 +272,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         )
         editor.setPosition({ lineNumber, column: Math.max(1, column) })
         editor.revealLineInCenter(lineNumber)
-        scrollOuterTo(editor, lineNumber)
         editor.focus()
+        scrollOuterTo(editor, lineNumber)
       },
       [scrollOuterTo],
     )
@@ -280,8 +298,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           endColumn: model?.getLineMaxColumn(last) ?? 1,
         })
         editor.revealLinesInCenter(first, last)
-        scrollOuterTo(editor, first)
         editor.focus()
+        scrollOuterTo(editor, first)
       },
       [scrollOuterTo],
     )
@@ -517,8 +535,9 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       if (!hasActions) hideSelectionBar()
     }, [hasActions, hideSelectionBar])
 
-    // Prop → editor sync (external value swaps, language, options).
-    React.useEffect(() => {
+    // Apply replacements during the commit: a passive effect can replay an
+    // older controlled value after Monaco has already accepted another key.
+    React.useLayoutEffect(() => {
       const editor = editorRef.current
       if (!ready || !editor || value === editorValueRef.current) return
       // The same editor refilled from outside (an agent rewriting the open
@@ -570,6 +589,43 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         if (active instanceof HTMLElement) active.blur()
       }
     }, [ready, readOnly, disabled, placeholder, ariaLabel])
+
+    // Monaco owns its editing control and can replace it when switching
+    // between a textarea and the browser's native EditContext. Validation
+    // belongs on that control so assistive technology reads it on focus.
+    React.useEffect(() => {
+      const domNode = ready ? editorRef.current?.getDomNode() : null
+      if (!domNode) return
+      const controlSelector =
+        'textarea.inputarea, .native-edit-context[role="textbox"]'
+      const syncValidation = () => {
+        const attributes = {
+          'aria-invalid': ariaInvalid,
+          'aria-describedby': ariaDescribedBy,
+          'aria-errormessage': ariaErrorMessage,
+        }
+        for (const control of domNode.querySelectorAll(controlSelector)) {
+          for (const [name, value] of Object.entries(attributes)) {
+            if (value === undefined) control.removeAttribute(name)
+            else control.setAttribute(name, String(value))
+          }
+        }
+      }
+      syncValidation()
+      const observer = new MutationObserver((records) => {
+        const controlAdded = records.some((record) =>
+          Array.from(record.addedNodes).some(
+            (node) =>
+              node instanceof Element &&
+              (node.matches(controlSelector) ||
+                node.querySelector(controlSelector)),
+          ),
+        )
+        if (controlAdded) syncValidation()
+      })
+      observer.observe(domNode, { childList: true, subtree: true })
+      return () => observer.disconnect()
+    }, [ready, ariaInvalid, ariaDescribedBy, ariaErrorMessage])
 
     // Autocomplete: a non-empty `completions` turns on the as-you-type suggest
     // popup (the default stays prose-quiet) and registers a provider for the
@@ -643,6 +699,50 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           )
         : null
 
+    const isGrowingTextAt = (x: number, y: number) => {
+      const editor = editorRef.current
+      if (fill || !editor) return false
+      const target = editor.getTargetAtClientPoint(x, y)
+      // Monaco MouseTargetType: 6 = CONTENT_TEXT, 7 = CONTENT_EMPTY,
+      // 3 = GUTTER_LINE_NUMBERS. Widgets keep their own focus behavior.
+      return target?.type === 6 || target?.type === 7 || target?.type === 3
+    }
+
+    const preparePointerFocus = (event: React.MouseEvent<HTMLDivElement>) => {
+      const editor = editorRef.current
+      if (
+        event.button !== 0 ||
+        !editor ||
+        editor.hasTextFocus() ||
+        !isGrowingTextAt(event.clientX, event.clientY)
+      )
+        return
+      // Native focus can scroll the outer pane to the old caret before
+      // Monaco resolves the original pointer event. Prepare focus without
+      // scrolling; Monaco still owns the caret, drag and modifier selection.
+      editor
+        .getDomNode()
+        ?.querySelector<HTMLElement>(
+          'textarea.inputarea, .native-edit-context[role="textbox"]',
+        )
+        ?.focus({ preventScroll: true })
+    }
+
+    const keepBrowserTouch = (event: React.TouchEvent<HTMLDivElement>) => {
+      if (
+        Array.from(event.changedTouches).some((touch) =>
+          browserTouchesRef.current.has(touch.identifier),
+        )
+      )
+        event.stopPropagation()
+    }
+
+    const finishBrowserTouch = (event: React.TouchEvent<HTMLDivElement>) => {
+      keepBrowserTouch(event)
+      for (const touch of Array.from(event.changedTouches))
+        browserTouchesRef.current.delete(touch.identifier)
+    }
+
     return (
       // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay + gap-click focus around a real editor
       <div
@@ -662,6 +762,97 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         // not inputs; every keystroke inside the editor is content.
         data-keybindings-standdown=""
         onKeyDown={onKeyDown}
+        onKeyDownCapture={(event) => {
+          if (fill || !editorRef.current?.hasTextFocus()) return
+          const target = event.target as HTMLElement
+          const reveal = () => {
+            if (!target.isConnected || document.activeElement !== target) return
+            const scroller = scrollParentOf(target)
+            if (!scroller) return
+            const bounds = target.getBoundingClientRect()
+            const viewport = scroller.getBoundingClientRect()
+            const inset =
+              Number.parseFloat(
+                getComputedStyle(target).scrollMarginBlockStart,
+              ) || 16
+            if (
+              bounds.top < viewport.top + inset ||
+              bounds.bottom > viewport.top + scroller.clientHeight - 16
+            )
+              scroller.scrollTo({
+                top: centeredScrollTop(
+                  scroller.scrollTop,
+                  bounds.top - viewport.top,
+                  scroller.clientHeight,
+                  bounds.height,
+                ),
+                behavior: 'instant',
+              })
+          }
+          // Monaco moves its native editing control on the next frame.
+          // Read its new cursor position after that render has completed.
+          requestAnimationFrame(() => requestAnimationFrame(reveal))
+        }}
+        onMouseDownCapture={preparePointerFocus}
+        onTouchStartCapture={(event) => {
+          for (const touch of Array.from(event.changedTouches)) {
+            if (isGrowingTextAt(touch.clientX, touch.clientY))
+              browserTouchesRef.current.add(touch.identifier)
+          }
+          // Monaco's document gesture handler cancels native touch scrolling
+          // and moves its internal viewport. Growing editors have no internal
+          // scroll range: leave their text gestures to the browser's pane.
+          // Native compatibility mouse events still select the tapped text.
+          keepBrowserTouch(event)
+        }}
+        onTouchMoveCapture={keepBrowserTouch}
+        onTouchEndCapture={finishBrowserTouch}
+        onTouchCancelCapture={finishBrowserTouch}
+        onPointerDownCapture={(event) => {
+          if (event.pointerType !== 'touch') return
+          if (isGrowingTextAt(event.clientX, event.clientY))
+            browserPanPointersRef.current.add(event.pointerId)
+          touchStartRef.current = {
+            pointerId: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            timeStamp: event.timeStamp,
+          }
+        }}
+        onPointerMoveCapture={(event) => {
+          if (
+            event.pointerType === 'touch' &&
+            browserPanPointersRef.current.has(event.pointerId)
+          )
+            // A tap's compatibility mousedown can leave Monaco's window
+            // drag monitor waiting past pointerup. A following touch pan
+            // must scroll the browser pane without extending that selection.
+            // Keep pointerup flowing so Monaco can stop its monitor normally.
+            event.stopPropagation()
+        }}
+        onPointerCancelCapture={(event) => {
+          if (event.pointerType !== 'touch') return
+          browserPanPointersRef.current.delete(event.pointerId)
+          if (touchStartRef.current?.pointerId === event.pointerId)
+            touchStartRef.current = null
+        }}
+        onPointerUpCapture={(event) => {
+          if (event.pointerType !== 'touch') return
+          browserPanPointersRef.current.delete(event.pointerId)
+          const start = touchStartRef.current
+          if (!start || start.pointerId !== event.pointerId) return
+          touchStartRef.current = null
+          if (
+            event.timeStamp - start.timeStamp >= TOUCH_TAP_MAX_DURATION_MS ||
+            Math.abs(event.clientX - start.x) >= TOUCH_TAP_MAX_DISTANCE ||
+            Math.abs(event.clientY - start.y) >= TOUCH_TAP_MAX_DISTANCE
+          )
+            return
+          // Touch taps are resolved on touchend, before synthetic mousedown.
+          // Pointerup precedes that gesture; waiting until now leaves pans
+          // and held touches unfocused while preserving the original tap.
+          preparePointerFocus(event)
+        }}
         onMouseDown={(e) => {
           // A caller-set min-height can leave dead space under the last
           // line; clicking it lands the caret at the end, like a textarea.
@@ -700,6 +891,9 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             // biome-ignore lint/a11y/noAutofocus: mirrors the editor's autoFocus contract
             autoFocus={autoFocus}
             aria-label={ariaLabel}
+            aria-invalid={ariaInvalid}
+            aria-describedby={ariaDescribedBy}
+            aria-errormessage={ariaErrorMessage}
             spellCheck={false}
             autoCapitalize="off"
             autoComplete="off"

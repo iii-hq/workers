@@ -149,7 +149,8 @@ tests cannot run inadvertently.
 ## Worker conventions
 
 The public runtime functions remain `judge-typesafe::evaluate`, `judge-typesafe::models::list` and
-`judge-typesafe::cancel`. Their types live in
+`judge-typesafe::cancel`, plus `judge-typesafe::status`, which tells the Console's judge picker
+whether a usable key is held. Their types live in
 [judge-contract](https://github.com/iii-hq/workers/tree/main/crates/judge-contract),
 and [src/register.rs](src/register.rs) publishes the bus schemas. Every
 registration carries `metadata.internal: true`: callers reach the provider

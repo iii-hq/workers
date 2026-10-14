@@ -6,7 +6,7 @@
 // as a plain host node process and connects to the engine over WebSocket
 // like any external client. Only storage runs as an engine-managed
 // worker; the harness is purely a client driving its RPCs.
-import { registerWorker, Logger } from 'iii-sdk';
+import { registerWorker } from 'iii-sdk';
 import { resolve } from 'node:path';
 import { Runner } from './runner.ts';
 import { ALL_PROVIDERS, type Provider } from './cases.ts';
@@ -44,7 +44,6 @@ const TRIGGER_PROVIDERS: Provider[] | undefined = TRIGGER_PROVIDERS_RAW
   : undefined;
 
 const iii = registerWorker(URL);
-const logger = new Logger();
 const runner = new Runner({
   iii,
   reportPath: REPORT_PATH,
@@ -64,7 +63,7 @@ iii.registerFunction(
   { description: 'Sink for storage::object-deleted dispatches.' },
 );
 
-logger.info('harness: registered, kicking off suite', {
+console.info('harness: registered, kicking off suite', {
   url: URL,
   filter: FILTER ?? 'all',
   reportPath: REPORT_PATH,

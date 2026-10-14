@@ -1,6 +1,6 @@
 {
   "name": "vscode",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "description": "VS Code Workbench served by the VS Code Server CLI as an injectable iii Console page.",
   "license": "Apache-2.0",
@@ -25,7 +25,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0",
+    "iii-sdk": "0.24.5",
     "yaml": "^2.6.0",
     "zod": "^4.0.0"
   },

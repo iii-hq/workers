@@ -48,8 +48,12 @@ export interface StepResult {
 }
 
 const COMPOSE_ADD_TIMEOUT_MS = 600_000
+/** The project setup adds providers to is the one running the router. */
+const ROUTER_WORKER = 'llm-router'
 /** A worker built from source can take minutes to compile on first start. */
 const WORKER_START_TIMEOUT_MS = 600_000
+/** How long a removed worker may take to disconnect. */
+const WORKER_STOP_TIMEOUT_MS = 60_000
 const MODELS_TIMEOUT_MS = 90_000
 /** A local judge may download its model on first start. */
 const JUDGE_TIMEOUT_MS = 600_000
@@ -254,6 +258,8 @@ export async function runStep(
   switch (step.kind) {
     case 'add-workers':
       return addWorkers(step.workers, context)
+    case 'remove-workers':
+      return removeWorkers(step.workers, context)
     case 'store-secret':
       return storeSecret(step)
     case 'set-config':
@@ -355,6 +361,52 @@ function operationTrigger(operationId: string): WakeTrigger {
 }
 
 /**
+ * The compose file the daemon has loaded, for `compose::add` and
+ * `compose::remove`. Without it, compose looks for `worker-compose.yaml` in
+ * its own working directory — not where a daemon started with `--file`
+ * from another directory (`workers-dev` at the repo root, the harness's
+ * file under `harness/`) keeps its project, which fails with "no
+ * worker-compose.yaml here". With several projects loaded, the one running
+ * any of `near` (the workers being removed, or `llm-router` for an add);
+ * else the first with a file. `undefined` when the daemon cannot say, in
+ * which case compose keeps its default.
+ */
+async function composeProjectFile(
+  near: readonly string[],
+): Promise<string | undefined> {
+  const client = await getIiiClient()
+  try {
+    const list = await client.trigger<ComposeList>(
+      'compose::list',
+      {},
+      { timeoutMs: 10_000 },
+    )
+    return projectFileFor(list, near)
+  } catch {
+    return undefined
+  }
+}
+
+interface ComposeList {
+  projects?: { file?: string; containers?: { container?: string }[] }[]
+}
+
+/** The loaded project running any of `near`, else the first with a file. */
+export function projectFileFor(
+  list: ComposeList | null | undefined,
+  near: readonly string[],
+): string | undefined {
+  const projects = (list?.projects ?? []).filter((project) => project.file)
+  const owner = projects.find((project) =>
+    project.containers?.some(
+      (entry) =>
+        entry.container !== undefined && near.includes(entry.container),
+    ),
+  )
+  return (owner ?? projects[0])?.file
+}
+
+/**
  * `compose::add` and follow its operation to the end through
  * `compose-operation` events: bound before the add starts, one
  * `compose::operation` read to catch up, one more when the terminal event
@@ -374,10 +426,15 @@ async function composeAdd(
     handler: 'iii::console::onboarding::compose',
     triggers: [operationTrigger(requested)],
     start: async (arm) => {
-      report({ note: 'adding to worker-compose.yaml' })
+      report({ note: 'Adding to worker-compose.yaml' })
+      const file = await composeProjectFile([ROUTER_WORKER])
       const accepted = await client.trigger<{ operation_id?: string }>(
         'compose::add',
-        { workers: sources, operation_id: requested },
+        {
+          ...(file ? { file } : {}),
+          workers: sources,
+          operation_id: requested,
+        },
         { timeoutMs: COMPOSE_ADD_TIMEOUT_MS },
       )
       const id = accepted?.operation_id ?? null
@@ -463,7 +520,7 @@ async function waitForWorkers(
       const connected = await installedWorkerNames()
       waiting = names.filter((worker) => !connected.has(worker))
       if (waiting.length === 0) return { value: undefined }
-      report({ note: `waiting for ${waiting.join(', ')} to connect` })
+      report({ note: `Waiting for ${waiting.join(', ')} to connect` })
       return null
     },
     timeoutMs: WORKER_START_TIMEOUT_MS,
@@ -473,6 +530,72 @@ async function waitForWorkers(
     silenceMs: WORKERS_SILENCE_MS,
     signal,
   })
+}
+
+/**
+ * Wait until every worker in `names` has left: the mirror of
+ * `waitForWorkers`, re-reading the list on the same events.
+ */
+async function waitForWorkersGone(
+  names: readonly string[],
+  { report, signal }: Pick<RunContext, 'report' | 'signal'>,
+): Promise<void> {
+  let lingering = [...names]
+  await waitForEvents<undefined>({
+    handler: 'iii::console::onboarding::workers-gone',
+    triggers: [
+      { type: WORKERS_AVAILABLE_TRIGGER },
+      {
+        type: WORKER_LIFECYCLE_TRIGGER,
+        config: { operations: ['remove'], stages: ['done'] },
+      },
+    ],
+    check: async () => {
+      const connected = await installedWorkerNames()
+      lingering = names.filter((worker) => connected.has(worker))
+      if (lingering.length === 0) return { value: undefined }
+      report({ note: `Waiting for ${lingering.join(', ')} to disconnect` })
+      return null
+    },
+    timeoutMs: WORKER_STOP_TIMEOUT_MS,
+    onTimeout: () => {
+      throw new Error(`${lingering.join(', ')} did not stop in time`)
+    },
+    silenceMs: WORKERS_SILENCE_MS,
+    signal,
+  })
+}
+
+/** Take workers out of the project and wait until they disconnect. */
+async function removeWorkers(
+  workers: readonly string[],
+  { report, signal }: RunContext,
+): Promise<StepResult> {
+  const client = await getIiiClient()
+  const before = await installedWorkerNames()
+  const present = workers.filter((worker) => before.has(worker))
+  if (present.length === 0) return { note: 'already removed' }
+  report({ note: 'Removing from worker-compose.yaml' })
+  const file = await composeProjectFile(present)
+  const accepted = await client.trigger<{ operation_id?: string }>(
+    'compose::remove',
+    { ...(file ? { file } : {}), workers: present },
+    { timeoutMs: COMPOSE_ADD_TIMEOUT_MS },
+  )
+  if (accepted?.operation_id) {
+    // Removal is quick; one read of the operation is enough to learn its
+    // outcome, and the worker list below is the proof.
+    const snapshot = await client.trigger<OperationSnapshot>(
+      'compose::operation',
+      { operation_id: accepted.operation_id },
+      { timeoutMs: 10_000 },
+    )
+    if (snapshot.status === 'failed') {
+      throw new Error(snapshot.last_event?.detail || 'compose failed')
+    }
+  }
+  await waitForWorkersGone(present, { report, signal })
+  return { note: `${present.join(', ')} removed` }
 }
 
 async function addWorkers(
@@ -618,8 +741,8 @@ async function waitForModels(
       if (!state?.configured) {
         report({
           note: state
-            ? 'waiting for the provider to list its models'
-            : 'waiting for the provider to register',
+            ? `Waiting for ${title} to list its models`
+            : `Waiting for ${title} to register with llm-router`,
         })
         return null
       }
@@ -627,7 +750,7 @@ async function waitForModels(
       // catalog: a rejected key comes back as an empty list, and saying so
       // now beats a timeout a minute and a half later. The answer also
       // arrives as a `router::models::changed` event, which asks once more.
-      report({ note: 'asking the provider for its models with this key' })
+      report({ note: `Waiting on response from ${title}` })
       const refreshed = await client
         .trigger<{ count?: number }>(
           `provider::${providerId}::refresh_models`,
@@ -730,7 +853,7 @@ async function checkJudge(
       return 'check'
     },
     check: async () => {
-      report({ note: `asking ${title}` })
+      report({ note: `Waiting on response from ${title}` })
       last = ''
       // The hub answers a provider failure as a result with `status:
       // "error"`, and the bus rejects with the same shape; read both alike.
@@ -753,8 +876,8 @@ async function checkJudge(
       last = answer?.provider_error?.detail?.message ?? last
       report({
         note: last
-          ? `waiting for ${title} — ${last}`
-          : `waiting for ${title} to answer`,
+          ? `Waiting on ${title}: ${last}`
+          : `Waiting on response from ${title}`,
       })
       return null
     },

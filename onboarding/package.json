@@ -1,6 +1,6 @@
 {
   "name": "onboarding",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
   "description": "Guided console tour: step content, progress in state, and a spotlight over the console.",
   "license": "Apache-2.0",
@@ -19,7 +19,7 @@
     "start": "node dist/bundle/index.mjs"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0"
+    "iii-sdk": "0.24.5"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

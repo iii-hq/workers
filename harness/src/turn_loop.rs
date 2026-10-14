@@ -596,6 +596,7 @@ async fn generate_step(
         deps.filesystem_boundary("shell::exec").await,
         record.options.response_language.as_ref(),
         record.options.functions.as_ref(),
+        cfg.co_author.then_some(record.options.model.as_str()),
         record.options.seeded_contracts.as_deref(),
     );
     let (runtime_aid, runtime_changed) = match crate::window::frozen_runtime_context(&entries) {
@@ -3687,7 +3688,9 @@ fn with_runtime_context(
 /// The response-language line names the session's pinned language, once one
 /// is (`crate::language`), right after the working directory, whose path must
 /// never be read as a hint of it. Under `configured_roots` the working
-/// directory only anchors relative paths, and its line says so. A spawned
+/// directory only anchors relative paths, and its line says so. `co_author`
+/// names the turn's model for the commit trailer line (`co_author` config,
+/// MOT-5364); a model switch reaches the model as the usual notice. A spawned
 /// child's seeded `<preloaded_functions>` block closes it: after the cache
 /// seam, so it never forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
@@ -3696,6 +3699,7 @@ pub(crate) fn runtime_context_aid(
     boundary: crate::filesystem_scope::FilesystemBoundary,
     response_language: Option<&ResponseLanguage>,
     functions: Option<&FunctionPolicy>,
+    co_author: Option<&str>,
     seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
@@ -3713,6 +3717,11 @@ pub(crate) fn runtime_context_aid(
     }
     if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
+    }
+    if let Some(model) = co_author {
+        lines.push(format!(
+            "End every git commit message you write with a blank line, then the trailer `Co-authored-by: iii harness ({model}) <noreply@iii.dev>`."
+        ));
     }
     let aid = lines.join("\n");
     match seeded_contracts {
@@ -4833,6 +4842,7 @@ mod tests {
             Some(&english),
             None,
             None,
+            None,
         );
         let lines: Vec<&str> = named.lines().collect();
         assert_eq!(lines[1], "Your working directory is /home/sergio/app.");
@@ -4841,6 +4851,7 @@ mod tests {
             "s_1",
             Some("/home/sergio/app"),
             crate::filesystem_scope::FilesystemBoundary::Workspace,
+            None,
             None,
             None,
             None,
@@ -4892,6 +4903,7 @@ mod tests {
                 crate::filesystem_scope::FilesystemBoundary::Workspace,
                 None,
                 None,
+                None,
                 seeded,
             )
         };
@@ -4918,12 +4930,35 @@ mod tests {
     #[test]
     fn working_directory_line_says_when_it_is_not_a_boundary() {
         use crate::filesystem_scope::FilesystemBoundary::*;
-        let aid =
-            |boundary| super::runtime_context_aid("s_1", Some("/w"), boundary, None, None, None);
+        let aid = |boundary| {
+            super::runtime_context_aid("s_1", Some("/w"), boundary, None, None, None, None)
+        };
         assert!(aid(Workspace).contains("Your working directory is /w.\n"));
         assert!(aid(ConfiguredRoots).contains(
             "Your working directory is /w (default directory, not an access boundary).\n"
         ));
+    }
+
+    /// Prevents: agent commits landing without the harness co-author trailer
+    /// naming the turn's model, or carrying it once an operator opted out
+    /// (MOT-5364).
+    #[test]
+    fn co_author_line_names_the_turn_model_only_when_enabled() {
+        let aid = |co_author| {
+            super::runtime_context_aid(
+                "s_1",
+                None,
+                crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
+                None,
+                co_author,
+                None,
+            )
+        };
+        assert!(aid(Some("claude-opus-5-5")).ends_with(
+            "\nEnd every git commit message you write with a blank line, then the trailer `Co-authored-by: iii harness (claude-opus-5-5) <noreply@iii.dev>`."
+        ));
+        assert!(!aid(None).contains("Co-authored-by"));
     }
 
     /// Prevents: a runtime context that changed after it was frozen into the
@@ -4936,6 +4971,7 @@ mod tests {
                 "s_1",
                 None,
                 crate::filesystem_scope::FilesystemBoundary::Workspace,
+                None,
                 None,
                 None,
                 seeded,

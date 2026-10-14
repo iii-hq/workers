@@ -7,8 +7,9 @@ export function formatTokens(n: number): string {
   return String(Math.round(n))
 }
 
+/** Cents from a dollar up; four places below it, where a single step lives. */
 export function formatCost(usd: number): string {
-  return `$${usd.toFixed(4)}`
+  return `$${usd.toFixed(Math.abs(usd) >= 1 ? 2 : 4)}`
 }
 
 function trimmed(value: number): string {

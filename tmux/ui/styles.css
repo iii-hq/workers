@@ -1,0 +1,242 @@
+@import "@xterm/xterm/css/xterm.css";
+
+/* The tmux worker's console stylesheet (asset tmux/styles.css): every rule
+   nests under [data-iii-ui="tmux"], the wrapper the console mounts around
+   the page and its configuration form. Console tokens only, except the
+   terminal's own dark canvas, declared once on the scope root. */
+
+[data-iii-ui="tmux"] {
+  --tmux-term-bg: #141414;
+
+  /* ── shared bits ─────────────────────────────────────────────────── */
+  .tmux-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .tmux-num { font-variant-numeric: tabular-nums; }
+  .tmux-faint { color: var(--color-ink-faint); }
+  .tmux-meta-icon {
+    flex: none;
+    width: 16px;
+    height: 16px;
+  }
+
+  /* ── page layout ─────────────────────────────────────────────────── */
+  .tmux-shell { min-height: 0; }
+  .tmux-side {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+  }
+  .tmux-side-top {
+    flex: none;
+    display: flex;
+    padding: 8px 8px 4px;
+  }
+  .tmux-side-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 4px 6px 12px;
+  }
+  .tmux-side-note { padding: 8px 10px; font-size: 12px; }
+
+  .tmux-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+  .tmux-tabs {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .tmux-tab {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+  /* The terminal tab stays mounted while Ports shows, so the client and its
+     scrollback survive; inactive content leaves the layout. */
+  .tmux-tab[data-state="inactive"] { display: none; }
+  .tmux-tab-scroll { overflow: auto; }
+
+  /* ── session tree ────────────────────────────────────────────────── */
+  .tmux-tree-group { display: contents; }
+  .tmux-window-index {
+    margin-right: 6px;
+    color: var(--color-ink-ghost);
+  }
+  .tmux-active-mark {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    border-radius: var(--radius-full);
+    background: var(--color-ink-faint);
+  }
+  .tmux-agent,
+  .tmux-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .tmux-agent-label {
+    color: var(--color-ink-faint);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .tmux-agent-waiting {
+    color: var(--color-warn-strong);
+    font-size: 11px;
+  }
+  .tmux-chip { font-size: 11px; }
+  .tmux-bell { color: var(--color-warn); }
+
+  /* ── terminal ────────────────────────────────────────────────────── */
+  .tmux-terminal {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+  .tmux-terminal-toolbar { flex: none; }
+  .tmux-terminal-body {
+    position: relative;
+    flex: 1;
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+  }
+  .tmux-xterm {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 6px 8px;
+    background: var(--tmux-term-bg);
+  }
+  .tmux-xterm-host,
+  .tmux-xterm .xterm {
+    width: 100%;
+    height: 100%;
+  }
+  .tmux-xterm .xterm-viewport {
+    background-color: var(--tmux-term-bg);
+    scrollbar-color: var(--color-ink-ghost) transparent;
+  }
+  .tmux-terminal-overlay {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: color-mix(in oklab, var(--color-panel) 88%, transparent);
+  }
+  .tmux-terminal-overlay > * { max-width: 520px; }
+  .tmux-terminal-statusbar { flex: none; }
+  .tmux-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tmux-font {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .tmux-font output {
+    min-width: 2ch;
+    text-align: center;
+  }
+
+  /* ── ports ───────────────────────────────────────────────────────── */
+  .tmux-ports {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 16px;
+  }
+  .tmux-ports-empty { padding: 24px; }
+  .tmux-ports-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .tmux-compose-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .tmux-compose-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .tmux-compose-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+  .tmux-compose-note { margin: 0; font-size: 12px; }
+  .tmux-port-list {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .tmux-port-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--color-ink);
+    text-decoration: none;
+  }
+  .tmux-port-link:hover { text-decoration: underline; }
+  .tmux-port-link .tmux-meta-icon { color: var(--color-ink-ghost); }
+
+  /* ── dialogs ─────────────────────────────────────────────────────── */
+  .tmux-dialog-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: 12px;
+  }
+  .tmux-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  /* ── configuration form ──────────────────────────────────────────── */
+  .tmux-config-overview,
+  .tmux-config-agent {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+  .tmux-pattern-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+  .tmux-pattern-row > :first-child {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* A narrow pane keeps the agent dot and drops its name. */
+  @container (max-width: 480px) {
+    .tmux-agent-label { display: none; }
+  }
+}

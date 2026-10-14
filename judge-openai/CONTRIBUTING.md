@@ -130,7 +130,8 @@ inadvertently.
 ## Worker conventions
 
 The public runtime functions remain `judge-openai::evaluate`, `judge-openai::models::list` and
-`judge-openai::cancel`. Their types live in
+`judge-openai::cancel`, plus `judge-openai::status`, which tells the Console's judge picker
+whether a usable key is held. Their types live in
 [judge-contract](https://github.com/iii-hq/workers/tree/main/crates/judge-contract),
 and [src/register.rs](src/register.rs) publishes the bus schemas. Every
 registration carries `metadata.internal: true`: callers reach the provider

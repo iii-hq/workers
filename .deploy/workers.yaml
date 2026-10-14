@@ -2459,6 +2459,45 @@ workers:
       binary: telegram-bot
       targets: *id001
     publish: true
+  tmux:
+    source:
+      path: tmux
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: tmux
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: tmux is a POSIX terminal multiplexer with no Windows build
+      frontends:
+      - workspace_root: .
+        source_path: tmux/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
   voice:
     source:
       path: voice
@@ -2553,6 +2592,23 @@ workers:
         - build
         outputs:
         - dist
+    publish: true
+  whatsapp:
+    source:
+      path: whatsapp
+      package_manifest: package.json
+    artifact:
+      kind: go-binary
+      toolchain:
+        name: go
+        version: 1.27.1
+      binary: whatsapp
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      windows_exception: session and inbox locking use POSIX flock and O_NOFOLLOW; Windows builds are unsupported
     publish: true
   workflow:
     source:

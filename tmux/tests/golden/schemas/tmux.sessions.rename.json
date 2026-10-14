@@ -1,0 +1,42 @@
+{
+  "description": "Rename a tmux session.",
+  "function_id": "tmux::sessions::rename",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "description": "New name. No `:` or `.`.",
+        "type": "string"
+      },
+      "session": {
+        "description": "Session id (`$5`) or exact name.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "session"
+    ],
+    "title": "RenameSessionInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "description": "New name.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "session_id"
+    ],
+    "title": "RenamedSession",
+    "type": "object"
+  }
+}

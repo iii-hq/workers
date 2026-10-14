@@ -15,12 +15,18 @@ import {
 import { cn } from '@/lib/utils'
 import {
   ActivityLog,
+  SlowStepNotice,
   StepHeader,
   StepLayout,
   type StepPosition,
   stepEyebrow,
+  useNow,
 } from './parts'
-import type { OnboardingController } from './use-onboarding'
+import {
+  type OnboardingController,
+  SKIPPED,
+  SLOW_STEP_MS,
+} from './use-onboarding'
 
 const LEAD =
   'Agents open the pages they build in Chromium to make sure they work.'
@@ -52,11 +58,16 @@ export function BrowserStep({
     installChromium,
     checkChromium,
     chromiumProgress,
+    skipStep,
   } = onboarding
   const state = snapshot.browser
   const log = activity.filter((entry) => entry.group === 'browser')
   const installedHere = log.some((entry) => entry.status === 'done')
   const installing = running === 'browser'
+  const now = useNow(installing)
+  const startedAt = log.at(-1)?.startedAt
+  const slow =
+    installing && startedAt !== undefined && now - startedAt >= SLOW_STEP_MS
   const busy = running !== null
   const [failure, setFailure] = useState<{
     error: string
@@ -79,7 +90,9 @@ export function BrowserStep({
     setFailure(null)
     setStillMissing(false)
     const outcome = await installChromium()
-    if (!outcome.ok && outcome.error !== 'cancelled') {
+    // Done, or skipped as taking too long: either way, on to the next step.
+    if (outcome.ok || outcome.error === SKIPPED) onNext()
+    else if (outcome.error !== 'cancelled') {
       setFailure({ error: outcome.error, hint: outcome.hint })
     }
   }
@@ -169,7 +182,10 @@ export function BrowserStep({
       ) : found && state ? (
         <ReadyPanel state={state} installedHere={installedHere} />
       ) : installing ? (
-        <ProgressPanel progress={chromiumProgress} state={state} />
+        <>
+          <ProgressPanel progress={chromiumProgress} state={state} />
+          {slow ? <SlowStepNotice onSkip={skipStep} /> : null}
+        </>
       ) : failure ? (
         <FailurePanel failure={failure} />
       ) : canInstall && state ? (

@@ -229,3 +229,31 @@ async fn a_secrets_changed_event_rotates_the_cached_key() {
     assert_eq!(results[1], json!({"ok": true}));
     assert_eq!(results[2]["status"], "ok", "{results:?}");
 }
+
+#[tokio::test]
+async fn status_follows_the_reference_and_never_falls_back_to_the_boot_key() {
+    let (result, _) = call_with_secret(
+        "judge-openai::status",
+        json!({}),
+        "secret://OPENAI_API_KEY",
+        Err(json!({"code": "SECRET_NOT_FOUND", "message": "no such secret"})),
+        DecisionsClient::new(Some("boot-env-key".into())),
+    )
+    .await;
+    assert_eq!(
+        result,
+        json!({
+            "configured": false,
+            "reason": "secret OPENAI_API_KEY not found in the secrets worker; store it there or fix the reference"
+        })
+    );
+    let (result, _) = call_with_secret(
+        "judge-openai::status",
+        json!({}),
+        "secret://OPENAI_API_KEY",
+        Ok(json!({"name": "OPENAI_API_KEY", "value": "sk-from-secrets"})),
+        DecisionsClient::new(None),
+    )
+    .await;
+    assert_eq!(result, json!({"configured": true}));
+}

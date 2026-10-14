@@ -34,6 +34,7 @@ import {
   type PlanStep,
   type ProviderState,
   servesUsableModels,
+  stepDetail,
   type ToolScan,
 } from '@/lib/onboarding/plan'
 import { envFileName, getSecretsStatus } from '@/lib/secrets'
@@ -46,13 +47,40 @@ export interface ActivityEntry {
   group: ActivityGroup
   /** One plain sentence (`describeStep`). */
   title: string
-  status: 'running' | 'done' | 'failed'
+  /** The engine operation behind it (`stepDetail`), shown in mono. */
+  detail?: string
+  /** `skipped`: the person moved on from a slow step ("Skip for now"). */
+  status: 'running' | 'done' | 'failed' | 'skipped'
   /** Live progress line while running; the outcome once finished. */
   note?: string
   progress?: number
+  /** When the step started (ms since epoch), for "taking longer". */
+  startedAt?: number
+  /** When `note` last changed, for its seconds counter. */
+  noteAt?: number
   /** Workers this entry added, for the summary. */
   workers?: string[]
 }
+
+/** Looks again after a run that left a provider it did not touch serving
+ * nothing, this far apart. */
+const SETTLE_LOOKS = 4
+const SETTLE_MS = 2_000
+
+/** Providers serving usable models in `snapshot`, by id. */
+function servingProviders(snapshot: MachineSnapshot): Set<string> {
+  return new Set(
+    (snapshot.providers ?? [])
+      .filter(servesUsableModels)
+      .map((provider) => provider.id),
+  )
+}
+
+/** A step running longer than this offers "Skip for now". */
+export const SLOW_STEP_MS = 30_000
+
+/** The outcome error of a Chromium download the person skipped. */
+export const SKIPPED = 'skipped'
 
 export interface MachineSnapshot {
   tools: ToolScan[] | null
@@ -162,6 +190,8 @@ export function useOnboarding(
   onSettled?: () => void,
 ) {
   const [snapshot, setSnapshot] = useState<MachineSnapshot>(EMPTY)
+  /** The latest snapshot, for a run that started on an older render. */
+  const snapshotRef = useRef<MachineSnapshot>(EMPTY)
   const [scanning, setScanning] = useState(false)
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const [running, setRunning] = useState<ActivityGroup | null>(null)
@@ -169,6 +199,8 @@ export function useOnboarding(
   const onSettledRef = useRef(onSettled)
   onSettledRef.current = onSettled
   const cancel = useRef({ cancelled: false })
+  /** Ends the step running now, if any, and moves on to the next one. */
+  const skipCurrent = useRef<(() => void) | null>(null)
 
   const refresh = useCallback(async () => {
     setScanning(true)
@@ -192,7 +224,7 @@ export function useOnboarding(
       names.has(JUDGE_HUB_WORKER) ? readJudgeProvider() : null,
     ])
     if (browser.value) setChromiumMissing(chromiumMissing(browser.value))
-    setSnapshot({
+    const next: MachineSnapshot = {
       tools: tools.value ?? [],
       toolsError: tools.error,
       providers: providers.value
@@ -206,9 +238,17 @@ export function useOnboarding(
       consoleConfig,
       browser: browser.value,
       browserError: browser.error,
-    })
+    }
+    snapshotRef.current = next
+    setSnapshot(next)
     setScanning(false)
+    return next
   }, [])
+
+  /** Look at the machine again ("Scan again"). */
+  const rescan = useCallback(async () => {
+    await refresh()
+  }, [refresh])
 
   /** Read Chromium again (after installing it by hand), nothing else. */
   const checkChromium = useCallback(async () => {
@@ -224,24 +264,46 @@ export function useOnboarding(
 
   useEffect(() => {
     if (!enabled) return
+    void refresh()
+  }, [enabled, refresh])
+
+  // A run keeps going when setup is closed — what it asked of the engine
+  // finishes either way, and reopening shows where it got to — and stops
+  // following only when the wizard itself goes away.
+  useEffect(() => {
     const token = { cancelled: false }
     cancel.current = token
-    void refresh()
     return () => {
       token.cancelled = true
+      skipCurrent.current?.()
     }
-  }, [enabled, refresh])
+  }, [])
 
   const patch = useCallback((id: number, next: Partial<ActivityEntry>) => {
     setActivity((current) =>
-      current.map((entry) => (entry.id === id ? { ...entry, ...next } : entry)),
+      current.map((entry) =>
+        entry.id !== id
+          ? entry
+          : {
+              ...entry,
+              ...next,
+              // A new progress line restarts its seconds counter.
+              ...(next.note !== undefined && next.note !== entry.note
+                ? { noteAt: Date.now() }
+                : {}),
+            },
+      ),
     )
   }, [])
+
+  /** "Skip for now" on a slow step: end it and carry on with the next. */
+  const skipStep = useCallback(() => skipCurrent.current?.(), [])
 
   /** Run `steps` in order; stops at the first failure. Resolves to success. */
   const run = useCallback(
     async (group: ActivityGroup, steps: readonly PlanStep[]) => {
       setRunning(group)
+      const servingBefore = servingProviders(snapshotRef.current)
       const consoleConfig =
         snapshot.consoleConfig ?? (await readConsoleConfig())
       let ok = true
@@ -253,16 +315,40 @@ export function useOnboarding(
             id,
             group,
             title: describeStep(step),
+            detail: stepDetail(step),
             status: 'running',
+            startedAt: Date.now(),
             workers: step.kind === 'add-workers' ? step.workers : undefined,
           },
         ])
+        // Each step waits on its own token, so skipping one stops only its
+        // waits; the wizard going away ends it the same way.
+        const token = { cancelled: cancel.current.cancelled }
+        const skipped = new Promise<'skipped'>((resolve) => {
+          skipCurrent.current = () => {
+            token.cancelled = true
+            resolve('skipped')
+          }
+        })
         try {
-          const result = await runStep(step, {
-            consoleConfig,
-            signal: cancel.current,
-            report: ({ note, progress }) => patch(id, { note, progress }),
-          })
+          const result = await Promise.race([
+            runStep(step, {
+              consoleConfig,
+              signal: token,
+              report: ({ note, progress }) => patch(id, { note, progress }),
+            }),
+            skipped,
+          ])
+          if (result === 'skipped') {
+            // The skipped step may still finish on the engine; setup no
+            // longer waits for it.
+            patch(id, {
+              status: 'skipped',
+              note: 'skipped — setup moved on',
+              progress: undefined,
+            })
+            continue
+          }
           patch(id, { status: 'done', note: result.note, progress: undefined })
         } catch (error) {
           patch(id, {
@@ -272,9 +358,32 @@ export function useOnboarding(
           })
           ok = false
           break
+        } finally {
+          skipCurrent.current = null
         }
       }
-      await refresh()
+      // A provider that served models before this run, and that the run did
+      // not remove, reads as gone only while it re-registers (the router or
+      // its worker restarting, a slow Keychain read): look again before the
+      // step shows it disconnected. Signing in to one provider must not
+      // appear to sign the others out.
+      const removed = new Set(
+        steps.flatMap((step) =>
+          step.kind === 'remove-workers' ? step.workers : [],
+        ),
+      )
+      const kept = [...servingBefore].filter(
+        (id) => !removed.has(PROVIDER_WORKERS.get(id) ?? `provider-${id}`),
+      )
+      let after = await refresh()
+      for (let look = 0; look < SETTLE_LOOKS; look++) {
+        const serving = servingProviders(after)
+        if (kept.every((id) => serving.has(id)) || cancel.current.cancelled) {
+          break
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, SETTLE_MS))
+        after = await refresh()
+      }
       setRunning(null)
       onSettledRef.current?.()
       return ok
@@ -301,10 +410,16 @@ export function useOnboarding(
           group: 'browser',
           title: 'Download Chromium',
           status: 'running',
+          startedAt: Date.now(),
         },
       ])
       const abort = new AbortController()
       const token = cancel.current
+      let skipped = false
+      skipCurrent.current = () => {
+        skipped = true
+        abort.abort()
+      }
       const outcome = await followChromiumInstall({
         signal: abort.signal,
         onProgress: (progress) => {
@@ -316,6 +431,17 @@ export function useOnboarding(
           })
         },
       })
+      skipCurrent.current = null
+      if (skipped && !outcome.ok) {
+        patch(id, {
+          status: 'skipped',
+          note: 'skipped — setup moved on',
+          progress: undefined,
+        })
+        await checkChromium()
+        setRunning(null)
+        return { ok: false, error: SKIPPED }
+      }
       if (outcome.ok) {
         patch(id, {
           status: 'done',
@@ -341,10 +467,11 @@ export function useOnboarding(
   return {
     snapshot,
     scanning,
-    refresh,
+    refresh: rescan,
     activity,
     running,
     run,
+    skipStep,
     judgeInstalled,
     checkChromium,
     installChromium,

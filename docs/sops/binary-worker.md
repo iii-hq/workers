@@ -2,7 +2,8 @@
 
 This guide covers a first-party Rust daemon published as
 `artifact.kind: rust-binary`. Use [`new-worker.md`](new-worker.md) for the
-cross-cutting checklist.
+cross-cutting checklist. Go binaries use the separate
+[`go-binary-worker.md`](go-binary-worker.md) contract.
 
 ## Catalog entry
 

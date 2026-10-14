@@ -1,0 +1,18 @@
+goos: linux
+goarch: amd64
+pkg: github.com/iii-hq/workers/whatsapp
+cpu: Intel(R) Core(TM) i9-14900K
+BenchmarkDecodeCloudDocumentRequest/fileMiB=1         	     114	   3296420 ns/op	 318.10 MB/s	 7009617 B/op	      39 allocs/op
+BenchmarkDecodeCloudDocumentRequest/fileMiB=1         	     122	   2928805 ns/op	 358.02 MB/s	 6997301 B/op	      39 allocs/op
+BenchmarkDecodeCloudDocumentRequest/fileMiB=1         	     124	   2851100 ns/op	 367.78 MB/s	 7008600 B/op	      39 allocs/op
+BenchmarkDecodeCloudDocumentRequest/fileMiB=1         	     126	   2829798 ns/op	 370.55 MB/s	 7008421 B/op	      39 allocs/op
+BenchmarkDecodeCloudDocumentRequest/fileMiB=1         	     120	   2985945 ns/op	 351.17 MB/s	 6997299 B/op	      39 allocs/op
+BenchmarkDecodeCloudDocumentRequest/fileMiB=1         	     123	   2872708 ns/op	 365.01 MB/s	 7008693 B/op	      39 allocs/op
+BenchmarkInboxRecordReceipt/messages=10000            	     177	   1991493 ns/op	     814 B/op	      20 allocs/op
+BenchmarkInboxRecordReceipt/messages=10000            	     175	   2045987 ns/op	     797 B/op	      20 allocs/op
+BenchmarkInboxRecordReceipt/messages=10000            	     181	   1968214 ns/op	     784 B/op	      20 allocs/op
+BenchmarkInboxRecordReceipt/messages=10000            	     180	   2019709 ns/op	     784 B/op	      20 allocs/op
+BenchmarkInboxRecordReceipt/messages=10000            	     180	   1977345 ns/op	     792 B/op	      20 allocs/op
+BenchmarkInboxRecordReceipt/messages=10000            	     183	   1959176 ns/op	     784 B/op	      20 allocs/op
+PASS
+ok  	github.com/iii-hq/workers/whatsapp	4.608s

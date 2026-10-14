@@ -1,6 +1,6 @@
 {
   "name": "cursor",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "description": "Cursor as a login-backed LLM Router provider and coding-agent worker through CLI ACP, with optional sdk.v1 Bridge sessions.",
   "license": "Apache-2.0",
@@ -23,7 +23,7 @@
     "cursor-worker": "./dist/index.js"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0",
+    "iii-sdk": "0.24.5",
     "zod": "^4.0.0"
   },
   "devDependencies": {

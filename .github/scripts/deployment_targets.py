@@ -59,6 +59,23 @@ TARGET_LARGER_RUNNERS = {
 }
 
 
+def go_target_env(target: str) -> dict[str, str]:
+    """Map the Registry's binary triples to Go's cross-compilation variables."""
+    targets = {
+        "x86_64-apple-darwin": {"GOOS": "darwin", "GOARCH": "amd64"},
+        "aarch64-apple-darwin": {"GOOS": "darwin", "GOARCH": "arm64"},
+        "x86_64-unknown-linux-gnu": {"GOOS": "linux", "GOARCH": "amd64"},
+        "x86_64-unknown-linux-musl": {"GOOS": "linux", "GOARCH": "amd64"},
+        "aarch64-unknown-linux-gnu": {"GOOS": "linux", "GOARCH": "arm64"},
+        "armv7-unknown-linux-gnueabihf": {"GOOS": "linux", "GOARCH": "arm", "GOARM": "7"},
+        "x86_64-pc-windows-msvc": {"GOOS": "windows", "GOARCH": "amd64"},
+        "aarch64-pc-windows-msvc": {"GOOS": "windows", "GOARCH": "arm64"},
+    }
+    if target not in targets:
+        raise ValueError(f"unknown release target: {target}")
+    return targets[target]
+
+
 def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str]:
     """Return canonical targets, rejecting unknown triples.
 
