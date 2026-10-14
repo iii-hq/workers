@@ -1,4 +1,8 @@
 [workspace]
+members = ["."]
+# Vendored crates build and test on their own (own Cargo.lock), outside this
+# workspace's fmt and clippy; CI runs their tests separately.
+exclude = ["vendor/xa11y-linux"]
 
 [package]
 name = "computer"

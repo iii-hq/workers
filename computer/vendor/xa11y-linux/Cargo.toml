@@ -1,0 +1,25 @@
+[package]
+name = "xa11y-linux"
+version = "0.15.2"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+description = "Vendored, patched xa11y-linux 0.15.2: AT-SPI2 provider + X11 EWMH window management only (see PATCHES.md)"
+repository = "https://github.com/xa11y/xa11y"
+
+# Standalone: never join an enclosing workspace.
+[workspace]
+
+[dependencies]
+xa11y-core = { version = "=0.15.2", default-features = false }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rayon = "1"
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+x11rb = { version = "0.14", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Hermetic AT-SPI reply tests over a Unix socket pair, without a desktop bus.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api", "p2p"] }
