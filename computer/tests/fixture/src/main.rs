@@ -1,9 +1,10 @@
 //! A real accessible window for the semantic e2e. Controls: Salvar (counts
-//! presses), Nome (text), Senha (password with a known value), Ativo
-//! (checkbox), Itens (list box Um/Dois/Três), two OK buttons, a disabled
-//! button and Remover (removes Salvar). Every accessibility action request and
-//! every physical click is appended to $COMPUTER_A11Y_FIXTURE_LOG so the test
-//! can prove exactly one effect per action and none per refusal.
+//! presses), Nome (text), Senha (password with a known value), Campo B
+//! (password with a neutral name), Ativo (checkbox), Itens (list box
+//! Um/Dois/Três), two OK buttons, a disabled button and Remover (removes
+//! Salvar). Every accessibility action request and every physical click and
+//! typed key is appended to $COMPUTER_A11Y_FIXTURE_LOG so the test can prove
+//! exactly one effect per action and none per refusal.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -20,6 +21,7 @@ use winit::window::{Window, WindowId};
 
 const TITLE: &str = "computer a11y fixture";
 pub const SECRET: &str = "s3cr3t-fixture";
+pub const SECRET_B: &str = "campo-b-s3cr3t";
 
 const WINDOW: NodeId = NodeId(0);
 const SALVAR: NodeId = NodeId(1);
@@ -35,6 +37,10 @@ const OK2: NodeId = NodeId(10);
 const DESABILITADO: NodeId = NodeId(11);
 const REMOVER: NodeId = NodeId(12);
 const STATUS: NodeId = NodeId(13);
+const NOME_RUN: NodeId = NodeId(14);
+const SENHA_RUN: NodeId = NodeId(15);
+const CAMPO_B: NodeId = NodeId(16);
+const CAMPO_B_RUN: NodeId = NodeId(17);
 
 fn log(line: &str) {
     let Ok(path) = std::env::var("COMPUTER_A11Y_FIXTURE_LOG") else {
@@ -58,6 +64,7 @@ fn name_of(id: NodeId) -> &'static str {
         SALVAR => "Salvar",
         NOME => "Nome",
         SENHA => "Senha",
+        CAMPO_B => "Campo B",
         ATIVO => "Ativo",
         UM => "Um",
         DOIS => "Dois",
@@ -76,6 +83,25 @@ fn button(label: &str) -> Node {
     b
 }
 
+/// The one text run a single-line input needs for AT-SPI to expose Text and
+/// EditableText (AccessKit's `supports_text_ranges`). The platform trees
+/// filter `TextRun` out, so no node is added on any OS.
+fn run(text: &str) -> Node {
+    let lengths: Vec<u8> = text.chars().map(|c| c.len_utf8() as u8).collect();
+    let mut r = Node::new(Role::TextRun);
+    r.set_value(text);
+    r.set_character_lengths(lengths);
+    r
+}
+
+fn password(label: &str, secret: &str, run_id: NodeId) -> Node {
+    let mut p = Node::new(Role::PasswordInput);
+    p.set_label(label);
+    p.set_value(secret);
+    p.set_children(vec![run_id]);
+    p
+}
+
 fn build(s: &State) -> TreeUpdate {
     let mut children = Vec::new();
     let mut nodes = Vec::new();
@@ -86,6 +112,7 @@ fn build(s: &State) -> TreeUpdate {
     children.extend([
         NOME,
         SENHA,
+        CAMPO_B,
         ATIVO,
         ITENS,
         OK1,
@@ -99,12 +126,14 @@ fn build(s: &State) -> TreeUpdate {
     nome.set_label("Nome");
     nome.set_value(s.nome.as_str());
     nome.add_action(Action::SetValue);
+    nome.set_children(vec![NOME_RUN]);
     nodes.push((NOME, nome));
+    nodes.push((NOME_RUN, run(&s.nome)));
 
-    let mut senha = Node::new(Role::PasswordInput);
-    senha.set_label("Senha");
-    senha.set_value(SECRET);
-    nodes.push((SENHA, senha));
+    nodes.push((SENHA, password("Senha", SECRET, SENHA_RUN)));
+    nodes.push((SENHA_RUN, run(SECRET)));
+    nodes.push((CAMPO_B, password("Campo B", SECRET_B, CAMPO_B_RUN)));
+    nodes.push((CAMPO_B_RUN, run(SECRET_B)));
 
     let mut ativo = Node::new(Role::CheckBox);
     ativo.set_label("Ativo");
@@ -255,6 +284,11 @@ impl ApplicationHandler<AccessKitEvent> for App {
                     main.cursor.0.round(),
                     main.cursor.1.round()
                 ));
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if let Some(text) = &event.text {
+                    log(&format!("key {}", text.as_str().escape_debug()));
+                }
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             _ => {}
