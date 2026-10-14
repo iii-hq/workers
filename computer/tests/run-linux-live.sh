@@ -14,11 +14,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [[ -z "${COMPUTER_LIVE_INSIDE:-}" ]]; then
+# Inside only when dbus-run-session (which keeps this PID through the execs)
+# is our parent: a stray exported marker must not skip the isolation.
+if [[ "${COMPUTER_LIVE_INSIDE:-}" != "$PPID" ]]; then
   # A Wayland login would make the worker refuse X11 (by design).
   exec env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE -u DISPLAY \
     -u AT_SPI_BUS_ADDRESS \
-    GSETTINGS_BACKEND=memory COMPUTER_LIVE_INSIDE=1 \
+    GSETTINGS_BACKEND=memory COMPUTER_LIVE_INSIDE=$$ \
     dbus-run-session -- "$0" "$@"
 fi
 

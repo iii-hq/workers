@@ -392,6 +392,8 @@ async fn the_password_value_never_leaves() {
     let tree = s.snapshot(query(f.pid(), None), true).await.unwrap();
     assert!(tree.text.contains("Senha"), "{}", tree.text);
     assert!(!tree.text.contains(SECRET));
+    // Positive control: the field is there, so 0 below means the value hid it.
+    assert_eq!(find(&s, f.pid(), "[name='Senha']").await.matches, 1);
     assert_eq!(
         find(&s, f.pid(), "[name='Senha'][value^='s']")
             .await
@@ -411,6 +413,7 @@ async fn the_password_value_never_leaves() {
     if cfg!(not(target_os = "windows")) {
         assert!(tree.text.contains("Campo B"), "{}", tree.text);
         assert!(!tree.text.contains(SECRET_B), "{}", tree.text);
+        assert_eq!(find(&s, f.pid(), "[name='Campo B']").await.matches, 1);
         assert_eq!(
             find(&s, f.pid(), "[name='Campo B'][value^='c']")
                 .await
@@ -541,9 +544,13 @@ async fn type_reaches_the_window_including_unmapped_characters() {
             .unwrap();
         assert_eq!(c.get_input_focus().unwrap().reply().unwrap().focus, under);
     }
-    host.type_text("ação €ł\n").await.unwrap();
-    wait_for("the typed text", || typed(&f) == "ação €ł\\r").await;
-    assert_eq!(typed(&f), "ação €ł\\r", "{:?}", f.lines());
+    // 19 distinct characters missing from the map, more than Xvfb's 15 free
+    // keycodes: the second segment rebinds them, and must arrive as typed.
+    let text = "ação €ł日本語中文한국어ñöüßøåæ";
+    host.type_text(&format!("{text}\n")).await.unwrap();
+    let want = format!("{text}\\r");
+    wait_for("the typed text", || typed(&f) == want).await;
+    assert_eq!(typed(&f), want, "{:?}", f.lines());
 }
 
 /// Spec risk 6: one find attempt builds a provider (two D-Bus connections
