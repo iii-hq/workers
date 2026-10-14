@@ -1,0 +1,68 @@
+{
+  "description": "Rename a tmux window.",
+  "function_id": "tmux::windows::rename",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "WindowArg": {
+        "anyOf": [
+          {
+            "description": "Window index inside the session.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          {
+            "description": "Window id like `@3`, or an index as text.",
+            "type": "string"
+          }
+        ],
+        "description": "A window as callers name it: an id (`\"@3\"`) or an index (`2` or `\"2\"`)."
+      }
+    },
+    "properties": {
+      "name": {
+        "description": "New name. No `:` or `.`.",
+        "type": "string"
+      },
+      "session": {
+        "description": "Session id (`$5`) or exact name.",
+        "type": "string"
+      },
+      "window": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/WindowArg"
+          }
+        ],
+        "description": "Window id (`@3`) or index."
+      }
+    },
+    "required": [
+      "name",
+      "session",
+      "window"
+    ],
+    "title": "RenameWindowInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "description": "New name.",
+        "type": "string"
+      },
+      "window_id": {
+        "description": "Window id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "window_id"
+    ],
+    "title": "RenamedWindow",
+    "type": "object"
+  }
+}

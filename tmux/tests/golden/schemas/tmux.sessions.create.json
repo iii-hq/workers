@@ -1,0 +1,79 @@
+{
+  "description": "Create a detached tmux session (starting the tmux server if needed). Optional name, working directory (default $HOME), first window name and a shell command to run instead of the default shell.",
+  "function_id": "tmux::sessions::create",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "command": {
+        "default": null,
+        "description": "Shell command to run in the first window instead of the default shell.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cwd": {
+        "default": null,
+        "description": "Working directory, absolute or `~/…`. Defaults to $HOME.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "default": null,
+        "description": "Session name; tmux picks a number when omitted. No `:` or `.`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "window_name": {
+        "default": null,
+        "description": "Name of the first window.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "CreateSessionInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane_id": {
+        "description": "First pane id.",
+        "type": "string"
+      },
+      "session": {
+        "description": "Session name.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "New session id, e.g. `$7`.",
+        "type": "string"
+      },
+      "window_id": {
+        "description": "First window id.",
+        "type": "string"
+      },
+      "window_index": {
+        "description": "First window index.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pane_id",
+      "session",
+      "session_id",
+      "window_id",
+      "window_index"
+    ],
+    "title": "CreatedSession",
+    "type": "object"
+  }
+}

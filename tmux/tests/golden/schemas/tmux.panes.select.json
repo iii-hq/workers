@@ -1,0 +1,55 @@
+{
+  "description": "Make a pane the active pane of its window, optionally zooming the window on it (zoom: true, like tmux's prefix z) or unzooming it (zoom: false); without zoom the window keeps its zoom state. Like tmux itself, every client looking at that window follows, your terminal included. It does not change the session's current window (tmux::windows::select does).",
+  "function_id": "tmux::panes::select",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane": {
+        "description": "Pane id, e.g. `%5`.",
+        "type": "string"
+      },
+      "zoom": {
+        "default": null,
+        "description": "true zooms the window on this pane, false unzooms it, absent keeps the window's zoom.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "pane"
+    ],
+    "title": "SelectPaneInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane_id": {
+        "description": "Pane id now active in its window.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session id the pane was resolved in.",
+        "type": "string"
+      },
+      "window_id": {
+        "description": "Window id holding the pane.",
+        "type": "string"
+      },
+      "zoomed": {
+        "description": "The window is zoomed on the active pane.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "pane_id",
+      "session_id",
+      "window_id",
+      "zoomed"
+    ],
+    "title": "SelectedPane",
+    "type": "object"
+  }
+}

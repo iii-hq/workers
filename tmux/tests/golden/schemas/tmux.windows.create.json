@@ -1,0 +1,81 @@
+{
+  "description": "Create a window in a tmux session. Optional name, working directory (default: the directory the session was created in), a shell command to run instead of the default shell, and whether to make it the current window (default true).",
+  "function_id": "tmux::windows::create",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "command": {
+        "default": null,
+        "description": "Shell command to run instead of the default shell.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cwd": {
+        "default": null,
+        "description": "Working directory, absolute or `~/…`. Defaults to the directory the session was created in.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "default": null,
+        "description": "Window name. No `:` or `.`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "select": {
+        "default": null,
+        "description": "Make it the session's current window (default true).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "session": {
+        "description": "Session id (`$5`) or exact name.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "CreateWindowInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pane_id": {
+        "description": "Its first pane id.",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Session id.",
+        "type": "string"
+      },
+      "window_id": {
+        "description": "New window id, e.g. `@9`.",
+        "type": "string"
+      },
+      "window_index": {
+        "description": "New window index.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pane_id",
+      "session_id",
+      "window_id",
+      "window_index"
+    ],
+    "title": "CreatedWindow",
+    "type": "object"
+  }
+}

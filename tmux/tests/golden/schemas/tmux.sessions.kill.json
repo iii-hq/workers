@@ -1,0 +1,32 @@
+{
+  "description": "Kill a tmux session and every program running in its windows.",
+  "function_id": "tmux::sessions::kill",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "session": {
+        "description": "Session id (`$5`) or exact name.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session"
+    ],
+    "title": "SessionInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "killed": {
+        "description": "Always true.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "killed"
+    ],
+    "title": "KilledOutput",
+    "type": "object"
+  }
+}

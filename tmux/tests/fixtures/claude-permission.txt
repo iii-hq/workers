@@ -1,0 +1,13 @@
+● Bash(rm -rf build)
+  ⎿  Running…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   rm -rf build
+   Remove the build directory
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for rm commands in this project
+   3. No, and tell Claude what to do differently (esc)

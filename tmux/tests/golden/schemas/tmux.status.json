@@ -1,0 +1,58 @@
+{
+  "description": "Whether tmux is installed, its version and path, and whether a tmux server is running on the configured socket.",
+  "function_id": "tmux::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "No parameters.",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Whether a usable tmux exists and which server this worker talks to.",
+    "properties": {
+      "available": {
+        "description": "A usable tmux binary was found.",
+        "type": "boolean"
+      },
+      "error": {
+        "description": "Why tmux is unavailable, or the last listing error.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Resolved tmux binary.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "server_running": {
+        "description": "A tmux server is running on that socket.",
+        "type": "boolean"
+      },
+      "socket_path": {
+        "description": "Server socket, known while the server runs.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "version": {
+        "description": "tmux version, e.g. `3.6`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "available",
+      "server_running"
+    ],
+    "title": "TmuxInfo",
+    "type": "object"
+  }
+}
