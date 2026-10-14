@@ -413,6 +413,12 @@
   overflow: auto;
   padding: 8px;
 }
+[data-iii-ui="computer"] pre.cp-ui-json {
+  margin: 0;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 [data-iii-ui="computer"] .cp-ui-shot {
   margin: 0;
   display: flex;

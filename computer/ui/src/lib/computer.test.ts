@@ -45,6 +45,29 @@ describe('captureText', () => {
     assert.equal(captureText({ content: [image, note], details }), null)
   })
 
+  it('keeps the app line under the marker', () => {
+    const tree = {
+      type: 'text',
+      text: `Accessibility tree of session c1\n${MARKER}\napp "Doc" pid 7\n[ref=e1] button "OK"`,
+    }
+    const { mime: _mime, ...noMime } = details
+    assert.match(
+      captureText({ content: [tree], details: noMime }) ?? '',
+      /app "Doc" pid 7\n\[ref=e1\] button "OK"/,
+    )
+  })
+
+  it('shows why the tree is missing next to an image', () => {
+    const why = {
+      type: 'text',
+      text: 'Desktop of session c1 (1280x800, 3 bytes)\na11y tree unavailable: busy: another accessibility operation is running',
+    }
+    assert.match(
+      captureText({ content: [image, why], details }) ?? '',
+      /a11y tree unavailable: busy/,
+    )
+  })
+
   it('leaves error envelopes to the console', () => {
     const err = {
       error: { kind: 'function_error', message: 'stale_ref: ...', details: null, content: [] },

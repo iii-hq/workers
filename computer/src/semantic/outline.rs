@@ -37,6 +37,16 @@ pub fn label(el: &ElementData) -> String {
     }
 }
 
+/// `app "name" pid N` — the app a tree was read from (the pid is left out
+/// when the OS does not report one).
+pub fn app_line(app: &ElementData) -> String {
+    let name = quote(app.name.as_deref().unwrap_or_default(), MAX_NAME_CHARS);
+    match app.pid {
+        Some(pid) => format!("app {name} pid {pid}"),
+        None => format!("app {name}"),
+    }
+}
+
 pub fn element_line(r: Option<&str>, el: &ElementData) -> String {
     let mut s = String::new();
     if let Some(r) = r {
@@ -82,18 +92,18 @@ pub struct Outline {
     notes: Vec<String>,
 }
 
-impl Default for Outline {
-    fn default() -> Self {
+impl Outline {
+    /// The untrusted marker, then `header` (the app line), then element
+    /// lines; both header lines count toward the byte cap.
+    pub fn new(header: String) -> Self {
         Self {
-            lines: vec![UNTRUSTED.to_string()],
-            bytes: UNTRUSTED.len() + 1,
+            bytes: UNTRUSTED.len() + header.len() + 2,
+            lines: vec![UNTRUSTED.to_string(), header],
             omitted: 0,
             notes: Vec::new(),
         }
     }
-}
 
-impl Outline {
     /// Adds an element line unless the byte cap was reached; `false` means
     /// the line was dropped (and counted in the omitted note).
     pub fn push(&mut self, line: String) -> bool {
@@ -172,13 +182,14 @@ mod tests {
 
     #[test]
     fn outline_starts_with_the_marker_and_respects_the_byte_cap() {
-        let mut out = Outline::default();
+        let mut out = Outline::new("app \"A\" pid 1".into());
         for i in 0..5_000 {
             out.push(format!("[ref=e{i}] button \"{}\"", "y".repeat(40)));
         }
         out.note("no matches".into());
         let text = out.finish();
         assert!(text.starts_with(UNTRUSTED));
+        assert_eq!(text.lines().nth(1), Some("app \"A\" pid 1"));
         assert!(text.len() <= MAX_BYTES + 200, "{}", text.len());
         assert!(text.contains("lines omitted (output cap)"));
         assert!(text.ends_with("no matches"));

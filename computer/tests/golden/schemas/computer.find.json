@@ -85,7 +85,7 @@
         "type": "integer"
       },
       "tree": {
-        "description": "Untrusted app text: a marker line, then one line per match (at most 50) with its ref and up to three named ancestors.",
+        "description": "Untrusted app text: a marker line, the `app \"name\" pid N` line, then one line per match (at most 50) with its ref and up to three named ancestors.",
         "type": "string"
       },
       "truncated": {

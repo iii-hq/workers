@@ -35,8 +35,9 @@ pub struct FindInput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FindOutput {
-    /// Untrusted app text: a marker line, then one line per match (at most
-    /// 50) with its ref and up to three named ancestors.
+    /// Untrusted app text: a marker line, the `app "name" pid N` line, then
+    /// one line per match (at most 50) with its ref and up to three named
+    /// ancestors.
     pub tree: String,
     /// Total matches (may exceed the lines listed).
     pub matches: u32,
