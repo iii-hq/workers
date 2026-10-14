@@ -433,7 +433,8 @@ async fn the_password_value_never_leaves() {
 /// mapping screen coordinates into the session's (downscaled) image space.
 /// The fixture logs physical pixels; `list_displays` sizes are what `xcap`
 /// reports — physical on Windows (per-monitor-v2) and Linux, logical points
-/// on macOS.
+/// on macOS. The pointer is parked off the window first, so the click has to
+/// travel: one that lands where the pointer was cannot pass by luck.
 async fn click_center(host: &NativeHost, display: &DisplayInfo, win: Win) {
     host.screenshot().await.unwrap();
     let image = host.screen_size().await.unwrap();
@@ -442,10 +443,16 @@ async fn click_center(host: &NativeHost, display: &DisplayInfo, win: Win) {
     } else {
         1.0
     };
-    let tx = ((win.x + win.w / 2) as f64 / s) as i64;
-    let ty = ((win.y + win.h / 2) as f64 / s) as i64;
-    let ix = tx * image.width as i64 / display.width as i64;
-    let iy = ty * image.height as i64 / display.height as i64;
+    let to_image = |x: i64, y: i64| {
+        let (tx, ty) = ((x as f64 / s) as i64, (y as f64 / s) as i64);
+        (
+            tx * image.width as i64 / display.width as i64,
+            ty * image.height as i64 / display.height as i64,
+        )
+    };
+    let (px, py) = to_image(win.x / 2, win.y / 2);
+    host.move_cursor(px, py).await.unwrap();
+    let (ix, iy) = to_image(win.x + win.w / 2, win.y + win.h / 2);
     host.left_click(ix, iy).await.unwrap();
 }
 
@@ -481,8 +488,10 @@ async fn a_coordinate_click_lands_before_and_after_semantic_use() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     let window = f.window().unwrap();
     let (ww, wh) = (window.w, window.h);
-    let host = NativeHost::new(4096, 80, None);
     let display = main_display();
+    // Capture the display the click is mapped through, not the one under the
+    // pointer: they differ on a multi-monitor desktop.
+    let host = NativeHost::new(4096, 80, Some(display.index));
     click_center(&host, &display, window).await;
     wait_for("the first click", || mouse_clicks(&f).len() == 1).await;
     let s = session();

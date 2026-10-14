@@ -10,6 +10,8 @@
 //! inherit, so it false-negatives on a capture that actually works; a missing
 //! grant instead surfaces as a wallpaper-only image.
 
+use std::time::{Duration, Instant};
+
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use xcap::Monitor;
 
@@ -226,6 +228,33 @@ fn input_err(e: enigo::InputError) -> String {
     format!("input failed: {e}")
 }
 
+/// Move the pointer, and on macOS wait until the OS reports it there. The
+/// window server applies a synthetic move asynchronously, while enigo 0.3
+/// posts a button at the position it reads back (`NSEvent::mouseLocation`)
+/// and a new scroll event carries the current position: either one, sent right
+/// after the move, lands where the pointer was. ±1 absorbs the truncation of a
+/// fractional pointer position.
+fn move_abs(e: &mut Enigo, (x, y): (i32, i32)) -> Result<(), String> {
+    e.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+    if cfg!(not(target_os = "macos")) {
+        return Ok(());
+    }
+    let start = Instant::now();
+    loop {
+        let (cx, cy) = e.location().map_err(input_err)?;
+        if (cx - x).abs() <= 1 && (cy - y).abs() <= 1 {
+            return Ok(());
+        }
+        if start.elapsed() > Duration::from_secs(1) {
+            return Err(format!(
+                "input failed: the pointer did not reach screen point ({x}, {y}) \
+                 within 1 s; it is at ({cx}, {cy})"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 fn button(b: Btn) -> Button {
     match b {
         Btn::Left => Button::Left,
@@ -236,7 +265,7 @@ fn button(b: Btn) -> Button {
 
 pub fn click(_: &Conn, (x, y): (i32, i32), b: Btn, count: u8) -> Result<(), String> {
     with_enigo(|e| {
-        e.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+        move_abs(e, (x, y))?;
         for _ in 0..count {
             e.button(button(b), Direction::Click).map_err(input_err)?;
         }
@@ -245,12 +274,12 @@ pub fn click(_: &Conn, (x, y): (i32, i32), b: Btn, count: u8) -> Result<(), Stri
 }
 
 pub fn move_to(_: &Conn, (x, y): (i32, i32)) -> Result<(), String> {
-    with_enigo(|e| e.move_mouse(x, y, Coordinate::Abs).map_err(input_err))
+    with_enigo(|e| move_abs(e, (x, y)))
 }
 
 pub fn scroll(_: &Conn, (x, y): (i32, i32), sx: i64, sy: i64) -> Result<(), String> {
     with_enigo(|e| {
-        e.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+        move_abs(e, (x, y))?;
         if sx != 0 {
             e.scroll(sx as i32, Axis::Horizontal).map_err(input_err)?;
         }
@@ -263,10 +292,13 @@ pub fn scroll(_: &Conn, (x, y): (i32, i32), sx: i64, sy: i64) -> Result<(), Stri
 
 pub fn drag(_: &Conn, (fx, fy): (i32, i32), (tx, ty): (i32, i32), b: Btn) -> Result<(), String> {
     with_enigo(|e| {
-        e.move_mouse(fx, fy, Coordinate::Abs).map_err(input_err)?;
+        move_abs(e, (fx, fy))?;
         e.button(button(b), Direction::Press).map_err(input_err)?;
-        e.move_mouse(tx, ty, Coordinate::Abs).map_err(input_err)?;
-        e.button(button(b), Direction::Release).map_err(input_err)
+        // Release even when the move fails: a held button turns every later
+        // move into a drag.
+        let moved = move_abs(e, (tx, ty));
+        let released = e.button(button(b), Direction::Release).map_err(input_err);
+        moved.and(released)
     })
 }
 

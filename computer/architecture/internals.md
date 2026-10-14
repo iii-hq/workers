@@ -41,6 +41,10 @@ The native driver does the work no guest does for it:
   uses, so a click on a scaled display lands where the model saw it. Never
   multiply by a scale factor, and never click by AT-SPI bounds (GTK4 reports
   (0,0) for every element).
+- On macOS every move waits until the OS reports the pointer at the target:
+  a synthetic move lands asynchronously, while `enigo` 0.3 posts a button at
+  the position it reads back (and a scroll carries the current one), so an
+  immediate press or scroll hits where the pointer was.
 
 ### Linux
 
@@ -218,7 +222,8 @@ Recording:
       cargo test --locked --test semantic_live -- --ignored --test-threads=1
 
 Set `COMPUTER_A11Y_FIXTURE_LOG_DIR` to keep the fixture logs somewhere else than
-the temp dir. With two native sessions, a click in one must turn the other's
+the temp dir. Keep hands off the mouse while it runs. Under tmux the grants
+that count are those of the terminal app that started the tmux server. With two native sessions, a click in one must turn the other's
 refs into `stale_ref`.
 
 Then, on a live stack with the harness and approval-gate, have an agent run
