@@ -40,6 +40,34 @@ All fields hot-reload through the `configuration` worker: `enabled`, `interval_h
 
 Fail-soft: an unavailable router just skips the tier (named in the report's `notes`, so it never blocks the checkpoint), and a malformed reply is treated as "no merges, no promotions". Either way, the deterministic pass has already completed.
 
+## The semantic tier (optional)
+
+`semantic_enabled` (off by default) runs one more tier, last, on a fresh fetch. A `router::complete` judge looks at each memory written since the last pass, next to its nearest neighbours, and decides:
+
+- **merge**: both state the same fact (paraphrase, another language). The duplicate retires and the survivor absorbs its observations. The survivor must keep every detail; when both are equally complete, the older one survives.
+- **supersede**: a state change ("moved to", "switched to", a rescheduled date). The outdated record retires in favour of the current one, which is the one stated last.
+- **nothing**: distinct facts on one topic (two allergies, two projects). This is the normal answer.
+
+Every change goes through `memory::supersede` and carries the judge's one-sentence `reason` on memory's `item-changed` events. The design follows Hindsight's consolidator (`hindsight_api/engine/consolidation/`):
+
+- **Candidates.** Neighbours come from the raw lexical and raw semantic `memory::recall` arms, interleaved, because a fused rank buries the near-duplicate.
+- **Targets.** The judge may only pair a memory with one of its *own* candidates, through short per-batch aliases.
+- **Validation.** Before anything is written, every action is checked: pinned records are never retired; direction follows `last stated`; a merge may not drop a number the survivor lacks; the reason is required; the per-run cap applies.
+- **Freshness.** Each record is re-read right before the write, so a record edited since the judge read it drops its action.
+- **Failure handling.**
+  - Transport, auth or quota errors stop the tier for that bank with a note, and the cursor stays put.
+  - An unparseable or truncated reply bisects the batch down to one memory. A memory that still fails is listed in `semantic_failed` and skipped, so it cannot wedge the tier.
+- **Cursor.** Progress is a per-bank cursor in the state worker, keyed by `(updated_at, id)`, so edited or resurrected records are judged again. It advances only over batches that were fully judged and fully applied.
+- **Dry runs** judge and report the plan without writing or moving the cursor.
+
+Config: `semantic_batch` (8 memories per LLM call), `semantic_candidates` (4 per arm), `semantic_max_per_run` (48 per bank per pass). The model comes from `llm_model`. `router::complete` has no temperature control, so the provider default applies.
+
+**Judge eval.** `tests/judge_golden.rs` runs the real prompt and validator over 18 cases from memory's recall golden set: 8 supersedes, 4 merges and 6 keeps. It reports accuracy and **harmful** actions, which must be 0. With `claude-sonnet-5-5` the result was 18/18 with 0 harmful. `UPDATE_CONSOLIDATION=1` records the decisions into memory's `tests/recall_quality/consolidation.json`, which memory's recall eval replays in its `hybrid-consolidated` mode: traps go from 2 to 0 and duplicate pollution from 23 to 0.
+
+```bash
+III_NAMESPACE=<ns> cargo test --test judge_golden -- --ignored --nocapture
+```
+
 ## What counts as a duplicate
 
 v1 is deterministic and deliberately conservative: two live memories merge only when their normalized text matches (case, punctuation, and whitespace insensitive) or their token sets are equal (word-order shuffles). One differing word is NOT a duplicate — "always publishes" and "never publishes" must never merge. Survivor choice is stable: pinned first, then highest corroboration, then the oldest record (it carries the original provenance). Semantic near-duplicate merging is a later, LLM-assisted tier.

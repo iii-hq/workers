@@ -252,6 +252,7 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
                 let mut f = existing;
                 f.corroboration = f.corroboration.saturating_add(1);
                 f.updated_at = now;
+                f.stated_at = Some(now);
                 f.revision += 1;
                 (f, ItemEvent::Updated)
             }
@@ -332,6 +333,7 @@ fn new_memory(item: ExtractedItem, session_id: &str, entry_id: Option<&str>, now
         invalid_at: None,
         superseded_by: None,
         revision: 0,
+        stated_at: Some(now),
     }
 }
 

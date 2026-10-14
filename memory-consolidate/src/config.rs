@@ -53,6 +53,38 @@ pub struct WorkerConfig {
     /// candidates for the judge. 0 disables promotion.
     #[serde(default = "default_promote_threshold")]
     pub promote_corroboration_threshold: u32,
+
+    /// Run the semantic consolidation tier after the other tiers: memories
+    /// written since the last pass are compared with their nearest
+    /// neighbours (raw BM25 and raw cosine, interleaved) and a
+    /// `router::complete` judge merges paraphrases and supersedes outdated
+    /// states, each with a reason. Off by default — one LLM call per batch.
+    #[serde(default)]
+    pub semantic_enabled: bool,
+
+    /// New memories judged per LLM call by the semantic tier.
+    #[serde(default = "default_semantic_batch")]
+    pub semantic_batch: usize,
+
+    /// Neighbours fetched per arm (lexical and semantic) for each new
+    /// memory; interleaved, so up to twice this many candidates.
+    #[serde(default = "default_semantic_candidates")]
+    pub semantic_candidates: usize,
+
+    /// Cap on new memories the semantic tier judges per bank per pass; the
+    /// rest waits for the next pass (a bank cursor tracks progress).
+    #[serde(default = "default_semantic_max_per_run")]
+    pub semantic_max_per_run: usize,
+}
+
+fn default_semantic_batch() -> usize {
+    8
+}
+fn default_semantic_candidates() -> usize {
+    4
+}
+fn default_semantic_max_per_run() -> usize {
+    48
 }
 
 fn default_true() -> bool {

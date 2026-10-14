@@ -2,52 +2,57 @@
   "embedding": {
     "dims": 256,
     "model": "text-embedding-3-small",
-    "vectors_fingerprint": "fp29f1faa3c9e880f3"
+    "vectors_fingerprint": "fp9b88c6adb7105abb"
   },
   "half_life_days": 30,
   "modes": {
     "hybrid": {
       "all": {
-        "hit_at_1": 0.5323,
+        "dup_polluted": 23,
+        "hit_at_1": 0.5645,
         "hit_at_3": 0.6774,
-        "mrr_at_10": 0.6224,
-        "ndcg_at_10": 0.644,
+        "mrr_at_10": 0.6367,
+        "ndcg_at_10": 0.642,
         "queries": 62,
-        "recall_at_10": 0.7823,
+        "recall_at_10": 0.7634,
         "trap_queries": 12,
         "traps": 2
       },
       "category:dated-event": {
+        "dup_polluted": 1,
         "hit_at_1": 0.8333,
         "hit_at_3": 1.0,
         "mrr_at_10": 0.9167,
-        "ndcg_at_10": 0.874,
+        "ndcg_at_10": 0.8134,
         "queries": 6,
-        "recall_at_10": 0.9167,
+        "recall_at_10": 0.8611,
         "trap_queries": 2,
         "traps": 1
       },
       "category:durable-old": {
+        "dup_polluted": 2,
         "hit_at_1": 0.5,
         "hit_at_3": 0.8333,
-        "mrr_at_10": 0.7083,
-        "ndcg_at_10": 0.7821,
+        "mrr_at_10": 0.7,
+        "ndcg_at_10": 0.7748,
         "queries": 6,
         "recall_at_10": 1.0,
         "trap_queries": 0,
         "traps": 0
       },
       "category:identity": {
-        "hit_at_1": 0.25,
-        "hit_at_3": 0.4167,
-        "mrr_at_10": 0.3806,
-        "ndcg_at_10": 0.4046,
+        "dup_polluted": 6,
+        "hit_at_1": 0.4167,
+        "hit_at_3": 0.5,
+        "mrr_at_10": 0.4861,
+        "ndcg_at_10": 0.4621,
         "queries": 12,
         "recall_at_10": 0.5833,
         "trap_queries": 0,
         "traps": 0
       },
       "category:lexical": {
+        "dup_polluted": 5,
         "hit_at_1": 1.0,
         "hit_at_3": 1.0,
         "mrr_at_10": 1.0,
@@ -58,16 +63,18 @@
         "traps": 0
       },
       "category:paraphrase": {
+        "dup_polluted": 6,
         "hit_at_1": 0.0714,
-        "hit_at_3": 0.2143,
-        "mrr_at_10": 0.1718,
-        "ndcg_at_10": 0.2242,
+        "hit_at_3": 0.1429,
+        "mrr_at_10": 0.1484,
+        "ndcg_at_10": 0.195,
         "queries": 14,
-        "recall_at_10": 0.4643,
+        "recall_at_10": 0.4048,
         "trap_queries": 0,
         "traps": 0
       },
       "category:temporal-update": {
+        "dup_polluted": 3,
         "hit_at_1": 0.7,
         "hit_at_3": 0.9,
         "mrr_at_10": 0.7867,
@@ -78,68 +85,75 @@
         "traps": 1
       },
       "lang:en": {
-        "hit_at_1": 0.5806,
+        "dup_polluted": 12,
+        "hit_at_1": 0.6129,
         "hit_at_3": 0.7097,
-        "mrr_at_10": 0.6656,
-        "ndcg_at_10": 0.6675,
+        "mrr_at_10": 0.6731,
+        "ndcg_at_10": 0.6532,
         "queries": 31,
-        "recall_at_10": 0.7742,
+        "recall_at_10": 0.7312,
         "trap_queries": 6,
         "traps": 0
       },
       "lang:pt": {
-        "hit_at_1": 0.4839,
+        "dup_polluted": 11,
+        "hit_at_1": 0.5161,
         "hit_at_3": 0.6452,
-        "mrr_at_10": 0.5792,
-        "ndcg_at_10": 0.6206,
+        "mrr_at_10": 0.6004,
+        "ndcg_at_10": 0.6308,
         "queries": 31,
-        "recall_at_10": 0.7903,
+        "recall_at_10": 0.7957,
         "trap_queries": 6,
         "traps": 2
       }
     },
-    "lexical": {
+    "hybrid-consolidated": {
       "all": {
-        "hit_at_1": 0.4839,
-        "hit_at_3": 0.629,
-        "mrr_at_10": 0.5789,
-        "ndcg_at_10": 0.61,
+        "dup_polluted": 0,
+        "hit_at_1": 0.5645,
+        "hit_at_3": 0.6613,
+        "mrr_at_10": 0.6394,
+        "ndcg_at_10": 0.6596,
         "queries": 62,
-        "recall_at_10": 0.75,
+        "recall_at_10": 0.7903,
         "trap_queries": 12,
-        "traps": 1
+        "traps": 0
       },
       "category:dated-event": {
+        "dup_polluted": 0,
         "hit_at_1": 0.8333,
         "hit_at_3": 1.0,
-        "mrr_at_10": 0.9167,
-        "ndcg_at_10": 0.874,
+        "mrr_at_10": 0.8889,
+        "ndcg_at_10": 0.8522,
         "queries": 6,
         "recall_at_10": 0.9167,
         "trap_queries": 2,
         "traps": 0
       },
       "category:durable-old": {
+        "dup_polluted": 0,
         "hit_at_1": 0.5,
         "hit_at_3": 0.8333,
-        "mrr_at_10": 0.6722,
-        "ndcg_at_10": 0.753,
+        "mrr_at_10": 0.7083,
+        "ndcg_at_10": 0.7821,
         "queries": 6,
         "recall_at_10": 1.0,
         "trap_queries": 0,
         "traps": 0
       },
       "category:identity": {
-        "hit_at_1": 0.1667,
-        "hit_at_3": 0.3333,
-        "mrr_at_10": 0.3083,
-        "ndcg_at_10": 0.3603,
+        "dup_polluted": 0,
+        "hit_at_1": 0.4167,
+        "hit_at_3": 0.5,
+        "mrr_at_10": 0.4917,
+        "ndcg_at_10": 0.489,
         "queries": 12,
         "recall_at_10": 0.5833,
         "trap_queries": 0,
         "traps": 0
       },
       "category:lexical": {
+        "dup_polluted": 0,
         "hit_at_1": 1.0,
         "hit_at_3": 1.0,
         "mrr_at_10": 1.0,
@@ -150,16 +164,119 @@
         "traps": 0
       },
       "category:paraphrase": {
-        "hit_at_1": 0.0,
+        "dup_polluted": 0,
+        "hit_at_1": 0.0714,
         "hit_at_3": 0.1429,
-        "mrr_at_10": 0.1007,
-        "ndcg_at_10": 0.1473,
+        "mrr_at_10": 0.1664,
+        "ndcg_at_10": 0.2317,
         "queries": 14,
-        "recall_at_10": 0.3214,
+        "recall_at_10": 0.5,
         "trap_queries": 0,
         "traps": 0
       },
       "category:temporal-update": {
+        "dup_polluted": 0,
+        "hit_at_1": 0.7,
+        "hit_at_3": 0.8,
+        "mrr_at_10": 0.7833,
+        "ndcg_at_10": 0.7975,
+        "queries": 10,
+        "recall_at_10": 0.95,
+        "trap_queries": 10,
+        "traps": 0
+      },
+      "lang:en": {
+        "dup_polluted": 0,
+        "hit_at_1": 0.6129,
+        "hit_at_3": 0.6774,
+        "mrr_at_10": 0.6728,
+        "ndcg_at_10": 0.6775,
+        "queries": 31,
+        "recall_at_10": 0.7903,
+        "trap_queries": 6,
+        "traps": 0
+      },
+      "lang:pt": {
+        "dup_polluted": 0,
+        "hit_at_1": 0.5161,
+        "hit_at_3": 0.6452,
+        "mrr_at_10": 0.606,
+        "ndcg_at_10": 0.6416,
+        "queries": 31,
+        "recall_at_10": 0.7903,
+        "trap_queries": 6,
+        "traps": 0
+      }
+    },
+    "lexical": {
+      "all": {
+        "dup_polluted": 19,
+        "hit_at_1": 0.5323,
+        "hit_at_3": 0.6452,
+        "mrr_at_10": 0.6049,
+        "ndcg_at_10": 0.6111,
+        "queries": 62,
+        "recall_at_10": 0.7258,
+        "trap_queries": 12,
+        "traps": 1
+      },
+      "category:dated-event": {
+        "dup_polluted": 1,
+        "hit_at_1": 0.8333,
+        "hit_at_3": 1.0,
+        "mrr_at_10": 0.9167,
+        "ndcg_at_10": 0.7856,
+        "queries": 6,
+        "recall_at_10": 0.8056,
+        "trap_queries": 2,
+        "traps": 0
+      },
+      "category:durable-old": {
+        "dup_polluted": 2,
+        "hit_at_1": 0.5,
+        "hit_at_3": 0.8333,
+        "mrr_at_10": 0.6722,
+        "ndcg_at_10": 0.753,
+        "queries": 6,
+        "recall_at_10": 1.0,
+        "trap_queries": 0,
+        "traps": 0
+      },
+      "category:identity": {
+        "dup_polluted": 5,
+        "hit_at_1": 0.3333,
+        "hit_at_3": 0.4167,
+        "mrr_at_10": 0.4167,
+        "ndcg_at_10": 0.4203,
+        "queries": 12,
+        "recall_at_10": 0.5833,
+        "trap_queries": 0,
+        "traps": 0
+      },
+      "category:lexical": {
+        "dup_polluted": 3,
+        "hit_at_1": 1.0,
+        "hit_at_3": 1.0,
+        "mrr_at_10": 1.0,
+        "ndcg_at_10": 1.0,
+        "queries": 14,
+        "recall_at_10": 1.0,
+        "trap_queries": 0,
+        "traps": 0
+      },
+      "category:paraphrase": {
+        "dup_polluted": 5,
+        "hit_at_1": 0.0714,
+        "hit_at_3": 0.1429,
+        "mrr_at_10": 0.123,
+        "ndcg_at_10": 0.1384,
+        "queries": 14,
+        "recall_at_10": 0.2619,
+        "trap_queries": 0,
+        "traps": 0
+      },
+      "category:temporal-update": {
+        "dup_polluted": 3,
         "hit_at_1": 0.6,
         "hit_at_3": 0.8,
         "mrr_at_10": 0.725,
@@ -170,22 +287,24 @@
         "traps": 1
       },
       "lang:en": {
-        "hit_at_1": 0.4839,
+        "dup_polluted": 12,
+        "hit_at_1": 0.5484,
         "hit_at_3": 0.7097,
-        "mrr_at_10": 0.6129,
-        "ndcg_at_10": 0.6416,
+        "mrr_at_10": 0.6391,
+        "ndcg_at_10": 0.6348,
         "queries": 31,
-        "recall_at_10": 0.7742,
+        "recall_at_10": 0.7312,
         "trap_queries": 6,
         "traps": 0
       },
       "lang:pt": {
-        "hit_at_1": 0.4839,
-        "hit_at_3": 0.5484,
-        "mrr_at_10": 0.5449,
-        "ndcg_at_10": 0.5785,
+        "dup_polluted": 7,
+        "hit_at_1": 0.5161,
+        "hit_at_3": 0.5806,
+        "mrr_at_10": 0.5708,
+        "ndcg_at_10": 0.5873,
         "queries": 31,
-        "recall_at_10": 0.7258,
+        "recall_at_10": 0.7204,
         "trap_queries": 6,
         "traps": 1
       }

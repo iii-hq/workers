@@ -88,6 +88,7 @@ async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
             invalid_at: None,
             superseded_by: None,
             revision: 0,
+            stated_at: Some(now),
         })
         .await?;
         let hits = bank

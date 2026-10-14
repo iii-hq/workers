@@ -59,6 +59,27 @@ struct GoldenMemory {
     #[serde(default)]
     corroboration: u32,
     age_days: u64,
+    /// This memory paraphrases another (a duplicate consolidation should
+    /// merge); both in one top-10 wastes a recall slot.
+    #[serde(default)]
+    dup_of: Option<String>,
+}
+
+/// `tests/recall_quality/consolidation.json`: the semantic consolidation
+/// tier's decisions on this golden bank (recorded from a live judge run by
+/// memory-consolidate's ignored `judge_golden_cases` test), applied in the
+/// `hybrid-consolidated` mode so the gate pins what consolidation buys.
+#[derive(Deserialize)]
+struct Consolidation {
+    decisions: Vec<Decision>,
+}
+
+#[derive(Deserialize)]
+struct Decision {
+    /// `merge` (survivor absorbs the retired record) or `supersede`.
+    kind: String,
+    keep: String,
+    retire: String,
 }
 
 #[derive(Deserialize)]
@@ -116,6 +137,11 @@ fn validate(golden: &Golden) {
             m.key
         );
     }
+    for m in &golden.memories {
+        if let Some(of) = &m.dup_of {
+            assert!(keys.contains(of.as_str()), "{} dup_of unknown {of}", m.key);
+        }
+    }
     let mut ids = HashSet::new();
     for q in &golden.queries {
         assert!(ids.insert(q.id.as_str()), "duplicate query id {}", q.id);
@@ -141,6 +167,8 @@ struct Outcome {
     ndcg: f64,
     /// A stale key ranks above the current answer (or came back without it).
     trap: bool,
+    /// Both members of a duplicate pair landed in the top `DEPTH`.
+    dup_polluted: bool,
 }
 
 impl Outcome {
@@ -195,7 +223,16 @@ fn score(ranked: &[&str], relevant: &[String], stale: &[String]) -> Outcome {
         recall: found as f64 / relevant.len() as f64,
         ndcg: if idcg > 0.0 { dcg / idcg } else { 0.0 },
         trap,
+        dup_polluted: false,
     }
+}
+
+/// True when both members of any duplicate pair are in the top `DEPTH`.
+fn dup_polluted(ranked: &[&str], pairs: &[(&str, &str)]) -> bool {
+    let top = &ranked[..ranked.len().min(DEPTH)];
+    pairs
+        .iter()
+        .any(|(a, b)| top.contains(a) && top.contains(b))
 }
 
 /// Macro-averaged slice summary; traps are a count, never averaged in.
@@ -209,6 +246,8 @@ struct Summary {
     recall_at_10: f64,
     trap_queries: usize,
     traps: usize,
+    /// Queries whose top 10 holds both members of a duplicate pair.
+    dup_polluted: usize,
 }
 
 fn round4(x: f64) -> f64 {
@@ -228,6 +267,100 @@ fn summarize(outcomes: &[(&GoldenQuery, Outcome)]) -> Summary {
         recall_at_10: mean(&|o| o.recall),
         trap_queries: outcomes.iter().filter(|(q, _)| !q.stale.is_empty()).count(),
         traps: outcomes.iter().filter(|(_, o)| o.trap).count(),
+        dup_polluted: outcomes.iter().filter(|(_, o)| o.dup_polluted).count(),
+    }
+}
+
+fn load_consolidation(golden: &Golden) -> Consolidation {
+    let raw = std::fs::read_to_string(eval_dir().join("consolidation.json")).expect(
+        "tests/recall_quality/consolidation.json missing: record it with memory-consolidate's \
+         ignored judge_golden_cases test",
+    );
+    let c: Consolidation = serde_json::from_str(&raw).expect("consolidation.json parses");
+    let keys: HashSet<&str> = golden.memories.iter().map(|m| m.key.as_str()).collect();
+    for d in &c.decisions {
+        assert!(
+            matches!(d.kind.as_str(), "merge" | "supersede"),
+            "unknown decision kind {}",
+            d.kind
+        );
+        assert!(
+            keys.contains(d.keep.as_str()) && keys.contains(d.retire.as_str()),
+            "decision names unknown keys {} / {}",
+            d.keep,
+            d.retire
+        );
+    }
+    c
+}
+
+/// Where each retired key's relevance goes after consolidation: follow the
+/// supersede chain to the live survivor. A merged duplicate is no longer a
+/// findable answer — its survivor is — and a retired stale record can no
+/// longer trap, so the consolidated mode scores the expectations remapped.
+fn survivor_of(c: &Consolidation) -> HashMap<&str, &str> {
+    let next: HashMap<&str, &str> = c
+        .decisions
+        .iter()
+        .map(|d| (d.retire.as_str(), d.keep.as_str()))
+        .collect();
+    next.keys()
+        .map(|&k| {
+            let mut s = k;
+            while let Some(&n) = next.get(s) {
+                s = n;
+            }
+            (k, s)
+        })
+        .collect()
+}
+
+/// `expect` with retired keys replaced by their survivors (deduped, order
+/// kept) and `stale` without retired keys.
+fn remap(q: &GoldenQuery, survivors: &HashMap<&str, &str>) -> (Vec<String>, Vec<String>) {
+    let mut expect: Vec<String> = Vec::new();
+    for k in &q.expect {
+        let s = survivors.get(k.as_str()).copied().unwrap_or(k).to_string();
+        if !expect.contains(&s) {
+            expect.push(s);
+        }
+    }
+    let stale = q
+        .stale
+        .iter()
+        .filter(|k| !survivors.contains_key(k.as_str()))
+        .cloned()
+        .collect();
+    (expect, stale)
+}
+
+/// Apply recorded consolidation decisions with `memory::supersede`'s
+/// semantics: retire with a pointer; a merge reinforces a non-pinned
+/// survivor (corroboration s + r + 1, latest updated_at).
+async fn apply_consolidation(bank: &memory::store::Bank, golden: &Golden, c: &Consolidation) {
+    let id_of: HashMap<&str, String> = golden
+        .memories
+        .iter()
+        .map(|m| (m.key.as_str(), fingerprint(&m.text)))
+        .collect();
+    let now = now_ms();
+    for d in &c.decisions {
+        let mut retire = bank.get(&id_of[d.retire.as_str()]).await.unwrap();
+        let mut keep = bank.get(&id_of[d.keep.as_str()]).await.unwrap();
+        let (r_updated, r_corroboration, r_stated) =
+            (retire.updated_at, retire.corroboration, retire.stated_at);
+        retire.invalid_at = Some(now);
+        retire.superseded_by = Some(keep.id.clone());
+        retire.updated_at = now;
+        retire.revision += 1;
+        bank.commit(retire).await.unwrap();
+        if d.kind == "merge" && !keep.pinned {
+            keep.corroboration += r_corroboration + 1;
+            keep.updated_at = keep.updated_at.max(r_updated);
+            keep.stated_at = keep.stated_at.max(r_stated);
+            keep.revision += 1;
+            bank.commit(keep).await.unwrap();
+        }
     }
 }
 
@@ -262,6 +395,7 @@ async fn build_bank(
             invalid_at: None,
             superseded_by: None,
             revision: 0,
+            stated_at: Some(at),
         };
         bank.commit(m.clone()).await.unwrap();
         let e = &vectors.items[&g.key];
@@ -299,26 +433,48 @@ async fn recall_quality_matches_baseline() {
     let golden = load_golden();
     validate(&golden);
     let (vectors, vectors_fp) = load_vectors(&golden);
+    let consolidation = load_consolidation(&golden);
     let (_dir, bank, key_of_id) = build_bank(&golden, &vectors).await;
+    // A second bank with the recorded consolidation decisions applied.
+    let (_dir2, consolidated, _) = build_bank(&golden, &vectors).await;
+    apply_consolidation(&consolidated, &golden, &consolidation).await;
+    let survivors = survivor_of(&consolidation);
     let half_life = WorkerConfig::default().decay_half_life_days;
+    let pairs: Vec<(&str, &str)> = golden
+        .memories
+        .iter()
+        .filter_map(|m| m.dup_of.as_deref().map(|of| (m.key.as_str(), of)))
+        .collect();
 
     let mut report = String::new();
     let mut snapshot = BTreeMap::new();
-    for mode in ["lexical", "hybrid"] {
+    for mode in ["lexical", "hybrid", "hybrid-consolidated"] {
+        let (bank, hybrid) = match mode {
+            "lexical" => (&bank, false),
+            "hybrid" => (&bank, true),
+            _ => (&consolidated, true),
+        };
         let mut outcomes = Vec::new();
         for q in &golden.queries {
-            let qv = (mode == "hybrid").then(|| vectors.items[&q.id].v.as_slice());
+            let qv = hybrid.then(|| vectors.items[&q.id].v.as_slice());
             let hits = bank
                 .recall(&q.text, qv, &vectors.model, DEPTH, half_life, false)
                 .await;
-            if mode == "hybrid" {
+            if hybrid {
                 assert!(!hits.is_empty(), "guard: {} recalled nothing", q.id);
             }
             let ranked: Vec<&str> = hits
                 .iter()
                 .map(|(m, _)| key_of_id[&m.id].as_str())
                 .collect();
-            outcomes.push((q, score(&ranked, &q.expect, &q.stale)));
+            let (expect, stale) = if mode == "hybrid-consolidated" {
+                remap(q, &survivors)
+            } else {
+                (q.expect.clone(), q.stale.clone())
+            };
+            let mut outcome = score(&ranked, &expect, &stale);
+            outcome.dup_polluted = dup_polluted(&ranked, &pairs);
+            outcomes.push((q, outcome));
         }
 
         let mut slices: BTreeMap<String, Vec<(&GoldenQuery, Outcome)>> = BTreeMap::new();
@@ -337,12 +493,12 @@ async fn recall_quality_matches_baseline() {
             .collect();
 
         report.push_str(&format!(
-            "\n[{mode}]\n{:<26} {:>4} {:>6} {:>6} {:>7} {:>8} {:>9} {:>6}\n",
-            "slice", "n", "hit@1", "hit@3", "mrr@10", "ndcg@10", "recall@10", "traps"
+            "\n[{mode}]\n{:<26} {:>4} {:>6} {:>6} {:>7} {:>8} {:>9} {:>6} {:>5}\n",
+            "slice", "n", "hit@1", "hit@3", "mrr@10", "ndcg@10", "recall@10", "traps", "dups"
         ));
         for (slice, s) in &summaries {
             report.push_str(&format!(
-                "{slice:<26} {:>4} {:>6.3} {:>6.3} {:>7.3} {:>8.3} {:>9.3} {:>3}/{:<2}\n",
+                "{slice:<26} {:>4} {:>6.3} {:>6.3} {:>7.3} {:>8.3} {:>9.3} {:>3}/{:<2} {:>5}\n",
                 s.queries,
                 s.hit_at_1,
                 s.hit_at_3,
@@ -350,7 +506,8 @@ async fn recall_quality_matches_baseline() {
                 s.ndcg_at_10,
                 s.recall_at_10,
                 s.traps,
-                s.trap_queries
+                s.trap_queries,
+                s.dup_polluted
             ));
         }
         let mut worst: Vec<&(&GoldenQuery, Outcome)> = outcomes
@@ -384,7 +541,7 @@ async fn recall_quality_matches_baseline() {
         }
 
         // Guard: most queries must reach gold, or the fixture/pipeline broke.
-        if mode == "hybrid" {
+        if hybrid {
             let reached = outcomes
                 .iter()
                 .filter(|(_, o)| o.first_hit.is_some())
@@ -505,6 +662,43 @@ mod metric_tests {
         let rel2 = keys(&["current", "also"]);
         assert!(score(&["also", "s", "current"], &rel2, &stale).trap);
         assert!(!score(&["also", "current", "s"], &rel2, &stale).trap);
+    }
+
+    #[test]
+    fn consolidated_expectations_follow_the_supersede_chain() {
+        let c = Consolidation {
+            decisions: vec![
+                Decision {
+                    kind: "supersede".into(),
+                    keep: "moved".into(),
+                    retire: "oct15".into(),
+                },
+                Decision {
+                    kind: "merge".into(),
+                    keep: "dup".into(),
+                    retire: "moved".into(),
+                },
+            ],
+        };
+        let survivors = survivor_of(&c);
+        assert_eq!(
+            survivors["oct15"], "dup",
+            "chains resolve to the live survivor"
+        );
+        let q = GoldenQuery {
+            id: "q".into(),
+            text: "t".into(),
+            lang: "en".into(),
+            category: "dated-event".into(),
+            expect: keys(&["moved", "dup", "other"]),
+            stale: keys(&["oct15"]),
+        };
+        let (expect, stale) = remap(&q, &survivors);
+        assert_eq!(expect, keys(&["dup", "other"]), "deduped, order kept");
+        assert!(
+            stale.is_empty(),
+            "a retired stale record can no longer trap"
+        );
     }
 
     #[test]

@@ -296,6 +296,7 @@ mod tests {
             invalid_at: None,
             superseded_by: None,
             revision: 0,
+            stated_at: None,
         };
         let with = item_payload(ItemEvent::Superseded, "b", &m, Some("same fact"));
         assert_eq!(with["event_type"], "superseded");

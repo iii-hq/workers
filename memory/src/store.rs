@@ -733,6 +733,7 @@ mod tests {
             invalid_at: None,
             superseded_by: None,
             revision: 0,
+            stated_at: None,
         }
     }
 

@@ -976,6 +976,53 @@
       "pinned": false,
       "corroboration": 1,
       "age_days": 560
+    },
+    {
+      "key": "dup-deploy-window",
+      "text": "User deploys to production only on Tuesday and Thursday, from 10:00 to 15:00 local time.",
+      "entities": [],
+      "tags": [],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 3,
+      "dup_of": "en-work-deploy-window"
+    },
+    {
+      "key": "dup-cafe-v60",
+      "text": "Toda manhã a usuária passa café no V60 usando grãos de torra clara do sul de Minas.",
+      "entities": [
+        "café",
+        "v60"
+      ],
+      "tags": [],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 4,
+      "dup_of": "pt-life-cafe-v60"
+    },
+    {
+      "key": "dup-dentist-moved",
+      "text": "A usuária remarcou a consulta no dentista de 15/10/2026 para 20/10/2026 às 9:30.",
+      "entities": [
+        "dentista"
+      ],
+      "tags": [],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 1,
+      "dup_of": "evt-dentist-moved"
+    },
+    {
+      "key": "dup-partner",
+      "text": "Rafael, a UX designer, has been the user's partner since 2019.",
+      "entities": [
+        "rafael"
+      ],
+      "tags": [],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 5,
+      "dup_of": "id-partner"
     }
   ],
   "queries": [
@@ -1056,7 +1103,8 @@
       "category": "paraphrase",
       "expect": [
         "en-work-deploy-window",
-        "en-work-no-friday-deploys"
+        "en-work-no-friday-deploys",
+        "dup-deploy-window"
       ],
       "stale": []
     },
@@ -1067,7 +1115,8 @@
       "category": "paraphrase",
       "expect": [
         "en-work-no-friday-deploys",
-        "en-work-deploy-window"
+        "en-work-deploy-window",
+        "dup-deploy-window"
       ],
       "stale": []
     },
@@ -1147,7 +1196,8 @@
       "lang": "pt",
       "category": "lexical",
       "expect": [
-        "pt-life-cafe-v60"
+        "pt-life-cafe-v60",
+        "dup-cafe-v60"
       ],
       "stale": []
     },
@@ -1298,7 +1348,8 @@
       "lang": "en",
       "category": "identity",
       "expect": [
-        "id-partner"
+        "id-partner",
+        "dup-partner"
       ],
       "stale": []
     },
@@ -1381,7 +1432,8 @@
       "lang": "pt",
       "category": "identity",
       "expect": [
-        "id-partner"
+        "id-partner",
+        "dup-partner"
       ],
       "stale": []
     },
@@ -1533,7 +1585,8 @@
       "category": "dated-event",
       "expect": [
         "evt-dentist-moved",
-        "evt-palestra-meetup"
+        "evt-palestra-meetup",
+        "dup-dentist-moved"
       ],
       "stale": [
         "evt-dentist-oct15"
@@ -1545,7 +1598,8 @@
       "lang": "en",
       "category": "dated-event",
       "expect": [
-        "evt-dentist-moved"
+        "evt-dentist-moved",
+        "dup-dentist-moved"
       ],
       "stale": [
         "evt-dentist-oct15"

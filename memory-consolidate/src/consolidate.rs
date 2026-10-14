@@ -37,6 +37,14 @@ pub struct MemoryRow {
     pub corroboration: u32,
     #[serde(default)]
     pub created_at: u64,
+    /// Last write (reinforcement included): the semantic tier's cursor and
+    /// its "last stated" time.
+    #[serde(default)]
+    pub updated_at: u64,
+    /// When the fact was last stated (memory's `stated_at`; pin/tag edits
+    /// do not bump it). Absent on legacy records.
+    #[serde(default)]
+    pub stated_at: Option<u64>,
 }
 
 /// One planned merge: `losers` retire in favor of `winner`.
@@ -86,6 +94,18 @@ pub struct BankReport {
     /// cannot re-run the whole pass on every heartbeat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// Semantic-tier decisions (applied, or planned on dry runs), each with
+    /// the judge's reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic: Vec<crate::semantic::SemanticAction>,
+    /// Judge actions dropped by validation (unknown alias, pinned target,
+    /// wrong direction, a lost number, ...).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub semantic_rejected: usize,
+    /// New memories the judge could not decide even alone (a poison input);
+    /// skipped past the cursor so they cannot wedge the tier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_failed: Vec<String>,
 }
 
 /// Reason carried on the `memory::item-changed` events of a deterministic
@@ -101,7 +121,7 @@ const NOTE_OLD_MEMORY: &str = "memory worker did not report reinforcement — up
 /// `false` is a pinned survivor (untouchable), and an ABSENT field is an
 /// older memory worker that ignored `reinforce` — noted once per bank,
 /// never counted as reinforced.
-fn tally_reinforcement(report: &mut BankReport, reply: &Value) {
+pub(crate) fn tally_reinforcement(report: &mut BankReport, reply: &Value) {
     match reply.get("reinforced").and_then(Value::as_bool) {
         Some(true) => report.reinforced += 1,
         Some(false) => {}
@@ -212,7 +232,11 @@ fn group_by(rows: &[MemoryRow], key: fn(&str) -> String, report_only: bool) -> V
     planned
 }
 
-async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
+pub(crate) async fn call(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+) -> Result<Value, String> {
     iii.trigger(TriggerRequest {
         function_id: function_id.to_string(),
         payload,
@@ -240,12 +264,15 @@ pub async fn list_banks(iii: &IIIClient, allow: &[String]) -> Result<Vec<String>
 
 /// Every LIVE memory in a bank, paged. Undecodable rows are reported —
 /// a partial scan must not read as a complete one.
-async fn fetch_live(
+pub(crate) async fn fetch_live(
     iii: &IIIClient,
     bank: &str,
     errors: &mut Vec<String>,
 ) -> Result<Vec<MemoryRow>, String> {
     let mut rows = Vec::new();
+    // Offset paging over a newest-first list can repeat a row when a write
+    // lands between pages; a duplicate would break batch aliasing.
+    let mut seen = std::collections::HashSet::new();
     let mut offset = 0usize;
     loop {
         let reply = call(
@@ -261,7 +288,11 @@ async fn fetch_live(
         let got = page.len();
         for m in page {
             match serde_json::from_value::<MemoryRow>(m.clone()) {
-                Ok(row) => rows.push(row),
+                Ok(row) => {
+                    if seen.insert(row.id.clone()) {
+                        rows.push(row);
+                    }
+                }
                 Err(e) => {
                     let id = m.get("id").and_then(Value::as_str).unwrap_or("<no id>");
                     errors.push(format!("undecodable memory `{id}`: {e}"));
@@ -455,6 +486,8 @@ mod tests {
             pinned,
             corroboration,
             created_at,
+            updated_at: created_at,
+            stated_at: None,
         }
     }
 

@@ -21,8 +21,9 @@ pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 pub const RUN_ID: &str = "memory-consolidate::run";
 pub const RUN_DESC: &str =
     "Run one consolidation pass now (all configured banks, or one bank). Deterministic \
-     near-duplicate dedup applied strictly through memory::supersede (reinforce on merge); pinned \
-     memories are untouchable. dry_run plans without writing.";
+     near-duplicate dedup, plus the optional LLM tiers when enabled (reorder judge; semantic \
+     merge/supersede of new memories, each with a reason), applied strictly through \
+     memory::supersede; pinned memories are untouchable. dry_run plans without writing.";
 
 pub const STATUS_ID: &str = "memory-consolidate::status";
 pub const STATUS_DESC: &str =
@@ -114,7 +115,13 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn state_get(iii: &IIIClient, key: &str) -> Option<Value> {
+pub(crate) async fn state_get(iii: &IIIClient, key: &str) -> Option<Value> {
+    state_try_get(iii, key).await.ok().flatten()
+}
+
+/// `state_get` that tells a failed read (`Err`) from an absent value
+/// (`Ok(None)`), for state whose loss must not read as "start over".
+pub(crate) async fn state_try_get(iii: &IIIClient, key: &str) -> Result<Option<Value>, String> {
     iii.trigger(TriggerRequest {
         function_id: "state::get".into(),
         payload: json!({ "scope": STATE_SCOPE, "key": key }),
@@ -122,12 +129,11 @@ async fn state_get(iii: &IIIClient, key: &str) -> Option<Value> {
         timeout_ms: Some(5_000),
     })
     .await
-    .ok()
-    .map(|v| v.get("value").cloned().unwrap_or(v))
-    .filter(|v| !v.is_null())
+    .map(|v| Some(v.get("value").cloned().unwrap_or(v)).filter(|v| !v.is_null()))
+    .map_err(|e| format!("state::get {key}: {e}"))
 }
 
-async fn state_set(iii: &IIIClient, key: &str, value: Value) -> Result<(), String> {
+pub(crate) async fn state_set(iii: &IIIClient, key: &str, value: Value) -> Result<(), String> {
     iii.trigger(TriggerRequest {
         function_id: "state::set".into(),
         payload: json!({ "scope": STATE_SCOPE, "key": key, "value": value }),
@@ -185,6 +191,26 @@ async fn run_locked(deps: &Deps, req: RunRequest) -> Result<RunResponse, Error> 
             };
             consolidate::run_llm_tier(&deps.iii, bank, &rows, &mut report, &mut budget, &opts)
                 .await;
+        }
+        // LAST, on its own fresh fetch: it must never see (or re-judge)
+        // records the tiers above retired in this pass. Dry runs still judge
+        // and report the plan; they never write or move the cursor.
+        if cfg.semantic_enabled {
+            let opts = crate::semantic::SemanticOptions {
+                model: cfg.llm_model.clone(),
+                batch: cfg.semantic_batch,
+                candidates: cfg.semantic_candidates,
+                max_per_run: cfg.semantic_max_per_run,
+            };
+            crate::semantic::run_semantic_tier(
+                &deps.iii,
+                bank,
+                &opts,
+                dry_run,
+                &mut budget,
+                &mut report,
+            )
+            .await;
         }
         reports.push(report);
     }

@@ -71,6 +71,12 @@ pub struct Memory {
     /// highest.
     #[serde(default)]
     pub revision: u64,
+    /// When the fact was last STATED (created, re-observed, text edited).
+    /// Unlike `updated_at`, pin/tag/entity edits never bump it, so
+    /// consolidation can order "which statement is current" by it. Legacy
+    /// records load as None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stated_at: Option<u64>,
 }
 
 impl Memory {
@@ -193,6 +199,7 @@ mod tests {
             invalid_at: None,
             superseded_by: None,
             revision: 3,
+            stated_at: Some(2),
         };
         let s = serde_json::to_string(&f).unwrap();
         let back: Memory = serde_json::from_str(&s).unwrap();

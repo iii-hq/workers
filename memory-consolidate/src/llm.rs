@@ -142,7 +142,7 @@ pub fn merge_promotions(existing: &str, rules: &[String]) -> (String, usize) {
 }
 
 /// The extraction model: the configured pin, else the first catalog entry.
-async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, String> {
+pub(crate) async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, String> {
     if !configured.is_empty() {
         return Ok(configured.to_string());
     }
@@ -171,26 +171,43 @@ pub async fn judge(
     configured_model: &str,
     prompt: String,
 ) -> Result<JudgeReply, String> {
+    let reply = complete(iii, configured_model, JUDGE_SYSTEM, prompt, 1_024).await?;
+    Ok(parse_reply(&reply_text(&reply)))
+}
+
+/// One `router::complete` call with a static system prompt (cache-friendly)
+/// and one user message; the raw reply, so callers can classify provider
+/// errors (`message.stop_reason == "error"`) before reading text.
+pub(crate) async fn complete(
+    iii: &IIIClient,
+    configured_model: &str,
+    system_prompt: &str,
+    prompt: String,
+    max_output_tokens: u32,
+) -> Result<Value, String> {
     let model = resolve_model(iii, configured_model).await?;
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "router::complete".into(),
-            payload: json!({
-                "model": model,
-                "system_prompt": JUDGE_SYSTEM,
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": prompt }],
-                    "timestamp": now_ms() as i64,
-                }],
-                "max_output_tokens": 1_024,
-            }),
-            action: None,
-            timeout_ms: Some(LLM_TIMEOUT_MS),
-        })
-        .await
-        .map_err(|e| format!("router::complete: {e}"))?;
-    let text = reply
+    iii.trigger(TriggerRequest {
+        function_id: "router::complete".into(),
+        payload: json!({
+            "model": model,
+            "system_prompt": system_prompt,
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": prompt }],
+                "timestamp": now_ms() as i64,
+            }],
+            "max_output_tokens": max_output_tokens,
+        }),
+        action: None,
+        timeout_ms: Some(LLM_TIMEOUT_MS),
+    })
+    .await
+    .map_err(|e| format!("router::complete: {e}"))
+}
+
+/// The assistant text of a `router::complete` reply.
+pub(crate) fn reply_text(reply: &Value) -> String {
+    reply
         .pointer("/message/content")
         .and_then(Value::as_array)
         .map(|parts| {
@@ -200,8 +217,7 @@ pub async fn judge(
                 .collect::<Vec<_>>()
                 .join("\n")
         })
-        .unwrap_or_default();
-    Ok(parse_reply(&text))
+        .unwrap_or_default()
 }
 
 fn now_ms() -> u64 {
@@ -222,6 +238,8 @@ mod tests {
             pinned: false,
             corroboration,
             created_at: 1,
+            updated_at: 1,
+            stated_at: None,
         }
     }
 

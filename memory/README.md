@@ -98,7 +98,13 @@ process current directory for the same relative default.
 
 ## Recall quality eval
 
-`tests/recall_quality.rs` scores the production `Bank::recall` over a synthetic golden bank (`tests/recall_quality/golden.json`: one persona, 72 memories, 62 English/Portuguese queries across lexical, paraphrase, identity, temporal-update, dated-event and durable-old categories). It runs in `lexical` mode and in `hybrid` mode with cached `text-embedding-3-small` vectors. It reports hit@1/3, MRR@10, nDCG@10 and recall@10 per category and language, and counts **traps**: a superseded memory outranking the current one. The committed snapshot `tests/golden/recall_quality.json` makes it a PR gate. The metric conventions follow Hindsight's retrieval eval.
+`tests/recall_quality.rs` scores the production `Bank::recall` over a synthetic golden bank (`tests/recall_quality/golden.json`: one persona, 76 memories including 4 paraphrase duplicates, 62 English/Portuguese queries across lexical, paraphrase, identity, temporal-update, dated-event and durable-old categories). It runs in three modes:
+
+- `lexical`;
+- `hybrid`, with cached `text-embedding-3-small` vectors;
+- `hybrid-consolidated`, which first replays the semantic consolidation tier's recorded decisions (`tests/recall_quality/consolidation.json`, from memory-consolidate's judge eval) and scores expectations carried to the survivors.
+
+It reports hit@1/3, MRR@10, nDCG@10 and recall@10 per category and language. It also counts **traps**, where a superseded memory outranks the current one, and **duplicate pollution**, a query whose top 10 holds both members of a `dup_of` pair. The committed snapshot `tests/golden/recall_quality.json` makes it a PR gate. The metric conventions follow Hindsight's retrieval eval.
 
 ```bash
 cargo test --test recall_quality -- --nocapture                # report

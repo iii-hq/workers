@@ -68,6 +68,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
             f.corroboration = f.corroboration.saturating_add(1);
             f.pinned = f.pinned || pinned;
             f.updated_at = now;
+            f.stated_at = Some(now);
             f.revision += 1;
             if live {
                 (f, ItemEvent::Updated, false)
@@ -94,6 +95,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
                 invalid_at: None,
                 superseded_by: None,
                 revision: 0,
+                stated_at: Some(now),
             },
             ItemEvent::Created,
             true,
@@ -267,6 +269,10 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
                 "text must be 3..2000 characters".into(),
             ));
         }
+        // A text edit restates the fact; pin/tag/entity edits do not.
+        if memory.text != text {
+            memory.stated_at = Some(now_ms());
+        }
         memory.text = text;
     }
     if let Some(entities) = req.entities {
@@ -387,6 +393,7 @@ fn supersede_transition(
 ) -> (Memory, Option<Memory>) {
     let loser_updated_at = loser.updated_at;
     let loser_corroboration = loser.corroboration;
+    let loser_stated_at = loser.stated_at;
     loser.invalid_at = Some(now);
     loser.superseded_by = Some(winner.id.clone());
     loser.updated_at = now;
@@ -399,6 +406,7 @@ fn supersede_transition(
         .saturating_add(loser_corroboration)
         .saturating_add(1);
     winner.updated_at = winner.updated_at.max(loser_updated_at);
+    winner.stated_at = winner.stated_at.max(loser_stated_at);
     winner.revision += 1;
     (loser, Some(winner))
 }
@@ -493,6 +501,7 @@ mod tests {
             invalid_at: if live { None } else { Some(20) },
             superseded_by: if live { None } else { Some("fpw".into()) },
             revision,
+            stated_at: None,
         }
     }
 
@@ -513,6 +522,7 @@ mod tests {
         assert!(created);
         assert!(matches!(event, ItemEvent::Created));
         assert_eq!(m.revision, 0);
+        assert_eq!(m.stated_at, Some(99), "a new record is stated now");
         assert_eq!(m.entities, vec!["mike", "blog"]);
         assert_eq!(m.tags, vec!["intro"]);
         assert!(m.pinned);
@@ -575,6 +585,7 @@ mod tests {
             },
         );
         assert!(created, "a resurrection re-enters live sets");
+        assert_eq!(m.stated_at, Some(99), "re-saving restates the fact");
         assert!(matches!(event, ItemEvent::Created));
         assert_eq!(
             m.revision, 8,
@@ -589,9 +600,11 @@ mod tests {
         let mut loser = record("fpl", 3, true, false);
         loser.corroboration = 6;
         loser.updated_at = 50;
+        loser.stated_at = Some(45);
         let mut winner = record("fpw", 1, true, false);
         winner.corroboration = 0;
         winner.updated_at = 40;
+        winner.stated_at = Some(30);
         let (retired, survivor) = supersede_transition(loser, winner.clone(), true, 99);
         assert_eq!(retired.invalid_at, Some(99));
         assert_eq!(retired.superseded_by.as_deref(), Some("fpw"));
@@ -602,6 +615,7 @@ mod tests {
         assert_eq!(survivor.corroboration, 7);
         // Latest of the two, NOT now: a merge is not a fresh restatement.
         assert_eq!(survivor.updated_at, 50);
+        assert_eq!(survivor.stated_at, Some(45), "latest statement of the two");
         assert_eq!(survivor.revision, 2);
 
         let (_, none) = supersede_transition(record("fpl", 0, true, false), winner, false, 99);
