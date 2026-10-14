@@ -75,7 +75,7 @@ function makeCtx(conversations: Conversation[], activeId: string) {
 let root: Root | null = null
 let container: HTMLElement | null = null
 
-function render() {
+function render(pinned?: string) {
   if (!container) {
     container = document.createElement('div')
     document.body.appendChild(container)
@@ -85,6 +85,7 @@ function render() {
     root?.render(
       <TooltipProvider delayDuration={0}>
         <ChatPanel />
+        {pinned && <ChatPanel conversationId={pinned} />}
       </TooltipProvider>,
     ),
   )
@@ -119,6 +120,17 @@ describe('ChatPanel side chats', () => {
     render()
     expect(ctx.remove).toHaveBeenCalledWith('mine')
     expect(ctx.remove).not.toHaveBeenCalledWith('other-tab')
+  })
+
+  it('keeps them while a pinned pane still shows the conversation', () => {
+    const list = [chat('a'), chat('b'), side('mine', 'a')]
+    sideChatsMadeHere.add('mine')
+    const ctx = makeCtx(list, 'a')
+    mocks.ctx = ctx
+    render('a')
+    mocks.ctx = { ...ctx, activeId: 'b', active: list[1] }
+    render('a')
+    expect(ctx.remove).not.toHaveBeenCalled()
   })
 
   it('never discards the side chat being shown', () => {

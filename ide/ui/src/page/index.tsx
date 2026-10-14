@@ -1813,6 +1813,9 @@ export function ShellExplorerPage({
       return
     }
     if (context.type === 'source-control') {
+      // A newly mounted page resolves its own root first; changing it before
+      // that would cancel the resolution and skip the restored view state.
+      if (root === null) return
       appliedContextRef.current = panelContext.id
       changeRoot(context.cwd)
       setSideTab('scm')

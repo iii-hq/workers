@@ -144,6 +144,24 @@ export function isSideChat(
 /** Side chats this browser tab created: the only ones it discards on leave. */
 export const sideChatsMadeHere = new Set<string>()
 
+/** How many of this tab's chat panels show each conversation. */
+const displayedHere = new Map<string, number>()
+
+/** Count `id` as shown by one more panel; the returned function undoes it. */
+export function markDisplayed(id: string): () => void {
+  displayedHere.set(id, (displayedHere.get(id) ?? 0) + 1)
+  return () => {
+    const left = (displayedHere.get(id) ?? 1) - 1
+    if (left <= 0) displayedHere.delete(id)
+    else displayedHere.set(id, left)
+  }
+}
+
+/** Whether a panel of this tab still shows `id`. */
+export function isDisplayedHere(id: string): boolean {
+  return displayedHere.has(id)
+}
+
 /**
  * Keys the harness writes on a spawned session. A fork copies them, and a
  * side chat must not keep them: deleting it would then notify the parent

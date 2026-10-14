@@ -396,13 +396,20 @@ export function ChatView({
     },
     [showAside],
   )
+  // Keyed on the side chat's metadata object: the context value is rebuilt
+  // on every render, the metadata only when it changes, so the marks (and
+  // every message reading them) stay put while a reply streams.
+  const sideChatMetadata =
+    asideEnabled && conversationsCtx
+      ? findSideChat(conversationsCtx.conversations, conversation.id)
+          ?.sessionMetadata
+      : undefined
   const heldQuotes = useMemo(() => {
-    if (!asideEnabled || !conversationsCtx) return []
     const sent = sideChatQuotes(
-      findSideChat(conversationsCtx.conversations, conversation.id),
+      sideChatMetadata ? { sessionMetadata: sideChatMetadata } : null,
     )
     return pendingQuote ? [...sent, pendingQuote] : sent
-  }, [asideEnabled, conversationsCtx, conversation.id, pendingQuote])
+  }, [sideChatMetadata, pendingQuote])
   const sideChatValue = useMemo(
     () =>
       asideEnabled
@@ -1601,10 +1608,21 @@ export function ChatView({
   // only checked after that: a send it turns away goes back into the draft, and the Composer
   // remounts to pick the text and chips up again.
   const [composerGeneration, setComposerGeneration] = useState(0)
+  // Whether the last submit put the message out (appended or queued), and
+  // the side chat quote it carried: a send that stops short keeps the quote
+  // in its chip and gives the composer back only the question.
+  const messageSentRef = useRef(false)
+  const quotePrefixRef = useRef('')
   const restoreDraft = useCallback(
     (payload: ComposerSubmitPayload) => {
       if (!conversationsCtx) return
-      conversationsCtx.setDraftText(conversation.id, payload.text)
+      const prefix = quotePrefixRef.current
+      conversationsCtx.setDraftText(
+        conversation.id,
+        prefix && payload.text.startsWith(prefix)
+          ? payload.text.slice(prefix.length)
+          : payload.text,
+      )
       conversationsCtx.setDraftAttachments(conversation.id, payload.attachments)
       setComposerGeneration((generation) => generation + 1)
     },
@@ -1744,7 +1762,10 @@ export function ChatView({
             willQueue,
           })
 
-      if (!willQueue) onAppendMessage(conversationId, userMsg)
+      if (!willQueue) {
+        onAppendMessage(conversationId, userMsg)
+        messageSentRef.current = true
+      }
 
       if (compact) {
         if (!backend.compactSession) {
@@ -2002,6 +2023,7 @@ export function ChatView({
                 : {}),
             },
           )
+          messageSentRef.current = true
         } catch (err) {
           setQueuedDrafts((drafts) => drafts.filter((d) => d.id !== userMsg.id))
           onAppendMessage(
@@ -2389,11 +2411,16 @@ export function ChatView({
   const submitWithQuote = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (!sideQuote) return submit(payload)
-      await submit({
-        ...payload,
-        text: sideChatQuote(sideQuote.text) + payload.text,
-      })
-      onQuoteSent?.(sideQuote)
+      const prefix = sideChatQuote(sideQuote.text)
+      messageSentRef.current = false
+      quotePrefixRef.current = prefix
+      try {
+        await submit({ ...payload, text: prefix + payload.text })
+      } finally {
+        quotePrefixRef.current = ''
+      }
+      // Blocked, turned away or failed before it went out: the quote stays.
+      if (messageSentRef.current) onQuoteSent?.(sideQuote)
     },
     [submit, sideQuote, onQuoteSent],
   )

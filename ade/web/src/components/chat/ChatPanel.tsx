@@ -13,7 +13,13 @@ import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import { isSideChat, sideChatOf, sideChatsMadeHere } from '@/lib/chat-aside'
+import {
+  isDisplayedHere,
+  isSideChat,
+  markDisplayed,
+  sideChatOf,
+  sideChatsMadeHere,
+} from '@/lib/chat-aside'
 import { onChatShownRequest } from '@/lib/chat-requests'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
@@ -116,11 +122,19 @@ export function ChatPanel({
   // an effect cleanup, so a StrictMode remount discards nothing.
   const conversationsRef = useRef(conversations)
   conversationsRef.current = conversations
+  // Declared before the discard below: on a switch React runs this cleanup
+  // first, so the discard sees only the other panels still showing `left`.
+  useEffect(
+    () => (displayedId ? markDisplayed(displayedId) : undefined),
+    [displayedId],
+  )
   const shownIdRef = useRef(displayedId)
   useEffect(() => {
     const left = shownIdRef.current
     shownIdRef.current = displayedId
     if (!left || left === displayedId) return
+    // Another pane (a pinned one) still shows it: its side chat stays.
+    if (isDisplayedHere(left)) return
     for (const conversation of conversationsRef.current) {
       if (
         conversation.id === displayedId ||

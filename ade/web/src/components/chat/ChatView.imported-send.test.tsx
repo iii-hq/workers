@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { ChatBackend } from '@/lib/backend'
 import { buildTurnMetadata } from '@/lib/backend/real'
+import { sideChatQuote } from '@/lib/chat-aside'
 import type { Conversation } from '@/types/chat'
 import { ChatView } from './ChatView'
 import type { ComposerSubmitPayload } from './Composer'
@@ -57,7 +58,10 @@ const session: Conversation = {
     source_cwd: '/source/project',
   },
 }
-function render(conversation: Conversation) {
+function render(
+  conversation: Conversation,
+  side?: React.ComponentProps<typeof ChatView>['side'],
+) {
   const noop = vi.fn()
   renderToStaticMarkup(
     <TooltipProvider>
@@ -72,6 +76,7 @@ function render(conversation: Conversation) {
         onAppendMessage={noop}
         onPatchMessage={noop}
         onCompactConversation={noop}
+        side={side}
       />
     </TooltipProvider>,
   )
@@ -233,7 +238,7 @@ it('allows only one first submission while its native turn lookup is pending', a
   expect(stream).toHaveBeenCalledTimes(2)
 })
 
-it('puts a send the imported-session check turns away back into the draft', async () => {
+function installDrafts() {
   const setDraftText = vi.fn()
   const setDraftAttachments = vi.fn()
   ctx.value = {
@@ -255,6 +260,11 @@ it('puts a send the imported-session check turns away back into the draft', asyn
     setDraftText,
     setDraftAttachments,
   }
+  return { setDraftText, setDraftAttachments }
+}
+
+it('puts a send the imported-session check turns away back into the draft', async () => {
+  const { setDraftText, setDraftAttachments } = installDrafts()
   const props = render({
     ...session,
     model: 'ade::chosen',
@@ -277,4 +287,52 @@ it('puts a send the imported-session check turns away back into the draft', asyn
   expect(setDraftAttachments).toHaveBeenCalledWith('new-native-copy', [
     attachment,
   ])
+})
+
+describe('a side chat quote', () => {
+  const quote = { messageId: 'source', text: 'The views stay local.' }
+  const configured = {
+    ...session,
+    model: 'ade::chosen',
+    workingDir: '/ade/project',
+  }
+
+  it('goes out ahead of the question and is reported sent', async () => {
+    const onQuoteSent = vi.fn()
+    const props = render(configured, {
+      since: 0,
+      empty: null,
+      quote,
+      onQuoteSent,
+    })
+    await props.onSubmit({ text: 'Do they sync?', attachments: [] })
+    expect(stream).toHaveBeenCalledWith(
+      `${sideChatQuote(quote.text)}Do they sync?`,
+      'ade::chosen',
+      expect.anything(),
+    )
+    expect(onQuoteSent).toHaveBeenCalledWith(quote)
+  })
+
+  it('stays in its chip when the send is turned away', async () => {
+    const { setDraftText } = installDrafts()
+    const onQuoteSent = vi.fn()
+    const props = render(configured, {
+      since: 0,
+      empty: null,
+      quote,
+      onQuoteSent,
+    })
+    statusTrigger.mockRejectedValueOnce({
+      code: 'invocation_failed',
+      message: 'state is down',
+    })
+    await props.onSubmit({ text: 'Do they sync?', attachments: [] })
+    expect(stream).not.toHaveBeenCalled()
+    expect(onQuoteSent).not.toHaveBeenCalled()
+    expect(setDraftText).toHaveBeenCalledWith(
+      'new-native-copy',
+      'Do they sync?',
+    )
+  })
 })
