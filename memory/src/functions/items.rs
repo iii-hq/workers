@@ -164,6 +164,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     );
     bank.commit(memory.clone()).await?;
     deps.emitter.item(event, &bank_name, &memory).await;
+    crate::embed_client::spawn_backfill(deps, &bank_name);
     Ok(SaveResponse { memory, created })
 }
 
@@ -262,6 +263,7 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
         .get(&req.id)
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
+    let mut text_changed = false;
     if let Some(text) = req.text {
         let text = text.trim().to_string();
         if text.len() < 3 || text.len() > 2_000 {
@@ -270,7 +272,8 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
             ));
         }
         // A text edit restates the fact; pin/tag/entity edits do not.
-        if memory.text != text {
+        text_changed = memory.text != text;
+        if text_changed {
             memory.stated_at = Some(now_ms());
         }
         memory.text = text;
@@ -290,6 +293,10 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
     deps.emitter
         .item(ItemEvent::Updated, &bank_name, &memory)
         .await;
+    // The commit dropped the vector of the old text; embed the new one.
+    if text_changed {
+        crate::embed_client::spawn_backfill(deps, &bank_name);
+    }
     Ok(MemoryResponse { memory })
 }
 

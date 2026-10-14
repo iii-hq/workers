@@ -12,6 +12,7 @@ use crate::configuration::{ConfigCell, StoreCell};
 use crate::events::Emitter;
 use crate::store::Store;
 
+#[derive(Clone)]
 pub struct Deps {
     pub iii: Arc<IIIClient>,
     pub store: StoreCell,
