@@ -361,18 +361,37 @@ describe('ChatAside side chat', () => {
 })
 
 describe('ChatAside unread reply', () => {
-  it('marks the Side chat tab while the Context tab is up', async () => {
-    localStorage.clear()
-    const answered = chat('fork-1', {
+  const answered = (count: number) =>
+    chat('fork-1', {
       createdAt: 20,
+      hydrated: true,
       sessionMetadata: { side_chat_of: 'main' },
-      messages: [{ id: 'r1', role: 'assistant', content: 'ok', createdAt: 30 }],
+      messages: Array.from({ length: count }, (_, i) => ({
+        id: `r${i}`,
+        role: 'assistant' as const,
+        content: 'ok',
+        createdAt: 30 + i,
+      })),
     })
-    mocks.ctx = makeCtx([main, answered])
+  const dot = () => document.querySelector('[data-side-chat-unread]')
+
+  it('counts what was there on arrival as read', async () => {
+    localStorage.clear()
+    mocks.ctx = makeCtx([main, answered(1)])
+    render()
+    await settle()
+    expect(dot()).toBeNull()
+  })
+
+  it('marks the Side chat tab when a reply lands out of sight', async () => {
+    localStorage.clear()
+    mocks.ctx = makeCtx([main, answered(1)])
     const view = render()
     await settle()
-    const dot = () => view.querySelector('[data-side-chat-unread]')
-    expect(dot()).not.toBeNull()
+    mocks.ctx = makeCtx([main, answered(2)])
+    render()
+    await settle()
+    expect(dot()?.className).toContain('inline-block')
     expect(button('Side chat, new reply')).toBeDefined()
     const tab = [...view.querySelectorAll('[role="tab"]')].find((el) =>
       el.textContent?.startsWith('Side chat'),

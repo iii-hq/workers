@@ -314,6 +314,28 @@ describe('a side chat quote', () => {
     expect(onQuoteSent).toHaveBeenCalledWith(quote)
   })
 
+  it('is reported sent when the message goes out, not when the reply ends', async () => {
+    let finish: () => void = () => {}
+    stream.mockImplementationOnce(async function* () {
+      await new Promise<void>((resolve) => {
+        finish = resolve
+      })
+    })
+    const onQuoteSent = vi.fn()
+    const props = render(configured, {
+      since: 0,
+      empty: null,
+      quote,
+      onQuoteSent,
+    })
+    const sending = props.onSubmit({ text: 'Do they sync?', attachments: [] })
+    await vi.waitFor(() => expect(stream).toHaveBeenCalled())
+    expect(onQuoteSent).toHaveBeenCalledWith(quote)
+    finish()
+    await sending
+    expect(onQuoteSent).toHaveBeenCalledTimes(1)
+  })
+
   it('stays in its chip when the send is turned away', async () => {
     const { setDraftText } = installDrafts()
     const onQuoteSent = vi.fn()

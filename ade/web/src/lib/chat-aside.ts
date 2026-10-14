@@ -141,8 +141,97 @@ export function isSideChat(
   return sideChatOf(conversation) !== null
 }
 
-/** Side chats this browser tab created: the only ones it discards on leave. */
-export const sideChatsMadeHere = new Set<string>()
+const MADE_KEY = 'iii-side-chats'
+
+function readMade(): string[] {
+  try {
+    const ids: unknown = JSON.parse(localStorage.getItem(MADE_KEY) ?? '[]')
+    return Array.isArray(ids)
+      ? ids.filter((id): id is string => typeof id === 'string')
+      : []
+  } catch {
+    return []
+  }
+}
+
+function writeMade(ids: readonly string[]): void {
+  try {
+    if (ids.length) localStorage.setItem(MADE_KEY, JSON.stringify(ids))
+    else localStorage.removeItem(MADE_KEY)
+  } catch {}
+}
+
+/**
+ * Side chats this browser made and has not kept or discarded yet, in
+ * localStorage: they end when every ADE tab of the browser is closed (see
+ * `sideChatsLeftByClosedTabs`).
+ */
+export const sideChatsMadeHere = {
+  has(id: string): boolean {
+    return readMade().includes(id)
+  },
+  add(id: string): void {
+    const made = readMade()
+    // ponytail: capped, so ids that never show up again cannot pile up.
+    if (!made.includes(id)) writeMade([...made, id].slice(-50))
+  },
+  delete(id: string): void {
+    writeMade(readMade().filter((made) => made !== id))
+  },
+  clear(): void {
+    writeMade([])
+  },
+}
+
+const TAB_KEY = 'iii-ade-tab'
+const INSTANCE_LOCK = 'iii-ade-instance'
+let leftByClosedTabs: Promise<string[]> | null = null
+
+/**
+ * The side chats this browser made that outlived every ADE tab, asked once
+ * per tab: non-empty only in the first tab opened after all were closed,
+ * which ends them as the server's list shows them (each leaves the record
+ * as it ends).
+ * Each tab holds a shared Web Lock the browser drops when it closes, so the
+ * lock list says whether another tab is open; a reload keeps the tab's
+ * sessionStorage, so it is no new start. Nothing can be deleted reliably
+ * while a tab closes, hence at the next start.
+ */
+export function sideChatsLeftByClosedTabs(): Promise<string[]> {
+  leftByClosedTabs ??= (async () => {
+    let reloaded = true
+    try {
+      reloaded = sessionStorage.getItem(TAB_KEY) !== null
+      sessionStorage.setItem(TAB_KEY, '1')
+    } catch {}
+    const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+    if (!locks) return []
+    const { held = [] } = await locks.query()
+    const others = held.some((lock) => lock.name === INSTANCE_LOCK)
+    void locks.request(
+      INSTANCE_LOCK,
+      { mode: 'shared' },
+      () => new Promise<void>(() => {}),
+    )
+    return reloaded || others ? [] : readMade()
+  })().catch(() => [])
+  return leftByClosedTabs
+}
+
+const ending = new Set<string>()
+
+/** Delete a side chat once per tab, whichever panel asks first. */
+export function endSideChat(
+  id: string,
+  remove: (id: string) => Promise<void>,
+): void {
+  if (ending.has(id)) return
+  ending.add(id)
+  sideChatsMadeHere.delete(id)
+  void remove(id).catch(() => {
+    ending.delete(id)
+  })
+}
 
 /** How many of this tab's chat panels show each conversation. */
 const displayedHere = new Map<string, number>()

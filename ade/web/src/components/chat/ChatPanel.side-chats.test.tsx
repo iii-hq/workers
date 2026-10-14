@@ -13,10 +13,15 @@ import type { Conversation } from '@/types/chat'
 
 const mocks = vi.hoisted(() => ({
   ctx: null as Record<string, unknown> | null,
+  leftByClosedTabs: [] as string[],
 }))
 
 vi.mock('@/lib/conversations-context', () => ({
   useConversationsCtx: () => mocks.ctx,
+}))
+vi.mock('@/lib/chat-aside', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  sideChatsLeftByClosedTabs: () => Promise.resolve(mocks.leftByClosedTabs),
 }))
 vi.mock('./ChatView', () => ({
   ChatView: ({ conversation }: { conversation: Conversation }) => (
@@ -26,7 +31,7 @@ vi.mock('./ChatView', () => ({
 
 import { ChatPanel } from './ChatPanel'
 
-const DAY = 86_400_000
+const HOUR = 3_600_000
 
 function chat(id: string, extra: Partial<Conversation> = {}): Conversation {
   return {
@@ -44,7 +49,12 @@ function chat(id: string, extra: Partial<Conversation> = {}): Conversation {
 const side = (id: string, of: string, extra: Partial<Conversation> = {}) =>
   chat(id, { sessionMetadata: { side_chat_of: of }, ...extra })
 
-function makeCtx(conversations: Conversation[], activeId: string) {
+function makeCtx(
+  conversations: Conversation[],
+  activeId: string,
+  missing: string[] = [],
+  loading = false,
+) {
   return {
     conversations,
     activeId,
@@ -64,11 +74,11 @@ function makeCtx(conversations: Conversation[], activeId: string) {
     modelOptions: [],
     catalogLoading: false,
     connectionState: 'connected',
-    conversationsLoading: false,
+    conversationsLoading: loading,
     conversationsError: null,
     conversationLoadErrors: {},
     retryConversations: vi.fn(),
-    missingConversationIds: new Set<string>(),
+    missingConversationIds: new Set(missing),
   }
 }
 
@@ -93,7 +103,14 @@ function render(pinned?: string) {
 
 beforeEach(() => {
   sideChatsMadeHere.clear()
+  mocks.leftByClosedTabs = []
 })
+
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
 
 afterEach(() => {
   act(() => root?.unmount())
@@ -103,71 +120,93 @@ afterEach(() => {
 })
 
 describe('ChatPanel side chats', () => {
-  it('discards on leave only the side chats this tab made', () => {
-    const list = [
-      chat('a'),
-      chat('b'),
-      side('mine', 'a'),
-      side('other-tab', 'a'),
-    ]
-    sideChatsMadeHere.add('mine')
-    const ctx = makeCtx(list, 'a')
-    mocks.ctx = ctx
-    render()
-    expect(ctx.remove).not.toHaveBeenCalled()
-
-    mocks.ctx = { ...ctx, activeId: 'b', active: list[1] }
-    render()
-    expect(ctx.remove).toHaveBeenCalledWith('mine')
-    expect(ctx.remove).not.toHaveBeenCalledWith('other-tab')
-  })
-
-  it('keeps them while a pinned pane still shows the conversation', () => {
+  it('keeps them when the conversation is left', async () => {
     const list = [chat('a'), chat('b'), side('mine', 'a')]
     sideChatsMadeHere.add('mine')
     const ctx = makeCtx(list, 'a')
     mocks.ctx = ctx
-    render('a')
+    render()
     mocks.ctx = { ...ctx, activeId: 'b', active: list[1] }
-    render('a')
+    render()
+    await settle()
     expect(ctx.remove).not.toHaveBeenCalled()
   })
 
-  it('never discards the side chat being shown', () => {
-    const list = [chat('a'), side('mine', 'a')]
-    sideChatsMadeHere.add('mine')
-    const ctx = makeCtx(list, 'a')
-    mocks.ctx = ctx
-    render()
-    mocks.ctx = { ...ctx, activeId: 'mine', active: list[1] }
-    render()
-    expect(ctx.remove).not.toHaveBeenCalled()
-  })
-
-  it('sweeps side chats left untouched for a day, once', async () => {
+  it('ends the ones untouched for two hours, unless a pane shows their chat', async () => {
+    const idle = { updatedAt: Date.now() - 3 * HOUR }
     const list = [
       chat('a'),
-      side('stale', 'gone', { updatedAt: Date.now() - 2 * DAY }),
-      side('fresh', 'gone'),
+      chat('b'),
+      side('idle', 'b', idle),
+      side('shown', 'a', idle),
+      side('recent', 'b', { updatedAt: Date.now() - HOUR }),
     ]
     const ctx = makeCtx(list, 'a')
     mocks.ctx = ctx
     render()
     render()
-    await Promise.resolve()
+    await settle()
     expect(ctx.remove).toHaveBeenCalledTimes(1)
-    expect(ctx.remove).toHaveBeenCalledWith('stale')
+    expect(ctx.remove).toHaveBeenCalledWith('idle')
   })
 
-  it('sweeps no side chat another pane shows', async () => {
-    const list = [
-      chat('a'),
-      side('stale', 'a', { updatedAt: Date.now() - 2 * DAY }),
-    ]
-    const ctx = makeCtx(list, 'a')
+  it('checks again while the ADE stays open', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const list = [chat('a'), side('later', 'b')]
+      const ctx = makeCtx(list, 'a')
+      mocks.ctx = ctx
+      render()
+      await settle()
+      expect(ctx.remove).not.toHaveBeenCalled()
+      list[1].updatedAt = Date.now() - 3 * HOUR
+      act(() => vi.advanceTimersByTime(5 * 60 * 1000))
+      expect(ctx.remove).toHaveBeenCalledWith('later')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ends them with their main chat', async () => {
+    const list = [chat('a'), side('orphan', 'gone'), side('kept', 'a')]
+    const ctx = makeCtx(list, 'a', ['gone'])
     mocks.ctx = ctx
-    render('stale')
-    await Promise.resolve()
+    render()
+    await settle()
+    expect(ctx.remove).toHaveBeenCalledTimes(1)
+    expect(ctx.remove).toHaveBeenCalledWith('orphan')
+  })
+
+  it('ends the ones left when every ADE tab closed, once the list is in', async () => {
+    mocks.leftByClosedTabs = ['left', 'kept-elsewhere', 'unknown']
+    for (const id of mocks.leftByClosedTabs) sideChatsMadeHere.add(id)
+    const draft = [chat('draft')]
+    const ctx = makeCtx(draft, 'draft', [], true)
+    mocks.ctx = ctx
+    render()
+    render('a')
+    await settle()
     expect(ctx.remove).not.toHaveBeenCalled()
+    const list = [chat('a'), side('left', 'a'), chat('kept-elsewhere')]
+    mocks.ctx = { ...makeCtx(list, 'a'), remove: ctx.remove }
+    render('a')
+    await settle()
+    expect(ctx.remove).toHaveBeenCalledTimes(1)
+    expect(ctx.remove).toHaveBeenCalledWith('left')
+    expect(sideChatsMadeHere.has('kept-elsewhere')).toBe(false)
+    expect(sideChatsMadeHere.has('unknown')).toBe(true)
+  })
+
+  it('sweeps nothing until the server list is in', async () => {
+    const list = [chat('a'), side('stale', 'b', { updatedAt: 0 })]
+    const ctx = makeCtx(list, 'a', [], true)
+    mocks.ctx = ctx
+    render()
+    await settle()
+    expect(ctx.remove).not.toHaveBeenCalled()
+    mocks.ctx = { ...ctx, conversationsLoading: false }
+    render()
+    await settle()
+    expect(ctx.remove).toHaveBeenCalledWith('stale')
   })
 })

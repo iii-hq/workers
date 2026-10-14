@@ -14,10 +14,12 @@ import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
+  endSideChat,
   isDisplayedHere,
   isSideChat,
   markDisplayed,
   sideChatOf,
+  sideChatsLeftByClosedTabs,
   sideChatsMadeHere,
 } from '@/lib/chat-aside'
 import { onChatShownRequest } from '@/lib/chat-requests'
@@ -58,8 +60,10 @@ interface ChatPanelProps {
  * stays aligned with Tailwind's `sm` breakpoint.
  */
 const NARROW_BELOW = 560
-/** A side chat untouched this long is swept (see the effect below). */
-const SIDE_CHAT_TTL_MS = 86_400_000
+/** A side chat untouched this long ends (see the effect below)… */
+const SIDE_CHAT_IDLE_MS = 2 * 60 * 60 * 1000
+/** …checked this often while the ADE stays open. */
+const SIDE_CHAT_SWEEP_MS = 5 * 60 * 1000
 const MOBILE_VIEWPORT_QUERY = '(max-width: 639px)'
 
 /**
@@ -117,58 +121,66 @@ export function ChatPanel({
     return watchConversation(displayedId)
   }, [displayedId, watchConversation])
 
-  // Leaving a conversation discards the side chats this tab made for it: a
-  // kept one lost the tag, and another tab's may still be in use. A ref, not
-  // an effect cleanup, so a StrictMode remount discards nothing.
+  // Side chats end, besides Discard: two hours untouched, with their main
+  // chat (deleted here, in another tab or elsewhere: the list marks it
+  // missing), and when every ADE tab of this browser is closed. Leaving a
+  // conversation keeps them. One whose conversation a panel of this tab
+  // shows is never idle.
   const conversationsRef = useRef(conversations)
   conversationsRef.current = conversations
-  // Declared before the discard below: on a switch React runs this cleanup
-  // first, so the discard sees only the other panels still showing `left`.
   useEffect(
     () => (displayedId ? markDisplayed(displayedId) : undefined),
     [displayedId],
   )
-  const shownIdRef = useRef(displayedId)
+  // The server's list, not the local draft the list boots with.
+  const listed = !conversationsLoading && !conversationsError
   useEffect(() => {
-    const left = shownIdRef.current
-    shownIdRef.current = displayedId
-    if (!left || left === displayedId) return
-    // Another pane (a pinned one) still shows it: its side chat stays.
-    if (isDisplayedHere(left)) return
-    for (const conversation of conversationsRef.current) {
-      if (
-        conversation.id === displayedId ||
-        !sideChatsMadeHere.has(conversation.id) ||
-        sideChatOf(conversation) !== left
-      ) {
-        continue
-      }
-      sideChatsMadeHere.delete(conversation.id)
-      void remove(conversation.id).catch(() => {})
-    }
-  }, [displayedId, remove])
-
-  // Side chats whose tab is gone (closed, reloaded) are never discarded on
-  // leave; sweep the ones nobody touched for a day, once per panel. In a
-  // microtask: by then a pane mounted in the same commit has marked what it
-  // shows, and a side chat any pane shows stays.
-  const sweptRef = useRef(false)
-  useEffect(() => {
-    if (sweptRef.current || conversations.length === 0) return
-    sweptRef.current = true
-    queueMicrotask(() => {
-      const cutoff = Date.now() - SIDE_CHAT_TTL_MS
+    if (!listed) return
+    const sweep = () => {
+      const cutoff = Date.now() - SIDE_CHAT_IDLE_MS
       for (const conversation of conversationsRef.current) {
+        const main = sideChatOf(conversation)
         if (
-          isSideChat(conversation) &&
-          !isDisplayedHere(conversation.id) &&
-          conversation.updatedAt < cutoff
+          main !== null &&
+          conversation.updatedAt < cutoff &&
+          !isDisplayedHere(main) &&
+          !isDisplayedHere(conversation.id)
         ) {
-          void remove(conversation.id).catch(() => {})
+          endSideChat(conversation.id, remove)
         }
       }
-    })
-  }, [conversations, remove])
+    }
+    // A microtask: a pane mounted in the same commit has marked what it
+    // shows by then.
+    queueMicrotask(sweep)
+    const timer = window.setInterval(sweep, SIDE_CHAT_SWEEP_MS)
+    return () => window.clearInterval(timer)
+  }, [listed, remove])
+  const [leftByClosedTabs, setLeftByClosedTabs] = useState<readonly string[]>(
+    [],
+  )
+  useEffect(() => {
+    void sideChatsLeftByClosedTabs().then(setLeftByClosedTabs)
+  }, [])
+  useEffect(() => {
+    if (!listed) return
+    for (const id of leftByClosedTabs) {
+      const conversation = conversations.find((c) => c.id === id)
+      if (!conversation) continue
+      if (isSideChat(conversation)) endSideChat(id, remove)
+      // Kept in another browser: not a side chat any more.
+      else sideChatsMadeHere.delete(id)
+    }
+  }, [listed, leftByClosedTabs, conversations, remove])
+  useEffect(() => {
+    if (!missingConversationIds?.size) return
+    for (const conversation of conversations) {
+      const main = sideChatOf(conversation)
+      if (main !== null && missingConversationIds.has(main)) {
+        endSideChat(conversation.id, remove)
+      }
+    }
+  }, [conversations, missingConversationIds, remove])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const surfaceRef = useRef<HTMLDivElement | null>(null)

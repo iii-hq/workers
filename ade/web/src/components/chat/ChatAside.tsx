@@ -57,6 +57,10 @@ export interface AsideRequest {
 
 const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
 
+/** When a side chat ends on its own (ChatPanel runs the rules). */
+const SIDE_CHAT_LIFETIME =
+  'Deleted after 2 hours unused, when every ADE tab closes, or with this chat.'
+
 function readStoredTab(): AsideTab {
   try {
     return window.localStorage.getItem(TAB_STORAGE_KEY) === 'side-chat'
@@ -305,13 +309,25 @@ export function ChatAside({
   const from = sideChatFrom(fork)
   const own = fork ? sideChatMessages(fork.messages, since, from) : []
 
-  // A reply that lands while the side chat is out of sight marks its icon.
-  const [seenCount, setSeenCount] = useState(0)
+  // A reply that lands while the side chat is out of sight marks its tab and
+  // icon. Counted from when its transcript first loads here: coming back to
+  // a conversation shows what was already there as read.
+  const [seen, setSeen] = useState<{ id: string; count: number } | null>(null)
   const sideVisible = tab === 'side-chat' && visible
+  const loadedForkId = fork && fork.hydrated !== false ? fork.id : null
   useEffect(() => {
-    if (sideVisible) setSeenCount(own.length)
-  }, [sideVisible, own.length])
-  const unread = !sideVisible && own.length > seenCount
+    if (!loadedForkId) return
+    setSeen((current) =>
+      current?.id === loadedForkId && !sideVisible
+        ? current
+        : { id: loadedForkId, count: own.length },
+    )
+  }, [loadedForkId, sideVisible, own.length])
+  const unread =
+    !sideVisible &&
+    seen !== null &&
+    seen.id === loadedForkId &&
+    own.length > seen.count
 
   const tabs = (
     <SegmentedControl<AsideTab>
@@ -334,7 +350,7 @@ export function ChatAside({
               <span
                 aria-hidden
                 data-side-chat-unread=""
-                className="size-1.5 rounded-full bg-accent"
+                className="inline-block size-1.5 rounded-full bg-accent"
               />
               <span className="sr-only">, new reply</span>
             </>
@@ -394,9 +410,7 @@ export function ChatAside({
           <>
             <div className="flex h-8 shrink-0 items-center gap-1.5 pr-2 pl-4 text-[12px] text-ink-faint">
               <Clock aria-hidden className="size-4 shrink-0" />
-              <span title="Discarded when you leave this conversation">
-                Temporary
-              </span>
+              <span title={SIDE_CHAT_LIFETIME}>Temporary</span>
               <span className="min-w-0 truncate text-ink-ghost">
                 · sees the chat up to{' '}
                 <span className="font-mono text-[11px] tabular-nums">
@@ -452,7 +466,7 @@ export function ChatAside({
               onCompactConversation={ctx.compactConversation}
             />
             <p className="shrink-0 px-4 pb-3 text-[11px] leading-4 text-ink-ghost">
-              Discarded when you leave this conversation.
+              {SIDE_CHAT_LIFETIME}
             </p>
           </>
         ) : forking || forkPending ? (
@@ -512,7 +526,8 @@ export function ChatAside({
     return (
       <BottomSheet open={sheetOpen} onOpenChange={onSheetOpenChange}>
         <BottomSheetContent heading="Side panel" className="h-[85dvh]">
-          <div className="flex min-h-0 flex-1 flex-col gap-2">
+          {/* Portaled to the body, outside the app's sans default. */}
+          <div className="flex min-h-0 flex-1 flex-col gap-2 font-sans">
             <div className="flex px-3">{tabs}</div>
             {content}
           </div>

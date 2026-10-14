@@ -1610,15 +1610,22 @@ export function ChatView({
   // only checked after that: a send it turns away goes back into the draft, and the Composer
   // remounts to pick the text and chips up again.
   const [composerGeneration, setComposerGeneration] = useState(0)
-  // Whether the last submit put the message out (appended or queued), and
-  // the side chat quote it carried: a send that stops short keeps the quote
-  // in its chip and gives the composer back only the question.
-  const messageSentRef = useRef(false)
-  const quotePrefixRef = useRef('')
+  // The side chat quote riding on the submit in flight. It is reported sent
+  // the moment the message goes out (appended or queued), not when the turn
+  // it starts ends; a send that stops short keeps the quote in its chip and
+  // gives the composer back only the question.
+  const sendingQuoteRef = useRef<{ prefix: string; sent: () => void } | null>(
+    null,
+  )
+  const markQuoteSent = useCallback(() => {
+    const quote = sendingQuoteRef.current
+    sendingQuoteRef.current = null
+    quote?.sent()
+  }, [])
   const restoreDraft = useCallback(
     (payload: ComposerSubmitPayload) => {
       if (!conversationsCtx) return
-      const prefix = quotePrefixRef.current
+      const prefix = sendingQuoteRef.current?.prefix
       conversationsCtx.setDraftText(
         conversation.id,
         prefix && payload.text.startsWith(prefix)
@@ -1766,7 +1773,7 @@ export function ChatView({
 
       if (!willQueue) {
         onAppendMessage(conversationId, userMsg)
-        messageSentRef.current = true
+        markQuoteSent()
       }
 
       if (compact) {
@@ -2025,7 +2032,7 @@ export function ChatView({
                 : {}),
             },
           )
-          messageSentRef.current = true
+          markQuoteSent()
         } catch (err) {
           setQueuedDrafts((drafts) => drafts.filter((d) => d.id !== userMsg.id))
           onAppendMessage(
@@ -2401,6 +2408,7 @@ export function ChatView({
       onCompactConversation,
       reconcileWorkingDir,
       workingDirEnabled,
+      markQuoteSent,
     ],
   )
 
@@ -2414,15 +2422,16 @@ export function ChatView({
     async (payload: ComposerSubmitPayload) => {
       if (!sideQuote) return submit(payload)
       const prefix = sideChatQuote(sideQuote.text)
-      messageSentRef.current = false
-      quotePrefixRef.current = prefix
+      sendingQuoteRef.current = {
+        prefix,
+        sent: () => onQuoteSent?.(sideQuote),
+      }
       try {
         await submit({ ...payload, text: prefix + payload.text })
       } finally {
-        quotePrefixRef.current = ''
+        // Blocked, turned away or failed before it went out: the quote stays.
+        sendingQuoteRef.current = null
       }
-      // Blocked, turned away or failed before it went out: the quote stays.
-      if (messageSentRef.current) onQuoteSent?.(sideQuote)
     },
     [submit, sideQuote, onQuoteSent],
   )
