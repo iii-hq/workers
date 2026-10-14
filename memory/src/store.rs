@@ -551,7 +551,13 @@ impl Bank {
                 (f, fused)
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Ties break by id: HashMap iteration order would make equal scores
+        // rank differently per process (and the eval flaky).
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.id.cmp(&b.0.id))
+        });
         scored.truncate(limit);
         scored
     }
@@ -854,6 +860,30 @@ mod tests {
                 .expect("both memories are semantic hits")
         };
         assert!(score(&fresh.id) > score(&old.id), "{hits:?}");
+    }
+
+    #[tokio::test]
+    async fn tied_scores_rank_deterministically_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        // Same length, same age, one shared query token each: every score
+        // ties, so only the tie-break decides the order.
+        for w in ["one", "two", "three", "four", "five", "six"] {
+            let mut m = memory(&format!("kiwi {w}"));
+            m.updated_at = 1_000;
+            bank.commit(m).await.unwrap();
+        }
+        let ids: Vec<String> = bank
+            .recall("kiwi", None, "", 10, 30, false)
+            .await
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids.len(), 6);
+        assert_eq!(ids, sorted, "ties break by id, not HashMap order");
     }
 
     #[tokio::test]

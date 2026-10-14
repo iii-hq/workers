@@ -1,0 +1,1635 @@
+{
+  "memories": [
+    {
+      "key": "en-work-ledgerly-postgres",
+      "text": "User's payments project Ledgerly runs on PostgreSQL 16, with logical replication feeding a read-only reporting replica.",
+      "entities": [
+        "ledgerly",
+        "postgresql"
+      ],
+      "tags": [
+        "database",
+        "project"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 120
+    },
+    {
+      "key": "en-work-rotafy-mongodb",
+      "text": "User's side project Rotafy, a delivery route planner, stores its trip documents in MongoDB Atlas.",
+      "entities": [
+        "rotafy",
+        "mongodb"
+      ],
+      "tags": [
+        "database",
+        "side-project"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 45
+    },
+    {
+      "key": "en-work-ledgerly-redis-cache",
+      "text": "User put Redis in front of the Ledgerly balance endpoint as a read-through cache with a 30-second TTL.",
+      "entities": [
+        "ledgerly",
+        "redis"
+      ],
+      "tags": [
+        "caching",
+        "performance"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 30
+    },
+    {
+      "key": "en-work-ledgerly-kafka",
+      "text": "User's Ledgerly service publishes payment events to Kafka topics that the fraud-check service consumes.",
+      "entities": [
+        "ledgerly",
+        "kafka",
+        "fraud-check"
+      ],
+      "tags": [
+        "messaging",
+        "events"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 75
+    },
+    {
+      "key": "en-work-flyway-migrations",
+      "text": "User manages database schema migrations with Flyway, writing one versioned SQL file per change and never editing applied ones.",
+      "entities": [
+        "flyway"
+      ],
+      "tags": [
+        "database",
+        "migrations"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 90
+    },
+    {
+      "key": "en-work-review-two-approvals",
+      "text": "User's team requires two approvals on every pull request before it can be merged into main.",
+      "entities": [],
+      "tags": [
+        "code-review"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 140
+    },
+    {
+      "key": "en-work-conventional-commits",
+      "text": "User writes commit messages in the Conventional Commits style, with prefixes like feat:, fix: and chore:.",
+      "entities": [
+        "conventional-commits"
+      ],
+      "tags": [
+        "git",
+        "code-review"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 100
+    },
+    {
+      "key": "en-work-small-prs",
+      "text": "User keeps pull requests under about 400 changed lines so a reviewer can finish them in one sitting.",
+      "entities": [],
+      "tags": [
+        "code-review"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 60
+    },
+    {
+      "key": "en-work-deploy-window",
+      "text": "User ships to production only on Tuesdays and Thursdays, between 10:00 and 15:00 local time.",
+      "entities": [],
+      "tags": [
+        "deploy",
+        "production"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 20
+    },
+    {
+      "key": "en-work-no-friday-deploys",
+      "text": "User never releases on Fridays or on the day before a public holiday, to avoid weekend incidents.",
+      "entities": [],
+      "tags": [
+        "deploy"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 110
+    },
+    {
+      "key": "en-work-testcontainers",
+      "text": "User runs integration tests against real Postgres and Kafka using Testcontainers instead of mocking the database.",
+      "entities": [
+        "testcontainers",
+        "postgresql"
+      ],
+      "tags": [
+        "testing"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 35
+    },
+    {
+      "key": "en-work-regression-test-first",
+      "text": "User always writes a failing regression test that reproduces a reported bug before changing any code to fix it.",
+      "entities": [],
+      "tags": [
+        "testing",
+        "bugs"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 4
+    },
+    {
+      "key": "en-work-kotlin-spring",
+      "text": "User writes most of her backend services in Kotlin with Spring Boot 3 and coroutines.",
+      "entities": [
+        "kotlin",
+        "spring-boot"
+      ],
+      "tags": [
+        "language",
+        "framework"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 130
+    },
+    {
+      "key": "en-work-go-tools",
+      "text": "User picks Go for small command-line tools and wrote the Rotafy GPS ingestion worker in Go.",
+      "entities": [
+        "go",
+        "rotafy"
+      ],
+      "tags": [
+        "language"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 50
+    },
+    {
+      "key": "en-work-python-scripts",
+      "text": "User uses Python only for one-off data backfill scripts and Jupyter analysis, never for long-running services.",
+      "entities": [
+        "python"
+      ],
+      "tags": [
+        "language",
+        "scripts"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 80
+    },
+    {
+      "key": "en-work-grpc-internal",
+      "text": "User prefers gRPC with protobuf between internal services and REST with an OpenAPI spec for public endpoints.",
+      "entities": [
+        "grpc",
+        "openapi"
+      ],
+      "tags": [
+        "api-design"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 25
+    },
+    {
+      "key": "pt-life-escalada-boulder",
+      "text": "A usuária pratica escalada em um ginásio de boulder duas vezes por semana, depois do trabalho.",
+      "entities": [
+        "escalada",
+        "boulder"
+      ],
+      "tags": [
+        "hobby",
+        "esporte"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 40
+    },
+    {
+      "key": "pt-life-ceramica-torno",
+      "text": "A usuária começou aulas de cerâmica e está aprendendo a modelar tigelas no torno.",
+      "entities": [
+        "cerâmica"
+      ],
+      "tags": [
+        "hobby"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 18
+    },
+    {
+      "key": "pt-life-cafe-v60",
+      "text": "A usuária prepara café coado no V60 toda manhã, com grãos de torra clara do sul de Minas.",
+      "entities": [
+        "café",
+        "v60"
+      ],
+      "tags": [
+        "bebida",
+        "café"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 25
+    },
+    {
+      "key": "pt-life-cha-camomila",
+      "text": "À noite a usuária evita cafeína e toma chá de camomila para dormir melhor.",
+      "entities": [
+        "chá",
+        "camomila"
+      ],
+      "tags": [
+        "bebida"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 60
+    },
+    {
+      "key": "pt-life-vinho-branco",
+      "text": "Quando sai com amigos, a usuária prefere vinho branco gelado e quase nunca pede cerveja.",
+      "entities": [
+        "vinho"
+      ],
+      "tags": [
+        "bebida"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 95
+    },
+    {
+      "key": "pt-life-alergia-amendoim",
+      "text": "A usuária tem alergia grave a amendoim e sempre carrega um antialérgico na bolsa.",
+      "entities": [
+        "amendoim"
+      ],
+      "tags": [
+        "saúde",
+        "alergia"
+      ],
+      "pinned": true,
+      "corroboration": 2,
+      "age_days": 120
+    },
+    {
+      "key": "pt-life-alergia-dipirona",
+      "text": "A usuária é alérgica a dipirona, então usa paracetamol quando tem dor de cabeça.",
+      "entities": [
+        "dipirona",
+        "paracetamol"
+      ],
+      "tags": [
+        "saúde",
+        "alergia"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 140
+    },
+    {
+      "key": "pt-life-mpb-gal",
+      "text": "A usuária escuta muita MPB enquanto programa, principalmente Gal Costa e Caetano Veloso.",
+      "entities": [
+        "gal costa",
+        "caetano veloso"
+      ],
+      "tags": [
+        "música"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 30
+    },
+    {
+      "key": "pt-life-jazz-vinil",
+      "text": "A usuária coleciona discos de vinil de jazz e tem orgulho da edição original de um álbum de Bill Evans.",
+      "entities": [
+        "bill evans",
+        "vinil"
+      ],
+      "tags": [
+        "música",
+        "coleção"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 75
+    },
+    {
+      "key": "pt-life-livro-torto-arado",
+      "text": "A usuária está lendo Torto Arado, de Itamar Vieira Junior, para o próximo encontro do clube do livro.",
+      "entities": [
+        "torto arado",
+        "clube do livro"
+      ],
+      "tags": [
+        "livros"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 5
+    },
+    {
+      "key": "pt-life-livro-favorito",
+      "text": "O livro favorito da usuária é Cem Anos de Solidão, de Gabriel García Márquez, que ela já releu três vezes.",
+      "entities": [
+        "gabriel garcía márquez"
+      ],
+      "tags": [
+        "livros"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 110
+    },
+    {
+      "key": "pt-life-julia-bh",
+      "text": "A irmã da usuária, Júlia, mora em Belo Horizonte e trabalha como professora de biologia.",
+      "entities": [
+        "júlia",
+        "belo horizonte"
+      ],
+      "tags": [
+        "família"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 50
+    },
+    {
+      "key": "pt-life-julia-videochamada",
+      "text": "A usuária faz videochamada com a irmã Júlia todo domingo à noite para colocar a conversa em dia.",
+      "entities": [
+        "júlia"
+      ],
+      "tags": [
+        "família"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 12
+    },
+    {
+      "key": "pt-life-viagem-trem",
+      "text": "Em viagens, a usuária prefere ir de trem a pegar avião sempre que a distância permite.",
+      "entities": [
+        "trem"
+      ],
+      "tags": [
+        "viagem"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 70
+    },
+    {
+      "key": "pt-life-viagem-pousada",
+      "text": "A usuária prefere se hospedar em pousadas pequenas a grandes hotéis de rede quando viaja.",
+      "entities": [
+        "pousada"
+      ],
+      "tags": [
+        "viagem"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 85
+    },
+    {
+      "key": "pt-life-tabuleiro-wingspan",
+      "text": "A usuária reúne amigos para jogos de tabuleiro, e o favorito dela é Wingspan.",
+      "entities": [
+        "wingspan"
+      ],
+      "tags": [
+        "hobby",
+        "jogos"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 2
+    },
+    {
+      "key": "id-full-name",
+      "text": "User's full name is Marina Costa Alves.",
+      "entities": [
+        "user",
+        "marina alves"
+      ],
+      "tags": [
+        "name"
+      ],
+      "pinned": true,
+      "corroboration": 3,
+      "age_days": 400
+    },
+    {
+      "key": "id-nascimento",
+      "text": "A usuária nasceu em 22 de março de 1994.",
+      "entities": [
+        "usuário"
+      ],
+      "tags": [
+        "aniversário",
+        "nascimento"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 380
+    },
+    {
+      "key": "id-birthplace",
+      "text": "User was born in Recife, Pernambuco, in northeastern Brazil, and grew up there until college.",
+      "entities": [
+        "recife"
+      ],
+      "tags": [
+        "birthplace",
+        "origin"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 350
+    },
+    {
+      "key": "id-empresa",
+      "text": "A usuária trabalha na Orbita Pagamentos, uma fintech brasileira de pagamentos, desde 2023.",
+      "entities": [
+        "orbita pagamentos"
+      ],
+      "tags": [
+        "trabalho",
+        "empresa"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 120
+    },
+    {
+      "key": "id-role",
+      "text": "User is a senior backend engineer on the payments platform team at Orbita Pagamentos.",
+      "entities": [
+        "user",
+        "orbita pagamentos"
+      ],
+      "tags": [
+        "job",
+        "role"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 90
+    },
+    {
+      "key": "id-idiomas",
+      "text": "A usuária tem o português como língua materna, fala inglês fluente e espanhol em nível intermediário.",
+      "entities": [],
+      "tags": [
+        "idiomas"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 300
+    },
+    {
+      "key": "id-partner",
+      "text": "User's partner is Rafael, a UX designer she has been dating since 2019.",
+      "entities": [
+        "rafael"
+      ],
+      "tags": [
+        "partner",
+        "relationship"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 210
+    },
+    {
+      "key": "id-gata",
+      "text": "A usuária tem uma gata chamada Pixel, uma vira-lata preta que ela adotou em 2021.",
+      "entities": [
+        "pixel"
+      ],
+      "tags": [
+        "pet",
+        "gata"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 180
+    },
+    {
+      "key": "id-age",
+      "text": "User turned 32 years old in March 2026.",
+      "entities": [
+        "user"
+      ],
+      "tags": [
+        "age"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 206
+    },
+    {
+      "key": "id-apelido",
+      "text": "Os amigos e a família chamam a usuária de Nina, um apelido de infância que vem de Marina.",
+      "entities": [
+        "usuário",
+        "nina"
+      ],
+      "tags": [
+        "apelido",
+        "nome"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 330
+    },
+    {
+      "key": "upd-city-old",
+      "text": "User lives in São Paulo, in an apartment in the Pinheiros neighborhood.",
+      "entities": [
+        "são paulo",
+        "pinheiros"
+      ],
+      "tags": [
+        "residence",
+        "city"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 540
+    },
+    {
+      "key": "upd-city-new",
+      "text": "User moved from São Paulo to Lisbon and now lives in an apartment in the Arroios neighborhood.",
+      "entities": [
+        "lisbon",
+        "são paulo",
+        "arroios"
+      ],
+      "tags": [
+        "residence",
+        "city",
+        "move"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 25
+    },
+    {
+      "key": "upd-tz-old",
+      "text": "A usuária trabalha no fuso horário de Brasília (UTC-3) e prefere reuniões marcadas nesse fuso.",
+      "entities": [
+        "brasília"
+      ],
+      "tags": [
+        "fuso-horario",
+        "agenda"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 480
+    },
+    {
+      "key": "upd-tz-new",
+      "text": "A usuária agora trabalha no fuso horário de Portugal (UTC+0, UTC+1 no verão) e quer reuniões marcadas nesse fuso, não mais no de Brasília.",
+      "entities": [
+        "portugal",
+        "brasília"
+      ],
+      "tags": [
+        "fuso-horario",
+        "agenda"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 24
+    },
+    {
+      "key": "upd-ci-old",
+      "text": "A usuária usa Jenkins como CI no trabalho e mantém os pipelines num Jenkinsfile.",
+      "entities": [
+        "jenkins"
+      ],
+      "tags": [
+        "ci"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 420
+    },
+    {
+      "key": "upd-ci-new",
+      "text": "A usuária migrou o CI do trabalho do Jenkins para o GitHub Actions e não usa mais o Jenkins.",
+      "entities": [
+        "github actions",
+        "jenkins"
+      ],
+      "tags": [
+        "ci",
+        "migracao"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 18
+    },
+    {
+      "key": "upd-run-old",
+      "text": "A usuária treina com o clube de corrida toda terça-feira de manhã, antes do trabalho.",
+      "entities": [
+        "clube de corrida"
+      ],
+      "tags": [
+        "corrida",
+        "rotina"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 380
+    },
+    {
+      "key": "upd-run-new",
+      "text": "A usuária agora treina com o clube de corrida às quintas-feiras à noite, e não mais às terças de manhã.",
+      "entities": [
+        "clube de corrida"
+      ],
+      "tags": [
+        "corrida",
+        "rotina"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 9
+    },
+    {
+      "key": "upd-diet-old",
+      "text": "User follows a pescatarian diet: she doesn't eat meat but still eats fish and eggs.",
+      "entities": [],
+      "tags": [
+        "diet",
+        "food"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 500
+    },
+    {
+      "key": "upd-diet-new",
+      "text": "User switched from a pescatarian to a fully vegan diet and no longer eats fish, eggs or dairy.",
+      "entities": [],
+      "tags": [
+        "diet",
+        "food"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 14
+    },
+    {
+      "key": "upd-manager-old",
+      "text": "O gestor direto da usuária é o Ricardo Teixeira, com quem ela faz 1:1 toda semana.",
+      "entities": [
+        "ricardo teixeira"
+      ],
+      "tags": [
+        "trabalho",
+        "gestao"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 450
+    },
+    {
+      "key": "upd-manager-new",
+      "text": "A usuária agora reporta para uma nova gestora, Camila Rocha; o Ricardo Teixeira deixou de ser seu gestor.",
+      "entities": [
+        "camila rocha",
+        "ricardo teixeira"
+      ],
+      "tags": [
+        "trabalho",
+        "gestao"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 20
+    },
+    {
+      "key": "upd-editor-old",
+      "text": "User's code editor is VS Code, with the Vim keybindings extension enabled.",
+      "entities": [
+        "vs code"
+      ],
+      "tags": [
+        "editor",
+        "tooling"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 350
+    },
+    {
+      "key": "upd-editor-new",
+      "text": "User switched her code editor from VS Code to Neovim, configured with lazy.nvim.",
+      "entities": [
+        "neovim",
+        "vs code"
+      ],
+      "tags": [
+        "editor",
+        "tooling"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 6
+    },
+    {
+      "key": "evt-dentist-oct15",
+      "text": "User has a dentist appointment at 9:30 on 2026-10-15.",
+      "entities": [
+        "dentist"
+      ],
+      "tags": [
+        "appointment",
+        "health"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 9
+    },
+    {
+      "key": "evt-dentist-moved",
+      "text": "User moved her dentist appointment from 2026-10-15 to 9:30 on 2026-10-20.",
+      "entities": [
+        "dentist"
+      ],
+      "tags": [
+        "appointment",
+        "health"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 2
+    },
+    {
+      "key": "evt-palestra-meetup",
+      "text": "A usuária vai apresentar, em inglês, a palestra \"Filas idempotentes na prática\" no meetup online Backend BR em 22/10/2026 (quinta-feira).",
+      "entities": [
+        "backend-br"
+      ],
+      "tags": [
+        "palestra",
+        "meetup"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 3
+    },
+    {
+      "key": "evt-prazo-artigo",
+      "text": "A usuária precisa enviar o artigo técnico sobre observabilidade para o blog de engenharia até 30/10/2026 (sexta-feira).",
+      "entities": [
+        "blog-engenharia"
+      ],
+      "tags": [
+        "prazo",
+        "artigo"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 1
+    },
+    {
+      "key": "evt-passport",
+      "text": "User has a passport renewal appointment at 14:00 on 2026-10-27.",
+      "entities": [
+        "passport"
+      ],
+      "tags": [
+        "appointment",
+        "documents"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 7
+    },
+    {
+      "key": "evt-dermatologista",
+      "text": "A usuária tem consulta com a dermatologista às 10h em 05/11/2026 (quinta-feira).",
+      "entities": [
+        "dermatologista"
+      ],
+      "tags": [
+        "consulta",
+        "saúde"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 4
+    },
+    {
+      "key": "evt-trip-berlin",
+      "text": "User travels to Berlin on 2026-11-16 for a three-day distributed systems conference, returning on 2026-11-19.",
+      "entities": [
+        "berlin"
+      ],
+      "tags": [
+        "trip",
+        "conference"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 5
+    },
+    {
+      "key": "evt-workshop-offsite",
+      "text": "User will run a 45-minute hands-on tracing workshop at the engineering offsite on 2026-12-03.",
+      "entities": [
+        "offsite"
+      ],
+      "tags": [
+        "workshop"
+      ],
+      "pinned": false,
+      "corroboration": 0,
+      "age_days": 0
+    },
+    {
+      "key": "evt-pref-concise",
+      "text": "User prefers short, direct answers that lead with the conclusion and skip long preambles.",
+      "entities": [],
+      "tags": [
+        "answer-style"
+      ],
+      "pinned": false,
+      "corroboration": 3,
+      "age_days": 640
+    },
+    {
+      "key": "evt-pref-metric",
+      "text": "User wants measurements in metric units: kilometers, kilograms and degrees Celsius, never miles or Fahrenheit.",
+      "entities": [],
+      "tags": [
+        "units"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 520
+    },
+    {
+      "key": "evt-pref-idioma",
+      "text": "A usuária quer que o assistente responda sempre em português, mesmo quando ela escreve em inglês.",
+      "entities": [],
+      "tags": [
+        "idioma"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 610
+    },
+    {
+      "key": "evt-pref-code-english",
+      "text": "A usuária pede que o código escrito pelo assistente, incluindo nomes de variáveis e comentários, fique em inglês.",
+      "entities": [],
+      "tags": [
+        "idioma",
+        "código"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 450
+    },
+    {
+      "key": "evt-pref-24h",
+      "text": "User wants times in 24-hour format and dates as DD/MM/YYYY, never AM/PM or month-first dates.",
+      "entities": [],
+      "tags": [
+        "format"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 380
+    },
+    {
+      "key": "evt-pref-no-emoji",
+      "text": "A usuária não quer emojis nas respostas do assistente.",
+      "entities": [],
+      "tags": [
+        "estilo"
+      ],
+      "pinned": false,
+      "corroboration": 2,
+      "age_days": 700
+    },
+    {
+      "key": "evt-pref-numbered-steps",
+      "text": "User likes setup instructions as numbered steps with every shell command in its own code block.",
+      "entities": [],
+      "tags": [
+        "format",
+        "answer-style"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 330
+    },
+    {
+      "key": "evt-pref-incerteza",
+      "text": "A usuária prefere que o assistente admita quando não sabe algo em vez de chutar uma resposta.",
+      "entities": [],
+      "tags": [
+        "estilo"
+      ],
+      "pinned": false,
+      "corroboration": 1,
+      "age_days": 560
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-en-work-ledgerly-db",
+      "text": "What PostgreSQL version is Ledgerly running on again?",
+      "lang": "en",
+      "category": "lexical",
+      "expect": [
+        "en-work-ledgerly-postgres"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-rotafy-store",
+      "text": "Remind me where Rotafy keeps its trip documents.",
+      "lang": "en",
+      "category": "lexical",
+      "expect": [
+        "en-work-rotafy-mongodb"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-redis-ttl",
+      "text": "What TTL did I put on the Redis cache in front of the balance endpoint?",
+      "lang": "en",
+      "category": "lexical",
+      "expect": [
+        "en-work-ledgerly-redis-cache"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-commit-style",
+      "text": "Write a commit message for this fix using my usual Conventional Commits prefixes.",
+      "lang": "en",
+      "category": "lexical",
+      "expect": [
+        "en-work-conventional-commits"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-pr-approvals",
+      "text": "How many approvals does a pull request need before it can be merged into main?",
+      "lang": "en",
+      "category": "lexical",
+      "expect": [
+        "en-work-review-two-approvals"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-kafka-events",
+      "text": "Which service consumes the payment events Ledgerly publishes to Kafka?",
+      "lang": "en",
+      "category": "lexical",
+      "expect": [
+        "en-work-ledgerly-kafka"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-flyway",
+      "text": "I need to add a column; how do I usually write Flyway schema migrations?",
+      "lang": "en",
+      "category": "lexical",
+      "expect": [
+        "en-work-flyway-migrations"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-release-days",
+      "text": "Which weekdays am I allowed to push a release live, and during what hours?",
+      "lang": "en",
+      "category": "paraphrase",
+      "expect": [
+        "en-work-deploy-window",
+        "en-work-no-friday-deploys"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-late-week-rollout",
+      "text": "Thinking of putting a change out at 5pm on the last workday of the week, any reason I shouldn't?",
+      "lang": "en",
+      "category": "paraphrase",
+      "expect": [
+        "en-work-no-friday-deploys",
+        "en-work-deploy-window"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-storage-checks",
+      "text": "When I check that my repositories talk correctly to storage, do I fake it or spin up actual throwaway engines in Docker?",
+      "lang": "en",
+      "category": "paraphrase",
+      "expect": [
+        "en-work-testcontainers"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-crash-ticket",
+      "text": "Someone filed a crash ticket against the checkout flow; what do I normally do first, prior to touching the implementation?",
+      "lang": "en",
+      "category": "paraphrase",
+      "expect": [
+        "en-work-regression-test-first"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-default-stack",
+      "text": "Which JVM language and web stack do I default to when I start a new microservice?",
+      "lang": "en",
+      "category": "paraphrase",
+      "expect": [
+        "en-work-kotlin-spring"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-wire-protocol",
+      "text": "How should my microservices talk to each other behind the firewall? What wire protocol do I like?",
+      "lang": "en",
+      "category": "paraphrase",
+      "expect": [
+        "en-work-grpc-internal"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-en-work-branch-size",
+      "text": "How big should I let a branch get before I open it up for my teammates to look at?",
+      "lang": "en",
+      "category": "paraphrase",
+      "expect": [
+        "en-work-small-prs"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-lex-amendoim",
+      "text": "Esse doce tailandês leva amendoim? Você sabe da minha alergia.",
+      "lang": "pt",
+      "category": "lexical",
+      "expect": [
+        "pt-life-alergia-amendoim"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-lex-jazz-vinil",
+      "text": "Qual era aquele álbum de jazz do Bill Evans que eu tenho em vinil?",
+      "lang": "pt",
+      "category": "lexical",
+      "expect": [
+        "pt-life-jazz-vinil"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-lex-cafe-v60",
+      "text": "Me sugere um café de torra clara pra eu passar no V60 amanhã?",
+      "lang": "pt",
+      "category": "lexical",
+      "expect": [
+        "pt-life-cafe-v60"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-lex-escalada",
+      "text": "Quero achar outro ginásio de boulder pra treinar escalada, o que eu devo olhar?",
+      "lang": "pt",
+      "category": "lexical",
+      "expect": [
+        "pt-life-escalada-boulder"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-lex-julia-bh",
+      "text": "Vou visitar a Júlia em Belo Horizonte, o que eu levo de presente pra ela?",
+      "lang": "pt",
+      "category": "lexical",
+      "expect": [
+        "pt-life-julia-bh"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-lex-torto-arado",
+      "text": "Preciso de umas perguntas pra discutir Torto Arado no clube do livro.",
+      "lang": "pt",
+      "category": "lexical",
+      "expect": [
+        "pt-life-livro-torto-arado"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-lex-trem",
+      "text": "Monta um roteiro de trem pela Europa pra mim, em vez de avião.",
+      "lang": "pt",
+      "category": "lexical",
+      "expect": [
+        "pt-life-viagem-trem"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-par-remedio",
+      "text": "Estou com enxaqueca, qual remédio eu posso tomar sem risco?",
+      "lang": "pt",
+      "category": "paraphrase",
+      "expect": [
+        "pt-life-alergia-dipirona"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-par-sono",
+      "text": "O que é bom eu beber antes de deitar pra pegar no sono?",
+      "lang": "pt",
+      "category": "paraphrase",
+      "expect": [
+        "pt-life-cha-camomila"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-par-artistas",
+      "text": "Que artistas brasileiros tocam no meu fone quando estou codando?",
+      "lang": "pt",
+      "category": "paraphrase",
+      "expect": [
+        "pt-life-mpb-gal"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-par-romance",
+      "text": "Sabe qual romance colombiano eu mais amo?",
+      "lang": "pt",
+      "category": "paraphrase",
+      "expect": [
+        "pt-life-livro-favorito"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-par-mana",
+      "text": "Em que momento da semana eu costumo bater papo com minha mana pela webcam?",
+      "lang": "pt",
+      "category": "paraphrase",
+      "expect": [
+        "pt-life-julia-videochamada"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-par-hospedagem",
+      "text": "Pra minha próxima ida ao litoral, reservo um hotelzão ou algo mais aconchegante e familiar?",
+      "lang": "pt",
+      "category": "paraphrase",
+      "expect": [
+        "pt-life-viagem-pousada"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-pt-life-par-olaria",
+      "text": "Como anda meu curso de olaria? Quero fazer potes de barro pro Natal.",
+      "lang": "pt",
+      "category": "paraphrase",
+      "expect": [
+        "pt-life-ceramica-torno"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-name",
+      "text": "what's my full name again? I need it exactly for a form",
+      "lang": "en",
+      "category": "identity",
+      "expect": [
+        "id-full-name"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-born-where",
+      "text": "where was I born?",
+      "lang": "en",
+      "category": "identity",
+      "expect": [
+        "id-birthplace"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-job-title",
+      "text": "What's my job title at work? I'm updating my LinkedIn",
+      "lang": "en",
+      "category": "identity",
+      "expect": [
+        "id-role",
+        "id-empresa"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-partner",
+      "text": "What's my partner's name? I want to write him a card",
+      "lang": "en",
+      "category": "identity",
+      "expect": [
+        "id-partner"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-how-old",
+      "text": "how old am I now?",
+      "lang": "en",
+      "category": "identity",
+      "expect": [
+        "id-age",
+        "id-nascimento"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-languages-en",
+      "text": "Which languages do I speak? I'm filling out a job application",
+      "lang": "en",
+      "category": "identity",
+      "expect": [
+        "id-idiomas"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-nome-gata",
+      "text": "qual é o nome da minha gata?",
+      "lang": "pt",
+      "category": "identity",
+      "expect": [
+        "id-gata"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-aniversario",
+      "text": "quando é o meu aniversário?",
+      "lang": "pt",
+      "category": "identity",
+      "expect": [
+        "id-nascimento",
+        "id-age"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-empresa",
+      "text": "em que empresa eu trabalho mesmo?",
+      "lang": "pt",
+      "category": "identity",
+      "expect": [
+        "id-empresa",
+        "id-role"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-cidade-natal",
+      "text": "qual é mesmo a minha cidade natal?",
+      "lang": "pt",
+      "category": "identity",
+      "expect": [
+        "id-birthplace"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-apelido",
+      "text": "como meus amigos costumam me chamar?",
+      "lang": "pt",
+      "category": "identity",
+      "expect": [
+        "id-apelido"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-id-namorado",
+      "text": "há quanto tempo eu namoro o Rafael? quero fazer as contas para uma surpresa",
+      "lang": "pt",
+      "category": "identity",
+      "expect": [
+        "id-partner"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-upd-city-now",
+      "text": "Where do I live now? Looking for a good bakery near my place.",
+      "lang": "en",
+      "category": "temporal-update",
+      "expect": [
+        "upd-city-new"
+      ],
+      "stale": [
+        "upd-city-old"
+      ]
+    },
+    {
+      "id": "q-upd-city-still-sp",
+      "text": "Do I still live in São Paulo, or have I moved already?",
+      "lang": "en",
+      "category": "temporal-update",
+      "expect": [
+        "upd-city-new"
+      ],
+      "stale": [
+        "upd-city-old"
+      ]
+    },
+    {
+      "id": "q-upd-ci-current",
+      "text": "Qual CI a gente usa agora no trabalho?",
+      "lang": "pt",
+      "category": "temporal-update",
+      "expect": [
+        "upd-ci-new"
+      ],
+      "stale": [
+        "upd-ci-old"
+      ]
+    },
+    {
+      "id": "q-upd-ci-pipeline",
+      "text": "Vou criar um pipeline novo de testes; em qual CI eu configuro isso hoje em dia?",
+      "lang": "pt",
+      "category": "temporal-update",
+      "expect": [
+        "upd-ci-new"
+      ],
+      "stale": [
+        "upd-ci-old"
+      ]
+    },
+    {
+      "id": "q-upd-run-day",
+      "text": "Em que dia da semana é o treino do meu clube de corrida agora?",
+      "lang": "pt",
+      "category": "temporal-update",
+      "expect": [
+        "upd-run-new"
+      ],
+      "stale": [
+        "upd-run-old"
+      ]
+    },
+    {
+      "id": "q-upd-diet-recipe",
+      "text": "Can you suggest a dinner recipe that fits my current diet?",
+      "lang": "en",
+      "category": "temporal-update",
+      "expect": [
+        "upd-diet-new",
+        "pt-life-alergia-amendoim"
+      ],
+      "stale": [
+        "upd-diet-old"
+      ]
+    },
+    {
+      "id": "q-upd-diet-fish",
+      "text": "Am I still eating fish and eggs, or did my diet change?",
+      "lang": "en",
+      "category": "temporal-update",
+      "expect": [
+        "upd-diet-new"
+      ],
+      "stale": [
+        "upd-diet-old"
+      ]
+    },
+    {
+      "id": "q-upd-manager",
+      "text": "Quem é meu gestor hoje? Preciso marcar o 1:1 da semana.",
+      "lang": "pt",
+      "category": "temporal-update",
+      "expect": [
+        "upd-manager-new"
+      ],
+      "stale": [
+        "upd-manager-old"
+      ]
+    },
+    {
+      "id": "q-upd-editor",
+      "text": "Which code editor am I using these days? I want to set up rust-analyzer for it.",
+      "lang": "en",
+      "category": "temporal-update",
+      "expect": [
+        "upd-editor-new"
+      ],
+      "stale": [
+        "upd-editor-old"
+      ]
+    },
+    {
+      "id": "q-upd-tz",
+      "text": "Em qual fuso horário eu devo marcar as reuniões agora?",
+      "lang": "pt",
+      "category": "temporal-update",
+      "expect": [
+        "upd-tz-new"
+      ],
+      "stale": [
+        "upd-tz-old"
+      ]
+    },
+    {
+      "id": "q-evt-talk-when",
+      "text": "quando é minha palestra?",
+      "lang": "pt",
+      "category": "dated-event",
+      "expect": [
+        "evt-palestra-meetup"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-on-22nd",
+      "text": "what do I have on 22/10?",
+      "lang": "en",
+      "category": "dated-event",
+      "expect": [
+        "evt-palestra-meetup"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-next-week",
+      "text": "tenho algum compromisso marcado na próxima semana?",
+      "lang": "pt",
+      "category": "dated-event",
+      "expect": [
+        "evt-dentist-moved",
+        "evt-palestra-meetup"
+      ],
+      "stale": [
+        "evt-dentist-oct15"
+      ]
+    },
+    {
+      "id": "q-evt-dentist",
+      "text": "When is my dentist appointment again? I think I changed it.",
+      "lang": "en",
+      "category": "dated-event",
+      "expect": [
+        "evt-dentist-moved"
+      ],
+      "stale": [
+        "evt-dentist-oct15"
+      ]
+    },
+    {
+      "id": "q-evt-berlin-dates",
+      "text": "I need to block my calendar for the conference; which days am I in Berlin?",
+      "lang": "en",
+      "category": "dated-event",
+      "expect": [
+        "evt-trip-berlin"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-prazo-artigo",
+      "text": "até quando eu tenho que mandar aquele artigo pro blog?",
+      "lang": "pt",
+      "category": "dated-event",
+      "expect": [
+        "evt-prazo-artigo"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-answer-style",
+      "text": "Remind me, do I prefer long detailed explanations or straight-to-the-point answers from you?",
+      "lang": "en",
+      "category": "durable-old",
+      "expect": [
+        "evt-pref-concise"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-units",
+      "text": "When you give me distances or temperatures, which units should you use?",
+      "lang": "en",
+      "category": "durable-old",
+      "expect": [
+        "evt-pref-metric"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-idioma",
+      "text": "se eu te escrever em inglês, em que língua você deve me responder?",
+      "lang": "pt",
+      "category": "durable-old",
+      "expect": [
+        "evt-pref-idioma"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-code-lang",
+      "text": "vou te pedir um script: os nomes de variáveis e os comentários devem ficar em que idioma?",
+      "lang": "pt",
+      "category": "durable-old",
+      "expect": [
+        "evt-pref-code-english"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-time-format",
+      "text": "Should you write times for me as 2 PM or as 14:00?",
+      "lang": "en",
+      "category": "durable-old",
+      "expect": [
+        "evt-pref-24h"
+      ],
+      "stale": []
+    },
+    {
+      "id": "q-evt-emoji",
+      "text": "você lembra se eu gosto de emojis nas suas respostas?",
+      "lang": "pt",
+      "category": "durable-old",
+      "expect": [
+        "evt-pref-no-emoji"
+      ],
+      "stale": []
+    }
+  ]
+}
