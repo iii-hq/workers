@@ -133,11 +133,17 @@ fn query_tokens(query: &str) -> Vec<String> {
     let first_person = tokens
         .iter()
         .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
-    // Portuguese = some Portuguese-only function word ("o"/"e" are too
-    // weak a signal: byte length, so "é" still counts).
-    let portuguese = tokens.iter().any(|t| {
-        t.len() > 1 && STOPWORDS_PT.contains(&t.as_str()) && !STOPWORDS_EN.contains(&t.as_str())
-    });
+    // Portuguese = two distinct Portuguese-only function words, so one place
+    // name ("São Paulo", "Como") doesn't flip an English query. "o"/"e" are
+    // too weak a signal (byte length, so "é" still counts).
+    let mut markers: Vec<&str> = tokens
+        .iter()
+        .map(String::as_str)
+        .filter(|t| t.len() > 1 && STOPWORDS_PT.contains(t) && !STOPWORDS_EN.contains(t))
+        .collect();
+    markers.sort_unstable();
+    markers.dedup();
+    let portuguese = markers.len() >= 2;
     let stop = |t: &String| {
         let t = t.as_str();
         STOPWORDS_EN.contains(&t)
@@ -808,6 +814,10 @@ mod tests {
             ["user", "live", "us"]
         );
         assert_eq!(query_tokens("quais os meus dados na EU"), ["dados"]);
+        assert_eq!(
+            query_tokens("Which OS is used in São Paulo?"),
+            ["os", "used", "paulo"]
+        );
         // An all-stopword query keeps its tokens rather than matching nothing.
         assert_eq!(query_tokens("o que é isso"), ["o", "que", "é", "isso"]);
     }
