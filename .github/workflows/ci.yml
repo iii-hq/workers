@@ -277,6 +277,21 @@ jobs:
         if: matrix.worker == 'browser'
         run: cargo test --locked
 
+      # computer vendors xa11y-linux (AT-SPI only, patched; see
+      # computer/vendor/xa11y-linux/PATCHES.md) outside its workspace, so its
+      # tests run here. The musl build is the guard for "no system C library
+      # on Linux": any -l<system lib> fails to link there.
+      - name: Vendored xa11y-linux tests (computer)
+        if: matrix.worker == 'computer'
+        run: cargo test --locked --manifest-path vendor/xa11y-linux/Cargo.toml --lib
+
+      - name: Pure-Rust Linux build (computer, musl)
+        if: matrix.worker == 'computer'
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --locked --target x86_64-unknown-linux-musl
+
   # ──────────────────────────────────────────────────────────────
   # iii-directory links a static ONNX Runtime on five release targets; the
   # ubuntu gate above proves only x86_64 linux-gnu. Build the two natively
@@ -326,12 +341,14 @@ jobs:
         run: cargo test --locked --test minilm_target
 
   # ──────────────────────────────────────────────────────────────
-  # computer's native driver and its accessibility layer only compile on
-  # macOS and Windows, which the ubuntu gate above never builds. Run the full
-  # suite on both, and on Windows (hosted runners have an interactive
-  # desktop, so UI Automation works) the semantic e2e against the AccessKit
-  # fixture. macOS e2e stays manual: TCC grants to cargo-hashed test binaries
-  # are not reliable on hosted runners.
+  # computer's native driver and accessibility layer per OS. macOS and
+  # Windows: the full suite (the ubuntu gate above never builds their code)
+  # and, on Windows (hosted runners have an interactive desktop, so UI
+  # Automation works), the semantic e2e against the AccessKit fixture. Linux:
+  # the rust job already lints and tests, so only the e2e runs here, on a
+  # private Xvfb + D-Bus + AT-SPI stack (tests/run-linux-live.sh). macOS e2e
+  # stays manual: TCC grants to cargo-hashed test binaries are not reliable on
+  # hosted runners.
   # ──────────────────────────────────────────────────────────────
   computer-native:
     name: "computer: native build + semantic e2e (${{ matrix.os }})"
@@ -342,7 +359,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         shell: bash
@@ -387,14 +404,35 @@ jobs:
         run: pnpm test
 
       - name: Clippy
+        if: runner.os != 'Linux'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Tests
+        if: runner.os != 'Linux'
         run: cargo test --locked --all-features
 
+      - name: Linux desktop runtime (Xvfb, D-Bus, AT-SPI, the fixture's X libraries)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus at-spi2-core libx11-6 libx11-xcb1 \
+            libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0
+
       - name: Build the accessibility fixture
-        if: runner.os == 'Windows'
+        if: runner.os != 'macOS'
         run: cargo build --locked --manifest-path tests/fixture/Cargo.toml
+
+      # Compile outside the e2e's timeout: a cold cache would spend it building.
+      - name: Build the live tests (Linux)
+        if: runner.os == 'Linux'
+        run: cargo test --locked --no-run
+
+      - name: Linux e2e (X11 driver + semantic layer against the fixture)
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        env:
+          COMPUTER_A11Y_FIXTURE_LOG_DIR: ${{ runner.temp }}
+        run: tests/run-linux-live.sh
 
       - name: Semantic e2e against the fixture
         if: runner.os == 'Windows'
@@ -405,7 +443,7 @@ jobs:
         run: cargo test --locked --test semantic_live -- --ignored --test-threads=1
 
       - name: Upload the fixture logs
-        if: failure() && runner.os == 'Windows'
+        if: failure() && runner.os != 'macOS'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: a11y-fixture-logs
