@@ -178,16 +178,18 @@ pub(crate) async fn handle(
                 text.push_str(&out.text);
             }
             // Only "no tree here right now" degrades to a line beside the
-            // image (spec §4.1); a wrong request is an error either way.
+            // image (spec §4.1); a wrong request is an error either way. An
+            // empty foreground (no app named, none in front) is desktop
+            // state, not a wrong request.
             Err(e)
                 if shot.is_some()
-                    && matches!(
+                    && (matches!(
                         e.code,
                         Code::UnsupportedSession
                             | Code::PermissionDenied
                             | Code::BackendError
                             | Code::Busy
-                    ) =>
+                    ) || (e.app_missing && req.scope.app_name.is_none())) =>
             {
                 text.push_str(&format!(
                     "\na11y tree unavailable: {}: {}",
@@ -397,6 +399,47 @@ mod tests {
         assert_eq!(code(e), "stale_ref");
         // The capture ran first (spec order); only the reply is an error.
         assert_eq!(d.shots.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn an_empty_foreground_keeps_the_image() {
+        let t = tree();
+        *t.foreground_error.lock().unwrap() = Some(xa11y_core::Error::selector_not_matched(
+            "focused application",
+        ));
+        let (s, _) = session_with(Some(SemanticSession::new(t.factory())));
+        let out = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","include_a11y":true})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content[0].r#type, "image");
+        let text = out.content[1].text.as_deref().unwrap();
+        assert!(
+            text.contains("a11y tree unavailable: invalid_input"),
+            "{text}"
+        );
+        assert!(
+            text.contains("no application is in the foreground"),
+            "{text}"
+        );
+        // Without an image there is nothing to keep: still the plain error.
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","include_a11y":true,"include_image":false})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "invalid_input");
+        // A named app that is not running is a wrong request, image or not.
+        let e = handle(
+            &s,
+            req(serde_json::json!({"session_id":"c1","include_a11y":true,"app_name":"Nope"})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code(e), "invalid_input");
     }
 
     #[tokio::test]
