@@ -24,6 +24,11 @@ SCHEMA_DEFINING_KEYS = frozenset(
     {"type", "properties", "$ref", "allOf", "anyOf", "oneOf", "enum", "items", "const"}
 )
 
+# Gap between registration snapshots. Three equal samples must fit inside the
+# life of a worker booted without its dependencies: harness registers, then
+# exits ~5 s later when no queue worker answers.
+SAMPLE_INTERVAL_SECONDS = 0.5
+
 
 def _schema_is_typed(schema: object) -> bool:
     return isinstance(schema, dict) and any(k in schema for k in SCHEMA_DEFINING_KEYS)
@@ -264,7 +269,7 @@ def wait_for_worker(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(2, remaining))
+        time.sleep(min(SAMPLE_INTERVAL_SECONDS, remaining))
         if time.monotonic() >= deadline:
             break
         workers_json = run_iii("engine::workers::list", {})

@@ -56,7 +56,7 @@ def test_capture_waits_through_gradual_registration_and_a_brief_plateau(monkeypa
     _, functions = collector.wait_for_worker("whatsapp", 20)
 
     assert names(functions) == ["whatsapp::first", "whatsapp::second"]
-    assert clock["now"] == 8
+    assert clock["now"] == 4 * collector.SAMPLE_INTERVAL_SECONDS
 
 
 def test_registration_ids_must_stabilize_even_when_count_is_unchanged(monkeypatch):
@@ -70,7 +70,7 @@ def test_registration_ids_must_stabilize_even_when_count_is_unchanged(monkeypatc
     _, functions = collector.wait_for_worker("whatsapp", 20)
 
     assert names(functions) == ["whatsapp::new"]
-    assert clock["now"] == 6
+    assert clock["now"] == 3 * collector.SAMPLE_INTERVAL_SECONDS
 
 
 def test_other_workers_registering_do_not_prevent_target_readiness(monkeypatch):
@@ -83,7 +83,27 @@ def test_other_workers_registering_do_not_prevent_target_readiness(monkeypatch):
     _, functions = collector.wait_for_worker("whatsapp", 20)
 
     assert names(functions) == ["whatsapp::ready"]
-    assert clock["now"] == 4
+    assert clock["now"] == 2 * collector.SAMPLE_INTERVAL_SECONDS
+
+
+def test_capture_settles_before_a_worker_that_exits_seconds_after_registering(monkeypatch):
+    # The boot smoke runs a worker with no dependencies: harness registers in
+    # ~0.2 s, then exits ~5 s later without a queue worker. Three stable
+    # samples must fit well inside that window.
+    clock = registration_sequence(monkeypatch, [{"whatsapp": ["whatsapp::ready"]}])
+    engine = collector.run_iii
+
+    def run_iii(function_id, payload):
+        result = engine(function_id, payload)
+        if function_id == "engine::functions::list" and clock["now"] >= 3:
+            return {"functions": []}
+        return result
+
+    monkeypatch.setattr(collector, "run_iii", run_iii)
+
+    _, functions = collector.wait_for_worker("whatsapp", 20)
+
+    assert names(functions) == ["whatsapp::ready"]
 
 
 @pytest.mark.parametrize("wait_seconds", [0, -1])
@@ -109,10 +129,9 @@ def test_absent_registration_times_out_without_oversleeping(monkeypatch):
 
 
 def test_changing_registration_times_out_instead_of_publishing_partial_interface(monkeypatch):
+    samples = int(5 / collector.SAMPLE_INTERVAL_SECONDS) + 1
     clock = registration_sequence(monkeypatch, [
-        {"whatsapp": ["whatsapp::first"]},
-        {"whatsapp": ["whatsapp::first", "whatsapp::second"]},
-        {"whatsapp": ["whatsapp::first", "whatsapp::second", "whatsapp::third"]},
+        {"whatsapp": [f"whatsapp::fn{i}" for i in range(n + 1)]} for n in range(samples)
     ])
 
     with pytest.raises(TimeoutError, match="whatsapp.*stabilize"):
@@ -187,7 +206,7 @@ def test_delayed_functions_reset_trigger_only_readiness(monkeypatch):
     _, functions = collector.wait_for_worker("whatsapp", 20)
 
     assert names(functions) == ["whatsapp::first", "whatsapp::second"]
-    assert clock["now"] == 10
+    assert clock["now"] == 5 * collector.SAMPLE_INTERVAL_SECONDS
 
 
 def test_trigger_only_readiness_cannot_hide_functions_registered_after_a_long_pause(monkeypatch):
@@ -202,7 +221,7 @@ def test_trigger_only_readiness_cannot_hide_functions_registered_after_a_long_pa
     _, functions = collector.wait_for_worker("whatsapp", 20)
 
     assert names(functions) == ["whatsapp::ready"]
-    assert clock["now"] == 10
+    assert clock["now"] == 5 * collector.SAMPLE_INTERVAL_SECONDS
 
 
 def test_functions_arriving_during_final_sleep_cannot_publish_stale_trigger_only_interface(monkeypatch):
