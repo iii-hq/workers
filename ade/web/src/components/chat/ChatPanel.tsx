@@ -149,22 +149,26 @@ export function ChatPanel({
   }, [displayedId, remove])
 
   // Side chats whose tab is gone (closed, reloaded) are never discarded on
-  // leave; sweep the ones nobody touched for a day, once per panel.
+  // leave; sweep the ones nobody touched for a day, once per panel. In a
+  // microtask: by then a pane mounted in the same commit has marked what it
+  // shows, and a side chat any pane shows stays.
   const sweptRef = useRef(false)
   useEffect(() => {
     if (sweptRef.current || conversations.length === 0) return
     sweptRef.current = true
-    const cutoff = Date.now() - SIDE_CHAT_TTL_MS
-    for (const conversation of conversations) {
-      if (
-        isSideChat(conversation) &&
-        conversation.id !== displayedId &&
-        conversation.updatedAt < cutoff
-      ) {
-        void remove(conversation.id).catch(() => {})
+    queueMicrotask(() => {
+      const cutoff = Date.now() - SIDE_CHAT_TTL_MS
+      for (const conversation of conversationsRef.current) {
+        if (
+          isSideChat(conversation) &&
+          !isDisplayedHere(conversation.id) &&
+          conversation.updatedAt < cutoff
+        ) {
+          void remove(conversation.id).catch(() => {})
+        }
       }
-    }
-  }, [conversations, displayedId, remove])
+    })
+  }, [conversations, remove])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const surfaceRef = useRef<HTMLDivElement | null>(null)

@@ -144,7 +144,7 @@ describe('ChatPanel side chats', () => {
     expect(ctx.remove).not.toHaveBeenCalled()
   })
 
-  it('sweeps side chats left untouched for a day, once', () => {
+  it('sweeps side chats left untouched for a day, once', async () => {
     const list = [
       chat('a'),
       side('stale', 'gone', { updatedAt: Date.now() - 2 * DAY }),
@@ -154,7 +154,20 @@ describe('ChatPanel side chats', () => {
     mocks.ctx = ctx
     render()
     render()
+    await Promise.resolve()
     expect(ctx.remove).toHaveBeenCalledTimes(1)
     expect(ctx.remove).toHaveBeenCalledWith('stale')
+  })
+
+  it('sweeps no side chat another pane shows', async () => {
+    const list = [
+      chat('a'),
+      side('stale', 'a', { updatedAt: Date.now() - 2 * DAY }),
+    ]
+    const ctx = makeCtx(list, 'a')
+    mocks.ctx = ctx
+    render('stale')
+    await Promise.resolve()
+    expect(ctx.remove).not.toHaveBeenCalled()
   })
 })
