@@ -936,7 +936,7 @@ mod tests {
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         // The old exact twin must lead the raw lexical arm even though the
-        // fused recall would decay it to the recency floor.
+        // fused recall would decay it by the recency factor.
         let mut old = memory("kiwi mango smoothie recipe");
         old.updated_at = now_ms() - 400 * 86_400_000;
         bank.commit(old.clone()).await.unwrap();
@@ -948,14 +948,14 @@ mod tests {
         let hits = bank.lexical("kiwi mango smoothie recipe", 3, false).await;
         assert_eq!(hits[0].0.id, old.id, "{hits:?}");
         assert!(hits.len() <= 3);
-        // The SCORE is raw BM25: fusion would decay the 400-day-old twin to
-        // the recency floor, so a fused lexical arm fails this.
+        // The SCORE is raw BM25: fusion would scale the 400-day-old twin by
+        // the recency factor (x0.8), so a fused lexical arm fails this.
         let fused = bank
             .recall("kiwi mango smoothie recipe", None, "", 3, 30, false)
             .await;
         let fused_old = fused.iter().find(|(m, _)| m.id == old.id).unwrap().1;
         assert!(
-            hits[0].1 > 2.0 * fused_old,
+            hits[0].1 > 1.2 * fused_old,
             "raw BM25, not recency-fused: {hits:?} vs {fused:?}"
         );
         // Tombstoned records stay out unless history is asked for.

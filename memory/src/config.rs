@@ -91,8 +91,10 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_rule_chars")]
     pub max_rule_chars: usize,
 
-    /// Recency half-life in days for recall ranking. Unpinned memories
-    /// lose rank weight as they age; they never lose the data.
+    /// Recency half-life in days for recall ranking: the age at which a
+    /// memory's recency is neutral. Recency is a mild factor — a fresh memory
+    /// gains up to 20% rank weight, a very old one loses up to 20% — so
+    /// durable preferences stay recallable; the data is never lost.
     #[serde(default = "default_decay_half_life_days")]
     pub decay_half_life_days: u64,
 
@@ -137,7 +139,7 @@ fn default_max_rule_chars() -> usize {
     6_000
 }
 fn default_decay_half_life_days() -> u64 {
-    30
+    60
 }
 
 impl Default for WorkerConfig {

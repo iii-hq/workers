@@ -207,13 +207,13 @@ mod tests {
             "raw BM25: age does not sink the twin"
         );
         // Wired to the raw arm, not the fused scorer: hybrid decays the
-        // 400-day-old twin's score to the recency floor.
+        // 400-day-old twin's score by the recency factor (x0.8).
         let hybrid =
             request(serde_json::json!({"query": "kiwi mango smoothie recipe", "mode": "hybrid"}));
         let fused = rank(&bank, &hybrid, None, &cfg).await;
         let fused_twin = fused.iter().find(|h| h.memory.id == old_twin.id).unwrap();
         assert!(
-            hits[0].score > 2.0 * fused_twin.score,
+            hits[0].score > 1.2 * fused_twin.score,
             "lexical mode must not route through the fused scorer"
         );
 
