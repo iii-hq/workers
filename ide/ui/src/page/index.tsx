@@ -1812,6 +1812,13 @@ export function ShellExplorerPage({
       setNewWorkerBase('workers')
       return
     }
+    if (context.type === 'source-control') {
+      appliedContextRef.current = panelContext.id
+      changeRoot(context.cwd)
+      setSideTab('scm')
+      setCollapsed(false)
+      return
+    }
     if (root === null) return
     appliedContextRef.current = panelContext.id
     const rel = context.path.startsWith('/') ? (relativeToRoot(context.path, root) ?? context.path) : context.path

@@ -78,3 +78,30 @@ describe('ConversationSidebar drafts', () => {
     expect(html).toContain('No conversations yet.')
   })
 })
+
+describe('ConversationSidebar side chats', () => {
+  it('hides a side chat and what it spawned until it is kept', () => {
+    const list: Conversation[] = [
+      conversation('main', 'Main chat'),
+      {
+        ...conversation('side', 'Side chat · Main chat'),
+        sessionMetadata: { side_chat_of: 'main' },
+      },
+      { ...conversation('helper', 'Helper inside side'), parentId: 'side' },
+    ]
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <ConversationSidebar
+          conversations={list}
+          activeId={null}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onRemove={vi.fn()}
+        />
+      </TooltipProvider>,
+    )
+    expect(html).toContain('aria-label="open Main chat"')
+    expect(html).not.toContain('Side chat · Main chat')
+    expect(html).not.toContain('Helper inside side')
+  })
+})

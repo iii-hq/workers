@@ -239,6 +239,12 @@ interface ComposerProps {
    * keyboard over the conversation, which is worse than aiming once.
    */
   autoFocus?: boolean
+  /**
+   * Take inserts, attachments and focus requests from other surfaces (on by
+   * default). A side chat's composer turns it off: those belong to the main
+   * chat.
+   */
+  externalInput?: boolean
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
   /**
@@ -359,6 +365,7 @@ export function Composer({
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
+  externalInput = true,
   initialContent,
   initialText,
   onTextChange,
@@ -571,8 +578,11 @@ export function Composer({
     [handleAttach],
   )
   useEffect(
-    () => onComposerAttach((files) => void attachFiles(files)),
-    [attachFiles],
+    () =>
+      externalInput
+        ? onComposerAttach((files) => void attachFiles(files))
+        : undefined,
+    [attachFiles, externalInput],
   )
 
   // A folded card can neither take the caret nor show what lands in it, so
@@ -586,6 +596,7 @@ export function Composer({
   // separate turns of the event loop.
   const pendingSubmitRef = useRef(false)
   useEffect(() => {
+    if (!externalInput) return
     const unfold = () => {
       if (!collapsedRef.current) return
       refocusAfterUnfoldRef.current = true
@@ -600,7 +611,7 @@ export function Composer({
       offFocus()
       offInsert()
     }
-  }, [setFolded])
+  }, [setFolded, externalInput])
   useEffect(() => {
     if (collapsed || !refocusAfterUnfoldRef.current) return
     refocusAfterUnfoldRef.current = false
@@ -778,6 +789,7 @@ export function Composer({
             }
             disabled={inputDisabled}
             autoFocus={autoFocus}
+            externalInput={externalInput}
             initialContent={resolvedInitialContent}
             functionEntries={functionEntries}
             searchFiles={searchFiles}

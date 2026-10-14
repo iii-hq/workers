@@ -13,6 +13,7 @@ import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { isSideChat, sideChatOf, sideChatsMadeHere } from '@/lib/chat-aside'
 import { onChatShownRequest } from '@/lib/chat-requests'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
@@ -51,6 +52,8 @@ interface ChatPanelProps {
  * stays aligned with Tailwind's `sm` breakpoint.
  */
 const NARROW_BELOW = 560
+/** A side chat untouched this long is swept (see the effect below). */
+const SIDE_CHAT_TTL_MS = 86_400_000
 const MOBILE_VIEWPORT_QUERY = '(max-width: 639px)'
 
 /**
@@ -107,6 +110,47 @@ export function ChatPanel({
     if (!displayedId) return
     return watchConversation(displayedId)
   }, [displayedId, watchConversation])
+
+  // Leaving a conversation discards the side chats this tab made for it: a
+  // kept one lost the tag, and another tab's may still be in use. A ref, not
+  // an effect cleanup, so a StrictMode remount discards nothing.
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
+  const shownIdRef = useRef(displayedId)
+  useEffect(() => {
+    const left = shownIdRef.current
+    shownIdRef.current = displayedId
+    if (!left || left === displayedId) return
+    for (const conversation of conversationsRef.current) {
+      if (
+        conversation.id === displayedId ||
+        !sideChatsMadeHere.has(conversation.id) ||
+        sideChatOf(conversation) !== left
+      ) {
+        continue
+      }
+      sideChatsMadeHere.delete(conversation.id)
+      void remove(conversation.id).catch(() => {})
+    }
+  }, [displayedId, remove])
+
+  // Side chats whose tab is gone (closed, reloaded) are never discarded on
+  // leave; sweep the ones nobody touched for a day, once per panel.
+  const sweptRef = useRef(false)
+  useEffect(() => {
+    if (sweptRef.current || conversations.length === 0) return
+    sweptRef.current = true
+    const cutoff = Date.now() - SIDE_CHAT_TTL_MS
+    for (const conversation of conversations) {
+      if (
+        isSideChat(conversation) &&
+        conversation.id !== displayedId &&
+        conversation.updatedAt < cutoff
+      ) {
+        void remove(conversation.id).catch(() => {})
+      }
+    }
+  }, [conversations, displayedId, remove])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
@@ -390,6 +434,7 @@ export function ChatPanel({
             onAppendMessage={appendMessage}
             onPatchMessage={updateMessage}
             onCompactConversation={compactConversation}
+            asideSide={panelSide === 'right' ? 'left' : 'right'}
           />
         ) : !narrow || pinned ? (
           <section className="flex-1 flex flex-col min-w-0 min-h-0">

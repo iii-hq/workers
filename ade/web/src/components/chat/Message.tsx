@@ -21,7 +21,7 @@ import type {
 } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import { AttachmentChip } from './AttachmentChip'
-import { CopyMessageButton } from './CopyMessageButton'
+import { AskInSideChatButton, CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import { SystemNotice } from './SystemNotice'
 import { ThoughtMessage } from './ThoughtMessage'
@@ -470,11 +470,16 @@ function AssistantMessage({
         <span className="font-medium text-ink-faint">
           {message.agent || agentName || 'Agent'}
         </span>
-        {copySource !== undefined && !message.streaming ? (
-          <CopyMessageButton
-            text={copySource}
-            className="opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-          />
+        {/* The message's actions, revealed on hover where there is one. */}
+        {!message.streaming ? (
+          <span className="flex items-center gap-2 opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+            {copySource !== undefined ? (
+              <CopyMessageButton text={copySource} />
+            ) : null}
+            {message.content ? (
+              <AskInSideChatButton text={message.content} />
+            ) : null}
+          </span>
         ) : null}
         {message.model ? (
           <span className="text-ink-ghost">· {message.model}</span>

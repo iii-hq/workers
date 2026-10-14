@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import { CommandPalette } from '@/components/CommandPalette'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
+import { hideSideChats } from '@/lib/chat-aside'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { shortcutPlatform } from '@/lib/keybindings/bindings'
 import {
@@ -169,7 +170,8 @@ export function PaletteHost({
       }
     })
 
-    const chats: PaletteEntry[] = conversations
+    // A side chat opens from its conversation's side panel, not from here.
+    const chats: PaletteEntry[] = hideSideChats(conversations)
       .filter((conversation) => !conversation.draft)
       .slice(0, 40)
       .map((conversation) => ({

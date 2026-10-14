@@ -86,6 +86,12 @@ interface LexicalShellProps {
   disabled?: boolean
   /** Put the caret in the editor on mount. Off by default. */
   autoFocus?: boolean
+  /**
+   * Take inserts and focus requests from other surfaces (on by default). A
+   * second composer on screen, such as a side chat's, turns it off so a pick
+   * or a file reference lands in the main chat only.
+   */
+  externalInput?: boolean
 }
 
 /**
@@ -703,6 +709,7 @@ export function LexicalShell({
   placeholder = 'send a message…',
   disabled,
   autoFocus,
+  externalInput = true,
   clearToken,
   initialContent,
   functionEntries,
@@ -768,13 +775,13 @@ export function LexicalShell({
         <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
         {/* After HistoryNavPlugin on purpose: same priority, later registration. */}
         <ArrowOutOfCodePlugin menuOpenRef={menuOpenRef} />
-        <ExternalInsertPlugin />
+        {externalInput ? <ExternalInsertPlugin /> : null}
         {/* Opening a session is a request to write in it, so the first
           keystroke should land in the message rather than be spent aiming.
           Lexical's own plugin waits for the editable node, which a bare
           focus() call on mount does not. */}
         {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
-        <FocusOnRequestPlugin enabled={disabled !== true} />
+        <FocusOnRequestPlugin enabled={disabled !== true && externalInput} />
         <EditablePlugin disabled={disabled} />
         <MentionsPlugin
           menuOpenRef={menuOpenRef}
