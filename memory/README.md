@@ -96,6 +96,16 @@ process current directory for the same relative default.
   .trash/              # trashed banks, timestamped
 ```
 
+## Recall quality eval
+
+`tests/recall_quality.rs` scores the production `Bank::recall` over a synthetic golden bank (`tests/recall_quality/golden.json`: one persona, 72 memories, 62 English/Portuguese queries across lexical, paraphrase, identity, temporal-update, dated-event and durable-old categories). It runs in `lexical` mode and in `hybrid` mode with cached `text-embedding-3-small` vectors. It reports hit@1/3, MRR@10, nDCG@10 and recall@10 per category and language, and counts **traps**: a superseded memory outranking the current one. The committed snapshot `tests/golden/recall_quality.json` makes it a PR gate. The metric conventions follow Hindsight's retrieval eval.
+
+```bash
+cargo test --test recall_quality -- --nocapture                # report
+UPDATE_GOLDENS=1 cargo test --test recall_quality              # re-baseline after an intended change
+III_NAMESPACE=<ns> cargo test --test recall_quality -- --ignored embed_golden_set   # re-embed after editing golden.json
+```
+
 ## Permissions
 
 Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
