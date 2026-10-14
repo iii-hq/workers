@@ -27,7 +27,7 @@ use iii_sdk::protocol::TriggerRequest;
 
 use crate::deps::Deps;
 use crate::extract;
-use crate::types::{now_ms, Memory};
+use crate::types::{local_date, now_ms, Memory};
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
@@ -204,6 +204,7 @@ pub async fn pre_generate(
                 .recall(
                     &query,
                     query_vec.as_deref(),
+                    &cfg.embedding_model,
                     cfg.recall_limit,
                     cfg.decay_half_life_days,
                     false,
@@ -217,7 +218,7 @@ pub async fn pre_generate(
             let top = bank.top_memories(cfg.recall_limit).await;
             let memories = apply_ambient_floor(hits, top, cfg.recall_limit);
             if let Some((body, ids)) =
-                memories_message(&bank_name, &memories, cfg.recall_budget_tokens)
+                memories_message(&bank_name, &memories, cfg.recall_budget_tokens, now_ms())
             {
                 let count = ids.len();
                 mutations.append_messages.push(user_text_message(body));
@@ -548,30 +549,41 @@ pub(crate) fn apply_ambient_floor(
     memories
 }
 
-/// The one appended `<memory>` message: bulleted memory texts under a
-/// 4-chars-per-token budget, plus the ids of the memories that made the
-/// cut. `None` when nothing fits.
+/// The one appended `<memory>` message: bulleted memory texts, each dated
+/// with its last update, under a 4-chars-per-token budget counted over the
+/// whole rendered line, plus the ids of the memories that made the cut. A
+/// memory too long for what is left is skipped, not a stop — shorter ones
+/// ranked below it still fit. The header names the day the recall ran,
+/// never "today": the message is persisted and replayed on later turns.
+/// `None` when nothing fits.
 pub(crate) fn memories_message(
     bank: &str,
     memories: &[Memory],
     recall_budget_tokens: u64,
+    now: u64,
 ) -> Option<(String, Vec<String>)> {
     let mut budget = (recall_budget_tokens * 4) as usize;
     let mut lines = Vec::new();
     let mut ids = Vec::new();
     for memory in memories {
-        if memory.text.len() > budget {
-            break;
+        let line = format!(
+            "- {} ({})",
+            memory.text,
+            local_date(memory.updated_at, "%Y-%m-%d")
+        );
+        if line.len() > budget {
+            continue;
         }
-        budget -= memory.text.len();
-        lines.push(format!("- {}", memory.text));
+        budget -= line.len();
+        lines.push(line);
         ids.push(memory.id.clone());
     }
     if lines.is_empty() {
         return None;
     }
     let body = format!(
-        "<memory bank=\"{bank}\">\nRelevant remembered memories (auto-recalled; verify anything surprising):\n{}\n</memory>",
+        "<memory bank=\"{bank}\">\nRelevant remembered memories (recalled {}; each dated when last updated; verify anything surprising):\n{}\n</memory>",
+        local_date(now, "%Y-%m-%d %A"),
         lines.join("\n")
     );
     Some((body, ids))
@@ -725,31 +737,56 @@ Formal."
         assert!(!out.iter().any(|m| m.id == "fp9"));
     }
 
+    /// 2025-10-14T12:00:00Z — the same calendar day from UTC-11 to UTC+11.
+    /// Expected dates are always built with `local_date` itself, never
+    /// hardcoded, so the tests hold in any host time zone.
+    const NOW: u64 = 1_760_443_200_000;
+
     #[test]
     fn memories_message_formats_body_and_ids_in_lockstep() {
         let ms = vec![memory("fp1", "first"), memory("fp2", "second")];
-        let (body, ids) = memories_message("blog", &ms, 1_200).unwrap();
+        let (body, ids) = memories_message("blog", &ms, 1_200, NOW).unwrap();
+        let d = local_date(1, "%Y-%m-%d");
         assert!(body.starts_with("<memory bank=\"blog\">"));
-        assert!(body.contains("- first\n- second"));
+        assert!(
+            body.contains(&format!("- first ({d})\n- second ({d})")),
+            "{body}"
+        );
         assert!(body.ends_with("</memory>"));
         assert_eq!(ids, vec!["fp1", "fp2"]);
     }
 
     #[test]
-    fn memories_message_stops_at_the_token_budget() {
-        // Budget of 1 token = 4 chars: the 5-char text does not fit.
-        let ms = vec![memory("fp1", "12345"), memory("fp2", "abc")];
-        let out = memories_message("b", &ms, 1);
-        // First memory over budget stops the loop entirely (ordered list,
-        // no skipping ahead) — nothing fits.
-        assert!(out.is_none());
+    fn memories_message_header_says_when_it_was_recalled() {
+        let ms = vec![memory("fp1", "first")];
+        let (body, _) = memories_message("b", &ms, 1_200, NOW).unwrap();
+        let recalled = format!("recalled {}", local_date(NOW, "%Y-%m-%d %A"));
+        assert!(body.contains(&recalled), "{body}");
+        // Persisted and replayed on later turns: "today" would turn false.
+        assert!(!body.contains("today"), "{body}");
     }
 
     #[test]
-    fn memories_message_budget_boundary_is_inclusive() {
-        let ms = vec![memory("fp1", "1234")];
-        let (_, ids) = memories_message("b", &ms, 1).unwrap();
+    fn memories_message_skips_an_oversized_memory_and_keeps_packing() {
+        // 10 tokens = 40 chars: the 115-char line is skipped, and the short
+        // memory ranked below it still makes the cut.
+        let ms = vec![memory("fp1", &"x".repeat(100)), memory("fp2", "abc")];
+        let (body, ids) = memories_message("b", &ms, 10, NOW).unwrap();
+        assert_eq!(ids, vec!["fp2"]);
+        assert!(!body.contains("xxx"), "{body}");
+        // Nothing fits at all: no message.
+        assert!(memories_message("b", &ms[..1], 10, NOW).is_none());
+    }
+
+    #[test]
+    fn memories_message_budget_counts_the_whole_dated_line_inclusively() {
+        let ms = vec![memory("fp1", "12345")];
+        let line = format!("- 12345 ({})", local_date(1, "%Y-%m-%d"));
+        assert_eq!(line.len() % 4, 0, "fixture sized to a whole token count");
+        let exact = (line.len() / 4) as u64;
+        let (_, ids) = memories_message("b", &ms, exact, NOW).unwrap();
         assert_eq!(ids, vec!["fp1"]);
+        assert!(memories_message("b", &ms, exact - 1, NOW).is_none());
     }
 
     #[test]

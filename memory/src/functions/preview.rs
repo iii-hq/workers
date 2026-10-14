@@ -73,6 +73,7 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
         .recall(
             &req.query,
             query_vec.as_deref(),
+            &cfg.embedding_model,
             cfg.recall_limit,
             cfg.decay_half_life_days,
             false,
@@ -84,11 +85,15 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
     let top = bank.top_memories(cfg.recall_limit).await;
     let memories = hooks::apply_ambient_floor(hit_memories, top, cfg.recall_limit);
 
-    let (message, included) =
-        match hooks::memories_message(&bank_name, &memories, cfg.recall_budget_tokens) {
-            Some((body, ids)) => (Some(body), ids),
-            None => (None, Vec::new()),
-        };
+    let (message, included) = match hooks::memories_message(
+        &bank_name,
+        &memories,
+        cfg.recall_budget_tokens,
+        crate::types::now_ms(),
+    ) {
+        Some((body, ids)) => (Some(body), ids),
+        None => (None, Vec::new()),
+    };
     let included: std::collections::HashSet<String> = included.into_iter().collect();
 
     Ok(PreviewResponse {

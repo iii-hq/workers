@@ -144,11 +144,12 @@ impl Bm25Index {
     }
 }
 
-/// Fused recall score for one already-BM25-matched memory: entity overlap,
+/// Fused recall score for one candidate: its query relevance (BM25 plus the
+/// weighted semantic similarity, when any) with entity overlap,
 /// corroboration, and pin bonus added, then a recency multiplier with a
 /// floor. Superseded memories are excluded by the caller.
 pub fn fused_score(
-    bm25: f32,
+    relevance: f32,
     memory: &Memory,
     query_tokens: &[String],
     now_ms: u64,
@@ -160,7 +161,7 @@ pub fn fused_score(
         .flat_map(|e| tokenize(e))
         .filter(|t| query_tokens.contains(t))
         .count() as f32;
-    let base = bm25
+    let base = relevance
         + ENTITY_WEIGHT * entity_hits
         + CORROBORATION_WEIGHT * (1.0 + memory.corroboration as f32).ln()
         + if memory.pinned { PINNED_BONUS } else { 0.0 };

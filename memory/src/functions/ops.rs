@@ -91,7 +91,7 @@ async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
         })
         .await?;
         let hits = bank
-            .recall("memory roundtrip probe", None, 3, 30, false)
+            .recall("memory roundtrip probe", None, "", 3, 30, false)
             .await;
         let trashed = store.trash_bank(&scratch).await?;
         if hits.is_empty() {

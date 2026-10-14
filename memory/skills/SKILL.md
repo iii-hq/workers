@@ -54,6 +54,8 @@ rule; point-in-time information belongs in memories.
   sibling worker.
 - Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
   over-budget rule is truncated visibly, never silently dropped.
+- Recalled memories are dated (last update); trust a newer memory over an
+  older one that contradicts it. Dated events are stored with absolute dates.
 
 ## Functions
 

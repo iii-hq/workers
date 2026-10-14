@@ -484,10 +484,18 @@ impl Bank {
     /// caller embeds the query, if at all). First-person pronouns expand
     /// to the `user` entity handle so identity questions reach the memories
     /// phrased third-person about the user.
+    ///
+    /// `embedding_model` is the model `query_vec` was embedded with: stored
+    /// vectors from another model live in an incomparable space and are
+    /// skipped (the same acceptance rule as [`Bank::unembedded`], so every
+    /// skipped vector is due a re-embed). The guard only bites when the
+    /// model is pinned — empty means "provider default", and vectors
+    /// stored under it carry no real model id.
     pub async fn recall(
         &self,
         query: &str,
         query_vec: Option<&[f32]>,
+        embedding_model: &str,
         limit: usize,
         half_life_days: u64,
         include_superseded: bool,
@@ -518,7 +526,10 @@ impl Bank {
         // Semantic candidates join the pool even without a lexical hit.
         let mut sem: HashMap<String, f32> = HashMap::new();
         if let Some(qv) = query_vec {
-            for (id, (_, v)) in &inner.vectors {
+            for (id, (model, v)) in &inner.vectors {
+                if !embedding_model.is_empty() && model != embedding_model {
+                    continue;
+                }
                 let c = cosine(qv, v);
                 if c > SEMANTIC_FLOOR {
                     sem.insert(id.clone(), c);
@@ -532,11 +543,11 @@ impl Bank {
             .filter_map(|(id, s)| inner.memories.get(&id).map(|f| (f.clone(), s, id)))
             .filter(|(f, _, _)| include_superseded || f.is_live())
             .map(|(f, s, id)| {
-                let mut fused =
-                    crate::index::fused_score(s, &f, &query_tokens, now, half_life_days);
-                if let Some(c) = sem.get(&id) {
-                    fused += SEMANTIC_WEIGHT * c;
-                }
+                // Semantic joins lexical BEFORE fusion so recency decays
+                // both alike.
+                let relevance = s + sem.get(&id).map_or(0.0, |c| SEMANTIC_WEIGHT * c);
+                let fused =
+                    crate::index::fused_score(relevance, &f, &query_tokens, now, half_life_days);
                 (f, fused)
             })
             .collect();
@@ -665,7 +676,7 @@ mod tests {
         // Simulate a restart: reopen from disk only.
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
-        let hits = bank2.recall("formal writing", None, 5, 30, false).await;
+        let hits = bank2.recall("formal writing", None, "", 5, 30, false).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.text, "mike prefers formal writing");
     }
@@ -691,14 +702,17 @@ mod tests {
         f.invalid_at = Some(now_ms());
         f.revision = 2;
         bank.commit(f.clone()).await.unwrap();
-        assert!(bank.recall("api port", None, 5, 30, false).await.is_empty());
+        assert!(bank
+            .recall("api port", None, "", 5, 30, false)
+            .await
+            .is_empty());
         assert!(bank.get(&f.id).await.unwrap().invalid_at.is_some());
 
         // And the same is true after a reopen.
         let store2 = Store::open(dir.path().to_path_buf()).unwrap();
         let bank2 = store2.bank("main").await.unwrap();
         assert!(bank2
-            .recall("api port", None, 5, 30, false)
+            .recall("api port", None, "", 5, 30, false)
             .await
             .is_empty());
         let (memories, total) = bank2.list(10, 0, true, None).await;
@@ -816,6 +830,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn semantic_relevance_decays_with_recency_like_lexical() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let fresh = memory("alpha beta");
+        let mut old = memory("gamma delta");
+        old.updated_at = now_ms() - 365 * 86_400_000;
+        bank.commit(fresh.clone()).await.unwrap();
+        bank.commit(old.clone()).await.unwrap();
+        for m in [&fresh, &old] {
+            bank.set_vector(&m.id, "m", vec![1.0, 0.0]).await.unwrap();
+        }
+        // No lexical overlap: the identical semantic match is the only
+        // relevance, so recency alone must separate the two.
+        let hits = bank
+            .recall("zzz", Some(&[1.0, 0.0]), "m", 5, 30, false)
+            .await;
+        let score = |id: &str| {
+            hits.iter()
+                .find(|(m, _)| m.id == id)
+                .map(|(_, s)| *s)
+                .expect("both memories are semantic hits")
+        };
+        assert!(score(&fresh.id) > score(&old.id), "{hits:?}");
+    }
+
+    #[tokio::test]
+    async fn recall_ignores_vectors_from_another_pinned_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("alpha beta");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "model-a", vec![1.0, 0.0])
+            .await
+            .unwrap();
+        let q = [1.0, 0.0];
+
+        let same = bank.recall("zzz", Some(&q), "model-a", 5, 30, false).await;
+        assert_eq!(same.len(), 1, "matching model contributes the hit");
+        let other = bank.recall("zzz", Some(&q), "model-b", 5, 30, false).await;
+        assert!(other.is_empty(), "another model's space is not comparable");
+        // Empty = provider default: whatever exists counts (mirrors
+        // `unembedded`, so nothing skipped here is left un-re-embedded).
+        let default = bank.recall("zzz", Some(&q), "", 5, 30, false).await;
+        assert_eq!(default.len(), 1);
+    }
+
+    #[tokio::test]
     async fn history_recall_surfaces_tombstones_lexical_only() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
@@ -827,10 +890,12 @@ mod tests {
         bank.commit(m.clone()).await.unwrap();
 
         assert!(bank
-            .recall("retired convention", None, 5, 30, false)
+            .recall("retired convention", None, "", 5, 30, false)
             .await
             .is_empty());
-        let hits = bank.recall("retired convention", None, 5, 30, true).await;
+        let hits = bank
+            .recall("retired convention", None, "", 5, 30, true)
+            .await;
         assert_eq!(
             hits.len(),
             1,

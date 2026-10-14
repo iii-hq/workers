@@ -224,7 +224,7 @@
         "type": "array"
       },
       "retrieval": {
-        "description": "Retrieval mode actually used — degradation is explicit, never silent. Currently always `bm25-entity`; a semantic signal joins when the router grows an embeddings surface.",
+        "description": "Retrieval mode actually used — degradation is explicit, never silent: `bm25-entity`, or `bm25-entity-semantic` when the query was embedded through `router::embed`.",
         "type": "string"
       }
     },

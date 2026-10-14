@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use crate::deps::Deps;
 use crate::events::ItemEvent;
 use crate::store::CommitKind;
-use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
+use crate::types::{fingerprint, local_date, now_ms, Confidence, Memory, Provenance};
 
 const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation excerpt.\n\
 Return ONLY a JSON array (no prose, no code fences). Each element:\n\
@@ -35,6 +35,12 @@ Rules:\n\
 identities, project constants, standing instructions.\n\
 - Never ephemeral state (current task progress, one-off values), never secrets, API keys, \
 tokens, or passwords.\n\
+- Each excerpt line starts with its message date in brackets. Dated events (appointments, \
+deadlines, trips) are worth keeping even though they happen once: rewrite relative \
+expressions (today, tomorrow, next Friday, in two weeks) as the absolute date, resolved \
+against the date of the line that contains them, and write the event's own date in the \
+text. Never add \"as of <date>\" or \"currently\" stamps to stable facts: each memory \
+already carries its own date.\n\
 - text: one self-contained sentence, max 200 characters, in the language of the source.\n\
 - entities: short lowercase handles for the people/projects/tools the memory is about.\n\
 - tags: 0-3 short lowercase topical labels for filtering within the bank (e.g. \"billing\", \
@@ -146,14 +152,16 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
     };
 
     let since = cursor_get(&deps.iii, session_id).await;
-    let (transcript, newest_id) = fetch_transcript_since(
+    let (transcript, newest_id, content_len) = fetch_transcript_since(
         &deps.iii,
         session_id,
         since.as_deref(),
         cfg.extraction_window,
     )
     .await?;
-    if transcript.trim().len() < 20 {
+    // Measured on message text, not the dated transcript: the per-line
+    // `role [date]: ` prefix alone would clear any threshold.
+    if content_len < 20 {
         // Nothing new worth an LLM call; still advance past trivia so the
         // same span is never re-fetched.
         if let Some(id) = newest_id {
@@ -249,40 +257,7 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
             }
             Some(_) => continue,
             None => (
-                Memory {
-                    id,
-                    text: text.to_string(),
-                    entities: item
-                        .entities
-                        .into_iter()
-                        .map(|e| e.trim().to_lowercase())
-                        .filter(|e| !e.is_empty())
-                        .take(8)
-                        .collect(),
-                    tags: item
-                        .tags
-                        .into_iter()
-                        .map(|t| t.trim().to_lowercase())
-                        .filter(|t| !t.is_empty())
-                        .take(8)
-                        .collect(),
-                    confidence: match item.confidence.as_deref() {
-                        Some("inferred") => Confidence::Inferred,
-                        _ => Confidence::Extracted,
-                    },
-                    corroboration: 0,
-                    pinned: false,
-                    source: Some(Provenance {
-                        session_id: Some(session_id.to_string()),
-                        entry_id: None,
-                        agent: None,
-                    }),
-                    created_at: now,
-                    updated_at: now,
-                    invalid_at: None,
-                    superseded_by: None,
-                    revision: 0,
-                },
+                new_memory(item, session_id, newest_id.as_deref(), now),
                 ItemEvent::Created,
             ),
         };
@@ -317,6 +292,47 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// A fresh record for one extracted item. `entry_id` is the newest
+/// transcript entry of the extracted span — the turn's last message — so
+/// the memory points back at the turn it came from.
+fn new_memory(item: ExtractedItem, session_id: &str, entry_id: Option<&str>, now: u64) -> Memory {
+    let text = item.text.trim().to_string();
+    Memory {
+        id: fingerprint(&text),
+        text,
+        entities: item
+            .entities
+            .into_iter()
+            .map(|e| e.trim().to_lowercase())
+            .filter(|e| !e.is_empty())
+            .take(8)
+            .collect(),
+        tags: item
+            .tags
+            .into_iter()
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| !t.is_empty())
+            .take(8)
+            .collect(),
+        confidence: match item.confidence.as_deref() {
+            Some("inferred") => Confidence::Inferred,
+            _ => Confidence::Extracted,
+        },
+        corroboration: 0,
+        pinned: false,
+        source: Some(Provenance {
+            session_id: Some(session_id.to_string()),
+            entry_id: entry_id.map(str::to_string),
+            agent: None,
+        }),
+        created_at: now,
+        updated_at: now,
+        invalid_at: None,
+        superseded_by: None,
+        revision: 0,
+    }
 }
 
 const CURSOR_SCOPE: &str = "memory_cursor";
@@ -384,7 +400,8 @@ pub async fn cursor_delete(iii: &IIIClient, session_id: &str) {
 }
 
 /// User/assistant messages NEWER than `since` (all of them, capped to the
-/// most recent `window`), plus the newest entry id seen. Walks the
+/// most recent `window`), the newest entry id seen, and the kept message
+/// text length (excluding the per-line date prefix). Walks the
 /// session page by page — `session::messages` returns root→leaf, so the
 /// new turn lives on the LAST page. `roles` narrowing also excludes
 /// custom + function_result entries, so memory's own calls never feed
@@ -394,8 +411,8 @@ async fn fetch_transcript_since(
     session_id: &str,
     since: Option<&str>,
     window: usize,
-) -> Result<(String, Option<String>), String> {
-    let mut collected: Vec<(String, String, String)> = Vec::new();
+) -> Result<(String, Option<String>, usize), String> {
+    let mut collected: Vec<(String, String, String, u64)> = Vec::new();
     let mut since_seen = false;
     let mut cursor: Option<String> = None;
     for _ in 0..MAX_PAGES {
@@ -417,30 +434,14 @@ async fn fetch_transcript_since(
             .await
             .map_err(|e| format!("session::messages: {e}"))?;
         if let Some(items) = reply.get("messages").and_then(Value::as_array) {
-            for item in items {
-                let entry_id = item
-                    .get("entry_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let Some(message) = item.get("message") else {
-                    continue;
-                };
-                let role = message
-                    .get("role")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let text = content_text(message.get("content"));
-                collected.push((entry_id, role, text));
-            }
+            collected.extend(items.iter().filter_map(parse_entry));
         }
         // Bound RAM on long sessions: everything at or before the stored
         // cursor is already extracted, so once the cursor id streams past
         // we only need what follows it; without a cursor only the window
         // tail is ever read.
         if let Some(s) = since {
-            if let Some(pos) = collected.iter().position(|(id, _, _)| id == s) {
+            if let Some(pos) = collected.iter().position(|(id, _, _, _)| id == s) {
                 since_seen = true;
                 collected.drain(..=pos);
             } else if !since_seen && collected.len() > window {
@@ -457,25 +458,64 @@ async fn fetch_transcript_since(
         }
     }
 
-    let newest_id = collected.last().map(|(id, _, _)| id.clone());
+    let newest_id = collected.last().map(|(id, _, _, _)| id.clone());
 
     // `collected` now holds entries strictly after the stored cursor (or
     // the tail when the cursor id was never seen: branch switch, trimmed
     // history); cap the LLM excerpt to the newest `window` either way.
     let start = collected.len().saturating_sub(window);
 
-    let mut lines = Vec::new();
-    for (_, role, text) in collected.into_iter().skip(start).rev().take(window) {
-        let trimmed = text.trim().to_string();
-        if trimmed.is_empty() || trimmed.starts_with("<memory ") {
-            continue;
-        }
-        let mut excerpt = trimmed;
-        excerpt.truncate(clamp_char_boundary(&excerpt, 2_000));
-        lines.push(format!("{role}: {excerpt}"));
+    let mut content_len = 0;
+    let lines: Vec<String> = collected
+        .into_iter()
+        .skip(start)
+        .filter_map(|(_, role, text, ts)| {
+            let line = transcript_line(&role, &text, ts)?;
+            content_len += text.trim().len();
+            Some(line)
+        })
+        .collect();
+    Ok((lines.join("\n"), newest_id, content_len))
+}
+
+/// One `session::messages` item as `(entry_id, role, text, timestamp_ms)`;
+/// `None` for entries without a message (custom entries). A missing or
+/// zero timestamp falls back to the pass's own clock.
+fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
+    let message = item.get("message")?;
+    let entry_id = item
+        .get("entry_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let text = content_text(message.get("content"));
+    let ts = message
+        .get("timestamp")
+        .and_then(Value::as_u64)
+        .filter(|&t| t > 0)
+        .unwrap_or_else(now_ms);
+    Some((entry_id, role, text, ts))
+}
+
+/// One excerpt line, `role [YYYY-MM-DD Weekday]: text`, dated by its OWN
+/// message so relative dates resolve right even when the excerpt spans days
+/// (an imported conversation, a first pass over an old session). Empty
+/// turns and our own injected `<memory …>` blocks are dropped.
+fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.starts_with("<memory ") {
+        return None;
     }
-    lines.reverse();
-    Ok((lines.join("\n"), newest_id))
+    let excerpt = &trimmed[..clamp_char_boundary(trimmed, 2_000)];
+    Some(format!(
+        "{role} [{}]: {excerpt}",
+        local_date(ts, "%Y-%m-%d %A")
+    ))
 }
 
 /// Largest index <= `max` that lands on a UTF-8 char boundary of `s`.
@@ -643,6 +683,69 @@ mod tests {
         );
         assert_eq!(added, 1);
         assert_eq!(batch.matches("- ").count(), 1);
+    }
+
+    #[test]
+    fn parse_entry_reads_role_text_and_message_timestamp() {
+        let item = json!({
+            "entry_id": "e_1",
+            "message": {
+                "role": "user",
+                "content": [{ "type": "text", "text": "hi" }],
+                "timestamp": 1_760_443_200_000_i64,
+            },
+        });
+        let (id, role, text, ts) = parse_entry(&item).unwrap();
+        assert_eq!(
+            (id.as_str(), role.as_str(), text.as_str(), ts),
+            ("e_1", "user", "hi", 1_760_443_200_000)
+        );
+
+        // No timestamp: the pass's own clock stands in.
+        let before = now_ms();
+        let bare =
+            json!({ "entry_id": "e_2", "message": { "role": "assistant", "content": "ok" } });
+        assert!(parse_entry(&bare).unwrap().3 >= before);
+        // Custom entries carry no message.
+        assert!(parse_entry(&json!({ "entry_id": "e_3", "custom": {} })).is_none());
+    }
+
+    #[test]
+    fn transcript_lines_carry_their_own_local_date() {
+        // Noon UTC: the same calendar day from UTC-11 to UTC+11.
+        let day1 = 1_760_443_200_000;
+        let day2 = day1 + 2 * 86_400_000;
+        let a = transcript_line("user", "o deploy é amanhã", day1).unwrap();
+        let b = transcript_line("assistant", "ok", day2).unwrap();
+        let d1 = local_date(day1, "%Y-%m-%d %A");
+        let d2 = local_date(day2, "%Y-%m-%d %A");
+        assert_ne!(d1, d2);
+        assert_eq!(a, format!("user [{d1}]: o deploy é amanhã"));
+        assert_eq!(b, format!("assistant [{d2}]: ok"));
+        // Injected memory blocks and empty turns never reach the excerpt.
+        assert!(transcript_line("user", "<memory bank=\"m\">…</memory>", day1).is_none());
+        assert!(transcript_line("user", "   ", day1).is_none());
+    }
+
+    #[test]
+    fn new_memory_records_the_span_entry_and_normalizes_fields() {
+        let item = ExtractedItem {
+            text: "  user prefers tea  ".into(),
+            entities: vec![" Mike ".into(), "".into()],
+            tags: vec!["Drinks".into()],
+            confidence: Some("inferred".into()),
+            kind: None,
+        };
+        let m = new_memory(item, "s_1", Some("e_9"), 42);
+        assert_eq!(m.text, "user prefers tea");
+        assert_eq!(m.id, fingerprint("user prefers tea"));
+        assert_eq!(m.entities, vec!["mike"]);
+        assert_eq!(m.tags, vec!["drinks"]);
+        assert_eq!(m.confidence, Confidence::Inferred);
+        let src = m.source.unwrap();
+        assert_eq!(src.session_id.as_deref(), Some("s_1"));
+        assert_eq!(src.entry_id.as_deref(), Some("e_9"));
+        assert_eq!((m.created_at, m.updated_at), (42, 42));
     }
 
     #[test]
