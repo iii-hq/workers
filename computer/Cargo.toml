@@ -1,5 +1,4 @@
 [workspace]
-members = ["."]
 # Vendored crates build and test on their own (own Cargo.lock), outside this
 # workspace's fmt and clippy; CI runs their tests separately.
 exclude = ["vendor/xa11y-linux"]
@@ -63,6 +62,9 @@ xa11y-windows = "=0.15.2"
 x11rb = { version = "0.14", default-features = false, features = ["xtest", "randr"] }
 xkeysym = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# AT-SPI semantic backend: xa11y-linux 0.15.2 vendored with our patches and
+# without its Wayland/uinput/portal code (vendor/xa11y-linux/PATCHES.md).
+xa11y-linux = { path = "vendor/xa11y-linux" }
 
 [dev-dependencies]
 serde_json = "1"

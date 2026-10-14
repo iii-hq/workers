@@ -36,7 +36,7 @@ impl Support {
             Self::yes()
         } else {
             Self::no(
-                "semantic actions need a native session on macOS or Windows; this session \
+                "semantic actions need a native session (macOS, Windows or Linux); this session \
                  takes coordinates only",
             )
         }

@@ -61,13 +61,31 @@ fn native_driver(
     )))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Linux: an X server gets the X11 driver; a Wayland desktop (directly or
+/// through XWayland) gets a semantic-only session (spec §5.1).
+#[cfg(target_os = "linux")]
+fn native_driver(
+    cfg: &crate::config::WorkerConfig,
+    monitor: Option<u32>,
+) -> Result<Arc<dyn Driver>, String> {
+    use crate::driver::native::{detect, Desktop, WAYLAND};
+    Ok(match detect()? {
+        Desktop::X11 => Arc::new(crate::driver::NativeHost::new(
+            cfg.max_screenshot_dimension as u32,
+            cfg.screenshot_quality as u8,
+            monitor,
+        )),
+        Desktop::Wayland => Arc::new(crate::driver::SemanticOnly(WAYLAND.to_string())),
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn native_driver(
     _cfg: &crate::config::WorkerConfig,
     _monitor: Option<u32>,
 ) -> Result<Arc<dyn Driver>, String> {
     Err(
-        "native driver (drive this machine) is only available on macOS and Windows; \
+        "native driver (drive this machine) is only available on macOS, Windows and Linux; \
          pass an `endpoint` to drive a remote or sandboxed desktop"
             .to_string(),
     )
@@ -75,7 +93,7 @@ fn native_driver(
 
 /// The accessibility layer for a native session on this OS, counting
 /// invalidations on the shared native desktop.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn native_semantic(invalidations: Arc<AtomicU64>) -> Option<crate::semantic::SemanticSession> {
     Some(crate::semantic::SemanticSession::on_desktop(
         crate::semantic::platform::factory(),
@@ -83,7 +101,7 @@ fn native_semantic(invalidations: Arc<AtomicU64>) -> Option<crate::semantic::Sem
     ))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn native_semantic(_: Arc<AtomicU64>) -> Option<crate::semantic::SemanticSession> {
     None
 }
@@ -149,7 +167,7 @@ pub struct Session {
     screencast_task: Mutex<Option<JoinHandle<()>>>,
     config: SharedConfig,
     frames: Arc<FrameNotifier>,
-    /// Accessibility layer: native macOS/Windows sessions only.
+    /// Accessibility layer: native sessions only.
     pub semantic: Option<crate::semantic::SemanticSession>,
     /// Serializes coordinate and semantic actions on this desktop (one lock
     /// for every native session), so a coordinate action can never land

@@ -15,6 +15,8 @@ pub fn factory() -> ProviderFactory {
         let provider = xa11y_macos::MacOSProvider::new()?;
         #[cfg(target_os = "windows")]
         let provider = xa11y_windows::WindowsProvider::new()?;
+        #[cfg(target_os = "linux")]
+        let provider = xa11y_linux::LinuxProvider::new()?;
         Ok(Arc::new(provider) as Arc<dyn Provider>)
     })
 }

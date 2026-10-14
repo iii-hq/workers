@@ -1,7 +1,7 @@
 //! Semantic computer use: read an app's accessibility tree, find elements by
 //! selector, and act on them by reference, through xa11y. It sits beside the
-//! coordinate `Driver`, not inside it, and only native macOS/Windows sessions
-//! get one.
+//! coordinate `Driver`, not inside it, and only native sessions (macOS,
+//! Windows, Linux) get one.
 
 mod engine;
 mod error;
@@ -9,7 +9,7 @@ mod executor;
 #[cfg(test)]
 pub(crate) mod fake;
 mod outline;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod platform;
 mod refs;
 mod selector;

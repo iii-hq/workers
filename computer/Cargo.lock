@@ -605,6 +605,7 @@ dependencies = [
  "tracing-subscriber",
  "x11rb",
  "xa11y-core",
+ "xa11y-linux",
  "xa11y-macos",
  "xa11y-windows",
  "xcap",
@@ -4422,6 +4423,17 @@ dependencies = [
  "serde_json",
  "strum",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "xa11y-linux"
+version = "0.15.2"
+dependencies = [
+ "rayon",
+ "serde_json",
+ "x11rb",
+ "xa11y-core",
+ "zbus",
 ]
 
 [[package]]

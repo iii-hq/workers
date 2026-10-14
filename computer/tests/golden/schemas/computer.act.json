@@ -1,5 +1,5 @@
 {
-  "description": "Drive the desktop. By coordinates (pixels of the latest screenshot): click, right_click, double_click, move, drag, scroll, type, press, hotkey. By ref from computer::observe or computer::find (native macOS/Windows): invoke, set_value (with text), toggle, select — no mouse or keyboard involved, and the effect is not verified, so confirm with computer::find. A coordinate action invalidates refs.",
+  "description": "Drive the desktop. By coordinates (pixels of the latest screenshot): click, right_click, double_click, move, drag, scroll, type, press, hotkey. By ref from computer::observe or computer::find (native sessions): invoke, set_value (with text), toggle, select — no mouse or keyboard involved, and the effect is not verified, so confirm with computer::find. A coordinate action invalidates refs.",
   "function_id": "computer::act",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

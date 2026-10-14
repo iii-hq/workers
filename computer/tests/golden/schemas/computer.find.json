@@ -1,12 +1,12 @@
 {
-  "description": "Find UI elements by selector (e.g. button[name='Save'], text_field[name='Name'][value='x']) in an app's accessibility tree, optionally waiting up to timeout_ms for one to appear. One line per match with a ref for computer::act; never picks a match for you. A find with matches replaces the previous refs. Native macOS/Windows sessions only.",
+  "description": "Find UI elements by selector (e.g. button[name='Save'], text_field[name='Name'][value='x']) in an app's accessibility tree, optionally waiting up to timeout_ms for one to appear. One line per match with a ref for computer::act; never picks a match for you. A find with matches replaces the previous refs. Native sessions only.",
   "function_id": "computer::find",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "app_name": {
         "default": null,
-        "description": "Exact, case-sensitive app name as the OS reports it (macOS: the app name; Windows: the executable name without .exe, e.g. `notepad`, or the window title when the process cannot be opened). Exclusive with `app_pid` and `root_ref`.",
+        "description": "Exact, case-sensitive app name as the OS reports it (macOS: the app name; Windows: the executable name without .exe, e.g. `notepad`, or the window title when the process cannot be opened; Linux: the app's accessibility name, e.g. `gedit`). Exclusive with `app_pid` and `root_ref`.",
         "type": [
           "string",
           "null"

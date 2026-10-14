@@ -57,7 +57,7 @@ impl Code {
                  worker; check its accessibility permissions, then retry"
             }
             Code::UnsupportedSession => {
-                "act by coordinates, or start a native session on macOS or Windows"
+                "act by coordinates, or start a native session (macOS, Windows or Linux)"
             }
             Code::BackendError => {
                 "retry, or observe with include_image=true and act by coordinates"

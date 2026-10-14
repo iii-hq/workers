@@ -24,8 +24,9 @@ pub struct TreeScope {
     pub app_pid: Option<u32>,
     /// Exact, case-sensitive app name as the OS reports it (macOS: the app
     /// name; Windows: the executable name without .exe, e.g. `notepad`, or the
-    /// window title when the process cannot be opened). Exclusive with
-    /// `app_pid` and `root_ref`.
+    /// window title when the process cannot be opened; Linux: the app's
+    /// accessibility name, e.g. `gedit`). Exclusive with `app_pid` and
+    /// `root_ref`.
     #[serde(default)]
     pub app_name: Option<String>,
     /// A ref from the current snapshot to read beneath (single attempt).
@@ -105,7 +106,7 @@ pub struct ObserveInput {
     #[serde(default)]
     pub include_image: Option<bool>,
     /// Also read an app's accessibility tree as text lines with `[ref=…]`
-    /// handles for computer::act. Native macOS/Windows sessions only.
+    /// handles for computer::act. Native sessions only.
     #[serde(default)]
     pub include_a11y: Option<bool>,
     #[serde(flatten)]

@@ -9,9 +9,10 @@
 //!
 //! macOS needs Accessibility and Screen Recording for the terminal running
 //! it; Windows needs an interactive desktop (hosted windows-latest has one).
+//! Linux runs it through tests/run-linux-live.sh (private Xvfb + D-Bus + AT-SPI).
 //! `COMPUTER_A11Y_FIXTURE_LOG_DIR` picks where the fixture logs go (default:
 //! the temp dir); CI uploads them when the job fails.
-#![cfg(any(target_os = "macos", target_os = "windows"))]
+#![cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 
 use std::path::PathBuf;
 use std::process::{Child, Command};
@@ -411,7 +412,8 @@ async fn the_password_value_never_leaves() {
 /// Click the centre of the fixture window through the coordinate driver,
 /// mapping screen coordinates into the session's (downscaled) image space.
 /// The fixture logs physical pixels; `list_displays` sizes are what `xcap`
-/// reports — physical on Windows (per-monitor-v2), logical points on macOS.
+/// reports — physical on Windows (per-monitor-v2) and Linux, logical points
+/// on macOS.
 async fn click_center(host: &NativeHost, display: &DisplayInfo, win: Win) {
     host.screenshot().await.unwrap();
     let image = host.screen_size().await.unwrap();
@@ -438,6 +440,16 @@ fn mouse_clicks(f: &Fixture) -> Vec<(i64, i64)> {
         .collect()
 }
 
+/// The primary display, or the first when none is primary (Xvfb marks none).
+fn main_display() -> DisplayInfo {
+    let all = computer::driver::native::list_displays().unwrap();
+    all.iter()
+        .find(|d| d.primary)
+        .or(all.first())
+        .cloned()
+        .expect("a display")
+}
+
 /// Smoke test: a coordinate click on the fixture lands, and still lands after
 /// a semantic call in the same process.
 #[tokio::test]
@@ -450,11 +462,7 @@ async fn a_coordinate_click_lands_before_and_after_semantic_use() {
     let window = f.window().unwrap();
     let (ww, wh) = (window.w, window.h);
     let host = NativeHost::new(4096, 80, None);
-    let display = computer::driver::native::list_displays()
-        .unwrap()
-        .into_iter()
-        .find(|d| d.primary)
-        .expect("a primary display");
+    let display = main_display();
     click_center(&host, &display, window).await;
     wait_for("the first click", || mouse_clicks(&f).len() == 1).await;
     let s = session();
