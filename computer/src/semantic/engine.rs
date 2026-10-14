@@ -96,6 +96,12 @@ fn stale(what: impl Into<String>) -> SemanticError {
     SemanticError::new(Code::StaleRef, what)
 }
 
+fn unknown_ref(r: &str) -> SemanticError {
+    stale(format!(
+        "unknown ref {r} (from a replaced snapshot, or never issued)"
+    ))
+}
+
 /// The one running app named exactly `name`. `App::by_name_with` would
 /// silently take the first of several; an ambiguous name is refused instead.
 fn app_named(provider: &dyn Provider, name: &str) -> Result<ElementData, SemanticError> {
@@ -159,11 +165,7 @@ impl Engine {
     ) -> Result<(Arc<dyn Provider>, ElementData), SemanticError> {
         if let Some(r) = &scope.root_ref {
             let snap = self.live()?;
-            let el = snap.refs.get(r).cloned().ok_or_else(|| {
-                stale(format!(
-                    "unknown ref {r} (from a replaced snapshot, or never issued)"
-                ))
-            })?;
+            let el = snap.refs.get(r).cloned().ok_or_else(|| unknown_ref(r))?;
             return Ok((snap.provider.clone(), el));
         }
         let provider = (self.factory)().map_err(|e| map_read_error(&e, false))?;
@@ -217,12 +219,15 @@ impl Engine {
             );
             match &q.selector {
                 None => {
-                    walk.fill(&root).map_err(|e| map_read_error(&e, rooted))?;
+                    walk.fill(&root)
+                        .map_err(|e| map_read_error(&e, rooted && walk.root_vanished()))?;
                     for (depth, el) in walk.preorder(&root) {
                         let r = next_ref();
                         let indent = "  ".repeat(depth.saturating_sub(1) as usize);
-                        out.push(format!("{indent}{}", element_line(Some(&r), &el)));
-                        refs.insert(r, el);
+                        // Only a printed line gets a live ref.
+                        if out.push(format!("{indent}{}", element_line(Some(&r), &el))) {
+                            refs.insert(r, el);
+                        }
                     }
                     matches = refs.len();
                 }
@@ -234,7 +239,7 @@ impl Engine {
                         None,
                         None,
                     )
-                    .map_err(|e| map_read_error(&e, rooted))?;
+                    .map_err(|e| map_read_error(&e, rooted && walk.root_vanished()))?;
                     matches = found.len();
                     for el in found.into_iter().take(MAX_FIND_LINES) {
                         let r = next_ref();
@@ -243,8 +248,9 @@ impl Engine {
                             line.push_str(" ← ");
                             line.push_str(&label(&a));
                         }
-                        out.push(line);
-                        refs.insert(r, el);
+                        if out.push(line) {
+                            refs.insert(r, el);
+                        }
                     }
                     if matches > MAX_FIND_LINES {
                         out.note(format!(
@@ -304,11 +310,7 @@ impl Engine {
         text: Option<&str>,
     ) -> Result<String, SemanticError> {
         let snap = self.live()?;
-        let el = snap.refs.get(r).ok_or_else(|| {
-            stale(format!(
-                "unknown ref {r} (from a replaced snapshot, or never issued)"
-            ))
-        })?;
+        let el = snap.refs.get(r).ok_or_else(|| unknown_ref(r))?;
         if !el.states.enabled {
             return Err(SemanticError::new(
                 Code::NotSupported,
@@ -511,6 +513,60 @@ mod tests {
         );
         // One provider call per act: no retry, no fallback.
         assert_eq!(t.actions().len(), 4, "{:?}", t.actions());
+    }
+
+    #[test]
+    fn only_printed_lines_get_refs() {
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        for i in 0..200 {
+            t.add(w, Role::Button, &format!("{i:03} {}", "x".repeat(400)));
+        }
+        let t = Arc::new(t);
+        let (mut e, _) = engine(&t);
+        let out = e.snapshot(&query(None), deadline(), true).unwrap();
+        assert!(
+            out.text.contains("lines omitted (output cap)"),
+            "the cap must be reached"
+        );
+        let printed = out
+            .text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("[ref="))
+            .count();
+        // `matches` is the ref table's size: one ref per printed line.
+        assert_eq!(out.matches, printed);
+    }
+
+    #[test]
+    fn a_vanished_root_ref_is_stale_but_a_vanished_descendant_is_a_backend_error() {
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        let d = t.add(w, Role::Dialog, "Opções");
+        let g = t.add(d, Role::Group, "Grupo");
+        t.add(g, Role::Button, "OK");
+        let t = Arc::new(t);
+        let (mut e, _) = engine(&t);
+        let out = e.snapshot(&query(None), deadline(), true).unwrap();
+        let mut q = query(None);
+        q.scope.root_ref = Some(ref_of(&out.text, "dialog"));
+        // The group vanishes between the dialog's fetch and its own.
+        let tree = t.clone();
+        let fetches = Arc::new(AtomicU64::new(0));
+        let n = fetches.clone();
+        *t.on_fetch.lock().unwrap() = Some(Box::new(move || {
+            if n.fetch_add(1, Ordering::SeqCst) == 1 {
+                tree.remove(g);
+            }
+        }));
+        let err = e.snapshot(&q, deadline(), true).unwrap_err();
+        *t.on_fetch.lock().unwrap() = None;
+        assert_eq!(err.code, Code::BackendError, "{}", err.message);
+        // The root_ref element itself going away is the caller's stale ref.
+        t.remove(d);
+        let err = e.snapshot(&q, deadline(), true).unwrap_err();
+        assert_eq!(err.code, Code::StaleRef, "{}", err.message);
+        assert!(err.message.contains("root_ref"), "{}", err.message);
     }
 
     #[test]

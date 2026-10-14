@@ -222,6 +222,12 @@ impl Provider for FakeTree {
             std::thread::sleep(Duration::from_millis(5));
         }
         let idx = self.idx(element)?;
+        // A destroyed element can no longer list its children.
+        if self.removed.lock().unwrap().contains(&idx) {
+            return Err(Error::ElementStale {
+                selector: format!("node:{idx}"),
+            });
+        }
         let kids = self.nodes.lock().unwrap()[idx].children.clone();
         Ok(kids.into_iter().map(|k| self.data(k)).collect())
     }

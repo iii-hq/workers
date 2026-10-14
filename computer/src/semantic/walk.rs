@@ -27,6 +27,9 @@ pub struct Walk<'a> {
     visited: Cell<usize>,
     truncated: Cell<bool>,
     depth_cut: Cell<bool>,
+    root: u64,
+    /// The parent whose children could not be listed because it vanished.
+    stale_parent: Cell<Option<u64>>,
 }
 
 impl<'a> Walk<'a> {
@@ -41,6 +44,8 @@ impl<'a> Walk<'a> {
             visited: Cell::new(0),
             truncated: Cell::new(false),
             depth_cut: Cell::new(false),
+            root: root.handle,
+            stale_parent: Cell::new(None),
         };
         walk.depth.borrow_mut().insert(root.handle, 0);
         walk.nodes.borrow_mut().insert(root.handle, root.clone());
@@ -69,7 +74,15 @@ impl<'a> Walk<'a> {
             self.truncated.set(true);
             return Ok(Vec::new());
         }
-        let mut kids = self.provider.get_children(Some(parent))?;
+        let mut kids = match self.provider.get_children(Some(parent)) {
+            Ok(kids) => kids,
+            Err(e) => {
+                if matches!(e, xa11y_core::Error::ElementStale { .. }) {
+                    self.stale_parent.set(Some(parent.handle));
+                }
+                return Err(e);
+            }
+        };
         let room = self.budget.max_nodes - self.visited.get();
         if kids.len() > room {
             kids.truncate(room);
@@ -154,6 +167,11 @@ impl<'a> Walk<'a> {
     /// because of the depth limit. Not a truncation.
     pub fn depth_cut(&self) -> bool {
         self.depth_cut.get()
+    }
+
+    /// The walk failed because its own root vanished, not a descendant.
+    pub fn root_vanished(&self) -> bool {
+        self.stale_parent.get() == Some(self.root)
     }
 }
 

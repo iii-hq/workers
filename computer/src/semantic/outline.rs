@@ -94,13 +94,16 @@ impl Default for Outline {
 }
 
 impl Outline {
-    pub fn push(&mut self, line: String) {
+    /// Adds an element line unless the byte cap was reached; `false` means
+    /// the line was dropped (and counted in the omitted note).
+    pub fn push(&mut self, line: String) -> bool {
         if self.omitted > 0 || self.bytes + line.len() + 1 > MAX_BYTES {
             self.omitted += 1;
-            return;
+            return false;
         }
         self.bytes += line.len() + 1;
         self.lines.push(line);
+        true
     }
 
     pub fn note(&mut self, note: String) {
