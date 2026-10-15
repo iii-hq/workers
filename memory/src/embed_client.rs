@@ -150,8 +150,10 @@ where
 /// and its providers finish their own boot), then every minute. Event
 /// passes (save, edit, extraction) are the fast path; the sweep is what
 /// finishes work they leave behind — a failed embed in a bank that then
-/// goes quiet, a provider up late, the per-pass cap, an `embedding_model`
-/// change, a reload. Idle, it is one RAM scan per bank and no router call.
+/// goes quiet, a provider up late, the per-pass cap, a newly pinned
+/// `embedding_model`, a reload. With nothing pending it is one RAM scan per
+/// bank and no router call; with no embed provider installed, one
+/// fast-failing `router::embed` per bank per minute.
 pub fn backfill_all(deps: Arc<Deps>) {
     tokio::spawn(async move {
         let mut wait = std::time::Duration::from_secs(20);
