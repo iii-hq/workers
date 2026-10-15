@@ -53,8 +53,8 @@ The current required frontmatter validation stays in place; the body — the
 system prompt — may be empty. Unknown frontmatter keys remain harmless, so fields that iii does not
 consume do not prevent a profile from loading. The keys iii consumes are
 `name`, `description`, `logo`, `skills`, `functions`, `model`,
-`reasoning_effort`, `icon`, `color`, `extends`, `hidden` and
-`composer_placeholder`.
+`reasoning_effort`, `icon`, `color`, `extends`, `hidden`,
+`composer_placeholder` and `skills_index`.
 
 ## Origins and kits
 

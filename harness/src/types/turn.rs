@@ -140,7 +140,8 @@ pub struct TurnOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills_prompt: Option<String>,
     /// Names-and-descriptions-only skill context for new-format sessions.
-    /// Absence identifies a durable legacy session.
+    /// Absence identifies a durable legacy session, or one started as a
+    /// profile with `skills_index: false` (no index).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_context: Option<SkillContext>,
     pub max_turns: u32,

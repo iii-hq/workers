@@ -749,7 +749,8 @@ async fn seed_child(
             .await?;
     }
     // A profile's skills are PRELOADED into its prompt (agents.rs), never a
-    // filter: only an explicit `options.skills` narrows the child's index.
+    // filter: only an explicit `options.skills` narrows the child's index, and
+    // a profile with `skills_index: false` drops it.
     let requested_skills = req
         .options
         .as_ref()
@@ -765,6 +766,7 @@ async fn seed_child(
         &mut options,
         child_skill_previous(reused, previous_child.as_ref()),
         requested_skills,
+        agent.as_ref().is_none_or(|profile| profile.skills_index),
     )
     .await?;
 
@@ -2021,6 +2023,7 @@ mod tests {
             functions: Vec::new(),
             model: None,
             reasoning_effort: None,
+            skills_index: true,
             name: name.to_string(),
             contract_digests: Default::default(),
             icon,

@@ -343,7 +343,11 @@ frozen into a `<preloaded_skills>` block of `<skill id="…">` sections
 appended to the prompt (ids the directory cannot serve are named as
 unavailable), so the skill is in context on the first step; the session's
 skills index is never narrowed by a profile — only an explicit
-`options.skills` does that. Its
+`options.skills` does that. A profile with `skills_index: false` (inherited
+through `extends`) starts its sessions, and children running as it, with no
+skills index at all; such a session ignores `options.skills` on its opening
+send and refuses it later. Its preloaded skills still render, and
+`directory::skills::get` stays callable when the policy allows it. Its
 `model` and optional provider-native `reasoning_effort` are authoritative for
 the session, and — when the send also omits
 `options.functions` — the dispatch policy defaults to the configured

@@ -438,7 +438,8 @@ async fn start_with_delivery_lock(
         None => None,
     };
     // A profile's skills are PRELOADED into its prompt (agents.rs), never a
-    // filter: only an explicit `options.skills` narrows the skills index.
+    // filter: only an explicit `options.skills` narrows the skills index, and
+    // a profile with `skills_index: false` drops it.
     prepare_skill_context(
         deps,
         &mut options,
@@ -446,6 +447,7 @@ async fn start_with_delivery_lock(
         req.options
             .as_ref()
             .and_then(|options| options.skills.as_deref()),
+        agent.as_ref().is_none_or(|profile| profile.skills_index),
     )
     .await?;
 
@@ -1315,18 +1317,27 @@ fn send_functions<'a>(
         })
 }
 
+/// Refusal for a `skills` change on a session that has no skill context: a
+/// legacy session, or one started as a profile with `skills_index: false`.
+const NO_SKILL_CONTEXT: &str =
+    "cannot change `skills` on a legacy session or one whose agent profile \
+     sets `skills_index: false`; start a new session to use the names-only skill index";
+
 fn select_skill_context(
     previous: Option<&TurnOptions>,
     requested: Option<&[String]>,
     view: &crate::skills::EffectiveView,
+    index: bool,
 ) -> Result<Option<SkillContext>, HarnessError> {
     match previous.and_then(|options| options.skill_context.as_ref()) {
         Some(previous) => Ok(Some(crate::skills::next_context(previous, requested))),
-        None if previous.is_some() && requested.is_some() => Err(HarnessError::InvalidRequest(
-            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                .into(),
-        )),
+        None if previous.is_some() && requested.is_some() => {
+            Err(HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into()))
+        }
         None if previous.is_some() => Ok(None),
+        // A `skills_index: false` profile starts with no index; the profile
+        // beats an explicit `options.skills` on the opening send.
+        None if !index => Ok(None),
         None => Ok(Some(crate::skills::new_context(requested, view))),
     }
 }
@@ -1371,18 +1382,14 @@ fn merge_explicit_skill_filter(
     if !explicit {
         return Ok(false);
     }
-    let requested = requested.skill_context.as_ref().ok_or_else(|| {
-        HarnessError::InvalidRequest(
-            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                .into(),
-        )
-    })?;
-    let active = active.skill_context.as_mut().ok_or_else(|| {
-        HarnessError::InvalidRequest(
-            "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                .into(),
-        )
-    })?;
+    let requested = requested
+        .skill_context
+        .as_ref()
+        .ok_or_else(|| HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into()))?;
+    let active = active
+        .skill_context
+        .as_mut()
+        .ok_or_else(|| HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into()))?;
     if active.filter == requested.filter {
         return Ok(false);
     }
@@ -1395,12 +1402,13 @@ pub(crate) async fn prepare_skill_context(
     options: &mut TurnOptions,
     previous: Option<&TurnOptions>,
     requested: Option<&[String]>,
+    index: bool,
 ) -> Result<(), HarnessError> {
     let functions = deps.functions().await;
     let skills = deps.skills().await;
     let policy = policy::CompiledPolicy::from(options.functions.as_ref());
     let view = crate::skills::effective_view(&skills, requested, &policy, &functions.functions);
-    options.skill_context = select_skill_context(previous, requested, &view)?;
+    options.skill_context = select_skill_context(previous, requested, &view, index)?;
     if options.skill_context.is_none() {
         options.skills_prompt = previous.and_then(|options| options.skills_prompt.clone());
     } else {
@@ -1621,12 +1629,7 @@ fn rebase_terminal_skill_options(
         return Ok(());
     };
     if skills_explicit {
-        let invalid_legacy_change = || {
-            HarnessError::InvalidRequest(
-                "cannot change `skills` on a legacy session; start a new session to use the names-only skill index"
-                    .into(),
-            )
-        };
+        let invalid_legacy_change = || HarnessError::InvalidRequest(NO_SKILL_CONTEXT.into());
         let filter = options
             .skill_context
             .as_ref()
@@ -2911,7 +2914,9 @@ mod tests {
     #[test]
     fn skill_context_is_new_for_fresh_sessions_inherited_when_omitted_and_rejects_legacy_changes() {
         let view = crate::skills::EffectiveView::Removed { generation: 1 };
-        let fresh = select_skill_context(None, None, &view).unwrap().unwrap();
+        let fresh = select_skill_context(None, None, &view, true)
+            .unwrap()
+            .unwrap();
         assert_eq!(fresh.filter, None);
 
         let mut previous = options_with(None);
@@ -2921,11 +2926,11 @@ mod tests {
             baseline_ref: None,
         });
         assert_eq!(
-            select_skill_context(Some(&previous), None, &view).unwrap(),
+            select_skill_context(Some(&previous), None, &view, true).unwrap(),
             previous.skill_context
         );
         assert_eq!(
-            select_skill_context(Some(&previous), Some(&[]), &view)
+            select_skill_context(Some(&previous), Some(&[]), &view, true)
                 .unwrap()
                 .unwrap()
                 .filter,
@@ -2935,13 +2940,40 @@ mod tests {
         previous.skill_context = None;
         previous.skills_prompt = Some("legacy body attribution".into());
         assert_eq!(
-            select_skill_context(Some(&previous), None, &view).unwrap(),
+            select_skill_context(Some(&previous), None, &view, true).unwrap(),
             None
         );
         let error =
-            select_skill_context(Some(&previous), Some(&["one".into()]), &view).unwrap_err();
+            select_skill_context(Some(&previous), Some(&["one".into()]), &view, true).unwrap_err();
         assert_eq!(error.code(), "harness/invalid_request");
         assert!(error.to_string().contains("start a new session"));
+    }
+
+    /// `skills_index: false` on the session's profile: a new session gets no
+    /// skill context (so no index), even with an explicit `options.skills`;
+    /// a reused session keeps the context it already has.
+    #[test]
+    fn skills_index_off_seeds_no_skill_context() {
+        let view = crate::skills::EffectiveView::Removed { generation: 1 };
+        assert_eq!(
+            select_skill_context(None, None, &view, false).unwrap(),
+            None
+        );
+        assert_eq!(
+            select_skill_context(None, Some(&["x".into()]), &view, false).unwrap(),
+            None
+        );
+        let mut previous = options_with(None);
+        previous.skill_context = Some(crate::types::turn::SkillContext {
+            filter: None,
+            baseline: Some("frozen".into()),
+            baseline_ref: None,
+        });
+        assert_eq!(
+            select_skill_context(Some(&previous), None, &view, false).unwrap(),
+            previous.skill_context,
+            "a reused session keeps its own context"
+        );
     }
 
     #[test]
@@ -3212,6 +3244,7 @@ mod tests {
             model: model.map(str::to_string),
             contract_digests: Default::default(),
             reasoning_effort: None,
+            skills_index: true,
             name: "Tech Leader".into(),
             icon: None,
             color: None,
