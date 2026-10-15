@@ -198,8 +198,9 @@ export function attachOrder(tickets: TicketSummary[], reasons: Map<string, strin
 
 /* ── subtasks of a ticket ────────────────────────────────────────────── */
 
-export const openChildren = (children: Brief[], doneStatus: string): Brief[] =>
-  children.filter((child) => !child.deleted_at && child.status !== doneStatus)
+/** Live children that are neither done nor canceled. */
+export const openChildren = (children: Brief[], doneStatus: string, canceledStatus: string | null): Brief[] =>
+  children.filter((child) => !child.deleted_at && child.status !== doneStatus && child.status !== canceledStatus)
 
 export function progressPercent(progress: { done: number; total: number }): number {
   return progress.total > 0 ? Math.min(100, Math.round((progress.done / progress.total) * 100)) : 0
@@ -215,10 +216,11 @@ export function columnBefore(columns: Column[], id: string): Column | null {
 export function doneWarning(
   ticket: Pick<Ticket, 'status' | 'children' | 'deleted_at'>,
   doneStatus: string,
+  canceledStatus: string | null,
   columns: Column[],
 ): { open: Brief[]; back: Column | null } | null {
   if (ticket.deleted_at || ticket.status !== doneStatus) return null
-  const open = openChildren(ticket.children, doneStatus)
+  const open = openChildren(ticket.children, doneStatus, canceledStatus)
   return open.length > 0 ? { open, back: columnBefore(columns, doneStatus) } : null
 }
 

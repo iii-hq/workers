@@ -19,6 +19,7 @@ fn context() -> BoardContext {
         prefix: "KAN".into(),
         default_status: "backlog".into(),
         done_status: "in_progress".into(),
+        canceled_status: None,
         columns: config().columns,
         priorities: config().priorities,
     }

@@ -120,7 +120,14 @@ function excerpt(text: string, limit = 140): string {
  * What a card needs from the board and cannot carry itself: the names of every project and release, the column
  * labels and the priority order. Read once and kept briefly: a chat can hold dozens of cards.
  */
-type Lookup = { projects: Map<string, string>; releases: Map<string, string>; columns: Column[]; priorities: string[] }
+type Lookup = {
+  projects: Map<string, string>
+  releases: Map<string, string>
+  columns: Column[]
+  doneStatus: string
+  canceledStatus: string | null
+  priorities: string[]
+}
 let lookupCache: { at: number; lookup: Promise<Lookup> } | null = null
 
 const FRESH_MS = 30_000
@@ -138,6 +145,8 @@ function boardLookup(host: Host, refresh = false): Promise<Lookup> {
     projects: new Map(projects.projects.map((project) => [project.id, project.name])),
     releases: new Map(releases.releases.map((release) => [release.id, release.name])),
     columns: config?.columns ?? [],
+    doneStatus: config?.done_status ?? '',
+    canceledStatus: config?.canceled_status ?? null,
     priorities: config?.priorities ?? [],
   }))
   lookupCache = { at: Date.now(), lookup }
@@ -180,9 +189,9 @@ const columnLabel = (columns: Column[], status: string) =>
   columns.find((column) => column.id === status)?.label ?? titleCase(status)
 
 /** The dot of a status badge, by the column's place on the board (the same reading as its glyph). */
-function statusTone(columns: Column[], status: string): 'ink' | 'ghost' | 'ok' {
-  if (columns.length === 0) return 'ghost'
-  const { tone } = statusGlyph(columns, status)
+function statusTone(lookup: Lookup | undefined | null, status: string): 'ink' | 'ghost' | 'ok' {
+  if (!lookup || lookup.columns.length === 0) return 'ghost'
+  const { tone } = statusGlyph(lookup.columns, status, lookup.doneStatus, lookup.canceledStatus)
   return tone === 'ok' ? 'ok' : tone === 'ghost' || tone === 'faint' ? 'ghost' : 'ink'
 }
 
@@ -250,7 +259,7 @@ function TicketCard({
               Deleted
             </Badge>
           ) : (
-            <StatusBadge tone={statusTone(columns, ticket.status)}>{columnLabel(columns, ticket.status)}</StatusBadge>
+            <StatusBadge tone={statusTone(lookup, ticket.status)}>{columnLabel(columns, ticket.status)}</StatusBadge>
           )}
           <PriorityChip priorities={lookup?.priorities ?? []} priority={ticket.priority} />
         </span>

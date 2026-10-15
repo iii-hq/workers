@@ -19,6 +19,8 @@ config:
   data_path: data/kanban
   id_prefix: KAN
   default_status: backlog
+  done_status: done
+  canceled_status: canceled
   columns:
     - id: backlog
       label: Backlog
@@ -30,6 +32,8 @@ config:
       label: In review
     - id: done
       label: Done
+    - id: canceled
+      label: Canceled
   priorities: [low, medium, high, urgent]
   agents_path: agents
 

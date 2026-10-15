@@ -1,6 +1,7 @@
 // Self-check for src/plan-rules.ts: `node plan.check.ts` (Node 24 strips types).
 import assert from 'node:assert/strict'
 import {
+  allClosed,
   byProgress,
   columnSummary,
   compareReleases,
@@ -14,9 +15,11 @@ import {
   isNextByDate,
   labelCounts,
   labelFamily,
+  liveCount,
   nameList,
   naturalCompare,
   nextRelease,
+  notDone,
   relativeDay,
   releaseStatusText,
   resolveEntity,
@@ -270,5 +273,14 @@ assert.equal(
   'any ticket',
   'blank and non-string filters are no filter',
 )
+
+// canceled tickets: out of `total`, so not open; still live, so still counted for a delete
+assert.equal(allClosed({ total: 3, done: 2, canceled: 1 }), true, 'done or canceled, one done at least')
+assert.equal(allClosed({ total: 2, done: 0, canceled: 2 }), false, 'only canceled tickets is not a release')
+assert.equal(allClosed({ total: 3, done: 2, canceled: 0 }), false)
+assert.equal(allClosed({ total: 0, done: 0, canceled: 0 }), false, 'an empty label releases nothing')
+assert.equal(liveCount({ counts: { todo: 1, done: 2, canceled: 3 } }), 6)
+assert.equal(liveCount({ counts: {} }), 0)
+assert.equal(notDone({ total: 3, done: 2 }), 1)
 
 console.log('plan: ok')

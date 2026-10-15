@@ -99,7 +99,8 @@ counts).
 - **Progress counts only the done column.** `kanban::ticket::get` on a parent
   returns `children` (live ones) and `progress: { done, total }`; `done` is the
   children sitting in `done_status`, so a child in `in_review` is not done.
-  Deleted children are not counted. A deleted parent leaves its children; their
+  Deleted children are not counted, and neither are canceled ones (in
+  `canceled_status`): move a ticket that will not be done to that column. A deleted parent leaves its children; their
   `parent` brief then has `deleted_at`.
 - **Attaching writes on both tickets.** Setting or clearing `parent` adds an
   activity line to the child and to the parent, and both fire `kanban:change`.

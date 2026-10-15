@@ -266,13 +266,19 @@ type GridProps = CommonProps & {
   /** The count under a column heading ("3 of 10" under a filter). */
   columnCount: (column: BoardColumn) => string
   onAddInColumn: (column: BoardColumn) => void
+  /** For the column glyphs. */
+  doneStatus: string
+  canceledStatus: string | null
 }
 
 const LaneRows = memo(function LaneRows({
   lane,
   nested,
   ...p
-}: Omit<GridProps, 'lanes' | 'columnCount' | 'onAddInColumn'> & { lane: Swimlane; nested?: boolean }) {
+}: Omit<GridProps, 'lanes' | 'columnCount' | 'onAddInColumn' | 'doneStatus' | 'canceledStatus'> & {
+  lane: Swimlane
+  nested?: boolean
+}) {
   const isCollapsed = p.collapsed(lane)
   const reason = p.refuseFor(lane)
   const refuse = refusal(reason, isCollapsed, p.drag !== null)
@@ -320,13 +326,18 @@ const LaneRows = memo(function LaneRows({
   )
 })
 
-export function SwimlaneGrid({ lanes, columnCount, onAddInColumn, ...p }: GridProps) {
+export function SwimlaneGrid({ lanes, columnCount, onAddInColumn, doneStatus, canceledStatus, ...p }: GridProps) {
   return (
     <div className="kanban-swimlanes" style={{ '--kanban-cols': p.columns.length } as CSSProperties}>
       <div className="kanban-swim kanban-swim__cols">
         {p.columns.map((column) => (
           <div className="kanban-swim__col" key={column.id}>
-            <StatusGlyph columns={p.columns} status={column.id} />
+            <StatusGlyph
+              canceledStatus={canceledStatus}
+              columns={p.columns}
+              doneStatus={doneStatus}
+              status={column.id}
+            />
             <span className="kanban-lane__title">{column.label}</span>
             <span className="kanban-lane__count">{columnCount(column)}</span>
             <IconButton

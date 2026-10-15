@@ -107,7 +107,8 @@ fn tally<'a>(
         .collect();
     let (mut total, mut done) = (0, 0);
     for ticket in tickets {
-        total += 1;
+        // A canceled ticket stays in its column count but leaves the total.
+        total += u64::from(!context.is_canceled(&ticket.status));
         done += u64::from(ticket.status == context.done_status);
         *counts.entry(ticket.status.clone()).or_default() += 1;
     }
@@ -157,7 +158,7 @@ pub fn release_view(board: &Board, release: &Release, context: &BoardContext) ->
     let mut per_project: HashMap<Option<&str>, (u64, u64)> = HashMap::new();
     for ticket in &members {
         let entry = per_project.entry(ticket.project_id.as_deref()).or_default();
-        entry.0 += 1;
+        entry.0 += u64::from(!context.is_canceled(&ticket.status));
         entry.1 += u64::from(ticket.status == context.done_status);
     }
     let name_of = |id: Option<&str>| {
@@ -582,7 +583,9 @@ pub fn ship_release(
         return Err(format!("release {name} is already released"));
     }
     let mut open: Vec<String> = live(board, |ticket| {
-        ticket.release_id.as_deref() == Some(id.as_str()) && ticket.status != context.done_status
+        ticket.release_id.as_deref() == Some(id.as_str())
+            && ticket.status != context.done_status
+            && !context.is_canceled(&ticket.status)
     })
     .map(|ticket| ticket.id.clone())
     .collect();
@@ -996,10 +999,13 @@ pub fn apply_convert(
             ticket.release_id.as_deref() == Some(entity_id.as_str())
         })
         .collect();
-        let all_done = !members.is_empty()
-            && members
-                .iter()
-                .all(|ticket| ticket.status == context.done_status);
+        // Done means every member is done or canceled, and at least one is done.
+        let all_done = members
+            .iter()
+            .any(|ticket| ticket.status == context.done_status)
+            && members.iter().all(|ticket| {
+                ticket.status == context.done_status || context.is_canceled(&ticket.status)
+            });
         // The date the work finished, not the moment of the conversion.
         let finished = members
             .iter()

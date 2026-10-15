@@ -9,6 +9,7 @@ import {
   groupSubtaskAdds,
   keyNumber,
   laneName,
+  openChildren,
   parentBlockedReason,
   parentFacet,
   parentOffer,
@@ -195,25 +196,46 @@ const kids = [
   brief('KAN-141', 'in_review'),
   brief('KAN-5', 'backlog', { deleted_at: 'x' }),
 ]
-const warn = doneWarning({ status: 'done', children: kids, deleted_at: null }, 'done', columns)
+const warn = doneWarning({ status: 'done', children: kids, deleted_at: null }, 'done', null, columns)
 assert.deepEqual(
   warn?.open.map((c) => c.key),
   ['KAN-138', 'KAN-141'],
   'in review is not done; deleted is not counted',
 )
 assert.equal(warn?.back?.label, 'In review')
-assert.equal(doneWarning({ status: 'in_review', children: kids, deleted_at: null }, 'done', columns), null)
+assert.equal(doneWarning({ status: 'in_review', children: kids, deleted_at: null }, 'done', null, columns), null)
 assert.equal(
-  doneWarning({ status: 'done', children: [brief('KAN-1', 'done')], deleted_at: null }, 'done', columns),
+  doneWarning({ status: 'done', children: [brief('KAN-1', 'done')], deleted_at: null }, 'done', null, columns),
   null,
 )
-assert.equal(doneWarning({ status: 'done', children: kids, deleted_at: 'x' }, 'done', columns), null)
+assert.equal(doneWarning({ status: 'done', children: kids, deleted_at: 'x' }, 'done', null, columns), null)
 assert.equal(
-  doneWarning({ status: 'backlog', children: kids, deleted_at: null }, 'backlog', columns)?.back,
+  doneWarning({ status: 'backlog', children: kids, deleted_at: null }, 'backlog', null, columns)?.back,
   null,
   'nothing before the first column',
 )
 assert.equal(columnBefore(columns, 'backlog'), null)
+// a canceled subtask is closed: it neither keeps the parent's warning nor counts as open
+const dropped = [brief('KAN-128', 'done'), brief('KAN-150', 'canceled'), brief('KAN-151', 'canceled')]
+assert.equal(
+  doneWarning({ status: 'done', children: dropped, deleted_at: null }, 'done', 'canceled', columns),
+  null,
+  'done and canceled subtasks leave nothing open',
+)
+assert.deepEqual(
+  doneWarning(
+    { status: 'done', children: [...kids, ...dropped], deleted_at: null },
+    'done',
+    'canceled',
+    columns,
+  )?.open.map((c) => c.key),
+  ['KAN-138', 'KAN-141'],
+)
+assert.deepEqual(
+  openChildren(dropped, 'done', null).map((c) => c.key),
+  ['KAN-150', 'KAN-151'],
+  'without a canceled column, a column named canceled is just another open one',
+)
 assert.equal(columnBefore(columns, 'nope'), null)
 assert.deepEqual(progressPercent({ done: 2, total: 12 }), 17)
 assert.deepEqual(progressPercent({ done: 0, total: 0 }), 0)

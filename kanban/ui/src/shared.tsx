@@ -1,6 +1,7 @@
 import { Chip, type ExtensionIii } from '@iii-dev/console-ui'
-import { ChartPie, Circle, CircleCheck, CircleDashed, Contrast } from 'lucide-react'
+import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon } from 'lucide-react'
 import { useSyncExternalStore } from 'react'
+import { type StatusStep, statusStep } from './board-state'
 
 export type Column = { id: string; label: string }
 
@@ -36,6 +37,8 @@ export type BoardData = {
   updated_at: string
   /** The column that counts as done for progress, releases and subtasks. */
   done_status: string
+  /** The column that counts as canceled: out of progress and release totals. Null when the board has none. */
+  canceled_status: string | null
   projects: ProjectView[]
   releases: ReleaseView[]
 }
@@ -170,6 +173,7 @@ export type ConfigInfo = {
   id_prefix: string
   default_status: string
   done_status: string
+  canceled_status: string | null
   columns: Column[]
   priorities: string[]
   agents_path_resolved: string
@@ -358,24 +362,35 @@ export function priorityLabel(priority: string): string {
 export type StatusTone = 'ghost' | 'faint' | 'ink' | 'warn' | 'ok'
 
 /**
- * The glyph for a column, by its position, since columns are configurable:
- * first = not started (dashed), last = done (check, ok), the one before last
- * on boards of 4+ = review (pie, warn), second on 4+ = ready (circle), the
- * rest = in progress (half, ink — accent is reserved for live state).
+ * The glyph per step (`statusStep`): start (dashed), ready (circle), in progress (half, ink — accent is reserved
+ * for live state), review (pie, warn), done (check, ok), canceled (cross, ghost).
  */
-export function statusGlyph(columns: Column[], status: string) {
-  const i = columns.findIndex((column) => column.id === status)
-  const n = columns.length
-  if (i < 0) return { Icon: Circle, tone: 'ghost' as StatusTone }
-  if (i === 0) return { Icon: CircleDashed, tone: 'ghost' as StatusTone }
-  if (i === n - 1) return { Icon: CircleCheck, tone: 'ok' as StatusTone }
-  if (n >= 4 && i === n - 2) return { Icon: ChartPie, tone: 'warn' as StatusTone }
-  if (n >= 4 && i === 1) return { Icon: Circle, tone: 'faint' as StatusTone }
-  return { Icon: Contrast, tone: 'ink' as StatusTone }
+const STEP_GLYPH: Record<StatusStep, { Icon: LucideIcon; tone: StatusTone }> = {
+  unknown: { Icon: Circle, tone: 'ghost' },
+  start: { Icon: CircleDashed, tone: 'ghost' },
+  ready: { Icon: Circle, tone: 'faint' },
+  progress: { Icon: Contrast, tone: 'ink' },
+  review: { Icon: ChartPie, tone: 'warn' },
+  done: { Icon: CircleCheck, tone: 'ok' },
+  canceled: { Icon: CircleX, tone: 'ghost' },
 }
 
-export function StatusGlyph({ columns, status }: { columns: Column[]; status: string }) {
-  const { Icon, tone } = statusGlyph(columns, status)
+export function statusGlyph(columns: Column[], status: string, doneStatus: string, canceledStatus: string | null) {
+  return STEP_GLYPH[statusStep(columns, status, doneStatus, canceledStatus)]
+}
+
+export function StatusGlyph({
+  columns,
+  status,
+  doneStatus,
+  canceledStatus,
+}: {
+  columns: Column[]
+  status: string
+  doneStatus: string
+  canceledStatus: string | null
+}) {
+  const { Icon, tone } = statusGlyph(columns, status, doneStatus, canceledStatus)
   return (
     <span aria-hidden="true" className="kanban-status-glyph" data-tone={tone}>
       <Icon size={16} />

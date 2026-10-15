@@ -385,6 +385,8 @@ type TicketScreenProps = {
   agents: AgentProfile[]
   /** The column that counts as done, when the caller already knows it; the board read overrides it. */
   doneStatus?: string
+  /** The same for the canceled column (null = the board has none). */
+  canceledStatus?: string | null
   onBack?: () => void
   /** Where a linked ticket opens when the host has no panes (`host.panels`). */
   onOpenTicket?: (key: string) => void
@@ -401,6 +403,7 @@ export function TicketScreen({
   priorities,
   agents,
   doneStatus: knownDoneStatus,
+  canceledStatus: knownCanceledStatus,
   onBack,
   onOpenTicket,
   onRequestClose,
@@ -480,6 +483,7 @@ export function TicketScreen({
   const boardTickets = useMemo(() => (board ? board.columns.flatMap((column) => column.tickets) : null), [board])
   const boardLabels = useMemo(() => allLabels(boardTickets ?? []), [boardTickets])
   const doneStatus = board?.done_status || knownDoneStatus || columns[columns.length - 1]?.id || ''
+  const canceledStatus = (board ? board.canceled_status : knownCanceledStatus) ?? null
 
   // A subtask shows its parent's numbers and its siblings: the parent as the worker returns it.
   const parentId = ticket?.parent_id ?? null
@@ -1012,7 +1016,9 @@ export function TicketScreen({
             <div className="kanban-record__strip">
               <ParentStrip
                 canOpen={canOpenTicket}
+                canceledStatus={canceledStatus}
                 columns={columns}
+                doneStatus={doneStatus}
                 onOpen={openTicket}
                 parent={parentBrief}
                 parentView={parentView?.id === ticket.parent_id ? parentView : null}
@@ -1025,7 +1031,16 @@ export function TicketScreen({
               <div className="kanban-record__eyebrow">
                 <span className="kanban-mono">{ticket.key}</span>
                 <Badge className="kanban-status-badge" variant={deleted ? 'alert' : 'default'}>
-                  {deleted ? <StatusDot tone="alert" /> : <StatusGlyph columns={columns} status={ticket.status} />}
+                  {deleted ? (
+                    <StatusDot tone="alert" />
+                  ) : (
+                    <StatusGlyph
+                      canceledStatus={canceledStatus}
+                      columns={columns}
+                      doneStatus={doneStatus}
+                      status={ticket.status}
+                    />
+                  )}
                   {deleted ? 'Deleted' : statusLabel(columns, ticket.status)}
                 </Badge>
                 <PriorityChip priorities={priorities} priority={ticket.priority} />
@@ -1092,6 +1107,7 @@ export function TicketScreen({
               </div>
               <DoneWarning
                 busy={busy}
+                canceledStatus={canceledStatus}
                 columns={columns}
                 doneStatus={doneStatus}
                 host={host}
@@ -1396,6 +1412,7 @@ export function TicketScreen({
                   agents={agents}
                   busy={busy}
                   canOpen={canOpenTicket}
+                  canceledStatus={canceledStatus}
                   columns={columns}
                   deleted={deleted}
                   doneStatus={doneStatus}
@@ -1432,7 +1449,12 @@ export function TicketScreen({
                           onClick={() => openTicket(linked.key)}
                           type="button"
                         >
-                          <StatusGlyph columns={columns} status={linked.status} />
+                          <StatusGlyph
+                            canceledStatus={canceledStatus}
+                            columns={columns}
+                            doneStatus={doneStatus}
+                            status={linked.status}
+                          />
                           <span className="kanban-mono">{linked.key}</span>
                           <span className="kanban-link-row__title">{linked.title}</span>
                           <span className="kanban-link-row__meta">
@@ -1609,6 +1631,7 @@ export function TicketPage({
   const [columns, setColumns] = useState<Column[]>([])
   const [priorities, setPriorities] = useState<string[]>([])
   const [doneStatus, setDoneStatus] = useState('')
+  const [canceledStatus, setCanceledStatus] = useState<string | null>(null)
   const [agents, setAgents] = useState<AgentProfile[]>([])
   const { props: shell } = useShell()
 
@@ -1625,6 +1648,7 @@ export function TicketPage({
         setColumns(info.columns ?? [])
         setPriorities(info.priorities ?? [])
         setDoneStatus(info.done_status ?? '')
+        setCanceledStatus(info.canceled_status ?? null)
       })
       .catch(() => undefined)
     void api
@@ -1666,6 +1690,7 @@ export function TicketPage({
     <TicketScreen
       agents={agents}
       columns={columns}
+      canceledStatus={canceledStatus}
       commands={commands}
       doneStatus={doneStatus}
       host={host}

@@ -65,6 +65,7 @@ export type TicketListProps = {
   projects: ProjectView[] // the board's, archived ones included
   releases: ReleaseView[] // the board's, in target order
   doneStatus: string // the column that counts as done: subtask progress reads it
+  canceledStatus: string | null // the column that counts as canceled, out of subtask totals; null = none
   subtasks?: Map<string, { done: number; total: number }> // board-wide progress per parent; absent = counted from `tickets`
   highlightLabels: string[] // the active label filter: those chips go first and look selected
   ctx: MatchContext
@@ -159,6 +160,7 @@ export function TicketList({
   projects,
   releases,
   doneStatus,
+  canceledStatus,
   subtasks,
   highlightLabels,
   ctx,
@@ -209,7 +211,10 @@ export function TicketList({
     [known],
   )
   // The board's count when it gives one: a filtered view would otherwise show "1/1" for a parent that has 4 subtasks.
-  const progress = useMemo(() => subtasks ?? subtaskStats(tickets, doneStatus), [subtasks, tickets, doneStatus])
+  const progress = useMemo(
+    () => subtasks ?? subtaskStats(tickets, doneStatus, canceledStatus),
+    [subtasks, tickets, doneStatus, canceledStatus],
+  )
   const releaseNames = useMemo(() => new Map(releases.map((release) => [release.id, release.name])), [releases])
   const projectNames = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects])
 
@@ -440,7 +445,9 @@ export function TicketList({
         <BulkBar
           agents={agents}
           busy={busy}
+          canceledStatus={canceledStatus}
           columns={columns}
+          doneStatus={doneStatus}
           known={known}
           labels={labels}
           narrow={narrow}
@@ -499,7 +506,12 @@ export function TicketList({
               <ListGroup key={column.id}>
                 <ListGroupLabel id={`${groupId}-${index}`}>
                   <div className="kanban-list__box">
-                    <StatusGlyph columns={columns} status={column.id} />
+                    <StatusGlyph
+                      canceledStatus={canceledStatus}
+                      columns={columns}
+                      doneStatus={doneStatus}
+                      status={column.id}
+                    />
                     <span>{column.label}</span>
                     <span className="kanban-list__count">{rows.length}</span>
                   </div>
@@ -573,7 +585,12 @@ export function TicketList({
                   <TableRow>
                     <TableHead className="kanban-list__group" colSpan={COLUMN_COUNT} scope="rowgroup">
                       <div className="kanban-list__box">
-                        <StatusGlyph columns={columns} status={column.id} />
+                        <StatusGlyph
+                          canceledStatus={canceledStatus}
+                          columns={columns}
+                          doneStatus={doneStatus}
+                          status={column.id}
+                        />
                         <span>{column.label}</span>
                         <span className="kanban-list__count">{rows.length}</span>
                       </div>
@@ -623,7 +640,12 @@ export function TicketList({
                         </TableCell>
                         <TableCell className="kanban-list__cell">
                           <div className="kanban-list__box">
-                            <StatusGlyph columns={columns} status={ticket.status} />
+                            <StatusGlyph
+                              canceledStatus={canceledStatus}
+                              columns={columns}
+                              doneStatus={doneStatus}
+                              status={ticket.status}
+                            />
                             <span className="kanban-list__text">{statusLabel(columns, ticket.status)}</span>
                           </div>
                         </TableCell>
@@ -677,6 +699,8 @@ type BulkBarProps = {
   /** Every ticket shown: where assignees and priorities without a profile or config come from. */
   tickets: TicketSummary[]
   columns: Column[]
+  doneStatus: string
+  canceledStatus: string | null
   priorities: string[]
   agents: AgentProfile[]
   labels: string[]
@@ -702,6 +726,8 @@ function BulkBar({
   picked,
   tickets,
   columns,
+  doneStatus,
+  canceledStatus,
   priorities,
   agents,
   labels,
@@ -826,7 +852,10 @@ function BulkBar({
     ))
   const statusOpts: Opt[] = columns.map((column) => ({
     value: column.id,
-    node: option(<StatusGlyph columns={columns} status={column.id} />, column.label),
+    node: option(
+      <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={column.id} />,
+      column.label,
+    ),
   }))
   const priorityOpts: Opt[] = [...[...priorities].reverse(), ...strayPriorities].map((priority) => ({
     value: priority,

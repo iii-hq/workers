@@ -1,4 +1,4 @@
-import type { BoardColumn, BoardData, GlyphTone, ProjectView, ReleaseView, TicketSummary } from './shared'
+import type { BoardColumn, BoardData, Column, GlyphTone, ProjectView, ReleaseView, TicketSummary } from './shared'
 
 /* Pure board state: no React, no console-ui, so `board-state.check.ts` runs it under plain node. */
 
@@ -177,7 +177,7 @@ export type Swimlane = {
   cells: Map<string, TicketSummary[]>
   /** Tickets that pass the filters. */
   count: number
-  /** Every live ticket of the lane, whatever the filters say, and how many of them are in the done status. */
+  /** Every live ticket of the lane but the canceled ones, whatever the filters say, and how many are in the done status. */
   total: number
   done: number
   /** `group` only: the released releases, collapsed under one heading. */
@@ -192,6 +192,8 @@ export type SwimlaneInput = {
   releases: readonly ReleaseView[]
   projects: readonly ProjectView[]
   doneStatus: string
+  /** The canceled column, out of `total`; null when the board has none. */
+  canceledStatus: string | null
   /** Keep the swimlanes that have no ticket in the current filter. */
   showEmpty: boolean
 }
@@ -278,7 +280,7 @@ export function dropRefusal(lane: Swimlane, ticket: TicketSummary, from: string,
  * "No parent" (the parents themselves are in it).
  */
 export function buildSwimlanes(input: SwimlaneInput): Swimlane[] {
-  const { by, columns, shownIds, releases, projects, doneStatus, showEmpty } = input
+  const { by, columns, shownIds, releases, projects, doneStatus, canceledStatus, showEmpty } = input
   const all = columns.flatMap((column) => column.tickets)
   const byId = new Map(all.map((ticket) => [ticket.id, ticket]))
   const known = knownLaneIds(by, all, releases, projects)
@@ -310,7 +312,7 @@ export function buildSwimlanes(input: SwimlaneInput): Swimlane[] {
   for (const column of columns) for (const ticket of column.tickets) columnOf.set(ticket.id, column.id)
   const fill = (target: Swimlane, tickets: readonly TicketSummary[]) => {
     for (const ticket of tickets) {
-      target.total += 1
+      if (ticket.status !== canceledStatus) target.total += 1
       if (ticket.status === doneStatus) target.done += 1
       if (!shownIds.has(ticket.id)) continue
       target.count += 1
@@ -409,20 +411,46 @@ export function flattenLanes(lanes: readonly Swimlane[]): Swimlane[] {
   return lanes.flatMap((l) => (l.kind === 'group' ? [l, ...l.lanes] : [l]))
 }
 
-/** Subtasks on the board per parent id: how many, how many in the done status. */
+/** Subtasks on the board per parent id: how many are not canceled, how many are in the done status. */
 export function subtaskStats(
   tickets: readonly TicketSummary[],
   doneStatus: string,
+  canceledStatus: string | null,
 ): Map<string, { done: number; total: number }> {
   const stats = new Map<string, { done: number; total: number }>()
   for (const ticket of tickets) {
     if (!ticket.parent_id) continue
     const s = stats.get(ticket.parent_id) ?? { done: 0, total: 0 }
-    s.total += 1
+    if (ticket.status !== canceledStatus) s.total += 1
     if (ticket.status === doneStatus) s.done += 1
     stats.set(ticket.parent_id, s)
   }
   return stats
+}
+
+export type StatusStep = 'unknown' | 'start' | 'ready' | 'progress' | 'review' | 'done' | 'canceled'
+
+/**
+ * Where a status sits in the flow, which picks its glyph. Done and canceled are named by the config; the other
+ * columns go by their place among themselves, since columns are configurable: first = start, last = review and
+ * second = ready on 3+ of them, the rest = in progress.
+ */
+export function statusStep(
+  columns: readonly Column[],
+  status: string,
+  doneStatus: string,
+  canceledStatus: string | null,
+): StatusStep {
+  if (status === doneStatus) return 'done'
+  if (status === canceledStatus) return 'canceled'
+  const steps = columns.filter((column) => column.id !== doneStatus && column.id !== canceledStatus)
+  const i = steps.findIndex((column) => column.id === status)
+  const n = steps.length
+  if (i < 0) return 'unknown'
+  if (i === 0) return 'start'
+  if (n >= 3 && i === n - 1) return 'review'
+  if (n >= 3 && i === 1) return 'ready'
+  return 'progress'
 }
 
 /** Cards a swimlane cell draws before "Show N more"; a cell that would hide a single card draws it instead. */

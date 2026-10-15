@@ -42,6 +42,7 @@ import {
   useState,
 } from 'react'
 import {
+  allClosed,
   asciiLower,
   columnSummary,
   formatTarget,
@@ -49,6 +50,7 @@ import {
   isNextByDate,
   labelCounts,
   labelFamily,
+  liveCount,
   nameList,
   nextRelease,
   notDone,
@@ -223,10 +225,14 @@ export function ProgressBar({ done, total, label }: { done: number; total: numbe
 /** The column counts of a release or a project, one tile per board column. */
 export function ColumnTiles({
   columns,
+  doneStatus,
+  canceledStatus,
   counts,
   extra,
 }: {
   columns: Column[]
+  doneStatus: string
+  canceledStatus: string | null
   counts: ColumnCounts
   extra?: ReactNode
 }) {
@@ -235,7 +241,7 @@ export function ColumnTiles({
       {columns.map((column) => (
         <div className="kanban-plan-tile" key={column.id}>
           <span className="kanban-plan-tile__label">
-            <StatusGlyph columns={columns} status={column.id} />
+            <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={column.id} />
             {column.label}
           </span>
           <span className="kanban-plan-tile__n">{counts[column.id] ?? 0}</span>
@@ -803,7 +809,7 @@ export function ShipDialog({
         </DialogDescription>
         <div className="kanban-dialog__form">
           <ul aria-label="What happens to the tickets" className="kanban-plan-facts">
-            {release.total === 0 ? (
+            {liveCount(release) === 0 ? (
               <li>
                 <Info size={16} />
                 <span>{release.name} has no tickets.</span>
@@ -1035,11 +1041,15 @@ export function ConvertDialog({
           const own = ticketsWithLabel(tickets, entry)
           return [
             key(entry),
-            { total: own.length, done: own.filter((ticket) => ticket.status === data.done_status).length },
+            {
+              total: own.length,
+              done: own.filter((ticket) => ticket.status === data.done_status).length,
+              canceled: own.filter((ticket) => ticket.status === data.canceled_status).length,
+            },
           ]
         }),
       ),
-    [tickets, label, family, data.done_status],
+    [tickets, label, family, data.done_status, data.canceled_status],
   )
 
   // The dry runs: one per row, once the names stop changing. The label picked is part of the key: every member of
@@ -1104,7 +1114,7 @@ export function ConvertDialog({
   ).size
   const releasable = selected.filter((entry) => {
     const own = stats[key(entry)]
-    return own && own.total > 0 && own.total === own.done
+    return own && allClosed(own)
   })
 
   // Off the moment it cannot apply (no selected label is all done), whatever was ticked before.
@@ -1288,14 +1298,14 @@ export function ConvertDialog({
               <>
                 <div className="kanban-field">
                   <span className="kanban-field__label">{titleCase(noun)}</span>
-                  <WithCount count={existing ? plural(existing.total, 'ticket') : undefined}>
+                  <WithCount count={existing ? plural(liveCount(existing), 'ticket') : undefined}>
                     <Selector
                       aria-label={titleCase(noun)}
                       onChange={setExistingId}
                       options={entities.map((entity) => ({
                         value: entity.id,
                         label: entity.name,
-                        description: plural(entity.total, 'ticket'),
+                        description: plural(liveCount(entity), 'ticket'),
                       }))}
                       placeholder={entities.length === 0 ? `No ${noun} yet` : `Pick a ${noun}`}
                       searchPlaceholder={`Search ${noun}s`}

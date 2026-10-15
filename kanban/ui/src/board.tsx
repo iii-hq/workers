@@ -400,6 +400,7 @@ export function BoardPage({
   const projects = data?.projects ?? []
   const releases = data?.releases ?? []
   const doneStatus = data?.done_status || columns[columns.length - 1]?.id || ''
+  const canceledStatus = data?.canceled_status ?? null
   const visibleLane = columns.find((column) => column.id === activeLane) ?? columns[0] ?? null
   // A narrow pane shows one lane, so New ticket starts in that lane (the lane header with its own add is gone).
   const laneNew = narrow && layout === 'board' ? visibleLane : null
@@ -415,7 +416,10 @@ export function BoardPage({
   const shownIds = useMemo(() => new Set(shown.map((ticket) => ticket.id)), [shown])
   const filtering = !isEmpty(filters)
   // Subtasks and their parents are read off the whole board, not the filtered one: "2/12" does not change with a search.
-  const subtasks = useMemo(() => subtaskStats(tickets, doneStatus), [tickets, doneStatus])
+  const subtasks = useMemo(
+    () => subtaskStats(tickets, doneStatus, canceledStatus),
+    [tickets, doneStatus, canceledStatus],
+  )
   const keyById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket.key])), [tickets])
   const lanes = useMemo(
     () =>
@@ -428,9 +432,10 @@ export function BoardPage({
             releases,
             projects,
             doneStatus,
+            canceledStatus,
             showEmpty,
           }),
-    [group, data, shownIds, releases, projects, doneStatus, showEmpty],
+    [group, data, shownIds, releases, projects, doneStatus, canceledStatus, showEmpty],
   )
   const laneById = useMemo(() => new Map(flattenLanes(lanes).map((lane) => [lane.id, lane])), [lanes])
   // The ids the swimlanes stand for: a ticket that names any other sits in the "No …" lane, whatever it names.
@@ -992,6 +997,7 @@ export function BoardPage({
         host={host}
         ticketId={inlineTicketId}
         doneStatus={doneStatus}
+        canceledStatus={canceledStatus}
         columns={columns}
         priorities={priorities}
         agents={agents}
@@ -1049,7 +1055,7 @@ export function BoardPage({
       >
         {head ? (
           <header className="kanban-lane__head">
-            <StatusGlyph columns={columns} status={column.id} />
+            <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={column.id} />
             <span className="kanban-lane__title">{column.label}</span>
             <span className="kanban-lane__count">{laneCount(column)}</span>
             <IconButton
@@ -1241,6 +1247,7 @@ export function BoardPage({
               onError={setActionError}
               onOpenTicket={openTicket}
               doneStatus={doneStatus}
+              canceledStatus={canceledStatus}
               projects={projects}
               releases={releases}
               subtasks={subtasks}
@@ -1288,6 +1295,8 @@ export function BoardPage({
               {drag ? <DragLine message={dragMessage} /> : null}
               <SwimlaneGrid
                 {...swimProps}
+                canceledStatus={canceledStatus}
+                doneStatus={doneStatus}
                 columnCount={laneCount}
                 onAddInColumn={(column) => setCreating({ status: column.id })}
               />

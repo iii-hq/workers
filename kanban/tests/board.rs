@@ -25,6 +25,7 @@ fn context() -> BoardContext {
         prefix: "KAN".into(),
         default_status: "backlog".into(),
         done_status: "done".into(),
+        canceled_status: None,
         columns: [("backlog", "Backlog"), ("todo", "To do"), ("done", "Done")]
             .into_iter()
             .map(|(id, label)| Column {
@@ -1059,7 +1060,11 @@ async fn the_board_file_round_trips_and_a_missing_file_is_an_empty_board() {
 #[test]
 fn normalize_config_repairs_hostile_input() {
     let fallback = normalize(&json!({}));
-    assert_eq!(fallback.columns.len(), 5);
+    assert_eq!(
+        fallback.columns.len(),
+        6,
+        "the defaults end with done, then canceled"
+    );
     assert_eq!(fallback, KanbanConfig::default());
     let repaired = normalize(&json!({
         "id_prefix": "bad prefix!",
@@ -1080,7 +1085,7 @@ fn sample_ticket() -> TicketView {
     let mut ticket = create_ticket(&mut board, &titled("Sample"), &context(), &at(1)).unwrap();
     ticket.id = TICKET_ID.into();
     ticket.key = "KAN-7".into();
-    ticket_view(&Board::empty(), &ticket, "done")
+    ticket_view(&Board::empty(), &ticket, "done", None)
 }
 
 fn change_event(event: &str) -> ChangeEvent {
@@ -1492,8 +1497,8 @@ fn ticket_writes_answer_with_the_compact_row_only_when_asked() {
     .unwrap()
     .unwrap();
     // Writes answer with the ticket view (the ticket plus parent, children and progress).
-    let view = ticket_view(&board, &ticket, "done");
-    let commented = ticket_view(&board, &created.ticket, "done");
+    let view = ticket_view(&board, &ticket, "done", None);
+    let commented = ticket_view(&board, &created.ticket, "done", None);
 
     assert_eq!(
         serde_json::to_value(functions::written(view.clone(), false)).unwrap(),

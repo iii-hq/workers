@@ -20,6 +20,7 @@ import {
   REFUSE_RELEASED,
   releaseState,
   shortDay,
+  statusStep,
   subtaskStats,
   type Tombstones,
   upsertSummary,
@@ -410,6 +411,73 @@ const withRelease = (id: string, release: string | null, status: string, order: 
     [stats.get('KAN-57'), stats.get('KAN-9'), stats.get('KAN-1'), stats.has('x')],
     [{ done: 1, total: 2 }, { done: 1, total: 1 }, { done: 0, total: 1 }, false],
   )
+}
+
+// canceled: drawn in its cell, out of the lane's total; a canceled subtask is out of its parent's
+{
+  const columns = board({
+    todo: [withRelease('a', 'r1', 'todo', 1)],
+    done: [withRelease('b', 'r1', 'done', 1)],
+    canceled: [withRelease('c', 'r1', 'canceled', 1)],
+  }).columns
+  const input = {
+    by: 'release' as const,
+    columns,
+    shownIds: everyone(columns),
+    releases: [rel('r1', 'Phase 1')],
+    projects: [],
+    doneStatus: 'done',
+    canceledStatus: 'canceled',
+    showEmpty: false,
+  }
+  const [r1] = buildSwimlanes(input)
+  assert.deepEqual(
+    [r1.count, r1.total, r1.done, ids(r1.cells.get('canceled'))],
+    [3, 2, 1, 'c'],
+    'a canceled ticket is drawn but leaves the total',
+  )
+  const [plain] = buildSwimlanes({ ...input, canceledStatus: null })
+  assert.deepEqual([plain.total, plain.done], [3, 1], 'a board without a canceled column counts every ticket')
+  const kid = (id: string, status: string, parent: string) => tk(id, status, 1, 1, false, { parent_id: parent })
+  const stats = subtaskStats(
+    [kid('k1', 'todo', 'p'), kid('k2', 'done', 'p'), kid('k3', 'canceled', 'p'), kid('k4', 'canceled', 'q')],
+    'done',
+    'canceled',
+  )
+  assert.deepEqual(
+    [stats.get('p'), stats.get('q')],
+    [
+      { done: 1, total: 2 },
+      { done: 0, total: 0 },
+    ],
+    'canceled subtasks leave the total',
+  )
+}
+
+// glyph steps: done and canceled by the config, the other columns by their place among themselves
+{
+  const cols = (...list: string[]) => list.map((id) => ({ id, label: id }))
+  const steps = (columns: { id: string; label: string }[], done: string, canceled: string | null) =>
+    columns.map((c) => statusStep(columns, c.id, done, canceled))
+  const legacy = cols('backlog', 'todo', 'in_progress', 'in_review', 'done')
+  assert.deepEqual(
+    steps(legacy, 'done', null),
+    ['start', 'ready', 'progress', 'review', 'done'],
+    'a board without a canceled column reads as before',
+  )
+  assert.deepEqual(
+    steps([...legacy, { id: 'canceled', label: 'Canceled' }], 'done', 'canceled'),
+    ['start', 'ready', 'progress', 'review', 'done', 'canceled'],
+    'the canceled column after done is not mistaken for done',
+  )
+  assert.deepEqual(
+    steps(cols('todo', 'done', 'doing'), 'done', null),
+    ['start', 'done', 'progress'],
+    'done is the configured column, not the last one',
+  )
+  assert.deepEqual(steps(cols('todo', 'done'), 'done', null), ['start', 'done'])
+  assert.equal(statusStep(legacy, 'gone', 'done', null), 'unknown')
+  assert.equal(statusStep([], 'done', 'done', null), 'done', 'done is known before the columns are')
 }
 
 // a release is active once something left the first column

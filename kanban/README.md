@@ -143,25 +143,36 @@ worker hot-reloads on `configuration:updated`; no restart is needed.
 data_path: data/kanban        # folder holding board.json; relative to III_COMPOSE_DIR (or the process cwd)
 id_prefix: KAN                # human keys become KAN-1, KAN-2, …  (^[A-Z][A-Z0-9]*$)
 default_status: backlog       # column a new ticket lands in when none is given
-done_status: done             # the column that counts as done: progress, release status, ship; default = the last column
+done_status: done             # the column that counts as done: progress, release status, ship; default = the last column that is not canceled
+canceled_status: canceled     # the column that counts as canceled: out of progress and release totals; null = none
 columns:                      # left to right; `id` is what tickets store, `label` is what the board shows
   - { id: backlog, label: Backlog }
   - { id: todo, label: To do }
   - { id: in_progress, label: In progress }
   - { id: in_review, label: In review }
   - { id: done, label: Done }
+  - { id: canceled, label: Canceled }
 priorities: [low, medium, high, urgent]   # offered on a ticket, lowest first; the first one is the default
 agents_path: agents           # fallback folder of <id>.md agent profiles when iii-directory is not installed
 ```
 
 A stored value is repaired rather than refused: an unknown `default_status`
-falls to the first column, an unknown `done_status` falls to the last column,
+falls to the first column, an unknown `done_status` falls to the last column
+that is not the canceled one, an unknown `canceled_status` (or one equal to
+`done_status`) means none,
 an invalid prefix falls back to `KAN`, duplicate column ids collapse, and an
 empty list falls back to the default. Pass
 `--config <file>.yaml` to seed the entry on first boot only; afterwards the
 configuration worker is the source of truth. `kanban::config::info` prints
-the resolved absolute paths and `done_status`; `kanban::board::get` returns
-`done_status` too. The settings form picks it as the **Done column**.
+the resolved absolute paths, `done_status` and `canceled_status`;
+`kanban::board::get` returns both too. The settings form picks them as the
+**Done column** and the **Canceled column** (None for no canceled column).
+
+A ticket in the canceled column is canceled: it stays on the board and in its
+column count, but leaves `progress`, project and release totals, and shipping
+never treats it as open. New boards get the Canceled column; a stored board
+without one keeps its columns (add it in the settings form), and a stored board
+that already has a `canceled` column picks it up.
 
 `board.json` is now version 2. The first write that upgrades a version 1 file
 keeps the original as `board.v1.json` next to it; going back to an older
@@ -172,7 +183,7 @@ that copy if you must downgrade.
 
 A ticket has at most one parent, one project and one release. The three are
 independent: nothing is inherited, and progress counts only the `done_status`
-column (In review is not done). `kanban::ticket::create` and
+column (In review is not done) over the tickets that are not canceled. `kanban::ticket::create` and
 `kanban::ticket::update` take `parent` (a key or uuid), `project` and `release`
 (an id or a name); a string sets, `null` clears, and leaving the field out
 changes nothing. The ticket a write or `kanban::ticket::get` returns carries
@@ -189,8 +200,8 @@ iii trigger kanban::ticket::list --json '{"release_id":"","compact":true}'
 level deep: the parent must exist, be live and have no parent of its own, a
 ticket cannot be its own parent, and a ticket with live children cannot get
 one. A child's status changes never touch the parent. `progress` is the
-children in `done_status` over the live children (deleted ones are not
-counted), so a parent moved to Done with open children shows a warning in the
+children in `done_status` over the live children that are not canceled
+(deleted ones are not counted either), so a parent moved to Done with open children shows a warning in the
 console. Deleting a parent leaves its children; each then shows the parent as
 deleted. A deleted ticket can't become a subtask (restore it first), and
 restoring a subtask whose parent is gone, deleted or now a subtask itself

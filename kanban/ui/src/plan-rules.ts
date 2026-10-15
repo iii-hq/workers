@@ -1,4 +1,4 @@
-import type { Column, ProjectView, ReleaseView, TicketSummary } from './shared'
+import type { Column, ColumnCounts, ProjectView, ReleaseView, TicketSummary } from './shared'
 
 /**
  * Pure rules of the Releases and Projects pages and of "Create from a label…":
@@ -98,8 +98,16 @@ export function releaseStatusText(
   return release.reopened > 0 ? `${shipped} · ${release.reopened} reopened` : shipped
 }
 
-/** Live tickets of an entity that are not in the done column. */
+/** Live tickets of an entity that are neither done nor canceled (`total` leaves the canceled out). */
 export const notDone = (entity: { total: number; done: number }) => entity.total - entity.done
+
+/** Tickets the worker would mark released: every one done or canceled, and at least one done. */
+export const allClosed = (own: { total: number; done: number; canceled: number }) =>
+  own.done > 0 && own.done + own.canceled === own.total
+
+/** Every live ticket of an entity, the canceled ones included: the sum of its column counts. */
+export const liveCount = (entity: { counts: ColumnCounts }) =>
+  Object.values(entity.counts).reduce((sum, n) => sum + n, 0)
 
 /** Not-done tickets first when sorting by progress: most advanced column first, then by key. */
 export function byProgress(columns: readonly Column[]) {

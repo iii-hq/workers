@@ -20,7 +20,8 @@ values), and the default board is `backlog`, `todo`, `in_progress`,
 
 A ticket has at most one parent (a subtask), one project and one release,
 independent of each other. A parent's `progress` counts only children in the
-`done_status` column (the last column unless configured; `in_review` is not done).
+`done_status` column (the last column unless configured; `in_review` is not done), over
+the children not in the `canceled_status` column: move a ticket that will not be done there.
 
 Tickets are never removed by an agent: a finished ticket is moved to
 `in_review` or `done`, and a human soft-deletes from the console's ticket
@@ -53,7 +54,7 @@ board, a ticket, a releases and a projects page into the console.
 
 ## Functions
 
-- `kanban::config::info` — resolved settings: board file path, columns, `done_status`, priorities, key prefix, agents folder.
+- `kanban::config::info` — resolved settings: board file path, columns, `done_status`, `canceled_status` (null when the board has none), priorities, key prefix, agents folder.
 - `kanban::board::get` — every column with its ticket summaries, plus `done_status`, `projects` and `releases` with their counts; `statuses`, `updated_since`, `limit` and `compact` keep the read small, and `parent_id`, `project_id` and `release_id` narrow it (`""` means none).
 - `kanban::ticket::create` — create a ticket (title, description, status, priority, assignee, labels, actor); `parent`, `project` and `release` file it as a subtask or under a project or release.
 - `kanban::ticket::get` — one ticket with comments and activity, by uuid or key, plus its `parent`, its `children` and a `progress` count.

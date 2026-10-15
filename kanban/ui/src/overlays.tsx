@@ -324,9 +324,24 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
   const agentsPath = typeof record.agents_path === 'string' ? record.agents_path : ''
   const idPrefix = typeof record.id_prefix === 'string' ? record.id_prefix : ''
   const defaultStatus = typeof record.default_status === 'string' ? record.default_status : ''
-  // Unset, or a column that is gone: the worker repairs it to the last column, so that is what the form shows.
+  // Read the way the worker repairs them, so the form shows what the board uses. Canceled: a missing key means the
+  // `canceled` column, null or empty means none.
+  const requestedCanceled =
+    record.canceled_status === undefined
+      ? 'canceled'
+      : typeof record.canceled_status === 'string'
+        ? record.canceled_status
+        : ''
+  // Done: unset, or a column that is gone, falls to the last column that is not the canceled one.
   const storedDone = typeof record.done_status === 'string' ? record.done_status : ''
-  const doneStatus = columns.some((column) => column.id === storedDone) ? storedDone : (columns[columns.length - 1]?.id ?? '')
+  const doneFallback =
+    [...columns].reverse().find((column) => column.id !== requestedCanceled) ?? columns[columns.length - 1]
+  const doneStatus = columns.some((column) => column.id === storedDone) ? storedDone : (doneFallback?.id ?? '')
+  // A canceled id that names no column, or the done one, means none.
+  const canceledStatus =
+    requestedCanceled !== doneStatus && columns.some((column) => column.id === requestedCanceled)
+      ? requestedCanceled
+      : ''
   const [info, setInfo] = useState<ConfigInfo | null>(null)
   const [activeColumn, setActiveColumn] = useState<number | null>(null)
   const consumed = useRef<string | null>(null)
@@ -360,11 +375,12 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
     const next = columns.map((column, position) =>
       position === index ? { ...column, ...changes } : column,
     )
-    // Renaming the done or the default column's id keeps it that column.
+    // Renaming the done, canceled or default column's id keeps it that column.
     const renamed = changes.id !== undefined ? columns[index]?.id : undefined
     update({
       columns: next,
       ...(renamed !== undefined && renamed === doneStatus ? { done_status: changes.id } : {}),
+      ...(renamed !== undefined && renamed === canceledStatus ? { canceled_status: changes.id } : {}),
       ...(renamed !== undefined && renamed === defaultStatus ? { default_status: changes.id } : {}),
     })
   }
@@ -465,9 +481,34 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
             renderControl={(controlProps) => (
               <Select
                 {...controlProps}
-                onChange={(next) => update({ done_status: next })}
+                // The done column cannot also be the canceled one: the worker would drop the canceled one anyway.
+                onChange={(next) =>
+                  update({ done_status: next, ...(next === canceledStatus ? { canceled_status: null } : {}) })
+                }
                 options={columns.map((column) => ({ value: column.id, label: column.label }))}
                 value={doneStatus}
+              />
+            )}
+          />
+          <SettingsField
+            data-field="canceled_status"
+            description="Tickets here are canceled: they leave progress and release totals and never hold a release open."
+            error={errors?.get('/canceled_status')}
+            field={fieldFocus('canceled_status')}
+            id="kanban-canceled-status"
+            label="Canceled column"
+            renderControl={(controlProps) => (
+              <Select
+                {...controlProps}
+                allowEmpty
+                emptyLabel="None"
+                onChange={(next) => update({ canceled_status: next })}
+                onClear={() => update({ canceled_status: null })}
+                options={columns
+                  .filter((column) => column.id !== doneStatus)
+                  .map((column) => ({ value: column.id, label: column.label }))}
+                placeholder="None"
+                value={canceledStatus || undefined}
               />
             )}
           />
@@ -587,10 +628,11 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
                   label={column.label}
                   onClick={() => setActiveColumn(index)}
                   trailing={
-                    column.id === defaultStatus || column.id === doneStatus ? (
+                    column.id === defaultStatus || column.id === doneStatus || column.id === canceledStatus ? (
                       <>
                         {column.id === defaultStatus ? <Chip>Default column</Chip> : null}
                         {column.id === doneStatus ? <Chip>Done column</Chip> : null}
+                        {column.id === canceledStatus ? <Chip>Canceled column</Chip> : null}
                       </>
                     ) : undefined
                   }
@@ -631,7 +673,7 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
           <SettingsRow
             description={
               info
-                ? `${info.columns.length} columns · ${info.priorities.length} priorities · done is ${statusLabel(info.columns, info.done_status)}`
+                ? `${info.columns.length} columns · ${info.priorities.length} priorities · done is ${statusLabel(info.columns, info.done_status)}${info.canceled_status ? ` · canceled is ${statusLabel(info.columns, info.canceled_status)}` : ' · no canceled column'}`
                 : 'Resolving…'
             }
             label="Effective board"

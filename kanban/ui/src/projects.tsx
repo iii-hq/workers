@@ -469,7 +469,8 @@ function ProjectDetail({
     for (const ticket of mine) {
       const key = ticket.release_id ?? null
       const row = rows.get(key) ?? { total: 0, done: 0 }
-      row.total += 1
+      // A canceled ticket keeps its release row but leaves the total, as the worker counts it.
+      if (ticket.status !== data.canceled_status) row.total += 1
       if (ticket.status === data.done_status) row.done += 1
       rows.set(key, row)
     }
@@ -483,7 +484,7 @@ function ProjectDetail({
         (a, b) =>
           Number(a.id === null) - Number(b.id === null) || a.name.localeCompare(b.name, 'en', { numeric: true }),
       )
-  }, [mine, data.releases, data.done_status])
+  }, [mine, data.releases, data.done_status, data.canceled_status])
   const inAnyRelease = releaseRows.some((row) => row.id !== null)
 
   const archive = () =>
@@ -612,8 +613,10 @@ function ProjectDetail({
             <ProgressBar done={project.done} total={project.total} />
           </div>
           <ColumnTiles
+            canceledStatus={data.canceled_status}
             columns={data.columns}
             counts={project.counts}
+            doneStatus={data.done_status}
             extra={
               <div className="kanban-plan-tile kanban-plan-tile--gap">
                 <span className="kanban-plan-tile__label">Unassigned</span>

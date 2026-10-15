@@ -184,11 +184,22 @@ type ParentStripProps = {
   parentView: Ticket | null
   ticketId: string
   columns: Column[]
+  doneStatus: string
+  canceledStatus: string | null
   canOpen: boolean
   onOpen: (key: string) => void
 }
 
-export function ParentStrip({ parent, parentView, ticketId, columns, canOpen, onOpen }: ParentStripProps) {
+export function ParentStrip({
+  parent,
+  parentView,
+  ticketId,
+  columns,
+  doneStatus,
+  canceledStatus,
+  canOpen,
+  onOpen,
+}: ParentStripProps) {
   const { previous, next } = parentView ? siblings(parentView.children, ticketId) : { previous: null, next: null }
   const status = statusLabel(columns, parent.status)
   const deleted = parent.deleted_at ? ' (deleted)' : ''
@@ -216,7 +227,12 @@ export function ParentStrip({ parent, parentView, ticketId, columns, canOpen, on
           <span aria-hidden="true" className="kanban-parentbar__faint">
             ·
           </span>
-          <StatusGlyph columns={columns} status={parent.status} />
+          <StatusGlyph
+            canceledStatus={canceledStatus}
+            columns={columns}
+            doneStatus={doneStatus}
+            status={parent.status}
+          />
           {status}
         </span>
         {progress ? (
@@ -292,13 +308,14 @@ type DoneWarningProps = {
   ticket: Ticket
   columns: Column[]
   doneStatus: string
+  canceledStatus: string | null
   busy: boolean
   onAct: Act
 }
 
-export function DoneWarning({ host, ticket, columns, doneStatus, busy, onAct }: DoneWarningProps) {
+export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus, busy, onAct }: DoneWarningProps) {
   const { confirm, dialog } = useConfirm()
-  const warning = doneWarning(ticket, doneStatus, columns)
+  const warning = doneWarning(ticket, doneStatus, canceledStatus, columns)
   if (!warning) return null
   const { open, back } = warning
   const doneLabel = statusLabel(columns, doneStatus)
@@ -383,6 +400,7 @@ type SubtasksProps = {
   priorities: string[]
   agents: AgentProfile[]
   doneStatus: string
+  canceledStatus: string | null
   /** The board's live tickets and projects; null until the board is read. */
   tickets: TicketSummary[] | null
   projects: ProjectView[]
@@ -415,6 +433,7 @@ export function SubtasksSection({
   priorities,
   agents,
   doneStatus,
+  canceledStatus,
   tickets,
   projects,
   releases,
@@ -432,7 +451,7 @@ export function SubtasksSection({
   // What the last create left out of the prefill, so it is not a surprise.
   const [notice, setNotice] = useState<string | null>(null)
   const children = ticket.children
-  const open = openChildren(children, doneStatus)
+  const open = openChildren(children, doneStatus, canceledStatus)
   const shown = view === 'open' ? open : children
   const visible = expanded ? shown : shown.slice(0, LIMIT)
   const { done, total } = ticket.progress
@@ -513,12 +532,17 @@ export function SubtasksSection({
         <h2 className="kanban-section__title" id={titleId}>
           Subtasks
         </h2>
-        {total > 0 ? (
+        {/* Every subtask canceled: no progress (`total` leaves them out), but the toggle still reaches them. */}
+        {children.length > 0 ? (
           <>
-            <span className="kanban-mono">
-              {done} of {total} done
-            </span>
-            <ProgressBar className="kanban-bar--head" done={done} total={total} />
+            {total > 0 ? (
+              <>
+                <span className="kanban-mono">
+                  {done} of {total} done
+                </span>
+                <ProgressBar className="kanban-bar--head" done={done} total={total} />
+              </>
+            ) : null}
             <SegmentedControl
               aria-label="Show subtasks"
               className="kanban-activity-filter"
@@ -541,7 +565,9 @@ export function SubtasksSection({
       {children.length === 0 ? (
         <p className="kanban-muted">No subtasks yet.</p>
       ) : shown.length === 0 ? (
-        <p className="kanban-muted">Every subtask is done.</p>
+        <p className="kanban-muted">
+          {canceledStatus ? 'Every subtask is done or canceled.' : 'Every subtask is done.'}
+        </p>
       ) : (
         <ul className="kanban-subs">
           {visible.map((child) => (
@@ -553,7 +579,12 @@ export function SubtasksSection({
                 onClick={() => onOpen(child.key)}
                 type="button"
               >
-                <StatusGlyph columns={columns} status={child.status} />
+                <StatusGlyph
+                  canceledStatus={canceledStatus}
+                  columns={columns}
+                  doneStatus={doneStatus}
+                  status={child.status}
+                />
                 <span className="kanban-mono">{child.key}</span>
                 <span className="kanban-sub__title">{child.title}</span>
                 <PriorityChip priorities={priorities} priority={child.priority} />

@@ -66,6 +66,7 @@ import {
   formatTarget,
   groupReleases,
   isIsoDay,
+  liveCount,
   nameList,
   plural,
   relativeDay,
@@ -495,14 +496,16 @@ function ReleaseDetail({
   })
 
   const mine = useMemo(() => tickets.filter((ticket) => ticket.release_id === release.id), [tickets, release.id])
-  const open = useMemo(
-    () => mine.filter((ticket) => ticket.status !== data.done_status).sort(byProgress(columns)),
-    [mine, data.done_status, columns],
-  )
-  const done = useMemo(
-    () => mine.filter((ticket) => ticket.status === data.done_status).sort(byProgress(columns)),
-    [mine, data.done_status, columns],
-  )
+  // Canceled tickets are closed: they sit with the done ones, never with the open.
+  const [open, done] = useMemo(() => {
+    const sorted = [...mine].sort(byProgress(columns))
+    const closed = (ticket: TicketSummary) =>
+      ticket.status === data.done_status || ticket.status === data.canceled_status
+    return [sorted.filter((ticket) => !closed(ticket)), sorted.filter(closed)]
+  }, [mine, data.done_status, data.canceled_status, columns])
+  const doneHeading = data.canceled_status ? 'Done or canceled' : 'Done'
+  // Canceled tickets are out of `total` but still in the release: the worker refuses the delete while any is.
+  const live = liveCount(release)
 
   const withLabel = release.source_label ? ticketsWithLabel(tickets, release.source_label) : []
   const drift = released ? [] : driftTickets(release, tickets)
@@ -592,13 +595,13 @@ function ReleaseDetail({
           </IconButton>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem disabled={release.total > 0 || busy} onSelect={() => void remove()}>
+          <DropdownMenuItem disabled={live > 0 || busy} onSelect={() => void remove()}>
             <Trash2 size={16} />
             Delete…
           </DropdownMenuItem>
-          {release.total > 0 ? (
+          {live > 0 ? (
             <DropdownMenuLabel className="kanban-plan-menu-note">
-              It has {plural(release.total, 'ticket')}. Move them to another release first.
+              It has {plural(live, 'ticket')}. Move them to another release first.
             </DropdownMenuLabel>
           ) : null}
         </DropdownMenuContent>
@@ -740,7 +743,12 @@ function ReleaseDetail({
           {release.done} of {release.total} done
         </span>
       </div>
-      <ColumnTiles columns={columns} counts={release.counts} />
+      <ColumnTiles
+        canceledStatus={data.canceled_status}
+        columns={columns}
+        counts={release.counts}
+        doneStatus={data.done_status}
+      />
     </section>
   )
 
@@ -788,7 +796,7 @@ function ReleaseDetail({
           <TicketRows
             agents={agents}
             canOpenPane={canOpenPane}
-            columns={columns}
+            data={data}
             host={host}
             label="Not done"
             tickets={open}
@@ -796,25 +804,25 @@ function ReleaseDetail({
         </Panel>
       ) : null}
       {done.length > 0 ? (
-        <Panel aria-label="Done" role="region">
+        <Panel aria-label={doneHeading} role="region">
           <button
             aria-expanded={showDone}
-            aria-label={`${showDone ? 'Hide' : 'Show'} the ${done.length} done tickets`}
+            aria-label={`${showDone ? 'Hide' : 'Show'} the ${done.length} ${doneHeading.toLowerCase()} tickets`}
             className={`${uiClasses.panelHeader} kanban-plan-collapse__trigger kanban-plan-touch`}
             onClick={() => setShowDone((now) => !now)}
             type="button"
           >
             <ChevronRight className="kanban-plan-collapse__chevron" size={16} />
-            <span>Done</span>
+            <span>{doneHeading}</span>
             <span className="kanban-plan-count">{done.length}</span>
           </button>
           {showDone ? (
             <TicketRows
               agents={agents}
               canOpenPane={canOpenPane}
-              columns={columns}
+              data={data}
               host={host}
-              label="Done"
+              label={doneHeading}
               tickets={done}
             />
           ) : null}
@@ -892,14 +900,15 @@ function ReleaseDetail({
 function TicketRows({
   host,
   tickets,
-  columns,
+  data,
   agents,
   canOpenPane,
   label,
 }: {
   host: Host
   tickets: TicketSummary[]
-  columns: BoardData['columns']
+  /** The board: its columns, done and canceled ones name each row's glyph. */
+  data: BoardData
   agents: AgentProfile[]
   canOpenPane: boolean
   label: string
@@ -920,7 +929,12 @@ function TicketRows({
                 onClick={() => openPane(host, TICKET_PAGE_ID, { id: ticket.key })}
                 type="button"
               >
-                <StatusGlyph columns={columns} status={ticket.status} />
+                <StatusGlyph
+                  canceledStatus={data.canceled_status}
+                  columns={data.columns}
+                  doneStatus={data.done_status}
+                  status={ticket.status}
+                />
                 <span className="kanban-plan-mono kanban-plan-trow__key">{ticket.key}</span>
                 <span className="kanban-plan-trow__title">{ticket.title}</span>
                 {assignee ? (

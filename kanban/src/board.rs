@@ -46,6 +46,8 @@ pub struct BoardContext {
     pub default_status: String,
     /// The column that counts as done (progress, releases, subtasks).
     pub done_status: String,
+    /// The column that counts as canceled: out of progress and release totals.
+    pub canceled_status: Option<String>,
     pub columns: Vec<Column>,
     pub priorities: Vec<String>,
 }
@@ -56,6 +58,7 @@ impl From<&KanbanConfig> for BoardContext {
             prefix: config.id_prefix.clone(),
             default_status: config.default_status.clone(),
             done_status: config.done_status.clone(),
+            canceled_status: config.canceled_status.clone(),
             columns: config.columns.clone(),
             priorities: config.priorities.clone(),
         }
@@ -63,6 +66,11 @@ impl From<&KanbanConfig> for BoardContext {
 }
 
 impl BoardContext {
+    /// True for a ticket in the canceled column.
+    pub fn is_canceled(&self, status: &str) -> bool {
+        self.canceled_status.as_deref() == Some(status)
+    }
+
     fn has_column(&self, id: &str) -> bool {
         self.columns.iter().any(|column| column.id == id)
     }
@@ -137,7 +145,7 @@ pub fn relation_brief(ticket: &Ticket) -> Brief {
     }
 }
 
-/// Live children in the done column over live children.
+/// Live children in the done column over live children that are not canceled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Progress {
     pub done: u64,
@@ -171,7 +179,12 @@ pub fn live_children<'a>(board: &'a Board, parent_id: &str) -> Vec<&'a Ticket> {
     rows
 }
 
-pub fn ticket_view(board: &Board, ticket: &Ticket, done_status: &str) -> TicketView {
+pub fn ticket_view(
+    board: &Board,
+    ticket: &Ticket,
+    done_status: &str,
+    canceled_status: Option<&str>,
+) -> TicketView {
     let children = live_children(board, &ticket.id);
     TicketView {
         parent: ticket
@@ -184,7 +197,10 @@ pub fn ticket_view(board: &Board, ticket: &Ticket, done_status: &str) -> TicketV
                 .iter()
                 .filter(|child| child.status == done_status)
                 .count() as u64,
-            total: children.len() as u64,
+            total: children
+                .iter()
+                .filter(|child| Some(child.status.as_str()) != canceled_status)
+                .count() as u64,
         },
         children: children.into_iter().map(relation_brief).collect(),
         ticket: ticket.clone(),
@@ -192,11 +208,16 @@ pub fn ticket_view(board: &Board, ticket: &Ticket, done_status: &str) -> TicketV
 }
 
 /// The view of a ticket as it is on the board now; `None` for an unknown id.
-pub fn view_of(board: &Board, id: &str, done_status: &str) -> Option<TicketView> {
+pub fn view_of(
+    board: &Board,
+    id: &str,
+    done_status: &str,
+    canceled_status: Option<&str>,
+) -> Option<TicketView> {
     board
         .tickets
         .get(id)
-        .map(|ticket| ticket_view(board, ticket, done_status))
+        .map(|ticket| ticket_view(board, ticket, done_status, canceled_status))
 }
 
 /// A release as the trigger filters see it: its id and its name.

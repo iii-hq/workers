@@ -421,6 +421,8 @@ pub struct ConfigInfo {
     pub default_status: String,
     /// The column that counts as done for progress, releases and subtasks.
     pub done_status: String,
+    /// The column that counts as canceled (out of progress and release totals); null when the board has none.
+    pub canceled_status: Option<String>,
     /// Board columns left to right.
     pub columns: Vec<Column>,
     pub priorities: Vec<String>,
@@ -447,6 +449,8 @@ pub struct BoardView {
     pub default_status: String,
     /// The column that counts as done for progress, releases and subtasks.
     pub done_status: String,
+    /// The column that counts as canceled (out of progress and release totals); null when the board has none.
+    pub canceled_status: Option<String>,
     pub id_prefix: String,
     pub data_path_resolved: String,
     pub board_file: String,
@@ -657,7 +661,14 @@ pub fn views<'a>(
     ids: impl IntoIterator<Item = &'a String>,
 ) -> Vec<TicketView> {
     ids.into_iter()
-        .filter_map(|id| view_of(board, id, &context.done_status))
+        .filter_map(|id| {
+            view_of(
+                board,
+                id,
+                &context.done_status,
+                context.canceled_status.as_deref(),
+            )
+        })
         .collect()
 }
 
@@ -673,9 +684,14 @@ pub fn ticket_outcome(
     after: Option<Ticket>,
     related: &[String],
 ) -> Outcome<Option<TicketView>> {
-    let view = after
-        .as_ref()
-        .map(|ticket| ticket_view(board, ticket, &context.done_status));
+    let view = after.as_ref().map(|ticket| {
+        ticket_view(
+            board,
+            ticket,
+            &context.done_status,
+            context.canceled_status.as_deref(),
+        )
+    });
     let tickets = if before == after {
         Vec::new()
     } else {
@@ -708,6 +724,7 @@ async fn config_info(ctx: Arc<Ctx>, _: Empty) -> Result<ConfigInfo, Error> {
         id_prefix: config.id_prefix.clone(),
         default_status: config.default_status.clone(),
         done_status: config.done_status.clone(),
+        canceled_status: config.canceled_status.clone(),
         columns: config.columns.clone(),
         priorities: config.priorities.clone(),
         agents_path: config.agents_path.clone(),
@@ -768,6 +785,7 @@ pub fn board_view(board: &Board, config: &KanbanConfig, input: &BoardGetInput) -
         priorities: config.priorities.clone(),
         default_status: config.default_status.clone(),
         done_status: config.done_status.clone(),
+        canceled_status: config.canceled_status.clone(),
         id_prefix: config.id_prefix.clone(),
         data_path_resolved: config.data_path_resolved().display().to_string(),
         board_file: config.board_file().display().to_string(),
@@ -817,7 +835,14 @@ async fn ticket_get(ctx: Arc<Ctx>, input: TicketGetInput) -> Result<TicketView, 
     let config = config_snapshot(&ctx.config);
     let board = read(&ctx).await?;
     board::find_ticket(&board, &input.id)
-        .map(|ticket| ticket_view(&board, ticket, &config.done_status))
+        .map(|ticket| {
+            ticket_view(
+                &board,
+                ticket,
+                &config.done_status,
+                config.canceled_status.as_deref(),
+            )
+        })
         .ok_or_else(|| not_found(&input.id))
 }
 
@@ -977,7 +1002,12 @@ async fn comment_create(ctx: Arc<Ctx>, input: CommentCreateInput) -> Result<Comm
     let outcome = apply(&ctx, "comment.created", |board, context, at| {
         Ok(match board::create_comment(board, &create, at)? {
             Some(result) => {
-                let view = ticket_view(board, &result.ticket, &context.done_status);
+                let view = ticket_view(
+                    board,
+                    &result.ticket,
+                    &context.done_status,
+                    context.canceled_status.as_deref(),
+                );
                 Outcome {
                     result: Some(comment_created(
                         result.comment.clone(),

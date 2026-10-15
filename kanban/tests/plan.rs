@@ -34,6 +34,7 @@ fn context() -> BoardContext {
         prefix: "KAN".into(),
         default_status: "backlog".into(),
         done_status: "done".into(),
+        canceled_status: None,
         columns: [
             ("backlog", "Backlog"),
             ("todo", "To do"),
@@ -110,7 +111,7 @@ impl Env {
     }
 
     fn view(&self, key: &str) -> TicketView {
-        ticket_view(&self.board, &self.get(key), "done")
+        ticket_view(&self.board, &self.get(key), "done", None)
     }
 
     fn project(&mut self, name: &str) -> plan::ProjectView {
@@ -692,7 +693,7 @@ fn the_view_carries_the_parent_the_live_children_by_number_and_the_progress() {
     assert_eq!((child.progress.done, child.progress.total), (0, 0));
     assert!(child.children.is_empty());
 
-    let strict = ticket_view(&env.board, &env.get("KAN-1"), "review");
+    let strict = ticket_view(&env.board, &env.get("KAN-1"), "review", None);
     assert_eq!(
         (strict.progress.done, strict.progress.total),
         (1, 3),
@@ -2233,7 +2234,7 @@ fn event_of(board: &Board, key: &str) -> ChangeEvent {
         event: "ticket.updated".into(),
         ticket_id: ticket.id.clone(),
         ticket_key: ticket.key.clone(),
-        ticket: ticket_view(board, ticket, "done").into(),
+        ticket: ticket_view(board, ticket, "done", None).into(),
         comment: None,
         activity: ticket.activity.last().cloned(),
         at: ticket.updated_at.clone(),
@@ -2259,7 +2260,7 @@ fn comment_event_of(env: &mut Env, key: &str, author: &str) -> CommentEvent {
         event: "comment.created".into(),
         ticket_id: result.ticket.id.clone(),
         ticket_key: result.ticket.key.clone(),
-        ticket: ticket_view(&env.board, &result.ticket, "done").into(),
+        ticket: ticket_view(&env.board, &result.ticket, "done", None).into(),
         comment: result.comment,
         author: author.into(),
         at,
@@ -2561,6 +2562,7 @@ fn the_board_view_carries_the_done_column_the_projects_and_the_releases() {
         columns: context().columns,
         default_status: "backlog".into(),
         done_status: "review".into(),
+        canceled_status: None,
         ..KanbanConfig::default()
     };
     let view = board_view(&env.board, &config, &BoardGetInput::default());
@@ -3039,4 +3041,100 @@ fn deliveries_carry_the_view_and_the_trigger_configs_declare_the_new_filters() {
     schemars::schema_for!(functions::ProjectList);
     schemars::schema_for!(functions::ReleaseList);
     schemars::schema_for!(functions::CommentCreated);
+}
+
+/* ── canceled ─────────────────────────────────────────────────────────── */
+
+fn canceled_context() -> BoardContext {
+    let mut context = context();
+    context.columns.push(Column {
+        id: "canceled".into(),
+        label: "Canceled".into(),
+    });
+    context.canceled_status = Some("canceled".into());
+    context
+}
+
+#[test]
+fn canceled_tickets_leave_progress_project_and_release_totals_and_never_hold_a_release_open() {
+    let context = canceled_context();
+    let mut board = Board::empty();
+    let at = clock(1);
+    let named = |name: &str| Some(name.to_string());
+    plan::create_project(
+        &mut board,
+        &ProjectFields {
+            name: named("P"),
+            ..ProjectFields::default()
+        },
+        &context,
+        &at,
+    )
+    .unwrap();
+    plan::create_release(
+        &mut board,
+        &ReleaseFields {
+            name: named("R"),
+            ..ReleaseFields::default()
+        },
+        &context,
+        &at,
+    )
+    .unwrap();
+    let parent = create_ticket(
+        &mut board,
+        &CreateTicketInput {
+            title: "parent".into(),
+            ..CreateTicketInput::default()
+        },
+        &context,
+        &at,
+    )
+    .unwrap();
+    for (title, status) in [
+        ("shipped", "done"),
+        ("dropped", "canceled"),
+        ("open", "todo"),
+    ] {
+        create_ticket(
+            &mut board,
+            &CreateTicketInput {
+                title: title.into(),
+                status: named(status),
+                parent: Some(parent.key.clone()),
+                project: named("P"),
+                release: named("R"),
+                ..CreateTicketInput::default()
+            },
+            &context,
+            &at,
+        )
+        .unwrap();
+    }
+
+    let view = ticket_view(
+        &board,
+        find_ticket(&board, &parent.key).unwrap(),
+        "done",
+        Some("canceled"),
+    );
+    assert_eq!((view.progress.done, view.progress.total), (1, 2));
+    assert_eq!(view.children.len(), 3, "a canceled child is still listed");
+
+    let project = plan::project_views(&board, &context, true).remove(0);
+    assert_eq!((project.done, project.total), (1, 2));
+    assert_eq!(project.counts["canceled"], 1, "the column count keeps it");
+    let release = plan::release_views(&board, &context).remove(0);
+    assert_eq!((release.done, release.total), (1, 2));
+
+    let error = plan::ship_release(&mut board, "R", None, &context, &clock(2)).unwrap_err();
+    assert_eq!(
+        error, "1 tickets are not done; choose where they go (move_open_to)",
+        "only the todo ticket is open"
+    );
+    let (shipped, moved) =
+        plan::ship_release(&mut board, "R", Some(None), &context, &clock(3)).unwrap();
+    assert_eq!(moved.len(), 1, "the canceled ticket stays in the release");
+    assert_eq!(shipped.status, ReleaseStatus::Released);
+    assert_eq!((shipped.done, shipped.total), (1, 1));
 }
