@@ -42,6 +42,7 @@ pub async fn embed_texts(
             timeout_ms: Some(timeout_ms),
         })
         .await
+        .inspect_err(|e| tracing::debug!(error = %e, "router::embed failed"))
         .ok()?;
     let embeddings: Vec<Vec<f32>> =
         serde_json::from_value(reply.get("embeddings").cloned().unwrap_or(Value::Null)).ok()?;
@@ -145,14 +146,24 @@ where
     total
 }
 
-/// Boot-time catch-up across every bank, delayed so llm-router and its
-/// providers finish their own boot first.
+/// Backfill sweep across every bank: first 20 s after boot (so llm-router
+/// and its providers finish their own boot), then every minute. Event
+/// passes (save, edit, extraction) are the fast path; the sweep is what
+/// finishes work they leave behind — a failed embed in a bank that then
+/// goes quiet, a provider up late, the per-pass cap, an `embedding_model`
+/// change, a reload. Idle, it is one RAM scan per bank and no router call.
 pub fn backfill_all(deps: Arc<Deps>) {
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-        let banks = deps.store().await.bank_names().await;
-        for bank in banks {
-            backfill_bank(deps.clone(), bank).await;
+        let mut wait = std::time::Duration::from_secs(20);
+        loop {
+            tokio::time::sleep(wait).await;
+            // ponytail: fixed 1-min retry, no per-bank backoff; add backoff
+            // if a persistently failing provider makes the minutely retry
+            // costly.
+            wait = std::time::Duration::from_secs(60);
+            for bank in deps.store().await.bank_names().await {
+                backfill_bank(deps.clone(), bank).await;
+            }
         }
     });
 }
