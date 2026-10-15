@@ -62,7 +62,7 @@ struct BankInner {
 }
 
 /// One sidecar line: a memory's embedding (last-wins by id on replay).
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct VectorRecord {
     id: String,
     model: String,
@@ -70,6 +70,39 @@ struct VectorRecord {
     /// still has this text (pin/tag/reinforce bumps leave it valid).
     text: String,
     v: Vec<f32>,
+}
+
+/// The write side of [`VectorRecord`], borrowing instead of cloning.
+#[derive(serde::Serialize)]
+struct VectorLine<'a> {
+    id: &'a str,
+    model: &'a str,
+    text: &'a str,
+    v: &'a [f32],
+}
+
+/// Rewrite the sidecar to exactly the vectors `open` kept: temp file,
+/// fsync, rename over. A crash leaves the old file or the new one, never a
+/// torn one; a leftover temp is truncated by the next attempt.
+fn compact_vectors(
+    path: &Path,
+    vectors: &HashMap<String, (String, Vec<f32>)>,
+    memories: &HashMap<String, Memory>,
+) -> std::io::Result<()> {
+    // Concurrent opens of one data_dir (memory::reload racing a data_dir
+    // config change) must not interleave writes into the same temp file.
+    static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _gate = GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = path.with_extension("jsonl.tmp");
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    for (id, (model, v)) in vectors {
+        // Kept means it embeds the record's current text.
+        let text = memories.get(id).map_or("", |m| m.text.as_str());
+        serde_json::to_writer(&mut out, &VectorLine { id, model, text, v })?;
+        out.write_all(b"\n")?;
+    }
+    out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    std::fs::rename(&tmp, path)
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -339,6 +372,7 @@ impl Bank {
         // are skipped (those memories are backfill work again).
         let mut vectors: HashMap<String, (String, Vec<f32>)> = HashMap::new();
         let vectors_path = dir.join(VECTORS_FILE);
+        let mut lines = 0usize;
         if vectors_path.exists() {
             let file = std::fs::File::open(&vectors_path)?;
             for line in std::io::BufReader::new(file).lines() {
@@ -346,6 +380,7 @@ impl Bank {
                 if line.trim().is_empty() {
                     continue;
                 }
+                lines += 1;
                 if let Ok(rec) = serde_json::from_str::<VectorRecord>(&line) {
                     // Keep only vectors of the record's CURRENT text — a
                     // text edit since the embed makes it stale.
@@ -356,6 +391,16 @@ impl Bank {
                         vectors.insert(rec.id, (rec.model, rec.v));
                     }
                 }
+            }
+        }
+        // Dead lines (edited text, retired records, re-embeds, pre-text-key
+        // lines, torn writes) are re-parsed every open and never reclaimed
+        // otherwise; ~19 KB each for a 1536-dim vector.
+        // ponytail: compacts at open only; a long uptime grows until the
+        // next boot or memory::reload.
+        if lines > 2 * vectors.len() {
+            if let Err(e) = compact_vectors(&vectors_path, &vectors, &memories) {
+                tracing::warn!(bank = name, error = %e, "vector sidecar compaction failed");
             }
         }
 
@@ -392,11 +437,11 @@ impl Bank {
         {
             return Ok(false);
         }
-        let line = serde_json::to_string(&VectorRecord {
-            id: id.to_string(),
-            model: model.to_string(),
-            text: embedded_text.to_string(),
-            v: v.clone(),
+        let line = serde_json::to_string(&VectorLine {
+            id,
+            model,
+            text: embedded_text,
+            v: &v,
         })
         .map_err(|e| MemoryError::Storage(format!("serialize vector: {e}")))?;
         let mut file = std::fs::OpenOptions::new()
@@ -769,6 +814,55 @@ mod tests {
             revision: 0,
             stated_at: None,
         }
+    }
+
+    #[tokio::test]
+    async fn open_compacts_the_sidecar_once_dead_lines_outnumber_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let (mut a, mut b, c) = (memory("alpha"), memory("bravo"), memory("charlie"));
+        for (m, v) in [(&a, 0.1), (&b, 0.2), (&c, 0.3)] {
+            bank.commit(m.clone()).await.unwrap();
+            bank.set_vector(&m.id, "m", &m.text, vec![v, 1.0])
+                .await
+                .unwrap();
+        }
+        let path = bank.dir().join(VECTORS_FILE);
+        let c_line = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .find(|l| l.contains(&c.id))
+            .unwrap()
+            .to_string();
+        // a's text edited, b retired: both lines dead; c's stays live.
+        a.text = "alpha edited".into();
+        a.revision += 1;
+        bank.commit(a.clone()).await.unwrap();
+        b.invalid_at = Some(now_ms());
+        b.revision += 1;
+        bank.commit(b.clone()).await.unwrap();
+        // A crash left a torn temp file behind.
+        std::fs::write(path.with_extension("jsonl.tmp"), b"{\"torn").unwrap();
+
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{c_line}\n")
+        );
+        assert!(!path.with_extension("jsonl.tmp").exists());
+
+        // The re-embed appends; at 2 lines for 2 kept, nothing is rewritten.
+        bank2
+            .set_vector(&a.id, "m", &a.text, vec![0.1, 1.0])
+            .await
+            .unwrap();
+        let store3 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank3 = store3.bank("main").await.unwrap();
+        assert_eq!(bank3.vector_count().await, 2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
     }
 
     #[tokio::test]
