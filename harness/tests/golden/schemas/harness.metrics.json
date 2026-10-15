@@ -15,6 +15,10 @@
       }
     ],
     "properties": {
+      "omit_context": {
+        "description": "Leave each session's context snapshot out of `by_session` (and skip reading it). For callers that only need the counters and cost. Default false.",
+        "type": "boolean"
+      },
       "root_session_id": {
         "description": "Any session in the tree. `session_id` is accepted as an alias, and a child id is walked up to its root, so the id that addresses `harness::status` addresses the tree here too.",
         "type": "string"
