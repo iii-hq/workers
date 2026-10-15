@@ -374,6 +374,7 @@ export function ChatAside({
         onOpenConversation={ctx.openConversationInPanel}
         shellAvailable={ctx.shellAvailable}
         githubAvailable={ctx.githubAvailable}
+        kanbanAvailable={ctx.kanbanAvailable}
         landBlocked={landBlocked}
         active={visible}
       />

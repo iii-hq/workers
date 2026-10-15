@@ -3,6 +3,8 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
   ChevronDown,
   ChevronRight,
+  ChevronsUp,
+  ChevronUp,
   Copy,
   ExternalLink,
   FileDiff,
@@ -12,6 +14,7 @@ import {
   Globe,
   ImageIcon,
   SquareTerminal,
+  Ticket,
   TriangleAlert,
   X,
 } from 'lucide-react'
@@ -49,12 +52,17 @@ import {
   capRows,
   collectChatImages,
   collectChatLinks,
+  collectChatTickets,
   type GitSummary,
   ghCliSource,
   githubWorkerSource,
+  type KanbanBoard,
   type PullRequestRow,
   readGitSummary,
+  readKanbanBoard,
   readPullRequests,
+  type TicketRow,
+  ticketRows,
 } from '@/lib/chat-aside'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
@@ -94,6 +102,8 @@ interface ChatContextPanelProps {
   /** git is read through `shell::exec`, so the folder's state needs that worker. */
   shellAvailable: boolean
   githubAvailable: boolean
+  /** The `kanban` worker is connected: the board names the tickets. */
+  kanbanAvailable?: boolean
   /** The managed worktree's land is blocked on conflicts. */
   landBlocked?: boolean
   /** Whether the panel is in sight; git and GitHub are read only then. */
@@ -132,6 +142,7 @@ export function ChatContextPanel({
   onOpenConversation,
   shellAvailable,
   githubAvailable,
+  kanbanAvailable = false,
   landBlocked,
   active = true,
 }: ChatContextPanelProps) {
@@ -243,6 +254,50 @@ export function ChatContextPanel({
     (s) => subagentRank(s.status) === 0,
   ).length
 
+  // Tickets: what the chat touched, named by the board. Read again when a
+  // turn ends or a new ticket shows up in the chat.
+  const touches = useMemo(
+    () =>
+      collectChatTickets(
+        conversation.messages,
+        subagents.map(({ child, appearance }) => ({
+          name: appearance.name,
+          title: child.title,
+          at: child.updatedAt,
+        })),
+      ),
+    [conversation.messages, subagents],
+  )
+  const touchKey = touches
+    .map((touch) => touch.ref)
+    .sort()
+    .join()
+  const [board, setBoard] = useState<KanbanBoard | null>()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: touchKey and status are re-read tokens
+  useEffect(() => {
+    if (!active || !kanbanAvailable || !touchKey) return
+    let alive = true
+    void (async () => {
+      const client = await getIiiClient()
+      const read = await readKanbanBoard(client.trigger.bind(client)).catch(
+        () => null,
+      )
+      if (alive) setBoard(read)
+    })()
+    return () => {
+      alive = false
+    }
+  }, [active, kanbanAvailable, touchKey, conversation.status])
+  const tickets = useMemo(
+    () => (board && kanbanAvailable ? ticketRows(touches, board) : []),
+    [board, kanbanAvailable, touches],
+  )
+  // Only a kanban call is sure to be a ticket: a bare key may be UTF-8.
+  const ticketsLoading =
+    kanbanAvailable &&
+    board === undefined &&
+    touches.some((touch) => touch.action)
+
   const liveTriggers = useMemo(
     () => triggers.filter((trigger) => !trigger.fired),
     [triggers],
@@ -263,6 +318,7 @@ export function ChatContextPanel({
   const openTrigger =
     liveTriggers.find((trigger) => trigger.id === openTriggerId) ?? null
 
+  const ticketRowsShown = capRows(tickets, SECTION_CAP, !!expanded.tickets)
   const prRows = capRows(pullRequests, SECTION_CAP, !!expanded.prs)
   const subagentRows = capRows(subagents, SUBAGENT_CAP, !!expanded.subagents)
   const triggerRows = capRows(liveTriggers, SECTION_CAP, !!expanded.triggers)
@@ -431,6 +487,28 @@ export function ChatContextPanel({
           />
         )}
       </Section>
+
+      {ticketsLoading ? (
+        <Section label="Tickets">
+          <div className="flex flex-col gap-2 px-3 py-1.5" aria-hidden>
+            <Skeleton className="h-3 w-44" />
+            <Skeleton className="h-3 w-28" />
+          </div>
+        </Section>
+      ) : tickets.length > 0 ? (
+        <Section label="Tickets" count={tickets.length}>
+          {ticketRowsShown.shown.map((row) => (
+            <TicketItem key={row.ticket.key} row={row} />
+          ))}
+          <ShowMore
+            hidden={ticketRowsShown.hidden}
+            expanded={!!expanded.tickets}
+            total={tickets.length}
+            cap={SECTION_CAP}
+            onToggle={() => toggle('tickets')}
+          />
+        </Section>
+      ) : null}
 
       {pullRequests.length > 0 ? (
         <Section label="Pull requests" count={pullRequests.length}>
@@ -658,6 +736,80 @@ function SubagentStatus({
       <span className="text-[11px] leading-4 text-ink">{status}</span>
     </>
   )
+}
+
+/** The status dot of a board column: the default columns' meaning. */
+function columnTone(status: string): 'accent' | 'warn' | 'ok' | 'ink' {
+  if (status === 'in_progress') return 'accent'
+  if (status === 'in_review') return 'warn'
+  if (status === 'done') return 'ok'
+  return 'ink'
+}
+
+/**
+ * One ticket the chat touched: opens the board's own ticket page beside the
+ * chat. A mentioned ticket reads quieter; a deleted one is struck through.
+ */
+function TicketItem({ row }: { row: TicketRow }) {
+  const { ticket } = row
+  const deleted = ticket.deletedAt !== null
+  const status = deleted ? 'Deleted' : row.status
+  return (
+    <Row
+      icon={<Ticket aria-hidden />}
+      label={
+        <span
+          className={cn(
+            (deleted || (!row.action && !row.by)) && 'text-ink-faint',
+            deleted && 'line-through',
+          )}
+        >
+          {ticket.title}
+        </span>
+      }
+      title={`${ticket.key} · ${ticket.title}`}
+      ariaLabel={`Open ${ticket.key} ${ticket.title} in a new panel (${status})`}
+      onActivate={() =>
+        requestPanelOpen({
+          pageId: 'kanban-ticket',
+          context: { id: ticket.key },
+        })
+      }
+      description={
+        <>
+          <span className="font-mono">{ticket.key} ·</span>
+          {deleted ? null : <StatusDot tone={columnTone(ticket.status)} />}
+          <span className="text-ink">{status}</span>
+          <span className="truncate">· {ticketTouchText(row)}</span>
+        </>
+      }
+      meta={
+        ticket.priority === 'urgent' ? (
+          <ChevronsUp
+            role="img"
+            aria-label="Urgent priority"
+            className="size-4 text-alert"
+          />
+        ) : ticket.priority === 'high' ? (
+          <ChevronUp
+            role="img"
+            aria-label="High priority"
+            className="size-4 text-warn"
+          />
+        ) : null
+      }
+      actions={<CopyAction text={ticket.key} label={`Copy ${ticket.key}`} />}
+    />
+  )
+}
+
+/** `moved here 12m ago`, the sub-agent's name, or `mentioned`. */
+function ticketTouchText(row: TicketRow): string {
+  if (row.action) {
+    const ago = formatRelative(row.at)
+    return `${row.action} here ${ago === 'just now' ? ago : `${ago} ago`}`
+  }
+  return row.by ?? 'mentioned'
 }
 
 function PullRequestFacts({ pr }: { pr: PullRequestRow }) {

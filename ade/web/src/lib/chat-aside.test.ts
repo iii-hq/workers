@@ -4,10 +4,12 @@ import {
   capRows,
   collectChatImages,
   collectChatLinks,
+  collectChatTickets,
   findSideChat,
   ghCliSource,
   githubWorkerSource,
   hideSideChats,
+  type KanbanBoard,
   lastSpokenEntry,
   parseGithubRemote,
   parseNumstat,
@@ -20,6 +22,7 @@ import {
   sideChatQuotes,
   splitQuotedMessage,
   summarizeChecks,
+  ticketRows,
   withSideChatQuote,
 } from './chat-aside'
 
@@ -552,5 +555,136 @@ describe('collectChatImages', () => {
     expect(images[0].dataUrl).toBe('data:image/jpeg;base64,AAAA')
     // Cached by message: the same objects come back.
     expect(collectChatImages([attached, tool])[2]).toBe(images[2])
+  })
+})
+
+describe('collectChatTickets', () => {
+  const call = (
+    functionId: string,
+    input: unknown,
+    output: unknown,
+    createdAt: number,
+  ): Message =>
+    ({
+      id: `${functionId}-${createdAt}`,
+      role: 'function-trigger',
+      functionId,
+      input,
+      output,
+      createdAt,
+    }) as Message
+
+  it('reads its own kanban calls, the latest per ticket winning', () => {
+    const touches = collectChatTickets([
+      call('kanban::ticket::create', { title: 'x' }, { key: 'KAN-9' }, 1),
+      call('kanban::ticket::update', { id: 'KAN-9' }, null, 2),
+      call('kanban::ticket::move', '{"id":"KAN-9","status":"done"}', null, 3),
+      call('kanban::comment::create', { ticket_id: 'uuid-1' }, null, 4),
+      call(
+        'kanban::ticket::create',
+        {},
+        { content: [], details: { key: 'KAN-10' } },
+        5,
+      ),
+    ])
+    expect(touches).toEqual([
+      { ref: 'KAN-9', action: 'moved', at: 3 },
+      { ref: 'uuid-1', action: 'commented', at: 4 },
+      { ref: 'KAN-10', action: 'created', at: 5 },
+    ])
+  })
+
+  it('credits a sub-agent by its instruction or title, a call beating both', () => {
+    const touches = collectChatTickets(
+      [
+        call(
+          'harness::spawn',
+          { task: 'Fix KAN-12 and KAN-13', display: { name: 'Implementer' } },
+          null,
+          1,
+        ),
+        call('kanban::ticket::move', { id: 'KAN-13' }, null, 2),
+      ],
+      [{ name: 'Reviewer', title: 'KAN-14 review', at: 3 }],
+    )
+    expect(touches).toEqual([
+      { ref: 'KAN-12', by: 'Implementer', at: 1 },
+      { ref: 'KAN-13', action: 'moved', at: 2 },
+      { ref: 'KAN-14', by: 'Reviewer', at: 3 },
+    ])
+  })
+
+  it('takes keys and @kanban mentions from what was said', () => {
+    const touches = collectChatTickets([
+      {
+        id: 'u',
+        role: 'user',
+        content: 'Look at KAN-7 and @kanban(id="uuid-2")',
+        createdAt: 1,
+      },
+      {
+        id: 'a',
+        role: 'assistant',
+        content: 'KAN-7 is done; UTF-8 too',
+        createdAt: 2,
+      },
+    ] as Message[])
+    expect(touches).toEqual([
+      { ref: 'KAN-7', at: 2 },
+      { ref: 'uuid-2', at: 1 },
+      { ref: 'UTF-8', at: 2 },
+    ])
+  })
+})
+
+describe('ticketRows', () => {
+  const ticket = (
+    id: string,
+    key: string,
+    deletedAt: string | null = null,
+  ) => ({
+    id,
+    key,
+    title: key,
+    status: 'in_review',
+    priority: 'low',
+    deletedAt,
+  })
+  const board: KanbanBoard = {
+    columns: new Map([['in_review', 'In review']]),
+    tickets: new Map(
+      [
+        ticket('u1', 'KAN-1'),
+        ticket('u2', 'KAN-2'),
+        ticket('u3', 'KAN-3', '2026-10-01'),
+        ticket('u4', 'KAN-4'),
+      ].flatMap((t) => [
+        [t.key, t],
+        [t.id, t],
+      ]),
+    ),
+  }
+
+  it('keeps what the board knows: worked newest first, mentioned, deleted', () => {
+    const rows = ticketRows(
+      [
+        { ref: 'KAN-1', at: 9 },
+        { ref: 'u1', action: 'moved', at: 2 },
+        { ref: 'KAN-2', by: 'Implementer', at: 5 },
+        { ref: 'KAN-3', action: 'created', at: 8 },
+        { ref: 'KAN-4', at: 7 },
+        { ref: 'UTF-8', at: 9 },
+      ],
+      board,
+    )
+    expect(
+      rows.map((row) => [row.ticket.key, row.action ?? row.by ?? '-']),
+    ).toEqual([
+      ['KAN-2', 'Implementer'],
+      ['KAN-1', 'moved'],
+      ['KAN-4', '-'],
+      ['KAN-3', 'created'],
+    ])
+    expect(rows[0].status).toBe('In review')
   })
 })

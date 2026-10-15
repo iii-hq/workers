@@ -52,7 +52,33 @@ function respond(fn: string, payload: Record<string, unknown> = {}) {
   if (fn === 'github::pr::checks') {
     return Promise.resolve({ value: [{ bucket: 'fail' }] })
   }
+  if (fn === 'kanban::config::info') {
+    return Promise.resolve({
+      columns: [
+        { id: 'in_review', label: 'In review' },
+        { id: 'done', label: 'Done' },
+      ],
+    })
+  }
+  if (fn === 'kanban::ticket::list') {
+    return Promise.resolve({
+      tickets: [
+        ticketRow('u-141', 'KAN-141', 'Filters by label', 'in_review', 'high'),
+        ticketRow('u-117', 'KAN-117', 'Empty board', 'done', 'low'),
+      ],
+    })
+  }
   return Promise.reject(new Error(`unexpected ${fn}`))
+}
+
+function ticketRow(
+  id: string,
+  key: string,
+  title: string,
+  status: string,
+  priority: string,
+) {
+  return { id, key, title, status, priority, deleted_at: null }
 }
 
 function chat(id: string, extra: Partial<Conversation> = {}): Conversation {
@@ -83,10 +109,12 @@ async function render(
     conversations = [main],
     active = true,
     githubAvailable = true,
+    kanbanAvailable = false,
   }: {
     conversations?: Conversation[]
     active?: boolean
     githubAvailable?: boolean
+    kanbanAvailable?: boolean
   } = {},
 ) {
   container = document.createElement('div')
@@ -104,6 +132,7 @@ async function render(
           onOpenConversation={() => {}}
           shellAvailable
           githubAvailable={githubAvailable}
+          kanbanAvailable={kanbanAvailable}
           active={active}
         />
       </TooltipProvider>,
@@ -286,6 +315,80 @@ describe('ChatContextPanel', () => {
     expect(img?.closest('button')?.getAttribute('aria-label')).toBe(
       'View shot.png',
     )
+  })
+
+  describe('tickets', () => {
+    const worked: Message[] = [
+      {
+        id: 'f1',
+        role: 'function-trigger',
+        functionId: 'kanban::ticket::move',
+        input: { id: 'KAN-141', status: 'in_review' },
+        output: { key: 'KAN-141' },
+        createdAt: Date.now() - 12 * 60_000,
+      },
+      say('Done with KAN-141; KAN-117 stays as is, and UTF-8 is fine.'),
+    ]
+
+    it('lists worked tickets first and opens one in a Kanban pane', async () => {
+      const view = await render(chat('main', { messages: worked }), {
+        kanbanAvailable: true,
+      })
+      const section = view.querySelector('section[aria-label="Tickets"]')
+      expect(section?.textContent).toContain('Filters by label')
+      expect(section?.textContent).toContain('moved here 12m ago')
+      expect(section?.textContent).toContain('mentioned')
+      expect(section?.textContent).not.toContain('UTF-8')
+      const rows = [
+        ...(section?.querySelectorAll('button[aria-label^="Open"]') ?? []),
+      ]
+      expect(rows.map((row) => row.getAttribute('aria-label'))).toEqual([
+        'Open KAN-141 Filters by label in a new panel (In review)',
+        'Open KAN-117 Empty board in a new panel (Done)',
+      ])
+      expect(
+        section?.querySelector('[aria-label="High priority"]'),
+      ).not.toBeNull()
+      act(() => (rows[0] as HTMLButtonElement).click())
+      expect(mocks.requestPanelOpen).toHaveBeenCalledWith({
+        pageId: 'kanban-ticket',
+        context: { id: 'KAN-141' },
+      })
+    })
+
+    it('shows nothing without the kanban worker or a ticket the board knows', async () => {
+      let view = await render(chat('main', { messages: worked }))
+      expect(view.querySelector('section[aria-label="Tickets"]')).toBeNull()
+      act(() => root?.unmount())
+      container?.remove()
+      view = await render(
+        chat('main', { messages: [say('UTF-8 and ISO-8601')] }),
+        {
+          kanbanAvailable: true,
+        },
+      )
+      expect(view.querySelector('section[aria-label="Tickets"]')).toBeNull()
+    })
+
+    it('holds a skeleton while the board is read, only for a kanban call', async () => {
+      mocks.trigger.mockImplementation((fn: string, payload) =>
+        fn.startsWith('kanban::')
+          ? new Promise(() => {})
+          : respond(fn, payload),
+      )
+      let view = await render(chat('main', { messages: worked }), {
+        kanbanAvailable: true,
+      })
+      expect(
+        view.querySelector('section[aria-label="Tickets"] [aria-hidden]'),
+      ).not.toBeNull()
+      act(() => root?.unmount())
+      container?.remove()
+      view = await render(chat('main', { messages: [say('see KAN-117')] }), {
+        kanbanAvailable: true,
+      })
+      expect(view.querySelector('section[aria-label="Tickets"]')).toBeNull()
+    })
   })
 
   it('asks for a folder when the chat has none', async () => {

@@ -1,5 +1,7 @@
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { createContext, type RefObject, useEffect } from 'react'
 import type { IiiClient } from '@/lib/iii-client'
+import { findMentions } from '@/lib/mentions/token'
 import { belongsToEntry } from '@/lib/sessions/entry-mapper'
 import type {
   Attachment,
@@ -945,4 +947,228 @@ export function collectChatImages(messages: readonly Message[]): Attachment[] {
     images.push(...found)
   }
   return images
+}
+
+// ── tickets ──
+
+/** What this chat did to a ticket, read off its own kanban calls. */
+export type TicketAction =
+  | 'created'
+  | 'updated'
+  | 'moved'
+  | 'commented'
+  | 'deleted'
+  | 'restored'
+
+/** A ticket the chat touched: worked here, by a sub-agent, or mentioned. */
+export interface TicketTouch {
+  /** As the chat named it: a key (KAN-12) or the ticket's uuid. */
+  ref: string
+  /** This chat's own call on it, the latest. */
+  action?: TicketAction
+  /** The sub-agent that works it, by name. */
+  by?: string
+  at: number
+}
+
+/** Worked here beats by a sub-agent beats mentioned. */
+const touchRank = (touch: TicketTouch) => (touch.action ? 2 : touch.by ? 1 : 0)
+
+/** The call's argument naming the ticket (its output, for a create). */
+const KANBAN_CALLS: Record<
+  string,
+  { action: TicketAction; ref: (input: unknown, output: unknown) => unknown }
+> = {
+  'kanban::ticket::create': {
+    action: 'created',
+    ref: (_, output) => field(output, 'key') ?? field(output, 'id'),
+  },
+  'kanban::ticket::update': { action: 'updated', ref: (i) => field(i, 'id') },
+  'kanban::ticket::move': { action: 'moved', ref: (i) => field(i, 'id') },
+  'kanban::comment::create': {
+    action: 'commented',
+    ref: (i) => field(i, 'ticket_id'),
+  },
+  'kanban::ticket::delete': { action: 'deleted', ref: (i) => field(i, 'id') },
+  'kanban::ticket::restore': {
+    action: 'restored',
+    ref: (i) => field(i, 'id'),
+  },
+}
+
+/** Ticket keys as people write them; the board drops look-alikes (UTF-8). */
+const TICKET_KEY = /\b[A-Z][A-Z0-9]{0,9}-\d{1,6}\b/g
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  let parsed = value
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return null
+    }
+  }
+  parsed = unwrapEnvelope(parsed)
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : null
+}
+
+function field(value: unknown, key: string): string | undefined {
+  const found = asRecord(value)?.[key]
+  return typeof found === 'string' && found ? found : undefined
+}
+
+function keysIn(text: string): string[] {
+  return [...new Set(text.match(TICKET_KEY) ?? [])]
+}
+
+/** Tickets one message touches, cached by message like its links. */
+const ticketsByMessage = new WeakMap<Message, TicketTouch[]>()
+
+function messageTickets(message: Message): TicketTouch[] {
+  const cached = ticketsByMessage.get(message)
+  if (cached) return cached
+  const at = message.createdAt
+  const found: TicketTouch[] = []
+  if (message.role === 'function-trigger') {
+    const call = KANBAN_CALLS[message.functionId]
+    const ref = call?.ref(message.input, message.output)
+    if (call && typeof ref === 'string' && ref) {
+      found.push({ ref, action: call.action, at })
+    } else if (message.functionId === 'harness::spawn') {
+      const input = asRecord(message.input)
+      const by = field(input?.display, 'name') ?? 'Sub-agent'
+      const task = input?.task
+      const text = typeof task === 'string' ? task : JSON.stringify(task ?? '')
+      for (const ref of keysIn(text)) found.push({ ref, by, at })
+    }
+  } else if (message.role === 'user' || message.role === 'assistant') {
+    for (const ref of keysIn(message.content)) found.push({ ref, at })
+    for (const mention of findMentions(message.content)) {
+      if (mention.name === 'kanban') found.push({ ref: mention.id, at })
+    }
+  }
+  ticketsByMessage.set(message, found)
+  return found
+}
+
+/**
+ * The tickets a chat touched, one per ref: its own kanban calls (the latest
+ * wins), then sub-agents whose instruction or title names a ticket, then
+ * keys and `@kanban` mentions in what was said. Which refs are tickets at
+ * all is the board's call (see `ticketRows`).
+ */
+export function collectChatTickets(
+  messages: readonly Message[],
+  subagents: readonly { name: string; title: string; at: number }[] = [],
+): TicketTouch[] {
+  const touches = new Map<string, TicketTouch>()
+  const add = (touch: TicketTouch) => {
+    const known = touches.get(touch.ref)
+    if (
+      !known ||
+      touchRank(touch) > touchRank(known) ||
+      (touchRank(touch) === touchRank(known) && touch.at >= known.at)
+    ) {
+      touches.set(touch.ref, touch)
+    }
+  }
+  for (const message of messages) messageTickets(message).forEach(add)
+  for (const subagent of subagents) {
+    for (const ref of keysIn(subagent.title)) {
+      add({ ref, by: subagent.name, at: subagent.at })
+    }
+  }
+  return [...touches.values()]
+}
+
+/** One ticket as the board lists it. */
+export interface KanbanTicket {
+  id: string
+  key: string
+  title: string
+  status: string
+  priority: string
+  deletedAt: string | null
+}
+
+/** The board, enough to name what a chat touched. */
+export interface KanbanBoard {
+  /** Column id → its label. */
+  columns: ReadonlyMap<string, string>
+  /** By key and by uuid. */
+  tickets: ReadonlyMap<string, KanbanTicket>
+}
+
+/** Two calls, whatever the chat touched: the columns and every ticket. */
+export async function readKanbanBoard(
+  trigger: IiiClient['trigger'],
+): Promise<KanbanBoard> {
+  const [info, list] = await Promise.all([
+    trigger<{ columns?: { id: string; label: string }[] }>(
+      'kanban::config::info',
+      {},
+    ),
+    trigger<{ tickets?: Record<string, unknown>[] }>('kanban::ticket::list', {
+      include_deleted: true,
+    }),
+  ])
+  const columns = new Map(
+    (info?.columns ?? []).map((column) => [column.id, column.label]),
+  )
+  const tickets = new Map<string, KanbanTicket>()
+  for (const row of list?.tickets ?? []) {
+    const ticket: KanbanTicket = {
+      id: String(row.id ?? ''),
+      key: String(row.key ?? ''),
+      title: String(row.title ?? ''),
+      status: String(row.status ?? ''),
+      priority: String(row.priority ?? ''),
+      deletedAt: typeof row.deleted_at === 'string' ? row.deleted_at : null,
+    }
+    if (!ticket.key) continue
+    tickets.set(ticket.key, ticket)
+    if (ticket.id) tickets.set(ticket.id, ticket)
+  }
+  return { columns, tickets }
+}
+
+/** A touched ticket the board knows, ready to list. */
+export interface TicketRow extends TicketTouch {
+  ticket: KanbanTicket
+  /** The column's label. */
+  status: string
+}
+
+/**
+ * The touched tickets the board knows, in list order: worked ones (here or
+ * by a sub-agent) newest first, then the mentioned, then the deleted.
+ */
+export function ticketRows(
+  touches: readonly TicketTouch[],
+  board: KanbanBoard,
+): TicketRow[] {
+  const rows = new Map<string, TicketRow>()
+  for (const touch of touches) {
+    const ticket = board.tickets.get(touch.ref)
+    if (!ticket) continue
+    const row: TicketRow = {
+      ...touch,
+      ticket,
+      status: board.columns.get(ticket.status) ?? ticket.status,
+    }
+    // A uuid and a key can name the same ticket: keep the stronger touch.
+    const known = rows.get(ticket.key)
+    if (
+      !known ||
+      touchRank(row) > touchRank(known) ||
+      (touchRank(row) === touchRank(known) && row.at > known.at)
+    ) {
+      rows.set(ticket.key, row)
+    }
+  }
+  const group = (row: TicketRow) =>
+    row.ticket.deletedAt ? 2 : touchRank(row) > 0 ? 0 : 1
+  return [...rows.values()].sort((a, b) => group(a) - group(b) || b.at - a.at)
 }

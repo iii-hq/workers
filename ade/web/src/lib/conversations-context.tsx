@@ -112,6 +112,8 @@ interface ConversationsContextValue extends ConversationsApi {
    * requests in the chat's side panel.
    */
   githubAvailable: boolean
+  /** Whether the optional `kanban` worker is connected: the tickets there. */
+  kanbanAvailable: boolean
   /** Open a chat pinned to this session without replacing the current chat. */
   openConversationInPanel: (sessionId: string) => void
 }
@@ -163,6 +165,13 @@ export function ConversationsProvider({
     useWorkerPresence({
       workerName: 'github',
       watchFnId: 'console::github-watch',
+      enabled: backend.id === 'real',
+    }),
+  )
+  const kanbanAvailable = isWorkerPresent(
+    useWorkerPresence({
+      workerName: 'kanban',
+      watchFnId: 'console::kanban-watch',
       enabled: backend.id === 'real',
     }),
   )
@@ -318,6 +327,7 @@ export function ConversationsProvider({
     worktreeAvailable,
     memoryAvailable,
     githubAvailable,
+    kanbanAvailable,
     openConversationInPanel,
   }
 
