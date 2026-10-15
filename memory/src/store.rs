@@ -66,10 +66,9 @@ struct BankInner {
 struct VectorRecord {
     id: String,
     model: String,
-    /// Memory revision the text was embedded at; an older revision means
-    /// the text changed since, so the vector is stale.
-    #[serde(default)]
-    revision: u64,
+    /// The exact text embedded: the vector is current while the memory
+    /// still has this text (pin/tag/reinforce bumps leave it valid).
+    text: String,
     v: Vec<f32>,
 }
 
@@ -335,8 +334,9 @@ impl Bank {
             index.add(memory);
         }
 
-        // Vector sidecar: last-wins by id, entries for unknown memories
-        // dropped (they belong to trimmed history), corrupt lines skipped.
+        // Vector sidecar: last-wins by id; entries of retired or unknown
+        // memories, of text since edited, and corrupt or pre-text-key lines
+        // are skipped (those memories are backfill work again).
         let mut vectors: HashMap<String, (String, Vec<f32>)> = HashMap::new();
         let vectors_path = dir.join(VECTORS_FILE);
         if vectors_path.exists() {
@@ -347,11 +347,11 @@ impl Bank {
                     continue;
                 }
                 if let Ok(rec) = serde_json::from_str::<VectorRecord>(&line) {
-                    // Keep only vectors embedded at the record's CURRENT
-                    // revision — an edit since the embed makes it stale.
+                    // Keep only vectors of the record's CURRENT text — a
+                    // text edit since the embed makes it stale.
                     let current = memories
                         .get(&rec.id)
-                        .is_some_and(|m| m.revision == rec.revision);
+                        .is_some_and(|m| m.is_live() && m.text == rec.text);
                     if current {
                         vectors.insert(rec.id, (rec.model, rec.v));
                     }
@@ -382,17 +382,20 @@ impl Bank {
         v: Vec<f32>,
     ) -> Result<bool, MemoryError> {
         let mut inner = self.inner.write().await;
-        let revision = match inner.memories.get(id) {
-            Some(m) if m.text == embedded_text => m.revision,
-            // The record vanished, or its text was edited while the embed was
-            // in flight: this vector is of text the record no longer has, and
-            // the record stays listed by `unembedded` for the new text.
-            _ => return Ok(false),
-        };
+        // The record vanished, or its text was edited while the embed was
+        // in flight: this vector is of text the record no longer has, and
+        // the record stays listed by `unembedded` for the new text.
+        if !inner
+            .memories
+            .get(id)
+            .is_some_and(|m| m.is_live() && m.text == embedded_text)
+        {
+            return Ok(false);
+        }
         let line = serde_json::to_string(&VectorRecord {
             id: id.to_string(),
             model: model.to_string(),
-            revision,
+            text: embedded_text.to_string(),
             v: v.clone(),
         })
         .map_err(|e| MemoryError::Storage(format!("serialize vector: {e}")))?;
@@ -468,10 +471,11 @@ impl Bank {
         }
         // The text changed under this id: any stored vector embeds the old
         // text. Drop it so unembedded() re-lists the record for backfill.
-        let stale_vector = inner
-            .memories
-            .get(&memory.id)
-            .is_some_and(|prev| prev.text != memory.text);
+        let stale_vector = !memory.is_live()
+            || inner
+                .memories
+                .get(&memory.id)
+                .is_some_and(|prev| prev.text != memory.text);
         if stale_vector {
             inner.vectors.remove(&memory.id);
         }
@@ -767,6 +771,38 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn retired_records_hold_no_vector_in_ram_or_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("beta to retire");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "m", &m.text, vec![0.5])
+            .await
+            .unwrap();
+        let mut gone = m.clone();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone.clone()).await.unwrap();
+        assert_eq!(bank.vector_count().await, 0, "dropped in RAM");
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0, "and on reopen");
+
+        // A vector landing after the retirement is refused.
+        assert!(!bank
+            .set_vector(&m.id, "m", &m.text, vec![0.5])
+            .await
+            .unwrap());
+        // Revived, the record is backfill work again.
+        let mut back = gone;
+        back.invalid_at = None;
+        back.revision += 1;
+        bank.commit(back).await.unwrap();
+        assert_eq!(bank.unembedded(10, "m").await.len(), 1);
+    }
+
     #[test]
     fn query_tokens_drop_stopwords_but_never_empty_the_query() {
         assert_eq!(
@@ -908,7 +944,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reload_drops_vectors_from_older_revisions() {
+    async fn reopen_keeps_vectors_until_the_text_changes() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
@@ -917,17 +953,41 @@ mod tests {
         bank.set_vector(&m.id, "test-model", &m.text, vec![0.5])
             .await
             .unwrap();
-        // Bump the record AFTER the vector was written.
+        // Reinforce / pin / tag: revision moves, text does not.
+        m.revision += 1;
+        m.pinned = true;
+        bank.commit(m.clone()).await.unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.bank("main").await.unwrap().vector_count().await, 1);
+
+        // A text edit (embed not yet landed) makes the stored vector stale.
+        m.text = "edited memory".into();
         m.revision += 1;
         bank.commit(m.clone()).await.unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0);
+        assert_eq!(bank2.unembedded(10, "").await.len(), 1);
+    }
 
-        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
-        let bank2 = store2.bank("main").await.unwrap();
-        assert_eq!(
-            bank2.vector_count().await,
-            0,
-            "a vector stamped with an older revision is stale on load"
-        );
+    #[tokio::test]
+    async fn legacy_revision_stamped_vectors_are_dropped_for_re_embed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("legacy memory");
+        bank.commit(m.clone()).await.unwrap();
+        std::fs::write(
+            bank.dir().join(VECTORS_FILE),
+            format!(
+                "{{\"id\":\"{}\",\"model\":\"\",\"revision\":0,\"v\":[0.5]}}\n",
+                m.id
+            ),
+        )
+        .unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0);
         assert_eq!(bank2.unembedded(10, "").await.len(), 1);
     }
 
