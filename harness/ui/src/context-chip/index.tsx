@@ -90,9 +90,10 @@ import { TONE_COLOR, toneFor } from '../lib/tone'
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
 const METRICS_FN = 'harness::metrics'
-/** `harness::metrics` re-reads every transcript of the tree; a big tree takes
-    seconds. Past this the skeleton gives way to the error and its retry. */
-const METRICS_TIMEOUT_MS = 30_000
+/** `harness::metrics` re-reads every transcript of the tree: a 179-session
+    tree took over 30 s. Past this the skeleton gives way to the error and its
+    retry. */
+const METRICS_TIMEOUT_MS = 90_000
 /** Phone chrome only (sheet vs dialog), the console's one viewport breakpoint. */
 const PHONE_QUERY = '(max-width: 639px)'
 
