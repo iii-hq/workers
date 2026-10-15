@@ -1210,6 +1210,7 @@ function PullRequestMenu({
           <>
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
+              box
               checked={autoFix}
               disabled={!autoFixAvailable || busy}
               aria-label="Auto-fix"
@@ -1220,6 +1221,7 @@ function PullRequestMenu({
               {reason('fix', autoFixReason)}
             </DropdownMenuCheckboxItem>
             <DropdownMenuCheckboxItem
+              box
               checked={pr.autoMerge}
               disabled={!canWrite || draft}
               aria-label="Merge when ready"

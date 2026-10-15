@@ -464,6 +464,14 @@ describe('ChatContextPanel', () => {
         'Convert to draft',
         'Dismiss',
       ])
+      // The two settings show their box even while off.
+      for (const label of ['Auto-fix', 'Merge when ready']) {
+        expect(item(label)?.getAttribute('role')).toBe('menuitemcheckbox')
+        expect(item(label)?.getAttribute('aria-checked')).toBe('false')
+        expect(
+          item(label)?.querySelector('[data-menu-checkbox]'),
+        ).not.toBeNull()
+      }
     })
 
     it('turns merge when ready on with gh and reads the PR again', async () => {
