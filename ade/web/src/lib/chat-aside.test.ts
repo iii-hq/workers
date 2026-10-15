@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Conversation, Message } from '@/types/chat'
 import {
-  autoFixTriggers,
-  autoFixWatchId,
   capRows,
   collectChatImages,
   collectChatLinks,
@@ -775,48 +773,6 @@ describe('pull request actions', () => {
     )
     expect(await runPullRequestAction(async () => null, pr, 'draft')).toBe(
       'gh could not run.',
-    )
-  })
-
-  it('finds the chat subscriptions that wake it on a PR', () => {
-    const triggers = [
-      {
-        id: 'a',
-        triggerType: 'github::pr::event',
-        config: { watch_id: autoFixWatchId(pr, 'console-1') },
-      },
-      {
-        id: 'b',
-        triggerType: 'github::pr::event',
-        config: { repo: 'O/R', number: 7 },
-      },
-      {
-        id: 'c',
-        triggerType: 'github::pr::event',
-        config: { repo: 'o/r', number: 8 },
-      },
-      {
-        id: 'd',
-        triggerType: 'cron',
-        config: { watch_id: autoFixWatchId(pr, 'console-1') },
-      },
-      {
-        id: 'e',
-        triggerType: 'github::pr::event',
-        fired: true,
-        config: { repo: 'o/r', number: 7 },
-      },
-    ]
-    expect(autoFixTriggers(triggers, pr, 'console-1').map((t) => t.id)).toEqual(
-      ['a'],
-    )
-    expect(autoFixWatchId(pr, 'console-1')).toBe('ade-autofix:console-1:o:r:7')
-    // Two chats, and two repos that a dash would confuse, never share a watch.
-    expect(autoFixWatchId(pr, 'console-2')).not.toBe(
-      autoFixWatchId(pr, 'console-1'),
-    )
-    expect(autoFixWatchId({ ...pr, repo: 'acme/web-app' }, 'c')).not.toBe(
-      autoFixWatchId({ ...pr, repo: 'acme-web/app' }, 'c'),
     )
   })
 

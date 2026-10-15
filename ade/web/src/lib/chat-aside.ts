@@ -955,59 +955,6 @@ export function dismissedPullRequests(
     : []
 }
 
-/** The `github` worker's PR events, which wake a chat subscribed to them. */
-export const PR_EVENT_TRIGGER = 'github::pr::event'
-
-/**
- * The watch a chat's auto-fix arms for a PR: one per chat and PR, so turning
- * it off in one chat never stops another chat's. `:` cannot occur in a
- * GitHub name, so two repos never share an id. ponytail: cut at the worker's
- * 128 characters; only absurdly long names could collide.
- */
-export function autoFixWatchId(pr: PullRequestRef, sessionId: string): string {
-  const [owner, name] = pr.repo.toLowerCase().split('/')
-  return `ade-autofix:${sessionId.slice(-12)}:${owner}:${name}:${pr.number}`.slice(
-    0,
-    128,
-  )
-}
-
-/**
- * The chat's live auto-fix subscription to this PR, by its watch: another
- * subscription to the same PR (the agent's own) is not auto-fix's to show
- * or drop.
- */
-export function autoFixTriggers<
-  T extends { triggerType: string; config?: unknown; fired?: boolean },
->(triggers: readonly T[], pr: PullRequestRef, sessionId: string): T[] {
-  const watchId = autoFixWatchId(pr, sessionId)
-  return triggers.filter(
-    (trigger) =>
-      trigger.triggerType === PR_EVENT_TRIGGER &&
-      !trigger.fired &&
-      asRecord(trigger.config)?.watch_id === watchId,
-  )
-}
-
-/** How long auto-fix lasts: the subscription and the watch end together. */
-const AUTO_FIX_DAYS = 7
-
-/**
- * What the agent is asked to turn auto-fix on: only it can subscribe, so the
- * wake reaches this chat. The trigger goes first, as the worker asks, so no
- * event falls between the watch and the subscription.
- */
-export function autoFixPrompt(pr: PullRequestRef, sessionId: string): string {
-  const watchId = autoFixWatchId(pr, sessionId)
-  const ms = AUTO_FIX_DAYS * 24 * 60 * 60 * 1000
-  return [
-    `Turn on auto-fix for ${pr.url}.`,
-    `1. Subscribe this chat to the \`${PR_EVENT_TRIGGER}\` trigger with config \`{"watch_id":"${watchId}"}\` and lifecycle \`{"expires_in_ms":${ms}}\`.`,
-    `2. Call \`github::pr::watch\` with watch_id \`${watchId}\`, repo \`${pr.repo}\`, number ${pr.number}, stop_on \`"merged"\`, and expires_at ${AUTO_FIX_DAYS} days from now (an absolute RFC 3339 time).`,
-    'When an event wakes you: a failing check, fix it and push to the PR branch; a review comment, address it, push, and reply on the thread; a merge conflict, resolve it and push. Ask me before anything beyond the fix (force-push, settings, secrets).',
-  ].join('\n')
-}
-
 /** What the agent is asked to open a pull request for the folder's branch. */
 export function createPullRequestPrompt(opts: {
   folder: string

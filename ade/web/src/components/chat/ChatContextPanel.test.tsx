@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   askAgent: vi.fn(),
   dismiss: vi.fn(),
   unregister: vi.fn(),
+  autoFix: vi.fn(),
 }))
 
 vi.mock('@/lib/iii-client', () => ({
@@ -61,6 +62,18 @@ function respond(fn: string, payload: Record<string, unknown> = {}) {
       ])
     }
     if (args[1] === 'checks') return out([{ bucket: 'fail' }])
+    if (args[0] === 'api') {
+      return Promise.resolve({
+        value: { exit_code: 0, stdout: 'me\n', stderr: '' },
+      })
+    }
+    if (args[1] === 'view') {
+      return out({
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        reviews: [{ author: { login: 'bot' }, state: 'COMMENTED' }],
+      })
+    }
     return Promise.resolve({ value: { exit_code: 0, stdout: '', stderr: '' } })
   }
   if (fn === 'kanban::config::info') {
@@ -149,6 +162,7 @@ async function render(
           active={active}
           onAskAgent={mocks.askAgent}
           onDismissPullRequest={mocks.dismiss}
+          onAutoFixChange={mocks.autoFix}
         />
       </TooltipProvider>,
     )
@@ -174,6 +188,7 @@ beforeEach(() => {
   mocks.askAgent.mockReset()
   mocks.dismiss.mockReset()
   mocks.unregister.mockReset()
+  mocks.autoFix.mockReset()
 })
 
 afterEach(() => {
@@ -388,63 +403,18 @@ describe('ChatContextPanel', () => {
       expect(ghCalls().filter((c) => c.startsWith('pr list'))).toHaveLength(2)
     })
 
-    it('dismisses a PR and asks the agent to turn auto-fix on', async () => {
-      await open()
-      await act(async () => item('Auto-fix')?.click())
-      expect(mocks.askAgent).toHaveBeenCalledWith(
-        expect.stringContaining('github::pr::watch'),
-        true,
-      )
+    it('dismisses a PR', async () => {
       await open()
       await act(async () => item('Dismiss')?.click())
       expect(mocks.dismiss).toHaveBeenCalledWith('o/r#9')
     })
 
-    it('turns auto-fix off by dropping the subscription and the watch', async () => {
-      const view = await render(chat('main', { workingDir: '/work/repo' }), {
-        triggers: [
-          {
-            id: 'sub-1',
-            triggerType: 'github::pr::event',
-            delivery: 'notify',
-            config: { watch_id: 'ade-autofix:main:o:r:9' },
-          } as unknown as SessionTriggerInfo,
-        ],
-      })
-      const trigger = view.querySelector(
-        'button[aria-label="Actions for o/r#9"]',
-      ) as HTMLButtonElement
-      await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
-      })
-      expect(item('Auto-fix')?.getAttribute('aria-checked')).toBe('true')
-      await act(async () => item('Auto-fix')?.click())
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0))
-      })
-      expect(mocks.unregister).toHaveBeenCalledWith('sub-1')
-      expect(mocks.trigger).toHaveBeenCalledWith('github::pr::unwatch', {
-        watch_id: 'ade-autofix:main:o:r:9',
-      })
-    })
-
-    it('says why auto-fix is off without the github worker', async () => {
+    it('starts auto-fix from where the PR stands, without the github worker', async () => {
       mocks.trigger.mockImplementation((fn: string, payload) =>
         fn === 'shell::exec' && payload.command === 'gh'
-          ? Promise.resolve({
-              exit_code: 0,
-              stdout: JSON.stringify([
-                {
-                  number: 9,
-                  title: 'Via gh',
-                  url: 'https://github.com/o/r/pull/9',
-                  state: 'OPEN',
-                  headRefName: 'feat/x',
-                },
-              ]),
-            })
+          ? respond('github::exec', payload).then(
+              (r) => (r as { value: unknown }).value,
+            )
           : respond(fn, payload),
       )
       const view = await render(chat('main', { workingDir: '/work/repo' }), {
@@ -458,9 +428,49 @@ describe('ChatContextPanel', () => {
           new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
         )
       })
-      expect(item('Auto-fix')?.textContent).toContain('needs the github worker')
-      expect(item('Auto-fix')?.getAttribute('data-disabled')).not.toBeNull()
-      expect(item('Merge when ready')?.getAttribute('data-disabled')).toBeNull()
+      expect(item('Auto-fix')?.getAttribute('data-disabled')).toBeNull()
+      await act(async () => item('Auto-fix')?.click())
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      // Failures already there count as news; old reviews do not.
+      expect(mocks.autoFix).toHaveBeenCalledWith('o/r#9', {
+        url: 'https://github.com/o/r/pull/9',
+        failing: [],
+        reviews: 1,
+        conflict: false,
+        reports: 0,
+      })
+    })
+
+    it('shows auto-fix on from the session and turns it off', async () => {
+      const view = await render(
+        chat('main', {
+          workingDir: '/work/repo',
+          sessionMetadata: {
+            context_autofix: {
+              'o/r#9': {
+                url: 'https://github.com/o/r/pull/9',
+                failing: [],
+                reviews: 0,
+                conflict: false,
+                reports: 0,
+              },
+            },
+          },
+        }),
+      )
+      const trigger = view.querySelector(
+        'button[aria-label="Actions for o/r#9"]',
+      ) as HTMLButtonElement
+      await act(async () => {
+        trigger.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+        )
+      })
+      expect(item('Auto-fix')?.getAttribute('aria-checked')).toBe('true')
+      await act(async () => item('Auto-fix')?.click())
+      expect(mocks.autoFix).toHaveBeenCalledWith('o/r#9', null)
     })
 
     it('offers to create a PR for a branch with work and none of its own', async () => {
@@ -493,27 +503,6 @@ describe('ChatContextPanel', () => {
       )
       const view = await render(chat('main', { workingDir: '/work/repo' }))
       expect(view.textContent).not.toContain('Create pull request')
-    })
-
-    it('asks for auto-fix once while the agent turns it on', async () => {
-      const view = await open()
-      await act(async () => item('Auto-fix')?.click())
-      const trigger = view.querySelector(
-        'button[aria-label="Actions for o/r#9"]',
-      ) as HTMLButtonElement
-      await act(async () => {
-        trigger.dispatchEvent(
-          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
-        )
-      })
-      expect(item('Auto-fix')?.textContent).toContain('turning on…')
-      expect(item('Auto-fix')?.getAttribute('data-disabled')).not.toBeNull()
-      await act(async () => item('Auto-fix')?.click())
-      expect(mocks.askAgent).toHaveBeenCalledTimes(1)
-      expect(mocks.askAgent.mock.calls[0][0]).toContain(
-        'ade-autofix:main:o:r:9',
-      )
-      expect(mocks.askAgent.mock.calls[0][0]).toContain('"merged"')
     })
 
     it('offers no PR creation while the branch has an open one', async () => {

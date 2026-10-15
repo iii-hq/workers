@@ -115,7 +115,11 @@ let container: HTMLElement | null = null
 const pending = vi.fn()
 let pendingQuote: SideChatQuote | null = null
 
-function render(request: AsideRequest | null = null) {
+function render(
+  request: AsideRequest | null = null,
+  conversation: Conversation = main,
+  onAskAgent?: (text: string, send: boolean) => void,
+) {
   if (!container) {
     container = document.createElement('div')
     document.body.appendChild(container)
@@ -125,7 +129,7 @@ function render(request: AsideRequest | null = null) {
     root?.render(
       <TooltipProvider delayDuration={0}>
         <ChatAside
-          conversation={main}
+          conversation={conversation}
           side="right"
           phone={false}
           sheetOpen={false}
@@ -136,6 +140,7 @@ function render(request: AsideRequest | null = null) {
           pendingQuote={pendingQuote}
           onPendingQuoteChange={pending}
           onJumpToMessage={() => {}}
+          onAskAgent={onAskAgent}
         />
       </TooltipProvider>,
     ),
@@ -450,5 +455,102 @@ describe('ChatAside context', () => {
     act(() => button('collapse Side panel')?.click())
     await settle()
     expect(panel()?.getAttribute('data-active')).not.toBe('true')
+  })
+})
+
+describe('ChatAside auto-fix rounds', () => {
+  it('tells the agent what is new on a watched PR, once, and keeps the state', async () => {
+    const gh: string[] = []
+    mocks.trigger.mockImplementation(
+      (fn: string, payload: Record<string, unknown>) => {
+        if (fn !== 'shell::exec') return Promise.reject(new Error(fn))
+        const args = payload.args as string[]
+        gh.push(args.slice(0, 2).join(' '))
+        const out = (value: unknown) =>
+          Promise.resolve({ exit_code: 0, stdout: JSON.stringify(value) })
+        if (args[0] === 'api')
+          return Promise.resolve({ exit_code: 0, stdout: 'me\n' })
+        if (args[1] === 'view') {
+          return out({
+            state: 'OPEN',
+            mergeable: 'MERGEABLE',
+            reviews: [
+              { author: { login: 'me' }, state: 'COMMENTED' },
+              { author: { login: 'bot' }, state: 'COMMENTED' },
+            ],
+          })
+        }
+        return out([
+          { name: 'lint', bucket: 'fail' },
+          { name: 'test', bucket: 'pass' },
+        ])
+      },
+    )
+    const ctx = { ...makeCtx([main]), shellAvailable: true }
+    mocks.ctx = ctx
+    const ask = vi.fn()
+    const watched = chat('main', {
+      ...main,
+      workingDir: '/work/repo',
+      sessionMetadata: {
+        context_autofix: {
+          'o/r#9': {
+            url: 'https://github.com/o/r/pull/9',
+            failing: [],
+            reviews: 0,
+            conflict: false,
+            reports: 0,
+          },
+        },
+      },
+    })
+    render(null, watched, ask)
+    await settle()
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask.mock.calls[0][0]).toContain('https://github.com/o/r/pull/9')
+    expect(ask.mock.calls[0][0]).toContain('a check fails: lint')
+    expect(ask.mock.calls[0][0]).toContain('a new review')
+    expect(ask.mock.calls[0][1]).toBe(true)
+    expect(ctx.setSessionMetadata).toHaveBeenCalledWith('main', {
+      context_autofix: {
+        'o/r#9': {
+          url: 'https://github.com/o/r/pull/9',
+          failing: ['lint'],
+          reviews: 1,
+          conflict: false,
+          reports: 1,
+        },
+      },
+    })
+    expect(gh).toContain('pr checks')
+  })
+
+  it('waits while the agent is working', async () => {
+    mocks.trigger.mockReset()
+    mocks.ctx = { ...makeCtx([main]), shellAvailable: true }
+    const ask = vi.fn()
+    render(
+      null,
+      chat('main', {
+        ...main,
+        status: 'working',
+        workingDir: '/work/repo',
+        sessionMetadata: {
+          context_autofix: {
+            'o/r#9': {
+              url: 'u',
+              failing: [],
+              reviews: 0,
+              conflict: false,
+              reports: 0,
+            },
+          },
+        },
+      }),
+      ask,
+    )
+    await settle()
+    expect(ask).not.toHaveBeenCalled()
+    expect(mocks.trigger).not.toHaveBeenCalled()
   })
 })
