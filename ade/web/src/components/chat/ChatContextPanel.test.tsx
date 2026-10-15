@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import { resetFoldedGroups } from '@/lib/context-groups'
 import type { Conversation, Message } from '@/types/chat'
 
 ;(
@@ -182,6 +183,8 @@ const byText = (text: string) =>
   ) as HTMLElement | undefined
 
 beforeEach(() => {
+  window.localStorage.clear()
+  resetFoldedGroups()
   mocks.trigger.mockReset()
   mocks.trigger.mockImplementation(respond)
   mocks.requestPanelOpen.mockReset()
@@ -320,9 +323,23 @@ describe('ChatContextPanel', () => {
     ).toBe(false)
   })
 
-  it('shows the pictures of the chat as a grid that opens them', async () => {
+  it('lists the pictures and files of the chat under Assets', async () => {
+    const write = (
+      id: string,
+      functionId: string,
+      path: string,
+      output: unknown = { bytes_written: 5 },
+    ): Message => ({
+      id,
+      role: 'function-trigger',
+      functionId,
+      input: { path, content: 'hello' },
+      output,
+      createdAt: 2,
+    })
     const view = await render(
       chat('main', {
+        workingDir: '/work/repo',
         messages: [
           {
             id: 'u1',
@@ -337,17 +354,73 @@ describe('ChatContextPanel', () => {
                 type: 'image/png',
                 dataUrl: 'data:image/png;base64,AAAA',
               },
+              {
+                id: 'a2',
+                name: 'spec.pdf',
+                size: 2048,
+                type: 'application/pdf',
+                attachmentId: 'att-2',
+              },
             ],
           },
+          write('w1', 'shell::fs::write', '/tmp/out/report.html'),
+          // Inside the folder: already among its changes.
+          write('w2', 'shell::fs::write', '/work/repo/src/a.ts'),
+          write('w3', 'shell::fs::write', '/tmp/out/failed.txt', {
+            error: { kind: 'io' },
+          }),
+          write('w4', 'sandbox::fs::write', '/workspace/out.txt'),
         ],
       }),
     )
-    expect(view.textContent).toContain('Images')
+    const assets = view.querySelector('section[aria-label="Assets"]')
+    expect(assets?.querySelector('button')?.textContent).toContain('3')
     const img = view.querySelector('img[src="data:image/png;base64,AAAA"]')
-    expect(img).not.toBeNull()
     expect(img?.closest('button')?.getAttribute('aria-label')).toBe(
       'View shot.png',
     )
+    expect(assets?.textContent).toContain('2kb')
+    expect(assets?.textContent).not.toContain('a.ts')
+    expect(assets?.textContent).not.toContain('failed.txt')
+    expect(assets?.textContent).not.toContain('out.txt')
+    expect(
+      view.querySelector('button[aria-label="Download spec.pdf"]'),
+    ).not.toBeNull()
+    act(() =>
+      (
+        view.querySelector(
+          'button[aria-label="Open report.html in the IDE"]',
+        ) as HTMLButtonElement
+      ).click(),
+    )
+    expect(mocks.requestPanelOpen).toHaveBeenCalledWith({
+      pageId: 'ide',
+      context: { type: 'file', path: '/tmp/out/report.html' },
+    })
+  })
+
+  it('folds a group to its brief and remembers it', async () => {
+    const main = chat('main', {
+      messages: [say('see https://example.com/a and https://docs.rs/b')],
+    })
+    let view = await render(main)
+    const header = () =>
+      view.querySelector(
+        'section[aria-label="Links"] > button',
+      ) as HTMLButtonElement
+    expect(header().getAttribute('aria-expanded')).toBe('true')
+    act(() => header().click())
+    expect(header().getAttribute('aria-expanded')).toBe('false')
+    expect(header().textContent).toContain('example.com · docs.rs')
+    expect(view.querySelector('section[aria-label="Links"] a')).toBeNull()
+    expect(byText('https://example.com/a')).toBeUndefined()
+
+    act(() => root?.unmount())
+    container?.remove()
+    view = await render(main)
+    expect(header().getAttribute('aria-expanded')).toBe('false')
+    act(() => header().click())
+    expect(header().getAttribute('aria-expanded')).toBe('true')
   })
 
   describe('pull request actions', () => {

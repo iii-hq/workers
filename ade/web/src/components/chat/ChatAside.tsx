@@ -3,6 +3,8 @@ import {
   ArrowLeft,
   BookmarkPlus,
   Check,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Clock,
   Copy,
   EllipsisVertical,
@@ -50,6 +52,11 @@ import {
   withSideChatQuote,
 } from '@/lib/chat-aside'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import {
+  allGroupsFolded,
+  foldAllGroups,
+  useFoldedGroups,
+} from '@/lib/context-groups'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
@@ -479,6 +486,22 @@ export function ChatAside({
     />
   )
 
+  const allFolded = allGroupsFolded(useFoldedGroups())
+  const foldAll =
+    tab === 'context' ? (
+      <IconButton
+        label={allFolded ? 'Expand all groups' : 'Collapse all groups'}
+        className={phone ? 'size-11 shrink-0' : 'size-7 shrink-0'}
+        onClick={() => foldAllGroups(!allFolded)}
+      >
+        {allFolded ? (
+          <ChevronsUpDown aria-hidden />
+        ) : (
+          <ChevronsDownUp aria-hidden />
+        )}
+      </IconButton>
+    ) : null
+
   const content =
     tab === 'context' ? (
       <ChatContextPanel
@@ -669,7 +692,9 @@ export function ChatAside({
                   : discard()
               }
             />
-          ) : null
+          ) : (
+            foldAll
+          )
         }
       >
         {content}
@@ -692,7 +717,12 @@ export function ChatAside({
       narrowMode="drawer"
       closeDrawerOnSelect={false}
       expandRequest={expandSeq}
-      header={tabs}
+      header={
+        <>
+          {tabs}
+          {foldAll}
+        </>
+      }
       collapsedActions={
         <>
           <IconButton

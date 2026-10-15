@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { type SideChatQuote, sideChatsMadeHere } from '@/lib/chat-aside'
+import { resetFoldedGroups } from '@/lib/context-groups'
 import type { Conversation } from '@/types/chat'
 import type { AsideRequest } from './ChatAside'
 
@@ -199,6 +200,7 @@ beforeEach(() => {
   pendingQuote = null
   phone = false
   window.localStorage.clear()
+  resetFoldedGroups()
   sideChatsMadeHere.clear()
   mocks.trigger.mockReset()
   mocks.setSessionMeta.mockReset()
@@ -501,6 +503,16 @@ describe('ChatAside context', () => {
     act(() => button('collapse Side panel')?.click())
     await settle()
     expect(panel()?.getAttribute('data-active')).not.toBe('true')
+  })
+  it('folds and unfolds every Context group', () => {
+    mocks.ctx = makeCtx([main])
+    render()
+    act(() => button('Collapse all groups')?.click())
+    expect(
+      JSON.parse(window.localStorage.getItem('iii-context-collapsed') ?? '[]'),
+    ).toContain('links')
+    act(() => button('Expand all groups')?.click())
+    expect(window.localStorage.getItem('iii-context-collapsed')).toBe('[]')
   })
 })
 
