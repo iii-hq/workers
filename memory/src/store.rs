@@ -83,7 +83,8 @@ struct VectorLine<'a> {
 
 /// Rewrite the sidecar to exactly the vectors `open` kept: temp file,
 /// fsync, rename over. A crash leaves the old file or the new one, never a
-/// torn one; a leftover temp is truncated by the next attempt.
+/// torn one; a failed rewrite removes its temp (a partial copy would only
+/// eat the disk the authoritative memories.jsonl appends need).
 fn compact_vectors(
     path: &Path,
     vectors: &HashMap<String, (String, Vec<f32>)>,
@@ -94,15 +95,20 @@ fn compact_vectors(
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _gate = GATE.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = path.with_extension("jsonl.tmp");
-    let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-    for (id, (model, v)) in vectors {
-        // Kept means it embeds the record's current text.
-        let text = memories.get(id).map_or("", |m| m.text.as_str());
-        serde_json::to_writer(&mut out, &VectorLine { id, model, text, v })?;
-        out.write_all(b"\n")?;
-    }
-    out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-    std::fs::rename(&tmp, path)
+    let rewrite = || -> std::io::Result<()> {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        for (id, (model, v)) in vectors {
+            // Kept means it embeds the record's current text.
+            let text = memories.get(id).map_or("", |m| m.text.as_str());
+            serde_json::to_writer(&mut out, &VectorLine { id, model, text, v })?;
+            out.write_all(b"\n")?;
+        }
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    rewrite().inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -863,6 +869,30 @@ mod tests {
         let bank3 = store3.bank("main").await.unwrap();
         assert_eq!(bank3.vector_count().await, 2);
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_failed_compaction_removes_its_temp_and_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut m = memory("alpha");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "m", &m.text, vec![0.1])
+            .await
+            .unwrap();
+        m.text = "alpha edited".into();
+        bank.commit(m.clone()).await.unwrap(); // its line is dead now
+        let path = bank.dir().join(VECTORS_FILE);
+        let tmp = path.with_extension("jsonl.tmp");
+        // Every write to the temp fails with ENOSPC.
+        std::os::unix::fs::symlink("/dev/full", &tmp).unwrap();
+
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        assert!(reopened.bank("main").await.is_ok());
+        assert!(std::fs::symlink_metadata(&tmp).is_err(), "temp removed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
     }
 
     #[tokio::test]
