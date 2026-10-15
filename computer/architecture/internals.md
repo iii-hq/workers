@@ -95,14 +95,26 @@ Observe walks breadth-first; find lets xa11y's matcher drive the same
 memoized, budgeted children closure (real providers mint a fresh handle on
 every fetch, so children are fetched once per parent). Walks are bounded by
 node count, absolute depth and a 5 s deadline. Secret values are dropped
-before the selector sees them (macOS `AXSecureTextField`, the AT-SPI password role, and a password-like
-name everywhere; on Linux the vendored provider never even reads a password field's text), and selectors are restricted to normalized attribute names,
-because xa11y resolves unknown names against the unredacted `raw` map. On
+before the selector sees them (macOS `AXSecureTextField`, or a macOS element
+whose `AXSubrole` read went unanswered, the AT-SPI password role, and a
+password-like name everywhere; on Linux the vendored provider never even reads
+a password field's text), and selectors are restricted to normalized attribute
+names, because xa11y resolves unknown names against the unredacted `raw` map.
+Before a write the macOS provider (vendored, `vendor/xa11y-macos/PATCHES.md`)
+re-reads the element's `AXRole`, refuses `select` on an element that exposed
+no `AXSelected` and `set_value` where `AXValue` is not settable; the engine
+refuses `set_value` on a text field observed read-only (Windows, Linux). On
 Windows the process is pinned to per-monitor-v2 DPI awareness before any
 capture, input or accessibility call.
 
 ## Known limits
 
+- **macOS writes AppKit drops.** AppKit answers success to an `AXSelected` or
+  `AXValue` write the element refuses, and settability is true for any class
+  that overrides the setter, AccessKit's included. So on macOS an AccessKit
+  read-only field, or an item that is not selectable, still answers
+  `dispatched … effect not verified` with nothing sent; `find` is the check.
+  The fix belongs upstream in accesskit_macos.
 - **Windows passwords.** A password field's value is hidden only when its
   name looks like a password (or the app masks it): xa11y does not read UIA's
   `IsPassword`. The fix belongs upstream.
@@ -212,7 +224,11 @@ window and toggle Caps Lock, and the script's `IsEnabled` write would persist
 the script) and Windows; the `rust` job also runs the vendored crate's tests
 (`cargo test --locked --manifest-path vendor/xa11y-linux/Cargo.toml --lib`)
 and a `x86_64-unknown-linux-musl` build, which fails if anything links a
-system C library.
+system C library. The macOS `computer-native` job runs the vendored
+xa11y-macos patch tests (`cargo test --locked --manifest-path
+vendor/xa11y-macos/Cargo.toml --lib vendored_patches`); its upstream tests
+build a provider, need TCC grants and run only on a Mac
+(`vendor/xa11y-macos/PATCHES.md`).
 
 On a Mac, from `computer/` in a terminal with Accessibility and Screen
 Recording:

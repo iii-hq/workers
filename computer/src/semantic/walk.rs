@@ -198,6 +198,11 @@ pub fn is_secret(el: &ElementData) -> bool {
     // maps to a plain text field.
     if raw("ax_role") == Some("AXSecureTextField")
         || raw("ax_subrole") == Some("AXSecureTextField")
+        // macOS could not read the subrole (vendor/xa11y-macos M4): it may
+        // say AXSecureTextField, so fail closed.
+        // ponytail: hides any such node's value, not only a text field's;
+        // AppKit answers a missing subrole as absent, so this is rare.
+        || el.raw.contains_key("ax_subrole_error")
         || raw("atspi_role")
             .is_some_and(|r| r.eq_ignore_ascii_case("password text") || r == "role_num:40")
     {
@@ -387,6 +392,25 @@ mod tests {
         redact(&mut secure);
         assert_eq!(secure.value, None);
         assert!(!secure.raw.contains_key("AXValue"));
+
+        // macOS could not read the subrole: hidden; no subrole at all: kept.
+        let mut unread = ElementData::for_role(Role::TextField);
+        unread.value = Some("hunter2".into());
+        unread.raw.insert("ax_role".into(), "AXTextField".into());
+        unread
+            .raw
+            .insert("ax_subrole_error".into(), (-25204).into());
+        unread.raw.insert("AXValue".into(), "hunter2".into());
+        redact(&mut unread);
+        assert_eq!(unread.value, None);
+        assert!(!unread.raw.contains_key("AXValue"));
+        let mut plain = ElementData::for_role(Role::TextField);
+        plain.value = Some("x".into());
+        plain.raw.insert("ax_role".into(), "AXTextField".into());
+        plain.raw.insert("AXValue".into(), "x".into());
+        redact(&mut plain);
+        assert_eq!(plain.value.as_deref(), Some("x"));
+        assert!(plain.raw.contains_key("AXValue"));
 
         let mut by_role = ElementData::for_role(Role::TextField);
         by_role

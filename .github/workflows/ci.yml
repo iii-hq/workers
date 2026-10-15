@@ -411,6 +411,13 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo test --locked --all-features
 
+      # computer vendors xa11y-macos (patched; see
+      # computer/vendor/xa11y-macos/PATCHES.md) outside its workspace. Only
+      # the patch tests: the upstream ones that build a provider need TCC.
+      - name: Vendored xa11y-macos patch tests (computer)
+        if: runner.os == 'macOS'
+        run: cargo test --locked --manifest-path vendor/xa11y-macos/Cargo.toml --lib vendored_patches
+
       - name: Linux desktop runtime (Xvfb, D-Bus, AT-SPI, the fixture's X libraries)
         if: runner.os == 'Linux'
         run: |

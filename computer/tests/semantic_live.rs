@@ -352,6 +352,53 @@ async fn a_disabled_button_is_refused_without_effect() {
 
 #[tokio::test]
 #[ignore]
+async fn select_refuses_what_has_no_selection_and_flags_a_selected_item() {
+    let f = Fixture::start().await;
+    let s = session();
+    // A button has no selection state on any platform: refused, no request.
+    let out = find(&s, f.pid(), "button[name='Salvar']").await;
+    let err = s
+        .act(first_ref(&out.text), Verb::Select, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::NotSupported, "{}", err.message);
+    settle();
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
+    // Um starts selected: dispatched, said so, and AccessKit does nothing.
+    let out = find(&s, f.pid(), "[name='Um'][selected='true']").await;
+    assert_eq!(out.matches, 1, "{}", out.text);
+    let got = s
+        .act(first_ref(&out.text), Verb::Select, None)
+        .await
+        .unwrap();
+    assert!(got.contains("already selected"), "{got}");
+    settle();
+    assert!(f.effects().is_empty(), "{:?}", f.requests());
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_read_only_field_is_refused_without_effect() {
+    let f = Fixture::start().await;
+    let s = session();
+    let out = find(&s, f.pid(), "text_field[name='Fixo']").await;
+    assert_eq!(out.matches, 1, "{}", out.text);
+    let got = s
+        .act(first_ref(&out.text), Verb::SetValue, Some("novo".into()))
+        .await;
+    // ponytail: on macOS an AccessKit node answers AXValue settable whatever
+    // it accepts (the setter is overridden), so the act is dispatched
+    // unverified and AppKit drops it (vendor/xa11y-macos PATCHES.md, M2).
+    if cfg!(not(target_os = "macos")) {
+        assert_eq!(got.unwrap_err().code, Code::NotSupported);
+    }
+    settle();
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
+    wait_matches(&s, f.pid(), "text_field[name='Fixo'][value='fixo']", 1).await;
+}
+
+#[tokio::test]
+#[ignore]
 async fn a_removed_element_is_a_stale_ref() {
     let f = Fixture::start().await;
     let s = session();

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use xa11y_core::{App, ElementData, Provider, SelectorGroup};
+use xa11y_core::{App, ElementData, Provider, Role, SelectorGroup};
 
 use super::outline::{app_line, element_line, label, Outline};
 use super::refs::next_ref;
@@ -341,6 +341,19 @@ impl Engine {
                 format!("{r} was disabled when observed"),
             ));
         }
+        // A text field observed read-only takes no set_value: UIA forwards
+        // ValuePattern.SetValue anyway (AccessKit checks only disabled), and an
+        // AT-SPI bridge may ack and drop it. macOS reports editable by role, so
+        // this never fires there (vendor/xa11y-macos M2 asks at dispatch).
+        if verb == Verb::SetValue
+            && matches!(el.role, Role::TextField | Role::TextArea)
+            && !el.states.editable
+        {
+            return Err(SemanticError::new(
+                Code::NotSupported,
+                format!("{r} was read-only when observed"),
+            ));
+        }
         let advertised = el.actions.iter().any(|a| a == verb.action_name());
         let p = &snap.provider;
         let result = match (verb, text) {
@@ -357,9 +370,16 @@ impl Engine {
             (Verb::Select, _) => p.select(el),
         };
         result.map_err(|e| map_act_error(&e, verb.as_str(), advertised))?;
+        // Still dispatched: UIA's Select also clears the other items, and an
+        // AT-SPI select is app-defined. Say so instead of skipping it.
+        let already = if verb == Verb::Select && el.states.selected {
+            " — it was already selected when observed, so the app may have done nothing"
+        } else {
+            ""
+        };
         Ok(format!(
-            "dispatched {} on {r} ({}); effect not verified — confirm at the end with \
-             computer::find (it replaces current refs)",
+            "dispatched {} on {r} ({}){already}; effect not verified — confirm at the end \
+             with computer::find (it replaces current refs)",
             verb.as_str(),
             label(el)
         ))
@@ -1055,14 +1075,53 @@ mod tests {
         let w = t.add(0, Role::Window, "W");
         t.add(w, Role::CheckBox, "Ativo");
         t.add(w, Role::ListItem, "Dois");
+        let um = t.add(w, Role::ListItem, "Um");
+        t.edit(um, |e| e.states.selected = true);
         let t = Arc::new(t);
         let (mut e, _) = engine(&t);
         let out = e.snapshot(&query(None), deadline(), true).unwrap();
         e.act(&ref_of(&out.text, "Ativo"), Verb::Toggle, None)
             .unwrap();
-        e.act(&ref_of(&out.text, "Dois"), Verb::Select, None)
+        let dois = e
+            .act(&ref_of(&out.text, "Dois"), Verb::Select, None)
             .unwrap();
-        assert_eq!(t.actions(), vec!["toggle:Ativo", "select:Dois"]);
+        assert!(!dois.contains("already selected"), "{dois}");
+        // An item already selected is still dispatched, once, and says so.
+        let um = e.act(&ref_of(&out.text, "Um"), Verb::Select, None).unwrap();
+        assert!(
+            um.contains("already selected") && um.contains("effect not verified"),
+            "{um}"
+        );
+        assert_eq!(
+            t.actions(),
+            vec!["toggle:Ativo", "select:Dois", "select:Um"]
+        );
+    }
+
+    #[test]
+    fn a_read_only_text_field_is_refused_without_dispatch() {
+        let t = FakeTree::new("App", 1);
+        let w = t.add(0, Role::Window, "W");
+        for (role, name) in [(Role::TextField, "Fixo"), (Role::TextArea, "Notas")] {
+            let n = t.add(w, role, name);
+            t.edit(n, |e| e.states.editable = false);
+        }
+        // Not a text role: every backend reports it not editable, by role.
+        t.add(w, Role::ComboBox, "Cidade");
+        let t = Arc::new(t);
+        let (mut e, _) = engine(&t);
+        let out = e.snapshot(&query(None), deadline(), true).unwrap();
+        for name in ["Fixo", "Notas"] {
+            let err = e
+                .act(&ref_of(&out.text, name), Verb::SetValue, Some("x"))
+                .unwrap_err();
+            assert_eq!(err.code, Code::NotSupported, "{name}");
+            assert!(err.message.contains("read-only"), "{}", err.message);
+        }
+        assert!(t.actions().is_empty(), "{:?}", t.actions());
+        e.act(&ref_of(&out.text, "Cidade"), Verb::SetValue, Some("x"))
+            .unwrap();
+        assert_eq!(t.actions(), vec!["set_value=x:Cidade"]);
     }
 
     #[test]
