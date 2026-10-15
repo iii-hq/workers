@@ -106,6 +106,11 @@ fn key(label: &'static str, pattern: &str) -> Rule {
     rule(label, pattern, 0, true, any)
 }
 
+/// The keys of a `key=value` credential. `(?:\b|_)`: `\b` never matches
+/// after `_` (`DB_PASSWORD=`), and `password` needs no left edge at all
+/// (`PGPASSWORD=`). ASCII `\b`: Unicode sees no edge between CJK and ASCII.
+const CREDENTIAL_KEYS: &str = r#"(?:(?:(?-u:\b)|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|token|secret)|password|passwd)(?-u:\b)"#;
+
 /// Order matters: structural shapes first, so a PEM block or a credentialed
 /// URL is taken whole before a key rule nibbles at it; specific prefixes
 /// before the generic `sk-`.
@@ -204,16 +209,32 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         ),
         key("shopify_token", r"shpat_[a-fA-F0-9]{32}"),
         // `api_key: …`, `password=…`, `"token": "…"`: the key stays, the
-        // value goes — when the value looks like a credential.
+        // value goes — when the value looks like a credential. A quoted
+        // value is taken whole first (`password="hunter2 123secret"` would
+        // otherwise leave the words after the space).
         rule(
             "credential",
-            // `(?:\b|_)`: `\b` never matches after `_` (`DB_PASSWORD=`), and
-            // `password` needs no left edge at all (`PGPASSWORD=`). ASCII
-            // `\b`: Unicode sees no edge between CJK and ASCII. The value
-            // may hold `$ & < >` (common in passwords); `[ ] { } \`` end it,
-            // so `${VAR}` and a placeholder never match, and a trailing `.`
-            // stays with the sentence. References are `credential_like`'s.
-            r#"(?i)(?:(?:(?-u:\b)|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|token|secret)|password|passwd)(?-u:\b)"?\s*[:=]\s*["']?([^\s,;"'\[\]{}`]{5,}[^\s,;"'\[\]{}`.])"#,
+            &format!(r#"(?i){CREDENTIAL_KEYS}"?\s*[:=]\s*"([^"\n]{{6,}})""#),
+            1,
+            false,
+            credential_like,
+        ),
+        rule(
+            "credential",
+            &format!(r#"(?i){CREDENTIAL_KEYS}'?\s*[:=]\s*'([^'\n]{{6,}})'"#),
+            1,
+            false,
+            credential_like,
+        ),
+        // Unquoted: the value may hold `$ & < >` (common in passwords);
+        // `[ ] { } \`` end it, so `${VAR}` and a placeholder never match,
+        // and a trailing `.` stays with the sentence. References are
+        // `credential_like`'s.
+        rule(
+            "credential",
+            &format!(
+                r#"(?i){CREDENTIAL_KEYS}"?\s*[:=]\s*["']?([^\s,;"'\[\]{{}}`]{{5,}}[^\s,;"'\[\]{{}}`.])"#
+            ),
             1,
             false,
             credential_like,
@@ -382,6 +403,8 @@ mod tests {
             ("credential", "api_key=Zx81!kLm0Pq".into()),
             ("credential", r#""password": "hunter2!x""#.into()),
             ("credential", "my password is hunter2!".into()),
+            ("credential", r#"password="hunter2 123secret""#.into()),
+            ("credential", "api_key: 'zx81 kLm0 Pq!x'".into()),
             ("credential", "MY_SERVICE_API_KEY=abc123xyz789qq".into()),
             ("credential", "export DB_PASSWORD=Tr0ub4dor&3xyz".into()),
             ("credential", "DB password=Pa$$w0rd2024".into()),
@@ -441,6 +464,10 @@ mod tests {
         assert_eq!(
             redact(&pg("admin:p4ss@w0rd@db:5432/app?ssl=1")).text,
             pg("[REDACTED:url_credentials]@db:5432/app?ssl=1")
+        );
+        assert_eq!(
+            redact(r#"password="hunter2 123secret" then"#).text,
+            r#"password="[REDACTED:credential]" then"#
         );
         assert_eq!(
             redact("api_key: Zx81!kLm0Pq").text,
