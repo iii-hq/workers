@@ -375,9 +375,13 @@ export function ChatView({
   const connectionState = conversationsCtx?.connectionState
 
   // The side panel (Context + Side chat) rides beside a real, writable chat;
-  // a side chat itself has none.
-  const asideEnabled =
+  // a side chat itself has none. It shows once the chat has started: before
+  // that there is nothing to read or to fork.
+  const asideAvailable =
     !side && !readOnly && backend.id === 'real' && conversationsCtx !== null
+  const asideEnabled =
+    asideAvailable &&
+    (conversation.started === true || conversation.messages.length > 0)
   const phoneViewport = useMediaQuery(MOBILE_LAYOUT_QUERY)
   const [asideRequest, setAsideRequest] = useState<AsideRequest | null>(null)
   const [asideSheetOpen, setAsideSheetOpen] = useState(false)
@@ -3404,34 +3408,40 @@ export function ChatView({
       ) : null}
     </section>
   )
-  if (!asideEnabled) return view
+  if (!asideAvailable) return view
+  // The frame stays from the first render, so the panel arriving with the
+  // first send does not remount the chat under it.
   return (
     <div
       className={`flex min-h-0 min-w-0 flex-1${asideSide === 'left' ? ' flex-row-reverse' : ''}`}
     >
       {view}
-      <SelectionToolbar read={readSelection} onAsk={askInSideChat} />
-      <ChatAside
-        conversation={conversation}
-        side={asideSide}
-        phone={phoneViewport}
-        sheetOpen={asideSheetOpen}
-        onSheetOpenChange={setAsideSheetOpen}
-        request={asideRequest}
-        triggers={mergedTriggers}
-        onUnregisterTrigger={handleUnregisterTrigger}
-        landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
-        pendingQuote={pendingQuote}
-        onPendingQuoteChange={setPendingQuote}
-        onJumpToMessage={(id) => {
-          // A source outside the loaded history would leave the jump
-          // pending until some later page happened to load it.
-          if (messagesRef.current.some((message) => message.id === id)) {
-            setQuoteFocusId(id)
-          }
-        }}
-        onAskAgent={askAgent}
-      />
+      {asideEnabled ? (
+        <>
+          <SelectionToolbar read={readSelection} onAsk={askInSideChat} />
+          <ChatAside
+            conversation={conversation}
+            side={asideSide}
+            phone={phoneViewport}
+            sheetOpen={asideSheetOpen}
+            onSheetOpenChange={setAsideSheetOpen}
+            request={asideRequest}
+            triggers={mergedTriggers}
+            onUnregisterTrigger={handleUnregisterTrigger}
+            landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
+            pendingQuote={pendingQuote}
+            onPendingQuoteChange={setPendingQuote}
+            onJumpToMessage={(id) => {
+              // A source outside the loaded history would leave the jump
+              // pending until some later page happened to load it.
+              if (messagesRef.current.some((message) => message.id === id)) {
+                setQuoteFocusId(id)
+              }
+            }}
+            onAskAgent={askAgent}
+          />
+        </>
+      ) : null}
     </div>
   )
 }

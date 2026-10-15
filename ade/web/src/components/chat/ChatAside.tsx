@@ -198,9 +198,6 @@ export function ChatAside({
   const [composerKey, setComposerKey] = useState(0)
   const [kept, setKept] = useState<{ id: string } | null>(null)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
-  const mainStarted =
-    conversation.started === true || conversation.messages.length > 0
-
   const { watchConversation } = ctx
   const watchedForkId = fork?.id ?? null
   useEffect(
@@ -347,9 +344,9 @@ export function ChatAside({
       // Choosing the side chat is choosing to type in it.
       setFocusSide(true)
       // Not before the list is in: an existing side chat would go unseen.
-      if (mainStarted && !listLoading) void ensureFork()
+      if (!listLoading) void ensureFork()
     },
-    [setTab, phone, onSheetOpenChange, mainStarted, listLoading, ensureFork],
+    [setTab, phone, onSheetOpenChange, listLoading, ensureFork],
   )
 
   // An outside request (a message's "Ask in side chat", the palette).
@@ -635,19 +632,10 @@ export function ChatAside({
         ) : (
           <div className="flex flex-1 flex-col justify-center px-4">
             <SideChatHint
-              action={
-                mainStarted
-                  ? {
-                      label: 'Start side chat',
-                      onClick: () => void ensureFork(),
-                    }
-                  : undefined
-              }
-              description={
-                mainStarted
-                  ? undefined
-                  : 'Send a message in this chat first: the side chat starts from it.'
-              }
+              action={{
+                label: 'Start side chat',
+                onClick: () => void ensureFork(),
+              }}
             />
           </div>
         )}
@@ -741,16 +729,14 @@ export function ChatAside({
 
 function SideChatHint({
   action,
-  description = 'Sees this conversation up to now and has the same tools. Nothing here lands in the main chat.',
 }: {
   action?: { label: string; onClick: () => void }
-  description?: string
 }) {
   return (
     <EmptyState
       icon={MessagesSquare}
       title="Ask on the side"
-      description={description}
+      description="Sees this conversation up to now and has the same tools. Nothing here lands in the main chat."
       action={action}
     />
   )
