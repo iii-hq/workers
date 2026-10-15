@@ -1111,6 +1111,92 @@ export function collectChatImages(messages: readonly Message[]): Attachment[] {
   return images
 }
 
+// ── files ──
+
+/** A file the chat holds: attached by the person or written by the agent. */
+export interface ChatFile {
+  /** Absolute for a written file; the file name for an attachment. */
+  path: string
+  name: string
+  /** Bytes, when the call or the attachment says. */
+  size: number | null
+  at: number
+  /** Set for an attachment: its stored original downloads. */
+  attachment?: Attachment
+}
+
+/** Host writes only: a sandbox's paths do not open in the IDE. */
+const WRITE_CALL = /^(shell::)?fs::write$/
+
+function writes(message: FunctionTriggerMessage): ChatFile[] {
+  const output = message.output
+  if (
+    !WRITE_CALL.test(message.functionId) ||
+    output === undefined ||
+    (output !== null && typeof output === 'object' && 'error' in output)
+  ) {
+    return []
+  }
+  const input = (message.input ?? {}) as {
+    path?: unknown
+    content?: unknown
+    files?: unknown
+  }
+  const entries = Array.isArray(input.files) ? input.files : [input]
+  const files: ChatFile[] = []
+  for (const entry of entries as { path?: unknown; content?: unknown }[]) {
+    if (typeof entry?.path !== 'string' || !entry.path.startsWith('/')) continue
+    files.push({
+      path: entry.path,
+      name: entry.path.slice(entry.path.lastIndexOf('/') + 1),
+      size:
+        typeof entry.content === 'string'
+          ? new TextEncoder().encode(entry.content).length
+          : null,
+      at: message.createdAt,
+    })
+  }
+  return files
+}
+
+/**
+ * Files in the conversation, newest first: what the person attached (images
+ * aside, they have their own strip) and what the agent wrote outside the
+ * project folder. A write inside it is already among the folder's changes.
+ */
+export function collectChatFiles(
+  messages: readonly Message[],
+  workingDir: string | null,
+): ChatFile[] {
+  const inside = workingDir ? `${workingDir.replace(/\/+$/, '')}/` : null
+  const files: ChatFile[] = []
+  const seen = new Set<string>()
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const found =
+      message.role === 'user'
+        ? (message.attachments ?? [])
+            .filter((a) => !a.type.startsWith('image/'))
+            .map((a) => ({
+              path: a.name,
+              name: a.name,
+              size: a.size,
+              at: message.createdAt,
+              attachment: a,
+            }))
+        : message.role === 'function-trigger'
+          ? writes(message).filter((f) => !inside || !f.path.startsWith(inside))
+          : []
+    for (const file of found) {
+      const key = file.attachment ? `a:${file.attachment.id}` : file.path
+      if (seen.has(key)) continue
+      seen.add(key)
+      files.push(file)
+    }
+  }
+  return files
+}
+
 // ── tickets ──
 
 /** What this chat did to a ticket, read off its own kanban calls. */

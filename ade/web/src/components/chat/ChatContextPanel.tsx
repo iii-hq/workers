@@ -9,7 +9,11 @@ import {
   EllipsisVertical,
   ExternalLink,
   EyeOff,
+  FileCode,
   FileDiff,
+  FileIcon,
+  FileSpreadsheet,
+  FileText,
   Folder,
   GitBranch,
   GitPullRequest,
@@ -62,7 +66,9 @@ import {
 } from '@/lib/auto-fix'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
+  type ChatFile,
   capRows,
+  collectChatFiles,
   collectChatImages,
   collectChatLinks,
   collectChatTickets,
@@ -86,12 +92,22 @@ import {
   ticketRows,
 } from '@/lib/chat-aside'
 import { copyTextToClipboard } from '@/lib/clipboard'
+import {
+  type ContextGroup,
+  toggleGroup,
+  useFoldedGroups,
+} from '@/lib/context-groups'
+import { openChatFile } from '@/lib/file-navigation'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
 import type { Attachment, Conversation } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
-import { isLazyImage } from './AttachmentChip'
+import {
+  downloadStoredAttachment,
+  formatSize,
+  isLazyImage,
+} from './AttachmentChip'
 import {
   collectSubagentDescendants,
   deriveSubagentVisualStatus,
@@ -109,8 +125,8 @@ const deltaClassName = 'font-mono text-[11px] leading-4 tabular-nums'
 /** Sub-agents are what people come here for; every other section shows less. */
 const SUBAGENT_CAP = 5
 const SECTION_CAP = 3
-/** Two rows of the three-across image grid. */
-const IMAGE_CAP = 6
+/** One row of the four-across strip: three pictures and a "+N". */
+const IMAGE_CAP = 3
 
 interface ChatContextPanelProps {
   conversation: Conversation
@@ -346,6 +362,10 @@ export function ChatContextPanel({
     () => collectChatImages(conversation.messages),
     [conversation.messages],
   )
+  const files = useMemo(
+    () => collectChatFiles(conversation.messages, workingDir),
+    [conversation.messages, workingDir],
+  )
 
   const subagents = useMemo(() => {
     const { descendants } = collectSubagentDescendants(
@@ -434,6 +454,9 @@ export function ChatContextPanel({
   const triggerRows = capRows(liveTriggers, SECTION_CAP, !!expanded.triggers)
   const linkRows = capRows(links, SECTION_CAP, !!expanded.links)
   const imageRows = capRows(images, IMAGE_CAP, !!expanded.images)
+  const fileRows = capRows(files, SECTION_CAP, !!expanded.files)
+  const ticketsWorked = tickets.filter((row) => row.action || row.by).length
+  const failingPrs = listedPrs.filter((pr) => pr.failing > 0).length
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-2 pt-1 pb-3">
@@ -456,7 +479,20 @@ export function ChatContextPanel({
         />
       ) : null}
 
-      <Section label="Project">
+      <Section
+        id="project"
+        label="Project"
+        brief={
+          workingDir ? (
+            <span className="truncate font-mono text-ink-ghost">
+              {branch ?? basename(workingDir)}
+              {summary && summary.changed > 0
+                ? ` · ${summary.changed} changed`
+                : ''}
+            </span>
+          ) : null
+        }
+      >
         {workingDir ? (
           <>
             <DropdownMenu>
@@ -619,14 +655,22 @@ export function ChatContextPanel({
       </Section>
 
       {ticketsLoading ? (
-        <Section label="Tickets">
+        <Section id="tickets" label="Tickets">
           <div className="flex flex-col gap-2 px-3 py-1.5" aria-hidden>
             <Skeleton className="h-3 w-44" />
             <Skeleton className="h-3 w-28" />
           </div>
         </Section>
       ) : tickets.length > 0 ? (
-        <Section label="Tickets" count={tickets.length}>
+        <Section
+          id="tickets"
+          label="Tickets"
+          count={tickets.length}
+          brief={plural([
+            [ticketsWorked, 'worked here', 'worked here'],
+            [tickets.length - ticketsWorked, 'mentioned', 'mentioned'],
+          ])}
+        >
           {ticketRowsShown.shown.map((row) => (
             <TicketItem key={row.ticket.key} row={row} />
           ))}
@@ -641,7 +685,19 @@ export function ChatContextPanel({
       ) : null}
 
       {listedPrs.length > 0 ? (
-        <Section label="Pull requests" count={listedPrs.length}>
+        <Section
+          id="prs"
+          label="Pull requests"
+          count={listedPrs.length}
+          brief={
+            failingPrs > 0 ? (
+              <>
+                <StatusDot tone="alert" />
+                <span className="text-ink">{failingPrs} failing</span>
+              </>
+            ) : null
+          }
+        >
           {prRows.shown.map((pr) => (
             <Row
               key={`${pr.repo}#${pr.number}`}
@@ -703,29 +759,67 @@ export function ChatContextPanel({
         </Section>
       ) : null}
 
-      {images.length > 0 ? (
-        <Section label="Images" count={images.length}>
-          <div className="grid grid-cols-3 gap-1.5 px-2.5 pt-1">
-            {imageRows.shown.map((image) => (
-              <ImageTile
-                key={image.id}
-                image={image}
-                sessionId={conversation.id}
-              />
-            ))}
-          </div>
+      {images.length + files.length > 0 ? (
+        <Section
+          id="assets"
+          label="Assets"
+          count={images.length + files.length}
+          brief={plural([
+            [images.length, 'image', 'images'],
+            [files.length, 'file', 'files'],
+          ])}
+        >
+          {images.length > 0 ? (
+            <div className="grid grid-cols-4 gap-1.5 px-2.5 pt-1 pb-1">
+              {imageRows.shown.map((image) => (
+                <ImageTile
+                  key={image.id}
+                  image={image}
+                  sessionId={conversation.id}
+                />
+              ))}
+              {imageRows.hidden > 0 ? (
+                <button
+                  type="button"
+                  aria-label={`Show ${imageRows.hidden} more images`}
+                  onClick={() => toggle('images')}
+                  className="flex aspect-square items-center justify-center rounded-sm bg-surface font-mono text-xs text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                >
+                  +{imageRows.hidden}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {/* The "+N" tile unfolds the pictures; this folds them back. */}
+          {expanded.images ? (
+            <ShowMore
+              hidden={0}
+              expanded
+              total={images.length}
+              cap={IMAGE_CAP}
+              onToggle={() => toggle('images')}
+            />
+          ) : null}
+          {fileRows.shown.map((file) => (
+            <FileRow
+              key={file.attachment ? file.attachment.id : file.path}
+              file={file}
+              sessionId={conversation.id}
+            />
+          ))}
           <ShowMore
-            hidden={imageRows.hidden}
-            expanded={!!expanded.images}
-            total={images.length}
-            cap={IMAGE_CAP}
-            onToggle={() => toggle('images')}
+            hidden={fileRows.hidden}
+            expanded={!!expanded.files}
+            total={files.length}
+            cap={SECTION_CAP}
+            onToggle={() => toggle('files')}
           />
         </Section>
       ) : null}
 
       {subagents.length > 0 ? (
         <Section
+          id="subagents"
           label="Sub-agents"
           count={subagents.length}
           extra={
@@ -763,7 +857,16 @@ export function ChatContextPanel({
       ) : null}
 
       {liveTriggers.length > 0 ? (
-        <Section label="Triggers" count={liveTriggers.length}>
+        <Section
+          id="triggers"
+          label="Triggers"
+          count={liveTriggers.length}
+          brief={
+            <span className="truncate font-mono text-ink-ghost">
+              {[...new Set(liveTriggers.map((t) => t.triggerType))].join(' · ')}
+            </span>
+          }
+        >
           {triggerRows.shown.map((trigger) => {
             const label = trigger.label ?? trigger.action ?? trigger.triggerType
             return (
@@ -813,7 +916,18 @@ export function ChatContextPanel({
       ) : null}
 
       {links.length > 0 ? (
-        <Section label="Links" count={links.length}>
+        <Section
+          id="links"
+          label="Links"
+          count={links.length}
+          brief={
+            <span className="truncate font-mono text-ink-ghost">
+              {[...new Set(links.map((link) => link.host))]
+                .slice(0, 2)
+                .join(' · ')}
+            </span>
+          }
+        >
           {linkRows.shown.map((link) => (
             <Row
               key={link.url}
@@ -1149,29 +1263,66 @@ function PullRequestMenu({
   )
 }
 
+/** `3 worked here · 2 mentioned`, leaving out the parts that are zero. */
+function plural(parts: [number, string, string][]): string | null {
+  const text = parts
+    .filter(([n]) => n > 0)
+    .map(([n, one, many]) => `${n} ${n === 1 ? one : many}`)
+    .join(' · ')
+  return text || null
+}
+
+/**
+ * A group whose header folds it. Folded, the header keeps a one-line brief
+ * of what is inside, so a failing check or a running agent stays in sight.
+ * Which groups are folded is remembered in this browser, for every chat.
+ */
 function Section({
+  id,
   label,
   count,
   extra,
+  brief,
   children,
 }: {
+  id: ContextGroup
   label: string
   count?: number
   extra?: ReactNode
+  brief?: ReactNode
   children: ReactNode
 }) {
+  const open = !useFoldedGroups().has(id)
   return (
     <section aria-label={label} className="flex flex-col">
-      <div className={cn(uiClasses.listGroupLabel, 'flex items-center gap-2')}>
-        <span className="flex-1">{label}</span>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => toggleGroup(id)}
+        className={cn(
+          uiClasses.listGroupLabel,
+          'flex items-center gap-2 rounded-sm text-left hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus pointer-coarse:min-h-11',
+        )}
+      >
+        <span className="shrink-0">{label}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-[11px] font-normal whitespace-nowrap">
+          {open ? null : brief}
+        </span>
         {extra}
         {count !== undefined ? (
           <span className="font-mono text-[11px] font-normal text-ink-ghost tabular-nums">
             {count}
           </span>
         ) : null}
-      </div>
-      <div className={uiClasses.tree}>{children}</div>
+        <ChevronDown
+          aria-hidden
+          className={cn(
+            'size-4 shrink-0 text-ink-ghost motion-safe:transition-transform',
+            !open && '-rotate-90',
+          )}
+        />
+      </button>
+      {open ? <div className={uiClasses.tree}>{children}</div> : null}
     </section>
   )
 }
@@ -1356,6 +1507,71 @@ function ShowMore({
         />
       </span>
     </button>
+  )
+}
+
+const FILE_ICONS: [RegExp, typeof FileIcon][] = [
+  [/\.(pdf|md|txt|docx?)$/i, FileText],
+  [/\.(csv|tsv|xlsx?)$/i, FileSpreadsheet],
+  [/\.(html?|json|jsx?|tsx?|css|ya?ml|toml|sh|py|rs)$/i, FileCode],
+]
+
+/**
+ * A file of the conversation. A written one opens in the IDE and copies its
+ * path; an attachment downloads its stored original.
+ */
+function FileRow({ file, sessionId }: { file: ChatFile; sessionId: string }) {
+  const Icon =
+    FILE_ICONS.find(([pattern]) => pattern.test(file.name))?.[1] ?? FileIcon
+  const stored = file.attachment?.attachmentId
+  const size =
+    file.size !== null ? (
+      <span className={uiClasses.treeItemMeta}>{formatSize(file.size)}</span>
+    ) : null
+  if (file.attachment) {
+    return (
+      <Row
+        icon={<Icon aria-hidden />}
+        label={file.name}
+        description="Attached"
+        ariaLabel={stored ? `Download ${file.name}` : file.name}
+        onActivate={
+          stored
+            ? () =>
+                // ponytail: a failed download stays quiet here; the chip in
+                // the transcript shows why.
+                void downloadStoredAttachment(
+                  sessionId,
+                  stored,
+                  file.name,
+                ).catch(() => {})
+            : undefined
+        }
+        meta={size}
+      />
+    )
+  }
+  const ago = formatRelative(file.at)
+  return (
+    <Row
+      icon={<Icon aria-hidden />}
+      label={file.name}
+      title={file.path}
+      ariaLabel={`Open ${file.name} in the IDE`}
+      description={
+        <>
+          <span className="shrink-0">
+            Written {ago === 'just now' ? ago : `${ago} ago`} ·
+          </span>
+          <span className="truncate font-mono text-ink-ghost">
+            {parentDir(file.path)}
+          </span>
+        </>
+      }
+      onActivate={() => openChatFile({ path: file.path }, null)}
+      meta={size}
+      actions={<CopyAction text={file.path} label="Copy path" />}
+    />
   )
 }
 
