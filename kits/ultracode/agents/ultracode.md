@@ -5,6 +5,7 @@ icon: agent
 color: purple
 extends: iii
 reasoning_effort: high
+skills_index: false
 composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=4 verify=on verifier=ultracode-qa judges= deadline_min=20 critic=on budget_usd= notify="
 functions:
   - harness::spawn
