@@ -113,7 +113,8 @@ capture, input or accessibility call.
   `AXValue` write the element refuses, and settability is true for any class
   that overrides the setter, AccessKit's included. So on macOS an AccessKit
   read-only field, or an item that is not selectable, still answers
-  `dispatched … effect not verified` with nothing sent; `find` is the check.
+  `dispatched … effect not verified`: the write is sent, AppKit drops it, and
+  the app sees no request; `find` is the check.
   The fix belongs upstream in accesskit_macos.
 - **Windows passwords.** A password field's value is hidden only when its
   name looks like a password (or the app masks it): xa11y does not read UIA's
