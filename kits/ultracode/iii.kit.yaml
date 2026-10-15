@@ -9,8 +9,7 @@ workers:
   harness: ^1.8.53
   # No caret: harness pulls state@latest, and ^0.22 would block 0.23.
   state: ">=0.22.18"
-  # Needs kanban::ticket::links and add_labels / remove_labels (iii-hq/workers#1384).
-  # Pin to the first kanban release that includes #1384 (0.1.20 does not); update this when kanban is released.
+  # 0.1.21: subtasks + parent_id (#1396), compact writes (#1400), add_labels / remove_labels (#1384).
   kanban: ^0.1.21
   # shell::exec and coder::* preloaded by the work and verify tiers. No caret: projects pin
   # ide@latest, and ^0.12 would hold it below 0.13. Not `shell` (a registry alias) or `coder`.

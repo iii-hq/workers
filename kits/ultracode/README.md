@@ -14,7 +14,7 @@ No `workflow` worker, code runner or fp pipeline: just `harness`, `state`, `kanb
 
 ## Install
 
-Not in the registry yet: the command below works once `iii-hq/ultracode@0.1.0` is published (it needs the first kanban release with `kanban::ticket::links`).
+Not in the registry yet: the command below works once `iii-hq/ultracode@0.1.0` is published.
 
 ```
 iii trigger directory::download-kit kit=iii-hq/ultracode apply=true --timeout-ms 1200000
@@ -44,6 +44,8 @@ args: max_rounds=2 concurrency=4 verifier=ultracode-qa budget_usd=5
 | `max_items` | 5 × K | cap on tickets the run creates; K = tickets per wave = min(concurrency, 8), or min(concurrency, ⌊8/J⌋) with J judges |
 | `budget_usd` | – | soft cap: checked with `harness::metrics` before each work wave and at each round close; no new work wave starts once it is reached. When a model has no catalog pricing or usage is missing, the cost is a lower bound (marked incomplete when the harness total is null; one generation without usage is left out silently), so the cap can be overshot |
 | `notify` | – | a function id called with the final report (e.g. a Slack or email send) |
+| `project` | – | an existing kanban project (id or name) to file the run ticket and every item under |
+| `release` | – | an existing kanban release (id or name), the same way. Agents can't create projects or releases: make them in the console first |
 
 **With hard caps:** console runs have only the soft `budget_usd`. For a hard ceiling, start the run from the CLI (or any non-agent client):
 ```
@@ -53,26 +55,26 @@ iii trigger harness::send --json '{"message":"<goal + args>","model":"<provider:
 
 ## The board
 
-- The run ticket is titled `ultracode: <goal>` with the label `uc:run`. Its page lists every run item under linked tickets, and each round adds a summary comment with the cost.
-- Run items are titled `[KAN-7] …` (the run key). The To do lane, in board order, is the queue.
+- The run ticket is titled `ultracode: <goal>` with the label `uc:run`. Every run item is one of its subtasks: its page lists them with a done/total progress bar, and each round adds a summary comment with the cost. Filter the board by the run ticket to see only the run.
+- The run's subtasks in To do, in board order, are the queue.
 - **Route a ticket:** set its assignee to a work tier (`ultracode-worker*` or `ultracode-impl*`). Any other assignee (e.g. kanban's `backend-engineer`) does not run that profile: the ticket runs as `ultracode-impl` when its Deliverable changes code or files, else as `ultracode-worker`, with a comment saying so. A new assignee takes effect on the next attempt that starts after the previous attempt's session has stopped; the session view keeps showing the first tier's name and model. Add your own tiers as `agents/ultracode-impl-<name>.md` with `extends: ultracode-impl` (or `ultracode-worker`) and a `model`.
-- **Steer between rounds:** add a `[KAN-7] …` ticket to To do, drag To do cards to reorder, comment on a ticket to steer its retry, drag a Backlog card to To do to re-queue it (a `stuck` card runs again only after its sub-agent session has stopped; until then it goes back to Backlog).
-- **Don't** drag In progress or In review cards: the orchestrator's next write wins. Move a queued card to Backlog to skip it (it is skipped from its wave on). A deleted card leaves the run and is listed as `deleted` in the report. Deleting the run ticket only stops writes to it (round comments, report, final move); the items keep moving and the report goes only to the chat and to `notify`.
+- **Steer between rounds:** add a subtask on the run ticket's page (it starts in the first column) and drag it to To do, drag To do cards to reorder, comment on a ticket to steer its retry, drag a Backlog card to To do to re-queue it (a `stuck` card runs again only after its sub-agent session has stopped; until then it goes back to Backlog).
+- **Don't** drag In progress or In review cards: the orchestrator's next write wins. Move a queued card to Backlog to skip it (it is skipped from its wave on). A deleted card, or one detached from the run ticket, leaves the run and is listed as `removed` in the report. Deleting the run ticket only stops writes to it (round comments, report, final move) and new items; the existing items keep moving and the report goes only to the chat and to `notify`.
 - Outcomes: Done carries `verified` or `accepted`; Backlog carries `blocked`, `failed`, `unverified`, `unfinished` or `stuck`. The orchestrator edits only these labels, so your own labels stay.
 
 ## Prerequisites
 
-- kanban's default column ids: `backlog`, `todo`, `in_progress`, `in_review`, `done`.
+- kanban's default column ids: `backlog`, `todo`, `in_progress`, `in_review`, `done`, with `done_status: done` (the default, the last column) so the run ticket's progress counts finished items.
 - state with the kv adapter (the redis adapter refuses `state::barrier`), `store_method: file_based` (the default; `in_memory` loses barrier progress and results on restart) and `triggers_enabled: true` (the default).
 - **Approval gate.** Allow these to run without a prompt:
   - `state::barrier`, unattended: the harness calls it on every state write in a wave's scope.
   - for sub-agents: `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, `shell::exec`, `coder::read-file` (plus `coder::create-file` and `coder::update-file` for `ultracode-impl`, and `state::get` for verifiers), and whatever else the work needs. A held call in a sub-agent never expires; a wave held on approvals ends the run as `blocked`.
-  - for the orchestrator: `harness::spawn`, `harness::metrics`, `state::compare-and-set`, `kanban::ticket::links`, `harness::stop`, and `directory::agents::get` when `judges=` is used. Without a rule, each `harness::stop` of a timed-out child waits for your approval. The repository rule set (`iii-permissions.yaml`) denies it with `'!harness::stop'` and the first matching rule wins: to allow it, put `- harness::stop` above that line (the allow then applies to every agent). If you keep the deny, timed-out children are parked as `stuck`.
-- **Trust.** Any agent allowed `kanban::ticket::create` can queue `[KEY]` work, which then runs with the orchestrator's permissions.
+  - for the orchestrator: `harness::spawn`, `harness::metrics`, `state::compare-and-set`, `kanban::ticket::list`, `harness::stop`, and `directory::agents::get` when `judges=` is used. Without a rule, each `harness::stop` of a timed-out child waits for your approval. The repository rule set (`iii-permissions.yaml`) denies it with `'!harness::stop'` and the first matching rule wins: to allow it, put `- harness::stop` above that line (the allow then applies to every agent). If you keep the deny, timed-out children are parked as `stuck`.
+- **Trust.** Any agent allowed `kanban::ticket::create` or `kanban::ticket::update` can add a subtask to the run ticket, which then runs with the orchestrator's permissions.
 
 ## How it works
 
-1. Each round takes a snapshot of the run's To do tickets (`kanban::ticket::links` on the run ticket) and runs it in waves of `concurrency`.
+1. Each round takes a snapshot of the run ticket's To do subtasks (`kanban::ticket::list` with `parent_id`) and runs it in waves of `concurrency`.
 2. Per wave, the orchestrator arms one `state` wake gated by `state::barrier` with a deadline, moves the tickets to In progress and spawns one hidden leaf per ticket, picked by the ticket's assignee.
 3. Each leaf reads its ticket, does it, posts one comment and writes one result document with set-if-absent `state::compare-and-set`.
 4. The barrier wakes the orchestrator once when every result is in, or the deadline does. It reads all results with one `state::list`. A missing, malformed or rewritten result is null: the child is stopped if still running (a stop ends its turn, not `shell::exec_bg` jobs it started) and the ticket is retried next round in the same session while rounds remain, or parked as `stuck` if it cannot be stopped.
