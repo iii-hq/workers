@@ -1,7 +1,9 @@
 # Vendored xa11y-macos 0.15.2: patches
 
 Base: crates.io `xa11y-macos` 0.15.2 (MIT, `LICENSE` from the upstream
-`v0.15.2` tag; the crates.io tarball lacks it). `Cargo.lock` is the tarball's.
+`v0.15.2` tag; the crates.io tarball lacks it). `Cargo.lock` is the tarball's,
+with `crossbeam-epoch` bumped to 0.9.21 (RUSTSEC-2026-0204; the repo audits
+every lockfile).
 
 Re-applying on an upgrade: start from the new pristine crate, hand-copy this
 `Cargo.toml`, redo every item below, then run the checks at the end. Patch
