@@ -41,10 +41,13 @@ The native driver does the work no guest does for it:
   uses, so a click on a scaled display lands where the model saw it. Never
   multiply by a scale factor, and never click by AT-SPI bounds (GTK4 reports
   (0,0) for every element).
-- On macOS every move waits until the OS reports the pointer at the target:
-  a synthetic move lands asynchronously, while `enigo` 0.3 posts a button at
-  the position it reads back (and a scroll carries the current one), so an
-  immediate press or scroll hits where the pointer was.
+- On macOS the pointer goes straight through CoreGraphics, every event
+  carrying its own position, and a drag posts dragged events between press
+  and release. `enigo` 0.3 reads the pointer back through
+  `NSEvent::mouseLocation`, which lags a synthetic move and, in a process
+  with no AppKit run loop, keeps the screen geometry from launch (clicks miss
+  after a display change), and it posts a drag as plain moves. The keyboard
+  and Windows stay on `enigo`.
 
 ### Linux
 

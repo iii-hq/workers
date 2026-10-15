@@ -1,5 +1,5 @@
-//! The macOS/Windows half of the native host: capture via `xcap`, mouse and
-//! keyboard via `enigo`.
+//! The macOS/Windows half of the native host: capture via `xcap`, keyboard
+//! via `enigo`, the pointer via CoreGraphics on macOS and `enigo` on Windows.
 //!
 //! `enigo` state is not `Send`, so an `Enigo` is created, used and dropped
 //! inside each call. On macOS the worker process needs Screen Recording
@@ -10,9 +10,7 @@
 //! inherit, so it false-negatives on a capture that actually works; a missing
 //! grant instead surfaces as a wallpaper-only image.
 
-use std::time::{Duration, Instant};
-
-use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use xcap::Monitor;
 
 use super::{pin_process_dpi, Btn, Grab};
@@ -207,18 +205,24 @@ pub fn grab(_: &Conn, pinned_id: Option<u32>, override_idx: Option<u32>) -> Resu
     })
 }
 
+/// Without Accessibility, macOS drops synthetic input while the posting call
+/// still succeeds, so the agent would think a click landed when it did not.
+/// Fail clearly instead.
+fn preflight() -> Result<(), String> {
+    if perms::accessibility_granted() {
+        return Ok(());
+    }
+    Err(
+        "Accessibility is not granted to this process, so macOS is silently \
+         dropping synthetic input. Enable it in System Settings > Privacy & \
+         Security > Accessibility for the app running this worker, then retry."
+            .to_string(),
+    )
+}
+
 /// Run `f` with a fresh `Enigo`, after preflighting Accessibility.
 fn with_enigo(f: impl FnOnce(&mut Enigo) -> Result<(), String>) -> Result<(), String> {
-    // Without Accessibility, macOS drops the event and enigo reports ok, so
-    // the agent thinks a click landed when it did not. Fail clearly instead.
-    if !perms::accessibility_granted() {
-        return Err(
-            "Accessibility is not granted to this process, so macOS is silently \
-             dropping synthetic input. Enable it in System Settings > Privacy & \
-             Security > Accessibility for the app running this worker, then retry."
-                .to_string(),
-        );
-    }
+    preflight()?;
     let mut enigo =
         Enigo::new(&Settings::default()).map_err(|e| format!("enigo init failed: {e}"))?;
     f(&mut enigo)
@@ -228,78 +232,270 @@ fn input_err(e: enigo::InputError) -> String {
     format!("input failed: {e}")
 }
 
-/// Move the pointer, and on macOS wait until the OS reports it there. The
-/// window server applies a synthetic move asynchronously, while enigo 0.3
-/// posts a button at the position it reads back (`NSEvent::mouseLocation`)
-/// and a new scroll event carries the current position: either one, sent right
-/// after the move, lands where the pointer was. ±1 absorbs the truncation of a
-/// fractional pointer position.
-fn move_abs(e: &mut Enigo, (x, y): (i32, i32)) -> Result<(), String> {
-    e.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
-    if cfg!(not(target_os = "macos")) {
-        return Ok(());
+pub fn click(_: &Conn, at: (i32, i32), b: Btn, count: u8) -> Result<(), String> {
+    pointer::click(at, b, count)
+}
+
+pub fn move_to(_: &Conn, at: (i32, i32)) -> Result<(), String> {
+    pointer::move_to(at)
+}
+
+pub fn scroll(_: &Conn, at: (i32, i32), sx: i64, sy: i64) -> Result<(), String> {
+    pointer::scroll(at, sx, sy)
+}
+
+pub fn drag(_: &Conn, from: (i32, i32), to: (i32, i32), b: Btn) -> Result<(), String> {
+    pointer::drag(from, to, b)
+}
+
+/// macOS pointer input straight through CoreGraphics: every event carries its
+/// own position, so nothing reads the pointer back. enigo 0.3 does, through
+/// `NSEvent::mouseLocation`, whose screen geometry a process without an AppKit
+/// run loop never updates after a display change (clicks then miss by the
+/// height difference), right after a synthetic move the window server has not
+/// applied yet (clicks land where the pointer was), and it picks moved vs
+/// dragged from a button state that lags the press (drags arrive as moves).
+#[cfg(target_os = "macos")]
+mod pointer {
+    use std::ffi::c_void;
+    use std::time::Duration;
+
+    use super::{preflight, Btn};
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(super) struct Point {
+        pub(super) x: f64,
+        pub(super) y: f64,
     }
-    let start = Instant::now();
-    loop {
-        let (cx, cy) = e.location().map_err(input_err)?;
-        if (cx - x).abs() <= 1 && (cy - y).abs() <= 1 {
-            return Ok(());
+
+    /// One mouse event to post. Down/Up carry their click count.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(super) enum Ev {
+        Move(Point),
+        Down(Btn, Point, i64),
+        Up(Btn, Point, i64),
+        Drag(Btn, Point),
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventCreateMouseEvent(
+            source: *const c_void,
+            kind: u32,
+            at: Point,
+            button: u32,
+        ) -> *mut c_void;
+        fn CGEventCreateScrollWheelEvent2(
+            source: *const c_void,
+            units: u32,
+            wheel_count: u32,
+            wheel1: i32,
+            wheel2: i32,
+            wheel3: i32,
+        ) -> *mut c_void;
+        fn CGEventSetLocation(event: *mut c_void, at: Point);
+        fn CGEventSetIntegerValueField(event: *mut c_void, field: u32, value: i64);
+        fn CGEventPost(tap: u32, event: *mut c_void);
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
+
+    const HID_TAP: u32 = 0; // kCGHIDEventTap
+    const CLICK_STATE: u32 = 1; // kCGMouseEventClickState
+    const MOUSE_MOVED: u32 = 5; // kCGEventMouseMoved
+    const LINE: u32 = 1; // kCGScrollEventUnitLine
+
+    // ponytail: 10 steps 8 ms apart is enough for AppKit drag tracking (the
+    // display arrangement in System Settings); slow it if an app needs more.
+    const DRAG_STEPS: i32 = 10;
+    const DRAG_STEP_DELAY: Duration = Duration::from_millis(8);
+
+    /// (down, up, dragged, button) CGEventType / CGMouseButton values.
+    fn kinds(b: Btn) -> (u32, u32, u32, u32) {
+        match b {
+            Btn::Left => (1, 2, 6, 0),
+            Btn::Right => (3, 4, 7, 1),
+            Btn::Middle => (25, 26, 27, 2),
         }
-        if start.elapsed() > Duration::from_secs(1) {
-            return Err(format!(
-                "input failed: the pointer did not reach screen point ({x}, {y}) \
-                 within 1 s; it is at ({cx}, {cy})"
+    }
+
+    fn point((x, y): (i32, i32)) -> Point {
+        Point {
+            x: f64::from(x),
+            y: f64::from(y),
+        }
+    }
+
+    pub(super) fn click_events(at: (i32, i32), b: Btn, count: u8) -> Vec<Ev> {
+        let at = point(at);
+        let mut evs = vec![Ev::Move(at)];
+        for n in 1..=i64::from(count) {
+            evs.extend([Ev::Down(b, at, n), Ev::Up(b, at, n)]);
+        }
+        evs
+    }
+
+    pub(super) fn drag_events(from: (i32, i32), to: (i32, i32), b: Btn) -> Vec<Ev> {
+        let (f, t) = (point(from), point(to));
+        let mut evs = vec![Ev::Move(f), Ev::Down(b, f, 1)];
+        for i in 1..=DRAG_STEPS {
+            let k = f64::from(i) / f64::from(DRAG_STEPS);
+            evs.push(Ev::Drag(
+                b,
+                Point {
+                    x: f.x + (t.x - f.x) * k,
+                    y: f.y + (t.y - f.y) * k,
+                },
             ));
         }
-        std::thread::sleep(Duration::from_millis(2));
+        evs.push(Ev::Up(b, t, 1));
+        evs
+    }
+
+    fn post(ev: Ev) -> Result<(), String> {
+        let (kind, at, button, count) = match ev {
+            Ev::Move(at) => (MOUSE_MOVED, at, 0, None),
+            Ev::Down(b, at, n) => (kinds(b).0, at, kinds(b).3, Some(n)),
+            Ev::Up(b, at, n) => (kinds(b).1, at, kinds(b).3, Some(n)),
+            Ev::Drag(b, at) => (kinds(b).2, at, kinds(b).3, None),
+        };
+        unsafe {
+            let e = CGEventCreateMouseEvent(std::ptr::null(), kind, at, button);
+            if e.is_null() {
+                return Err("input failed: could not create a mouse event".to_string());
+            }
+            if let Some(n) = count {
+                CGEventSetIntegerValueField(e, CLICK_STATE, n);
+            }
+            CGEventPost(HID_TAP, e);
+            CFRelease(e);
+        }
+        Ok(())
+    }
+
+    fn post_all(evs: &[Ev]) -> Result<(), String> {
+        preflight()?;
+        let mut held = None;
+        for &ev in evs {
+            if let Err(e) = post(ev) {
+                // Never leave a button held: it turns every later move into
+                // a drag.
+                if let Some((b, at)) = held {
+                    let _ = post(Ev::Up(b, at, 1));
+                }
+                return Err(e);
+            }
+            match ev {
+                Ev::Down(b, at, _) => held = Some((b, at)),
+                Ev::Drag(b, at) => {
+                    held = Some((b, at));
+                    std::thread::sleep(DRAG_STEP_DELAY);
+                }
+                Ev::Up(..) => held = None,
+                Ev::Move(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn click(at: (i32, i32), b: Btn, count: u8) -> Result<(), String> {
+        post_all(&click_events(at, b, count))
+    }
+
+    pub(super) fn move_to(at: (i32, i32)) -> Result<(), String> {
+        post_all(&[Ev::Move(point(at))])
+    }
+
+    pub(super) fn drag(from: (i32, i32), to: (i32, i32), b: Btn) -> Result<(), String> {
+        post_all(&drag_events(from, to, b))
+    }
+
+    /// enigo's convention: a positive amount scrolls down / right.
+    pub(super) fn scroll(at: (i32, i32), sx: i64, sy: i64) -> Result<(), String> {
+        let at = point(at);
+        post_all(&[Ev::Move(at)])?;
+        for (len, wheels, w1, w2) in [(sx, 2, 0, -sx), (sy, 1, -sy, 0)] {
+            if len == 0 {
+                continue;
+            }
+            unsafe {
+                let e = CGEventCreateScrollWheelEvent2(
+                    std::ptr::null(),
+                    LINE,
+                    wheels,
+                    w1 as i32,
+                    w2 as i32,
+                    0,
+                );
+                if e.is_null() {
+                    return Err("input failed: could not create a scroll event".to_string());
+                }
+                CGEventSetLocation(e, at);
+                CGEventPost(HID_TAP, e);
+                CFRelease(e);
+            }
+        }
+        Ok(())
     }
 }
 
-fn button(b: Btn) -> Button {
-    match b {
-        Btn::Left => Button::Left,
-        Btn::Right => Button::Right,
-        Btn::Middle => Button::Middle,
+/// Windows pointer input through enigo: its button input carries no
+/// position, so it lands where the move just put the pointer.
+#[cfg(not(target_os = "macos"))]
+mod pointer {
+    use enigo::{Axis, Button, Coordinate, Direction, Mouse};
+
+    use super::{input_err, with_enigo, Btn};
+
+    fn button(b: Btn) -> Button {
+        match b {
+            Btn::Left => Button::Left,
+            Btn::Right => Button::Right,
+            Btn::Middle => Button::Middle,
+        }
     }
-}
 
-pub fn click(_: &Conn, (x, y): (i32, i32), b: Btn, count: u8) -> Result<(), String> {
-    with_enigo(|e| {
-        move_abs(e, (x, y))?;
-        for _ in 0..count {
-            e.button(button(b), Direction::Click).map_err(input_err)?;
-        }
-        Ok(())
-    })
-}
+    pub(super) fn click((x, y): (i32, i32), b: Btn, count: u8) -> Result<(), String> {
+        with_enigo(|e| {
+            e.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+            for _ in 0..count {
+                e.button(button(b), Direction::Click).map_err(input_err)?;
+            }
+            Ok(())
+        })
+    }
 
-pub fn move_to(_: &Conn, (x, y): (i32, i32)) -> Result<(), String> {
-    with_enigo(|e| move_abs(e, (x, y)))
-}
+    pub(super) fn move_to((x, y): (i32, i32)) -> Result<(), String> {
+        with_enigo(|e| e.move_mouse(x, y, Coordinate::Abs).map_err(input_err))
+    }
 
-pub fn scroll(_: &Conn, (x, y): (i32, i32), sx: i64, sy: i64) -> Result<(), String> {
-    with_enigo(|e| {
-        move_abs(e, (x, y))?;
-        if sx != 0 {
-            e.scroll(sx as i32, Axis::Horizontal).map_err(input_err)?;
-        }
-        if sy != 0 {
-            e.scroll(sy as i32, Axis::Vertical).map_err(input_err)?;
-        }
-        Ok(())
-    })
-}
+    pub(super) fn scroll((x, y): (i32, i32), sx: i64, sy: i64) -> Result<(), String> {
+        with_enigo(|e| {
+            e.move_mouse(x, y, Coordinate::Abs).map_err(input_err)?;
+            if sx != 0 {
+                e.scroll(sx as i32, Axis::Horizontal).map_err(input_err)?;
+            }
+            if sy != 0 {
+                e.scroll(sy as i32, Axis::Vertical).map_err(input_err)?;
+            }
+            Ok(())
+        })
+    }
 
-pub fn drag(_: &Conn, (fx, fy): (i32, i32), (tx, ty): (i32, i32), b: Btn) -> Result<(), String> {
-    with_enigo(|e| {
-        move_abs(e, (fx, fy))?;
-        e.button(button(b), Direction::Press).map_err(input_err)?;
-        // Release even when the move fails: a held button turns every later
-        // move into a drag.
-        let moved = move_abs(e, (tx, ty));
-        let released = e.button(button(b), Direction::Release).map_err(input_err);
-        moved.and(released)
-    })
+    pub(super) fn drag((fx, fy): (i32, i32), (tx, ty): (i32, i32), b: Btn) -> Result<(), String> {
+        with_enigo(|e| {
+            e.move_mouse(fx, fy, Coordinate::Abs).map_err(input_err)?;
+            e.button(button(b), Direction::Press).map_err(input_err)?;
+            // Release even when the move fails: a held button turns every
+            // later move into a drag.
+            let moved = e.move_mouse(tx, ty, Coordinate::Abs).map_err(input_err);
+            let released = e.button(button(b), Direction::Release).map_err(input_err);
+            moved.and(released)
+        })
+    }
 }
 
 pub fn type_text(_: &Conn, text: &str) -> Result<(), String> {
@@ -394,5 +590,50 @@ mod tests {
         // Silently pressing 'f' would look like the key worked.
         assert!(key_for("f13").is_err());
         assert!(key_for("").is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod pointer_tests {
+    use super::pointer::{click_events, drag_events, Ev, Point};
+    use super::Btn;
+
+    fn at(x: f64, y: f64) -> Point {
+        Point { x, y }
+    }
+
+    #[test]
+    fn a_click_carries_its_target_on_every_event_and_counts_repeats() {
+        let p = at(10.0, 20.0);
+        assert_eq!(
+            click_events((10, 20), Btn::Left, 2),
+            vec![
+                Ev::Move(p),
+                Ev::Down(Btn::Left, p, 1),
+                Ev::Up(Btn::Left, p, 1),
+                Ev::Down(Btn::Left, p, 2),
+                Ev::Up(Btn::Left, p, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_drag_is_dragged_all_the_way_between_press_and_release() {
+        let evs = drag_events((0, 0), (100, 50), Btn::Right);
+        assert_eq!(evs[0], Ev::Move(at(0.0, 0.0)));
+        assert_eq!(evs[1], Ev::Down(Btn::Right, at(0.0, 0.0), 1));
+        assert_eq!(evs.last(), Some(&Ev::Up(Btn::Right, at(100.0, 50.0), 1)));
+        // Between press and release only dragged events, never a plain move,
+        // advancing to the target.
+        let path: Vec<Point> = evs[2..evs.len() - 1]
+            .iter()
+            .map(|ev| match ev {
+                Ev::Drag(Btn::Right, p) => *p,
+                other => panic!("not a drag between press and release: {other:?}"),
+            })
+            .collect();
+        assert!(path.len() > 1, "{path:?}");
+        assert!(path.windows(2).all(|w| w[1].x > w[0].x && w[1].y > w[0].y));
+        assert_eq!(path.last(), Some(&at(100.0, 50.0)));
     }
 }

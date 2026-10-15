@@ -27,7 +27,7 @@ engine and the harness, not here.
 | `configuration.rs` | `configuration::register` + the `computer::on-config-change` trigger |
 | `driver/mod.rs` | The `Driver` trait: the whole desktop semantic (capture, click, type, keypress, close) |
 | `driver/native.rs` | This machine: what the three OSes share — display pinning, downscale + JPEG, image → input coordinates |
-| `driver/native/desktop.rs` | macOS/Windows: `xcap` capture + `enigo` input, macOS permission gates |
+| `driver/native/desktop.rs` | macOS/Windows: `xcap` capture, the pointer through CoreGraphics on macOS and `enigo` on Windows, `enigo` keyboard, macOS permission gates |
 | `driver/native/x11.rs` | Linux: X11/Wayland detection, RandR monitors, GetImage capture, XTest input, Unicode typing via spare keycodes |
 | `driver/semantic_only.rs` | A native session with no coordinates (Wayland): refuses capture and input with the reason |
 | `vendor/xa11y-linux/` | xa11y-linux 0.15.2, AT-SPI only, with our patches (`PATCHES.md`) |

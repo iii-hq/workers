@@ -1,7 +1,8 @@
 //! Native host driver: drive the machine this worker runs on directly, with
 //! no executor process in between. The OS half is a submodule behind one set
-//! of free functions — `desktop` (`xcap` capture, `enigo` input) on macOS and
-//! Windows, `x11` (x11rb: GetImage, RandR, XTest) on Linux — and this file
+//! of free functions — `desktop` (`xcap` capture; the pointer through
+//! CoreGraphics on macOS, `enigo` for the keyboard and on Windows) on macOS
+//! and Windows, `x11` (x11rb: GetImage, RandR, XTest) on Linux — and this file
 //! holds what the three share.
 //!
 //! Multi-monitor and HiDPI aware. A session captures ONE display, chosen at
