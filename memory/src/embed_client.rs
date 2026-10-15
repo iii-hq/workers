@@ -200,10 +200,6 @@ where
         if embed(vec![CANARY.to_string()]).await.is_none() {
             break;
         }
-        if let [only] = pending.as_slice() {
-            reject(bank, &[only]);
-            continue;
-        }
         // The provider answers, so it rejects some text here: embed one at a
         // time. A failure is blamed on its text only once the provider is
         // seen answering after it (a later success, or a canary at the end
@@ -247,8 +243,8 @@ where
 /// finishes work they leave behind — a failed embed in a bank that then
 /// goes quiet, a provider up late, the per-pass cap, a newly pinned
 /// `embedding_model`, a reload. With nothing pending it is one RAM scan per
-/// bank and no router call; with no embed provider installed, one
-/// fast-failing `router::embed` per bank per minute.
+/// bank and no router call; with no embed provider installed, two
+/// fast-failing `router::embed` calls (batch and canary) per bank per minute.
 pub fn backfill_all(deps: Arc<Deps>) {
     tokio::spawn(async move {
         let mut wait = std::time::Duration::from_secs(20);
@@ -460,6 +456,65 @@ mod tests {
         bank.commit(bad).await.unwrap();
         assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
         assert!(bank.unembedded(10, "m").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lone_rejected_text_sits_out_the_next_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-rejected-lone").await;
+        bank.commit(memory("REJECTED alone")).await.unwrap();
+        let calls = AtomicUsize::new(0);
+        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 0);
+        // Batch, canary, the text alone (a second chance), canary.
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        calls.store(0, Ordering::SeqCst);
+        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "sits out the cooldown");
+    }
+
+    #[tokio::test]
+    async fn a_lone_text_survives_one_transient_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-lone-blip").await;
+        bank.commit(memory("user owns a bike")).await.unwrap();
+        let calls = AtomicUsize::new(0);
+        // The batch call blips; everything after it answers.
+        let blip = |texts: Vec<String>| {
+            let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+            let v = (!first).then(|| texts.iter().map(|_| vec![1.0, 0.0]).collect());
+            async move { v }
+        };
+        assert_eq!(backfill_pass(&bank, "m", blip).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_provider_dying_mid_loop_blames_no_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-dies").await;
+        for t in [
+            "user owns a bike",
+            "user likes tea",
+            "user plays chess",
+            "user rows on weekends",
+        ] {
+            bank.commit(memory(t)).await.unwrap();
+        }
+        let calls = AtomicUsize::new(0);
+        // The batch fails, the canary answers, the provider is gone for the
+        // next four calls, then back. Three failed singles must re-check the
+        // provider (and stop) rather than blame them on a later success.
+        let dying = |texts: Vec<String>| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            let up = n == 1 || n >= 6;
+            let v = up.then(|| texts.iter().map(|_| vec![1.0, 0.0]).collect());
+            async move { v }
+        };
+        assert_eq!(backfill_pass(&bank, "m", dying).await, 0);
+
+        // Back up: none of the four sits out, one batch embeds them all.
+        let healthy = AtomicUsize::new(0);
+        assert_eq!(backfill_pass(&bank, "m", picky(&healthy)).await, 4);
+        assert_eq!(healthy.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -877,22 +877,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
-        let mut m = memory("alpha");
+        let m = memory("alpha");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "m", &m.text, vec![0.1])
-            .await
-            .unwrap();
-        m.text = "alpha edited".into();
-        bank.commit(m.clone()).await.unwrap(); // its line is dead now
+        // Three re-embeds of one text: 1 live vector, 2 dead lines.
+        for _ in 0..3 {
+            bank.set_vector(&m.id, "m", &m.text, vec![0.1; 64])
+                .await
+                .unwrap();
+        }
         let path = bank.dir().join(VECTORS_FILE);
+        let before = std::fs::read_to_string(&path).unwrap();
         let tmp = path.with_extension("jsonl.tmp");
-        // Every write to the temp fails with ENOSPC.
+        // The compaction's writes land on /dev/full: ENOSPC mid-rewrite.
         std::os::unix::fs::symlink("/dev/full", &tmp).unwrap();
 
         let reopened = Store::open(dir.path().to_path_buf()).unwrap();
-        assert!(reopened.bank("main").await.is_ok());
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 1);
         assert!(std::fs::symlink_metadata(&tmp).is_err(), "temp removed");
-        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "untouched");
     }
 
     #[tokio::test]
