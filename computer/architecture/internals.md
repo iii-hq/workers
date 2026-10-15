@@ -41,6 +41,10 @@ The native driver does the work no guest does for it:
   uses, so a click on a scaled display lands where the model saw it. Never
   multiply by a scale factor, and never click by AT-SPI bounds (GTK4 reports
   (0,0) for every element).
+- On macOS every move waits until the OS reports the pointer at the target:
+  a synthetic move lands asynchronously, while `enigo` 0.3 posts a button at
+  the position it reads back (and a scroll carries the current one), so an
+  immediate press or scroll hits where the pointer was.
 
 ### Linux
 
@@ -91,14 +95,27 @@ Observe walks breadth-first; find lets xa11y's matcher drive the same
 memoized, budgeted children closure (real providers mint a fresh handle on
 every fetch, so children are fetched once per parent). Walks are bounded by
 node count, absolute depth and a 5 s deadline. Secret values are dropped
-before the selector sees them (macOS `AXSecureTextField`, the AT-SPI password role, and a password-like
-name everywhere; on Linux the vendored provider never even reads a password field's text), and selectors are restricted to normalized attribute names,
-because xa11y resolves unknown names against the unredacted `raw` map. On
+before the selector sees them (macOS `AXSecureTextField`, or a macOS element
+whose `AXSubrole` read went unanswered, the AT-SPI password role, and a
+password-like name everywhere; on Linux the vendored provider never even reads
+a password field's text), and selectors are restricted to normalized attribute
+names, because xa11y resolves unknown names against the unredacted `raw` map.
+Before a write the macOS provider (vendored, `vendor/xa11y-macos/PATCHES.md`)
+re-reads the element's `AXRole`, refuses `select` on an element that exposed
+no `AXSelected` and `set_value` where `AXValue` is not settable; the engine
+refuses `set_value` on a text field observed read-only (Windows, Linux). On
 Windows the process is pinned to per-monitor-v2 DPI awareness before any
 capture, input or accessibility call.
 
 ## Known limits
 
+- **macOS writes AppKit drops.** AppKit answers success to an `AXSelected` or
+  `AXValue` write the element refuses, and settability is true for any class
+  that overrides the setter, AccessKit's included. So on macOS an AccessKit
+  read-only field, or an item that is not selectable, still answers
+  `dispatched … effect not verified`: the write is sent, AppKit drops it, and
+  the app sees no request; `find` is the check.
+  The fix belongs upstream in accesskit_macos.
 - **Windows passwords.** A password field's value is hidden only when its
   name looks like a password (or the app masks it): xa11y does not read UIA's
   `IsPassword`. The fix belongs upstream.
@@ -208,7 +225,11 @@ window and toggle Caps Lock, and the script's `IsEnabled` write would persist
 the script) and Windows; the `rust` job also runs the vendored crate's tests
 (`cargo test --locked --manifest-path vendor/xa11y-linux/Cargo.toml --lib`)
 and a `x86_64-unknown-linux-musl` build, which fails if anything links a
-system C library.
+system C library. The macOS `computer-native` job runs the vendored
+xa11y-macos patch tests (`cargo test --locked --manifest-path
+vendor/xa11y-macos/Cargo.toml --lib vendored_patches`); its upstream tests
+build a provider, need TCC grants and run only on a Mac
+(`vendor/xa11y-macos/PATCHES.md`).
 
 On a Mac, from `computer/` in a terminal with Accessibility and Screen
 Recording:
@@ -218,7 +239,8 @@ Recording:
       cargo test --locked --test semantic_live -- --ignored --test-threads=1
 
 Set `COMPUTER_A11Y_FIXTURE_LOG_DIR` to keep the fixture logs somewhere else than
-the temp dir. With two native sessions, a click in one must turn the other's
+the temp dir. Keep hands off the mouse while it runs. Under tmux the grants
+that count are those of the terminal app that started the tmux server. With two native sessions, a click in one must turn the other's
 refs into `stale_ref`.
 
 Then, on a live stack with the harness and approval-gate, have an agent run

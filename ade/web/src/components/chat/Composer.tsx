@@ -239,6 +239,14 @@ interface ComposerProps {
    * keyboard over the conversation, which is worse than aiming once.
    */
   autoFocus?: boolean
+  /**
+   * Take inserts, attachments and focus requests from other surfaces (on by
+   * default). A side chat's composer turns it off: those belong to the main
+   * chat.
+   */
+  externalInput?: boolean
+  /** Shown at the top of the card, above attachments: a side chat's quote. */
+  header?: ReactNode
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
   /**
@@ -359,6 +367,8 @@ export function Composer({
   blockedPlaceholder = 'chat unavailable…',
   idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
+  externalInput = true,
+  header,
   initialContent,
   initialText,
   onTextChange,
@@ -571,8 +581,11 @@ export function Composer({
     [handleAttach],
   )
   useEffect(
-    () => onComposerAttach((files) => void attachFiles(files)),
-    [attachFiles],
+    () =>
+      externalInput
+        ? onComposerAttach((files) => void attachFiles(files))
+        : undefined,
+    [attachFiles, externalInput],
   )
 
   // A folded card can neither take the caret nor show what lands in it, so
@@ -586,6 +599,7 @@ export function Composer({
   // separate turns of the event loop.
   const pendingSubmitRef = useRef(false)
   useEffect(() => {
+    if (!externalInput) return
     const unfold = () => {
       if (!collapsedRef.current) return
       refocusAfterUnfoldRef.current = true
@@ -600,7 +614,7 @@ export function Composer({
       offFocus()
       offInsert()
     }
-  }, [setFolded])
+  }, [setFolded, externalInput])
   useEffect(() => {
     if (collapsed || !refocusAfterUnfoldRef.current) return
     refocusAfterUnfoldRef.current = false
@@ -739,6 +753,8 @@ export function Composer({
           </div>
         ) : null}
 
+        {header}
+
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-2 border-b border-rule-2 p-3">
             {attachments.map((a) => (
@@ -778,6 +794,7 @@ export function Composer({
             }
             disabled={inputDisabled}
             autoFocus={autoFocus}
+            externalInput={externalInput}
             initialContent={resolvedInitialContent}
             functionEntries={functionEntries}
             searchFiles={searchFiles}
@@ -836,8 +853,11 @@ export function Composer({
         {/* Desktop toolbar: attach (and the optional memory / permission
             pickers) on the left; the quiet model label and the send button
             on the right, where the eye lands after typing. */}
+        {/* In a narrow pane (a side panel, a split) the model label gives
+            way: the left group keeps its width and the send button stays
+            in view. */}
         <div className="hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
-          <div className="flex min-w-0 flex-1 items-center gap-1">
+          <div className="flex flex-1 items-center gap-1">
             <AttachmentButton
               onAttach={handleAttach}
               disabled={inputDisabled}
@@ -862,7 +882,7 @@ export function Composer({
             ) : null}
           </div>
 
-          <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
             {composerControls}
             <ModelPicker
               value={model}

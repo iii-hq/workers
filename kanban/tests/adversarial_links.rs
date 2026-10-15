@@ -47,6 +47,9 @@ fn mk(prefix: &str, number: u64, title: &str, description: &str, comments: &[&st
         priority: "low".into(),
         assignee: None,
         labels: vec![],
+        parent_id: None,
+        project_id: None,
+        release_id: None,
         order: number,
         created_at: "2026-01-01T00:00:00.000Z".into(),
         updated_at: "2026-01-01T00:00:00.000Z".into(),
@@ -597,6 +600,9 @@ fn rows_serialize_exactly_like_the_ui_ticket_summary() {
         "updated_at",
         "deleted_at",
         "comment_count",
+        "parent_id",
+        "project_id",
+        "release_id",
     ]
     .into_iter()
     .collect();

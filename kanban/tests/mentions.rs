@@ -3,11 +3,13 @@
 //! metadata — engine-free.
 
 use iii_kanban::board::{
-    BoardContext, CreateTicketInput, create_ticket, delete_ticket, search_tickets,
+    BoardContext, CreateTicketInput, UpdatePatch, create_ticket, delete_ticket, find_ticket,
+    search_tickets, update_ticket,
 };
 use iii_kanban::config::{Column, KanbanConfig};
 use iii_kanban::functions::{self, mention_search_metadata};
 use iii_kanban::mentions::{self, GET_FN, SEARCH_FN};
+use iii_kanban::plan::{ProjectFields, ReleaseFields, create_project, create_release};
 use iii_kanban::store::{Board, Ticket};
 use mention_contract::{MentionOpen, MentionProvider, MentionSearchRequest, color};
 use serde_json::json;
@@ -16,6 +18,7 @@ fn context() -> BoardContext {
     BoardContext {
         prefix: "KAN".into(),
         default_status: "backlog".into(),
+        done_status: "in_progress".into(),
         columns: config().columns,
         priorities: config().priorities,
     }
@@ -137,7 +140,7 @@ fn view_renders_status_label_priority_and_open_target() {
         },
         1,
     );
-    let view = mentions::view(&ticket, &config());
+    let view = mentions::view(&board, &ticket, &config());
     assert_eq!(view.id, ticket.id);
     assert_eq!(view.hint.as_deref(), Some("KAN-1"));
     assert_eq!(view.description.as_deref(), Some("In progress"));
@@ -187,7 +190,7 @@ fn the_preview_carries_only_the_start_of_a_long_description() {
         },
         1,
     );
-    let data = mentions::view(&ticket, &config()).data.unwrap();
+    let data = mentions::view(&board, &ticket, &config()).data.unwrap();
     let description = data["description"].as_str().unwrap();
     assert_eq!(description.chars().count(), 281);
     assert!(description.ends_with('…'));
@@ -197,7 +200,7 @@ fn the_preview_carries_only_the_start_of_a_long_description() {
 fn a_deleted_ticket_still_resolves_but_says_so() {
     let mut board = board();
     let deleted = delete_ticket(&mut board, "KAN-1", "user", &at(9)).unwrap();
-    let view = mentions::view(&deleted, &config());
+    let view = mentions::view(&board, &deleted, &config());
     assert_eq!(view.color.as_deref(), Some(color::NEUTRAL));
     assert!(view.fields.iter().any(|f| f.label == "Deleted"));
     assert!(view.summary.unwrap().ends_with("· deleted"));
@@ -218,4 +221,120 @@ fn the_get_function_declares_the_provider() {
     let search = mention_search_metadata();
     assert_eq!(search["internal"], json!(true));
     assert_eq!(MentionProvider::from_metadata(&search), None);
+}
+
+#[test]
+fn the_card_names_the_parent_project_and_release_only_when_they_are_set() {
+    let mut board = board();
+    create_project(
+        &mut board,
+        &ProjectFields {
+            name: Some("iii cloud".into()),
+            ..ProjectFields::default()
+        },
+        &context(),
+        &at(4),
+    )
+    .unwrap();
+    create_release(
+        &mut board,
+        &ReleaseFields {
+            name: Some("Phase 2".into()),
+            ..ReleaseFields::default()
+        },
+        &context(),
+        &at(5),
+    )
+    .unwrap();
+    update_ticket(
+        &mut board,
+        "KAN-2",
+        &UpdatePatch {
+            parent: Some(Some("KAN-1".into())),
+            project: Some(Some("iii cloud".into())),
+            release: Some(Some("Phase 2".into())),
+            ..UpdatePatch::default()
+        },
+        "user",
+        &context(),
+        &at(6),
+    )
+    .unwrap();
+
+    let field = |view: &mention_contract::MentionView, label: &str| {
+        view.fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value.clone())
+    };
+    let child = mentions::view(&board, find_ticket(&board, "KAN-2").unwrap(), &config());
+    assert_eq!(field(&child, "Parent").as_deref(), Some("KAN-1"));
+    assert_eq!(field(&child, "Project").as_deref(), Some("iii cloud"));
+    assert_eq!(field(&child, "Release").as_deref(), Some("Phase 2"));
+    let summary = child.summary.unwrap();
+    for part in ["parent: KAN-1", "project: iii cloud", "release: Phase 2"] {
+        assert!(summary.contains(part), "{summary}");
+    }
+
+    let loose = mentions::view(&board, find_ticket(&board, "KAN-3").unwrap(), &config());
+    for label in ["Parent", "Project", "Release"] {
+        assert_eq!(field(&loose, label), None, "{label}");
+    }
+}
+
+#[test]
+fn the_card_finds_a_project_and_a_release_by_id_only() {
+    let mut board = board();
+    for (name, second) in [("iii cloud", 4), ("Phase 2", 5)] {
+        create_project(
+            &mut board,
+            &ProjectFields {
+                name: Some(name.into()),
+                ..ProjectFields::default()
+            },
+            &context(),
+            &at(second),
+        )
+        .unwrap();
+    }
+    create_release(
+        &mut board,
+        &ReleaseFields {
+            name: Some("Phase 2".into()),
+            ..ReleaseFields::default()
+        },
+        &context(),
+        &at(6),
+    )
+    .unwrap();
+    let field = |board: &Board, key: &str, label: &str| {
+        let view = mentions::view(board, find_ticket(board, key).unwrap(), &config());
+        view.fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value.clone())
+    };
+
+    let (project, release) = (
+        board.projects.keys().next().unwrap().clone(),
+        board.releases.keys().next().unwrap().clone(),
+    );
+    let ticket = board.tickets.values_mut().next().unwrap();
+    ticket.project_id = Some(project);
+    ticket.release_id = Some(release);
+    assert_eq!(
+        field(&board, "KAN-1", "Project").as_deref(),
+        Some("iii cloud")
+    );
+    assert_eq!(
+        field(&board, "KAN-1", "Release").as_deref(),
+        Some("Phase 2")
+    );
+
+    // A stored name is not a reference: the relation is the id, nothing else.
+    let ticket = board.tickets.values_mut().next().unwrap();
+    ticket.project_id = Some("iii cloud".into());
+    ticket.release_id = Some("Phase 2".into());
+    assert_eq!(field(&board, "KAN-1", "Project"), None);
+    assert_eq!(field(&board, "KAN-1", "Release"), None);
 }

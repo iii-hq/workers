@@ -102,6 +102,8 @@ impl FakeTree {
             data.name = Some(name.to_string());
         }
         data.actions = default_actions(role);
+        // A writable field by default, as macOS and Windows report one.
+        data.states.editable = matches!(role, Role::TextField | Role::TextArea);
         let idx = nodes.len();
         nodes.push(Node {
             data,

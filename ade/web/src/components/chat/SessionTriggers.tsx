@@ -283,6 +283,113 @@ function TriggerRow({
 }
 
 /**
+ * One subscription's detail: what fires it, what it delivers, its lifetime
+ * and ids, with the unregister (or, for an inactive row, dismiss) button.
+ * Shared by the composer strip and the chat's side panel.
+ */
+export function TriggerDetailDialog({
+  trigger,
+  busy,
+  onOpenChange,
+  onUnregister,
+  onDismiss,
+}: {
+  trigger: SessionTriggerInfo | null
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onUnregister: (id: string) => void
+  /** An inactive row's dismiss button (it has nothing left to unregister). */
+  onDismiss?: (id: string) => void
+}) {
+  return (
+    <Dialog open={trigger !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogTitle className="text-[14px]">
+          <span
+            className="mr-2 inline-flex align-baseline text-ink-ghost"
+            aria-hidden
+          >
+            <TriggerIcon size={16} className="fill-ink-ghost" />
+          </span>
+          {trigger ? trigger.label || trigger.triggerType : ''}
+        </DialogTitle>
+        <DialogDescription className="mt-1">
+          trigger subscription registered by this conversation's agent.
+        </DialogDescription>
+        {trigger ? (
+          <div className="mt-4 space-y-4 font-mono text-[12px]">
+            <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-4 gap-y-1.5">
+              <dt className="text-ink-ghost">Fires on</dt>
+              <dd className="text-ink">{trigger.triggerType}</dd>
+              <dt className="text-ink-ghost">Delivers</dt>
+              <dd className="text-ink">{deliveryLabel(trigger)}</dd>
+              <dt className="text-ink-ghost">Lifetime</dt>
+              <dd className="text-ink">
+                {trigger.fired
+                  ? (lifecycleNote(trigger) ?? 'retired')
+                  : trigger.once
+                    ? 'once — retires after first fire'
+                    : (lifecycleNote(trigger) ?? 'until unregistered')}
+              </dd>
+              {trigger.createdAt !== undefined ? (
+                <>
+                  <dt className="text-ink-ghost">Registered</dt>
+                  <dd className="text-ink-faint">
+                    {new Date(trigger.createdAt).toLocaleString()}
+                  </dd>
+                </>
+              ) : null}
+              <dt className="text-ink-ghost">Subscription</dt>
+              <dd className="text-ink-faint">
+                <CopyableId value={trigger.id} />
+              </dd>
+              {trigger.triggerId ? (
+                <>
+                  <dt className="text-ink-ghost">Trigger ID</dt>
+                  <dd className="text-ink-faint">
+                    <CopyableId value={trigger.triggerId} />
+                  </dd>
+                </>
+              ) : null}
+            </dl>
+            {isEmptyConfig(trigger.config) ? null : (
+              <JsonSection label="config" value={trigger.config} />
+            )}
+            {trigger.conditions && trigger.conditions.length > 0 ? (
+              <JsonSection label="conditions" value={trigger.conditions} />
+            ) : null}
+            <div className="flex justify-end">
+              {/* An inactive row has no live binding left to unregister —
+                  offering it would only produce a guaranteed error. */}
+              {trigger.fired ? (
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="sm"
+                  onClick={() => onDismiss?.(trigger.id)}
+                >
+                  dismiss
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => onUnregister(trigger.id)}
+                >
+                  {busy ? 'unregistering…' : 'unregister'}
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
  * The conversation's registered trigger subscriptions, stacked above the
  * composer next to the queued-messages strip, in the composer's own material
  * (see `composer-chrome`) so the footer reads as one instrument. Collapsed by
@@ -496,95 +603,15 @@ export function SessionTriggers({
         onConfirm={() => void clearAll()}
       />
 
-      <Dialog
-        open={selected !== null}
+      <TriggerDetailDialog
+        trigger={selected}
+        busy={selected !== null && busyId === selected.id}
         onOpenChange={(open) => {
           if (!open) setSelectedId(null)
         }}
-      >
-        <DialogContent className="max-w-lg">
-          <DialogTitle className="text-[14px]">
-            <span
-              className="mr-2 inline-flex align-baseline text-ink-ghost"
-              aria-hidden
-            >
-              <TriggerIcon size={16} className="fill-ink-ghost" />
-            </span>
-            {selected ? selected.label || selected.triggerType : ''}
-          </DialogTitle>
-          <DialogDescription className="mt-1">
-            trigger subscription registered by this conversation's agent.
-          </DialogDescription>
-          {selected ? (
-            <div className="mt-4 space-y-4 font-mono text-[12px]">
-              <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-4 gap-y-1.5">
-                <dt className="text-ink-ghost">Fires on</dt>
-                <dd className="text-ink">{selected.triggerType}</dd>
-                <dt className="text-ink-ghost">Delivers</dt>
-                <dd className="text-ink">{deliveryLabel(selected)}</dd>
-                <dt className="text-ink-ghost">Lifetime</dt>
-                <dd className="text-ink">
-                  {selected.fired
-                    ? (lifecycleNote(selected) ?? 'retired')
-                    : selected.once
-                      ? 'once — retires after first fire'
-                      : (lifecycleNote(selected) ?? 'until unregistered')}
-                </dd>
-                {selected.createdAt !== undefined ? (
-                  <>
-                    <dt className="text-ink-ghost">Registered</dt>
-                    <dd className="text-ink-faint">
-                      {new Date(selected.createdAt).toLocaleString()}
-                    </dd>
-                  </>
-                ) : null}
-                <dt className="text-ink-ghost">Subscription</dt>
-                <dd className="text-ink-faint">
-                  <CopyableId value={selected.id} />
-                </dd>
-                {selected.triggerId ? (
-                  <>
-                    <dt className="text-ink-ghost">Trigger ID</dt>
-                    <dd className="text-ink-faint">
-                      <CopyableId value={selected.triggerId} />
-                    </dd>
-                  </>
-                ) : null}
-              </dl>
-              {isEmptyConfig(selected.config) ? null : (
-                <JsonSection label="config" value={selected.config} />
-              )}
-              {selected.conditions && selected.conditions.length > 0 ? (
-                <JsonSection label="conditions" value={selected.conditions} />
-              ) : null}
-              <div className="flex justify-end">
-                {/* An inactive row has no live binding left to unregister —
-                    offering it would only produce a guaranteed error. */}
-                {selected.fired ? (
-                  <Button
-                    type="button"
-                    variant="pill"
-                    size="sm"
-                    onClick={() => dismiss(selected.id)}
-                  >
-                    dismiss
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="pill"
-                    size="sm"
-                    disabled={busyId === selected.id}
-                    onClick={() => void unregister(selected.id)}
-                  >
-                    {busyId === selected.id ? 'unregistering…' : 'unregister'}
-                  </Button>
-                )}
-              </div>
-            </div>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+        onUnregister={(id) => void unregister(id)}
+        onDismiss={dismiss}
+      />
     </>
   )
 }

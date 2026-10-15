@@ -29,6 +29,7 @@ import {
   useSessionManagerStatus,
 } from '@/hooks/use-session-manager-status'
 import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
+import { isWorkerPresent, useWorkerPresence } from '@/hooks/use-worker-presence'
 import {
   isWorktreeAvailable,
   useWorktreeStatus,
@@ -106,6 +107,13 @@ interface ConversationsContextValue extends ConversationsApi {
    * backend.
    */
   memoryAvailable: boolean
+  /**
+   * Whether the optional `github` worker is connected. Gates the pull
+   * requests in the chat's side panel.
+   */
+  githubAvailable: boolean
+  /** Whether the optional `kanban` worker is connected: the tickets there. */
+  kanbanAvailable: boolean
   /** Open a chat pinned to this session without replacing the current chat. */
   openConversationInPanel: (sessionId: string) => void
 }
@@ -152,6 +160,20 @@ export function ConversationsProvider({
   )
   const memoryAvailable = isMemoryAvailable(
     useMemoryStatus(backend.id === 'real'),
+  )
+  const githubAvailable = isWorkerPresent(
+    useWorkerPresence({
+      workerName: 'github',
+      watchFnId: 'console::github-watch',
+      enabled: backend.id === 'real',
+    }),
+  )
+  const kanbanAvailable = isWorkerPresent(
+    useWorkerPresence({
+      workerName: 'kanban',
+      watchFnId: 'console::kanban-watch',
+      enabled: backend.id === 'real',
+    }),
   )
   const {
     modelOptions,
@@ -304,6 +326,8 @@ export function ConversationsProvider({
     shellAvailable,
     worktreeAvailable,
     memoryAvailable,
+    githubAvailable,
+    kanbanAvailable,
     openConversationInPanel,
   }
 

@@ -1,11 +1,18 @@
 //! The two trigger types this worker provides.
 //!
-//! - `kanban:change` fires after every mutation with the whole ticket.
-//!   Config `{ ticket_id?, events?, metadata? }`: `ticket_id` matches the
-//!   uuid or the human key, `events` narrows by event name.
-//! - `kanban:comment` fires once per comment created on one ticket. Config
-//!   `{ ticket_id, author?, exclude_author?, root_only? }`; a binding without
-//!   `ticket_id` never fires.
+//! - `kanban:change` fires after every mutation with the whole ticket
+//!   (a `TicketView`: parent, live children and progress included). Config
+//!   `{ ticket_id?, parent_id?, release_id?, events?, metadata? }`:
+//!   `ticket_id` matches the uuid or the human key; `parent_id` (uuid or key)
+//!   fires for that ticket and for each of its subtasks; `release_id` (id or
+//!   name) fires for a ticket in that release and for one a write just took
+//!   out of it; `events` narrows by event name. An unknown reference matches
+//!   nothing. A write that touches two tickets (attach, detach) fires once
+//!   per ticket.
+//! - `kanban:comment` fires once per comment created. Config
+//!   `{ ticket_id?, parent_id?, author?, exclude_author?, root_only? }`: a
+//!   comment on that ticket (`ticket_id`) or on that ticket or any of its
+//!   subtasks (`parent_id`); a binding with neither never fires.
 //!
 //! Bindings live in an in-process map keyed by trigger id (the SDK populates
 //! only `id` on unregister). Delivery is fire-and-forget (`Void`), in the
@@ -23,8 +30,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::board::{TicketSummary, summarize};
-use crate::store::{Activity, Comment, Ticket};
+use crate::board::{ReleaseRef, TicketSummary, TicketView, summarize};
+use crate::store::{Activity, Comment};
 
 pub const CHANGE_TRIGGER: &str = "kanban:change";
 pub const COMMENT_TRIGGER: &str = "kanban:comment";
@@ -57,6 +64,12 @@ pub struct ChangeConfig {
     /// Ticket uuid or human key. Omit to fire for every ticket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket_id: Option<String>,
+    /// Ticket uuid or human key of a parent: fires for the parent itself and for each of its subtasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Release id or name: fires for a ticket in the release and for a ticket a write just moved out of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_id: Option<String>,
     /// `full` (default) delivers the whole ticket; `summary` only its board-card fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<TicketDetail>,
@@ -71,8 +84,12 @@ pub struct ChangeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommentConfig {
-    /// Required: ticket uuid or human key. A binding without it never fires.
-    pub ticket_id: String,
+    /// Ticket uuid or human key. Give this or `parent_id`; a binding with neither never fires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_id: Option<String>,
+    /// Ticket uuid or human key of a parent: comments on the parent or on any of its subtasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     /// Fire only for comments by exactly this author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
@@ -92,21 +109,32 @@ pub struct CommentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum TicketPayload {
-    Full(Ticket),
-    Summary(TicketSummary),
+    Full(Box<TicketView>),
+    Summary(Box<TicketSummary>),
 }
 
-impl From<Ticket> for TicketPayload {
-    fn from(ticket: Ticket) -> Self {
-        TicketPayload::Full(ticket)
+impl From<TicketView> for TicketPayload {
+    fn from(view: TicketView) -> Self {
+        TicketPayload::Full(Box::new(view))
     }
 }
 
 impl TicketPayload {
     pub fn summarized(&self) -> TicketPayload {
         match self {
-            TicketPayload::Full(ticket) => TicketPayload::Summary(summarize(ticket)),
+            TicketPayload::Full(view) => TicketPayload::Summary(Box::new(summarize(&view.ticket))),
             TicketPayload::Summary(summary) => TicketPayload::Summary(summary.clone()),
+        }
+    }
+
+    /// The parent's uuid and, when the payload carries it, its key.
+    fn parent(&self) -> Option<(&str, Option<&str>)> {
+        match self {
+            TicketPayload::Full(view) => view
+                .parent
+                .as_ref()
+                .map(|parent| (parent.id.as_str(), Some(parent.key.as_str()))),
+            TicketPayload::Summary(summary) => summary.parent_id.as_deref().map(|id| (id, None)),
         }
     }
 }
@@ -120,6 +148,10 @@ pub struct ChangeEvent {
     pub comment: Option<Comment>,
     pub activity: Option<Activity>,
     pub at: String,
+    /// The releases the ticket is in or this write took it out of; what a
+    /// `release_id` filter matches against. Not part of the delivery.
+    #[serde(skip)]
+    pub releases: Vec<ReleaseRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -184,7 +216,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             CHANGE_TRIGGER,
-            "Fires after every kanban mutation with the whole ticket. Config: { ticket_id?, events?, metadata? } — ticket_id matches the uuid or the human key.",
+            "Fires after every kanban mutation with the whole ticket (parent, subtasks and progress included). Config: { ticket_id?, parent_id?, release_id?, events?, metadata? } — ticket_id and parent_id match the uuid or the human key (parent_id also fires for each subtask); release_id is a release id or name (fires for tickets in it and for tickets moved out of it).",
             BindingTable(subscribers.change.clone()),
         )
         .trigger_request_format::<ChangeConfig>()
@@ -193,7 +225,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             COMMENT_TRIGGER,
-            "Fires when a comment is added to one ticket, optionally filtered by author. Config: { ticket_id, author?, exclude_author?, root_only? }.",
+            "Fires when a comment is added, optionally filtered by author. Config: { ticket_id? | parent_id?, author?, exclude_author?, root_only? } — ticket_id is one ticket; parent_id is a ticket and all its subtasks (uuid or human key).",
             BindingTable(subscribers.comment.clone()),
         )
         .trigger_request_format::<CommentConfig>()
@@ -218,12 +250,34 @@ pub fn matches_ticket(reference: &str, ticket_id: &str, ticket_key: &str) -> boo
     wanted.eq_ignore_ascii_case(ticket_id) || wanted.eq_ignore_ascii_case(ticket_key)
 }
 
+/// A ticket that is `reference` itself or a subtask of it (uuid or key).
+fn in_family(reference: &str, ticket_id: &str, ticket_key: &str, ticket: &TicketPayload) -> bool {
+    matches_ticket(reference, ticket_id, ticket_key)
+        || ticket
+            .parent()
+            .is_some_and(|(id, key)| matches_ticket(reference, id, key.unwrap_or_default()))
+}
+
 pub fn matches_change(config: &Value, event: &ChangeEvent) -> bool {
     if !matches_ticket(
         text(config, "ticket_id"),
         &event.ticket_id,
         &event.ticket_key,
     ) {
+        return false;
+    }
+    let parent = text(config, "parent_id");
+    if !parent.is_empty() && !in_family(parent, &event.ticket_id, &event.ticket_key, &event.ticket)
+    {
+        return false;
+    }
+    let release = text(config, "release_id");
+    if !release.is_empty()
+        && !event.releases.iter().any(|candidate| {
+            release.eq_ignore_ascii_case(&candidate.id)
+                || release.eq_ignore_ascii_case(candidate.name.trim())
+        })
+    {
         return false;
     }
     let events: Vec<&str> = config
@@ -242,8 +296,15 @@ pub fn matches_change(config: &Value, event: &ChangeEvent) -> bool {
 }
 
 pub fn matches_comment(config: &Value, event: &CommentEvent) -> bool {
-    let reference = text(config, "ticket_id");
-    if reference.is_empty() || !matches_ticket(reference, &event.ticket_id, &event.ticket_key) {
+    let (reference, parent) = (text(config, "ticket_id"), text(config, "parent_id"));
+    if reference.is_empty() && parent.is_empty() {
+        return false;
+    }
+    if !matches_ticket(reference, &event.ticket_id, &event.ticket_key) {
+        return false;
+    }
+    if !parent.is_empty() && !in_family(parent, &event.ticket_id, &event.ticket_key, &event.ticket)
+    {
         return false;
     }
     let author = text(config, "author");

@@ -31,6 +31,7 @@ engine and the harness, not here.
 | `driver/native/x11.rs` | Linux: X11/Wayland detection, RandR monitors, GetImage capture, XTest input, Unicode typing via spare keycodes |
 | `driver/semantic_only.rs` | A native session with no coordinates (Wayland): refuses capture and input with the reason |
 | `vendor/xa11y-linux/` | xa11y-linux 0.15.2, AT-SPI only, with our patches (`PATCHES.md`) |
+| `vendor/xa11y-macos/` | xa11y-macos 0.15.2, whole crate, with our patches (`PATCHES.md`) |
 | `driver/sandbox.rs` | A desktop in an iii-sandbox microVM, driven through `sandbox::exec` / `sandbox::fs` |
 | `driver/remote.rs` | A desktop reached through its guest executor over a WebSocket |
 | `session.rs` | Session registry, driver selection, durable records in `state`, the screencast pump |

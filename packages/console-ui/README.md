@@ -101,7 +101,10 @@ Use the shared contracts for repeated Console interactions:
   remain mounted while collapsed, and instances sharing a `storageKey` stay
   synchronized. Narrow navigation is full-width by default for list/detail
   and hierarchy drill-in; `narrowMode="drawer"` is an explicit opt-in for
-  secondary navigation that overlays an unchanged main workspace.
+  secondary navigation that overlays an unchanged main workspace. A drawer
+  closes when a button, link or tab inside it is picked; a panel people keep
+  working in passes `closeDrawerOnSelect={false}`. Bump `expandRequest` (a
+  number) to expand the sidebar or open its drawer from a rail action.
 - Human-facing chrome uses sans and authored sentence/title case. Mono is only
   for machine-readable identifiers, paths, values, payloads, code, and tabular
   data. Application icons use a 16 px baseline; do not author icons below

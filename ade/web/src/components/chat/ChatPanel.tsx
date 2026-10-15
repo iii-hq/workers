@@ -13,6 +13,15 @@ import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import {
+  endSideChat,
+  isDisplayedHere,
+  isSideChat,
+  markDisplayed,
+  sideChatOf,
+  sideChatsLeftByClosedTabs,
+  sideChatsMadeHere,
+} from '@/lib/chat-aside'
 import { onChatShownRequest } from '@/lib/chat-requests'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
@@ -51,6 +60,10 @@ interface ChatPanelProps {
  * stays aligned with Tailwind's `sm` breakpoint.
  */
 const NARROW_BELOW = 560
+/** A side chat untouched this long ends (see the effect below)… */
+const SIDE_CHAT_IDLE_MS = 2 * 60 * 60 * 1000
+/** …checked this often while the ADE stays open. */
+const SIDE_CHAT_SWEEP_MS = 5 * 60 * 1000
 const MOBILE_VIEWPORT_QUERY = '(max-width: 639px)'
 
 /**
@@ -107,6 +120,67 @@ export function ChatPanel({
     if (!displayedId) return
     return watchConversation(displayedId)
   }, [displayedId, watchConversation])
+
+  // Side chats end, besides Discard: two hours untouched, with their main
+  // chat (deleted here, in another tab or elsewhere: the list marks it
+  // missing), and when every ADE tab of this browser is closed. Leaving a
+  // conversation keeps them. One whose conversation a panel of this tab
+  // shows is never idle.
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
+  useEffect(
+    () => (displayedId ? markDisplayed(displayedId) : undefined),
+    [displayedId],
+  )
+  // The server's list, not the local draft the list boots with.
+  const listed = !conversationsLoading && !conversationsError
+  useEffect(() => {
+    if (!listed) return
+    const sweep = () => {
+      const cutoff = Date.now() - SIDE_CHAT_IDLE_MS
+      for (const conversation of conversationsRef.current) {
+        const main = sideChatOf(conversation)
+        if (
+          main !== null &&
+          conversation.updatedAt < cutoff &&
+          !isDisplayedHere(main) &&
+          !isDisplayedHere(conversation.id)
+        ) {
+          endSideChat(conversation.id, remove)
+        }
+      }
+    }
+    // A microtask: a pane mounted in the same commit has marked what it
+    // shows by then.
+    queueMicrotask(sweep)
+    const timer = window.setInterval(sweep, SIDE_CHAT_SWEEP_MS)
+    return () => window.clearInterval(timer)
+  }, [listed, remove])
+  const [leftByClosedTabs, setLeftByClosedTabs] = useState<readonly string[]>(
+    [],
+  )
+  useEffect(() => {
+    void sideChatsLeftByClosedTabs().then(setLeftByClosedTabs)
+  }, [])
+  useEffect(() => {
+    if (!listed) return
+    for (const id of leftByClosedTabs) {
+      const conversation = conversations.find((c) => c.id === id)
+      if (!conversation) continue
+      if (isSideChat(conversation)) endSideChat(id, remove)
+      // Kept in another browser: not a side chat any more.
+      else sideChatsMadeHere.delete(id)
+    }
+  }, [listed, leftByClosedTabs, conversations, remove])
+  useEffect(() => {
+    if (!missingConversationIds?.size) return
+    for (const conversation of conversations) {
+      const main = sideChatOf(conversation)
+      if (main !== null && missingConversationIds.has(main)) {
+        endSideChat(conversation.id, remove)
+      }
+    }
+  }, [conversations, missingConversationIds, remove])
 
   const [rootRef, containerNarrow] = useContainerNarrow(NARROW_BELOW)
   const surfaceRef = useRef<HTMLDivElement | null>(null)
@@ -390,6 +464,7 @@ export function ChatPanel({
             onAppendMessage={appendMessage}
             onPatchMessage={updateMessage}
             onCompactConversation={compactConversation}
+            asideSide={panelSide === 'right' ? 'left' : 'right'}
           />
         ) : !narrow || pinned ? (
           <section className="flex-1 flex flex-col min-w-0 min-h-0">

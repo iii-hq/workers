@@ -126,3 +126,63 @@ fn kanban_ticket_links_is_allowed() {
         Decision::Allow { .. }
     ));
 }
+
+/// The kanban reads and the ticket working loop are allowed, including the
+/// project and release lists agents use to file a ticket.
+#[test]
+fn kanban_reads_and_the_ticket_loop_are_allowed() {
+    let permissions = repository_permissions();
+    for id in [
+        "kanban::config::info",
+        "kanban::board::get",
+        "kanban::ticket::list",
+        "kanban::ticket::get",
+        "kanban::ticket::links",
+        "kanban::ticket::create",
+        "kanban::ticket::update",
+        "kanban::ticket::move",
+        "kanban::project::list",
+        "kanban::release::list",
+        "kanban::comment::create",
+        "kanban::comment::list",
+        "kanban::activity::list",
+        "kanban::agent::list",
+    ] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Allow { .. }
+            ),
+            "{id} should be allowed"
+        );
+    }
+}
+
+/// Planning (projects, releases, label conversion) and ticket deletion are the
+/// human's call from the console; agents are denied, as in kanban's own policy.
+#[test]
+fn kanban_planning_and_ticket_deletion_are_denied() {
+    let permissions = repository_permissions();
+    for id in [
+        "kanban::ticket::delete",
+        "kanban::ticket::restore",
+        "kanban::project::create",
+        "kanban::project::update",
+        "kanban::project::archive",
+        "kanban::project::restore",
+        "kanban::release::create",
+        "kanban::release::update",
+        "kanban::release::ship",
+        "kanban::release::reopen",
+        "kanban::release::delete",
+        "kanban::label::convert",
+    ] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Deny { .. }
+            ),
+            "{id} should be denied"
+        );
+    }
+}

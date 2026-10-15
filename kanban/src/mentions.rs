@@ -43,8 +43,39 @@ pub fn search(
         .collect()
 }
 
+/// The parent ticket's key, the project's name and the release's name, for
+/// the relations the ticket has and the board still knows.
+fn relations(board: &Board, ticket: &Ticket) -> [(&'static str, Option<String>); 3] {
+    [
+        (
+            "Parent",
+            ticket
+                .parent_id
+                .as_deref()
+                .and_then(|id| board.tickets.get(id))
+                .map(|parent| parent.key.clone()),
+        ),
+        (
+            "Project",
+            ticket
+                .project_id
+                .as_deref()
+                .and_then(|id| board.projects.get(id))
+                .map(|project| project.name.clone()),
+        ),
+        (
+            "Release",
+            ticket
+                .release_id
+                .as_deref()
+                .and_then(|id| board.releases.get(id))
+                .map(|release| release.name.clone()),
+        ),
+    ]
+}
+
 /// The view of one ticket (live or soft-deleted).
-pub fn view(ticket: &Ticket, config: &KanbanConfig) -> MentionView {
+pub fn view(board: &Board, ticket: &Ticket, config: &KanbanConfig) -> MentionView {
     let status = column_label(config, &ticket.status);
     let mut fields = vec![
         MentionField::new("Status", status.clone()),
@@ -53,6 +84,11 @@ pub fn view(ticket: &Ticket, config: &KanbanConfig) -> MentionView {
     ];
     if let Some(assignee) = ticket.assignee.as_deref().filter(|a| !a.is_empty()) {
         fields.push(MentionField::new("Assignee", assignee));
+    }
+    for (label, value) in relations(board, ticket) {
+        if let Some(value) = value {
+            fields.push(MentionField::new(label, value));
+        }
     }
     if !ticket.labels.is_empty() {
         fields.push(MentionField::new("Labels", ticket.labels.join(", ")));
@@ -77,7 +113,7 @@ pub fn view(ticket: &Ticket, config: &KanbanConfig) -> MentionView {
             page: TICKET_PAGE.to_string(),
             context: Some(json!({ "id": ticket.key })),
         }),
-        summary: Some(summary(ticket, config)),
+        summary: Some(summary(board, ticket, config)),
         data: Some(preview_data(ticket)),
         updated_at: Some(ticket.updated_at.clone()),
         fields,
@@ -130,7 +166,7 @@ fn item(ticket: &Ticket, config: &KanbanConfig) -> MentionItem {
     }
 }
 
-fn summary(ticket: &Ticket, config: &KanbanConfig) -> String {
+fn summary(board: &Board, ticket: &Ticket, config: &KanbanConfig) -> String {
     let title = serde_json::to_string(&ticket.title).unwrap_or_default();
     let mut line = format!(
         "Kanban ticket {} {title} · status: {} · priority: {}",
@@ -141,6 +177,11 @@ fn summary(ticket: &Ticket, config: &KanbanConfig) -> String {
     match ticket.assignee.as_deref().filter(|a| !a.is_empty()) {
         Some(assignee) => line.push_str(&format!(" · assignee: {assignee}")),
         None => line.push_str(" · unassigned"),
+    }
+    for (label, value) in relations(board, ticket) {
+        if let Some(value) = value {
+            line.push_str(&format!(" · {}: {value}", label.to_lowercase()));
+        }
     }
     if !ticket.labels.is_empty() {
         line.push_str(&format!(" · labels: {}", ticket.labels.join(", ")));

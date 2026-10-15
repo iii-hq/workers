@@ -1,10 +1,10 @@
 //! A real accessible window for the semantic e2e. Controls: Salvar (counts
 //! presses), Nome (text), Senha (password with a known value), Campo B
-//! (password with a neutral name), Ativo (checkbox), Itens (list box
-//! Um/Dois/Três), two OK buttons, a disabled button and Remover (removes
-//! Salvar). Every accessibility action request and every physical click and
-//! typed key is appended to $COMPUTER_A11Y_FIXTURE_LOG so the test can prove
-//! exactly one effect per action and none per refusal.
+//! (password with a neutral name), Fixo (read-only text), Ativo (checkbox),
+//! Itens (list box Um/Dois/Três), two OK buttons, a disabled button and
+//! Remover (removes Salvar). Every accessibility action request and every
+//! physical click and typed key is appended to $COMPUTER_A11Y_FIXTURE_LOG so
+//! the test can prove exactly one effect per action and none per refusal.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -41,6 +41,8 @@ const NOME_RUN: NodeId = NodeId(14);
 const SENHA_RUN: NodeId = NodeId(15);
 const CAMPO_B: NodeId = NodeId(16);
 const CAMPO_B_RUN: NodeId = NodeId(17);
+const FIXO: NodeId = NodeId(18);
+const FIXO_RUN: NodeId = NodeId(19);
 
 fn log(line: &str) {
     let Ok(path) = std::env::var("COMPUTER_A11Y_FIXTURE_LOG") else {
@@ -65,6 +67,7 @@ fn name_of(id: NodeId) -> &'static str {
         NOME => "Nome",
         SENHA => "Senha",
         CAMPO_B => "Campo B",
+        FIXO => "Fixo",
         ATIVO => "Ativo",
         UM => "Um",
         DOIS => "Dois",
@@ -113,6 +116,7 @@ fn build(s: &State) -> TreeUpdate {
         NOME,
         SENHA,
         CAMPO_B,
+        FIXO,
         ATIVO,
         ITENS,
         OK1,
@@ -134,6 +138,16 @@ fn build(s: &State) -> TreeUpdate {
     nodes.push((SENHA_RUN, run(SECRET)));
     nodes.push((CAMPO_B, password("Campo B", SECRET_B, CAMPO_B_RUN)));
     nodes.push((CAMPO_B_RUN, run(SECRET_B)));
+
+    // No SetValue action and no apply() arm: a request that reaches it is
+    // only logged, so a test sees it.
+    let mut fixo = Node::new(Role::TextInput);
+    fixo.set_label("Fixo");
+    fixo.set_value("fixo");
+    fixo.set_read_only();
+    fixo.set_children(vec![FIXO_RUN]);
+    nodes.push((FIXO, fixo));
+    nodes.push((FIXO_RUN, run("fixo")));
 
     let mut ativo = Node::new(Role::CheckBox);
     ativo.set_label("Ativo");

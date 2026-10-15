@@ -352,6 +352,53 @@ async fn a_disabled_button_is_refused_without_effect() {
 
 #[tokio::test]
 #[ignore]
+async fn select_refuses_what_has_no_selection_and_flags_a_selected_item() {
+    let f = Fixture::start().await;
+    let s = session();
+    // A button has no selection state on any platform: refused, no request.
+    let out = find(&s, f.pid(), "button[name='Salvar']").await;
+    let err = s
+        .act(first_ref(&out.text), Verb::Select, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::NotSupported, "{}", err.message);
+    settle();
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
+    // Um starts selected: dispatched, said so, and AccessKit does nothing.
+    let out = find(&s, f.pid(), "[name='Um'][selected='true']").await;
+    assert_eq!(out.matches, 1, "{}", out.text);
+    let got = s
+        .act(first_ref(&out.text), Verb::Select, None)
+        .await
+        .unwrap();
+    assert!(got.contains("already selected"), "{got}");
+    settle();
+    assert!(f.effects().is_empty(), "{:?}", f.requests());
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_read_only_field_is_refused_without_effect() {
+    let f = Fixture::start().await;
+    let s = session();
+    let out = find(&s, f.pid(), "text_field[name='Fixo']").await;
+    assert_eq!(out.matches, 1, "{}", out.text);
+    let got = s
+        .act(first_ref(&out.text), Verb::SetValue, Some("novo".into()))
+        .await;
+    // ponytail: on macOS an AccessKit node answers AXValue settable whatever
+    // it accepts (the setter is overridden), so the act is dispatched
+    // unverified and AppKit drops it (vendor/xa11y-macos PATCHES.md, M2).
+    if cfg!(not(target_os = "macos")) {
+        assert_eq!(got.unwrap_err().code, Code::NotSupported);
+    }
+    settle();
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
+    wait_matches(&s, f.pid(), "text_field[name='Fixo'][value='fixo']", 1).await;
+}
+
+#[tokio::test]
+#[ignore]
 async fn a_removed_element_is_a_stale_ref() {
     let f = Fixture::start().await;
     let s = session();
@@ -433,7 +480,8 @@ async fn the_password_value_never_leaves() {
 /// mapping screen coordinates into the session's (downscaled) image space.
 /// The fixture logs physical pixels; `list_displays` sizes are what `xcap`
 /// reports — physical on Windows (per-monitor-v2) and Linux, logical points
-/// on macOS.
+/// on macOS. The pointer is parked off the window first, so the click has to
+/// travel: one that lands where the pointer was cannot pass by luck.
 async fn click_center(host: &NativeHost, display: &DisplayInfo, win: Win) {
     host.screenshot().await.unwrap();
     let image = host.screen_size().await.unwrap();
@@ -442,10 +490,16 @@ async fn click_center(host: &NativeHost, display: &DisplayInfo, win: Win) {
     } else {
         1.0
     };
-    let tx = ((win.x + win.w / 2) as f64 / s) as i64;
-    let ty = ((win.y + win.h / 2) as f64 / s) as i64;
-    let ix = tx * image.width as i64 / display.width as i64;
-    let iy = ty * image.height as i64 / display.height as i64;
+    let to_image = |x: i64, y: i64| {
+        let (tx, ty) = ((x as f64 / s) as i64, (y as f64 / s) as i64);
+        (
+            tx * image.width as i64 / display.width as i64,
+            ty * image.height as i64 / display.height as i64,
+        )
+    };
+    let (px, py) = to_image(win.x / 2, win.y / 2);
+    host.move_cursor(px, py).await.unwrap();
+    let (ix, iy) = to_image(win.x + win.w / 2, win.y + win.h / 2);
     host.left_click(ix, iy).await.unwrap();
 }
 
@@ -481,8 +535,10 @@ async fn a_coordinate_click_lands_before_and_after_semantic_use() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     let window = f.window().unwrap();
     let (ww, wh) = (window.w, window.h);
-    let host = NativeHost::new(4096, 80, None);
     let display = main_display();
+    // Capture the display the click is mapped through, not the one under the
+    // pointer: they differ on a multi-monitor desktop.
+    let host = NativeHost::new(4096, 80, Some(display.index));
     click_center(&host, &display, window).await;
     wait_for("the first click", || mouse_clicks(&f).len() == 1).await;
     let s = session();

@@ -2,6 +2,7 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { hideSideChats } from '@/lib/chat-aside'
 import { filterConversations } from '@/lib/conversation-filter'
 import {
   countConversations,
@@ -143,7 +144,9 @@ export function ConversationSidebar({
      list before the tree is built, judging each row by its root's kind, so
      hiding a kind hides whole subtrees and search matches inside them alike. */
   const started = useMemo(
-    () => conversations.filter((c) => !c.draft),
+    // A side chat (and what it spawned) lives in its conversation's side
+    // panel until it is kept.
+    () => hideSideChats(conversations.filter((c) => !c.draft)),
     [conversations],
   )
   const visible = useMemo(

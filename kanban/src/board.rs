@@ -8,8 +8,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use indexmap::IndexMap;
+
 use crate::config::{Column, KanbanConfig};
-use crate::store::{Activity, Board, Change, Comment, Ticket, default_actor};
+use crate::store::{Activity, Board, Change, Comment, Project, Release, Ticket, default_actor};
 
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -42,6 +44,8 @@ pub fn new_id() -> String {
 pub struct BoardContext {
     pub prefix: String,
     pub default_status: String,
+    /// The column that counts as done (progress, releases, subtasks).
+    pub done_status: String,
     pub columns: Vec<Column>,
     pub priorities: Vec<String>,
 }
@@ -51,6 +55,7 @@ impl From<&KanbanConfig> for BoardContext {
         Self {
             prefix: config.id_prefix.clone(),
             default_status: config.default_status.clone(),
+            done_status: config.done_status.clone(),
             columns: config.columns.clone(),
             priorities: config.priorities.clone(),
         }
@@ -78,6 +83,9 @@ pub struct TicketSummary {
     pub updated_at: String,
     pub deleted_at: Option<String>,
     pub comment_count: u64,
+    pub parent_id: Option<String>,
+    pub project_id: Option<String>,
+    pub release_id: Option<String>,
 }
 
 pub fn summarize(ticket: &Ticket) -> TicketSummary {
@@ -94,7 +102,137 @@ pub fn summarize(ticket: &Ticket) -> TicketSummary {
         updated_at: ticket.updated_at.clone(),
         deleted_at: ticket.deleted_at.clone(),
         comment_count: ticket.comments.len() as u64,
+        parent_id: ticket.parent_id.clone(),
+        project_id: ticket.project_id.clone(),
+        release_id: ticket.release_id.clone(),
     }
+}
+
+/// A ticket in short: what a parent shows for each child and a child for its
+/// parent, and what a project or release page lists.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Brief {
+    pub id: String,
+    pub key: String,
+    pub title: String,
+    pub status: String,
+    pub priority: String,
+    pub assignee: Option<String>,
+    pub deleted_at: Option<String>,
+    pub project_id: Option<String>,
+    pub release_id: Option<String>,
+}
+
+pub fn relation_brief(ticket: &Ticket) -> Brief {
+    Brief {
+        id: ticket.id.clone(),
+        key: ticket.key.clone(),
+        title: ticket.title.clone(),
+        status: ticket.status.clone(),
+        priority: ticket.priority.clone(),
+        assignee: ticket.assignee.clone(),
+        deleted_at: ticket.deleted_at.clone(),
+        project_id: ticket.project_id.clone(),
+        release_id: ticket.release_id.clone(),
+    }
+}
+
+/// Live children in the done column over live children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Progress {
+    pub done: u64,
+    pub total: u64,
+}
+
+/// Every ticket a function returns or an event carries: the stored ticket plus
+/// its relations, derived from the board at the moment of the read or write.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TicketView {
+    #[serde(flatten)]
+    pub ticket: Ticket,
+    /// The parent, deleted or not; `null` for a ticket that is not a subtask.
+    pub parent: Option<Brief>,
+    /// Live subtasks by ticket number.
+    pub children: Vec<Brief>,
+    pub progress: Progress,
+}
+
+/// Live subtasks of `parent_id`, by ticket number.
+pub fn live_children<'a>(board: &'a Board, parent_id: &str) -> Vec<&'a Ticket> {
+    let mut rows: Vec<&Ticket> = board
+        .tickets
+        .values()
+        .filter(|ticket| {
+            ticket.deleted_at.is_none() && ticket.parent_id.as_deref() == Some(parent_id)
+        })
+        .collect();
+    // ponytail: linear scan per view; index parent -> children if boards reach tens of thousands of tickets.
+    rows.sort_by_key(|ticket| (key_number(ticket), ticket.key.clone()));
+    rows
+}
+
+pub fn ticket_view(board: &Board, ticket: &Ticket, done_status: &str) -> TicketView {
+    let children = live_children(board, &ticket.id);
+    TicketView {
+        parent: ticket
+            .parent_id
+            .as_deref()
+            .and_then(|id| board.tickets.get(id))
+            .map(relation_brief),
+        progress: Progress {
+            done: children
+                .iter()
+                .filter(|child| child.status == done_status)
+                .count() as u64,
+            total: children.len() as u64,
+        },
+        children: children.into_iter().map(relation_brief).collect(),
+        ticket: ticket.clone(),
+    }
+}
+
+/// The view of a ticket as it is on the board now; `None` for an unknown id.
+pub fn view_of(board: &Board, id: &str, done_status: &str) -> Option<TicketView> {
+    board
+        .tickets
+        .get(id)
+        .map(|ticket| ticket_view(board, ticket, done_status))
+}
+
+/// A release as the trigger filters see it: its id and its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// The releases a write put `ticket` in or took it out of: its current
+/// release, and the release named by `from` in the `release` changes the write
+/// at `at` recorded (names are unique, so the name finds the id). Activity of
+/// earlier writes is ignored: a reorder records none, and the ticket must not
+/// announce a release it left long ago. A `kanban:change` filtered by release
+/// matches any of them.
+pub fn event_releases(board: &Board, ticket: &Ticket, at: &str) -> Vec<ReleaseRef> {
+    let current = ticket
+        .release_id
+        .as_deref()
+        .and_then(|id| board.releases.get(id));
+    let left = ticket
+        .activity
+        .iter()
+        .filter(|entry| entry.at == at)
+        .flat_map(|entry| entry.changes.iter().flatten())
+        .filter(|change| change.field == "release")
+        .filter_map(|change| change.from.as_str())
+        .filter_map(|name| board.releases.values().find(|release| release.name == name));
+    current
+        .into_iter()
+        .chain(left)
+        .map(|release| ReleaseRef {
+            id: release.id.clone(),
+            name: release.name.clone(),
+        })
+        .collect()
 }
 
 /// The compact projection: what an agent needs to recognise a ticket in a
@@ -118,29 +256,33 @@ pub enum TicketRow {
     Brief(TicketBrief),
 }
 
+pub fn brief(ticket: &Ticket) -> TicketBrief {
+    TicketBrief {
+        key: ticket.key.clone(),
+        title: ticket.title.clone(),
+        status: ticket.status.clone(),
+        priority: ticket.priority.clone(),
+        assignee: ticket.assignee.clone(),
+        comment_count: ticket.comments.len() as u64,
+    }
+}
+
 pub fn row(ticket: &Ticket, compact: bool) -> TicketRow {
     if compact {
-        TicketRow::Brief(TicketBrief {
-            key: ticket.key.clone(),
-            title: ticket.title.clone(),
-            status: ticket.status.clone(),
-            priority: ticket.priority.clone(),
-            assignee: ticket.assignee.clone(),
-            comment_count: ticket.comments.len() as u64,
-        })
+        TicketRow::Brief(brief(ticket))
     } else {
         TicketRow::Summary(summarize(ticket))
     }
 }
 
-fn trimmed(value: Option<&str>) -> Option<String> {
+pub(crate) fn trimmed(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
 
-fn actor_or_user(actor: Option<&str>) -> String {
+pub(crate) fn actor_or_user(actor: Option<&str>) -> String {
     trimmed(actor).unwrap_or_else(default_actor)
 }
 
@@ -158,7 +300,7 @@ fn clean_labels(labels: &[String]) -> Vec<String> {
 
 /// Resolve the internal uuid or the human key (case-insensitive) to the
 /// ticket's id in the map.
-fn resolve_id(board: &Board, id_or_key: &str) -> Option<String> {
+pub(crate) fn resolve_id(board: &Board, id_or_key: &str) -> Option<String> {
     let wanted = id_or_key.trim();
     if wanted.is_empty() {
         return None;
@@ -183,7 +325,40 @@ fn find_ticket_mut<'a>(board: &'a mut Board, id_or_key: &str) -> Option<&'a mut 
     board.tickets.get_mut(&id)
 }
 
-fn by_order(a: &Ticket, b: &Ticket) -> std::cmp::Ordering {
+/// A project or release by id (ASCII case ignored), else by name (trimmed,
+/// ASCII case ignored; names are unique per kind).
+pub(crate) fn find_entity<'a, T>(
+    entities: &'a IndexMap<String, T>,
+    reference: &str,
+    name: fn(&T) -> &str,
+) -> Option<&'a T> {
+    let wanted = reference.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    entities
+        .get(wanted)
+        .or_else(|| {
+            entities
+                .iter()
+                .find_map(|(id, entity)| id.eq_ignore_ascii_case(wanted).then_some(entity))
+        })
+        .or_else(|| {
+            entities
+                .values()
+                .find(|entity| name(entity).trim().eq_ignore_ascii_case(wanted))
+        })
+}
+
+pub(crate) fn find_project<'a>(board: &'a Board, reference: &str) -> Option<&'a Project> {
+    find_entity(&board.projects, reference, |project| &project.name)
+}
+
+pub(crate) fn find_release<'a>(board: &'a Board, reference: &str) -> Option<&'a Release> {
+    find_entity(&board.releases, reference, |release| &release.name)
+}
+
+pub(crate) fn by_order(a: &Ticket, b: &Ticket) -> std::cmp::Ordering {
     a.order
         .cmp(&b.order)
         .then_with(|| a.created_at.cmp(&b.created_at))
@@ -198,13 +373,50 @@ pub struct TicketFilter {
     pub include_deleted: bool,
     /// Only tickets whose `updated_at` is after this ISO timestamp.
     pub updated_since: Option<String>,
+    /// Parent ticket (uuid or key); `Some("")` matches tickets that are not subtasks.
+    pub parent_id: Option<String>,
+    /// Project (id or name); `Some("")` matches tickets in no project.
+    pub project_id: Option<String>,
+    /// Release (id or name); `Some("")` matches tickets in no release.
+    pub release_id: Option<String>,
     pub limit: Option<usize>,
+}
+
+/// One relation filter resolved against the board: outer `None` = no filter,
+/// `Some(None)` = an unknown reference (matches nothing), `Some(Some(id))` =
+/// the id the ticket's relation must equal (`""` = no relation).
+type Facet = Option<Option<String>>;
+
+fn facet(wanted: Option<&str>, resolve: impl Fn(&str) -> Option<String>) -> Facet {
+    let wanted = wanted.map(str::trim)?;
+    Some(if wanted.is_empty() {
+        Some(String::new())
+    } else {
+        resolve(wanted)
+    })
+}
+
+fn facet_matches(facet: &Facet, value: Option<&str>) -> bool {
+    match facet {
+        None => true,
+        Some(None) => false,
+        Some(Some(id)) => value.unwrap_or_default() == id,
+    }
 }
 
 pub fn list_tickets<'a>(board: &'a Board, filter: &TicketFilter) -> Vec<&'a Ticket> {
     let status = filter.status.as_deref().map(str::trim).unwrap_or_default();
     let assignee = filter.assignee.as_deref().map(str::trim);
     let since = trimmed(filter.updated_since.as_deref());
+    let parent = facet(filter.parent_id.as_deref(), |wanted| {
+        resolve_id(board, wanted)
+    });
+    let project = facet(filter.project_id.as_deref(), |wanted| {
+        find_project(board, wanted).map(|project| project.id.clone())
+    });
+    let release = facet(filter.release_id.as_deref(), |wanted| {
+        find_release(board, wanted).map(|release| release.id.clone())
+    });
     let mut rows: Vec<&Ticket> = board
         .tickets
         .values()
@@ -215,6 +427,9 @@ pub fn list_tickets<'a>(board: &'a Board, filter: &TicketFilter) -> Vec<&'a Tick
             Some(wanted) => ticket.assignee.as_deref().unwrap_or_default() == wanted,
         })
         .filter(|ticket| since.as_ref().is_none_or(|s| &ticket.updated_at > s))
+        .filter(|ticket| facet_matches(&parent, ticket.parent_id.as_deref()))
+        .filter(|ticket| facet_matches(&project, ticket.project_id.as_deref()))
+        .filter(|ticket| facet_matches(&release, ticket.release_id.as_deref()))
         .collect();
     rows.sort_by(|a, b| by_order(a, b));
     if let Some(limit) = filter.limit.filter(|limit| *limit > 0) {
@@ -350,7 +565,7 @@ fn cited_keys(ticket: &Ticket, heads: &HashSet<String>) -> HashSet<String> {
     keys
 }
 
-fn key_number(ticket: &Ticket) -> u64 {
+pub(crate) fn key_number(ticket: &Ticket) -> u64 {
     ticket
         .key
         .rsplit_once('-')
@@ -415,7 +630,7 @@ fn next_key(board: &mut Board, prefix: &str) -> String {
     key
 }
 
-fn record(
+pub(crate) fn record(
     ticket: &mut Ticket,
     kind: &str,
     actor: &str,
@@ -455,6 +670,198 @@ fn compact_column(board: &mut Board, status: &str) {
     }
 }
 
+/// What a patch does to one relation of a ticket: outer `None` = nothing,
+/// `Some(None)` = clear it, `Some(Some(id))` = set it.
+type Relation = Option<Option<String>>;
+
+/// The relation a patch asks for, as `Option<Option<&str>>` (absent / null /
+/// a reference); a blank reference clears, like a blank assignee.
+fn wanted_reference(wanted: Option<&Option<String>>) -> Option<Option<String>> {
+    wanted.map(|reference| trimmed(reference.as_deref()))
+}
+
+/// Validate a new parent for `child` (`None` while the ticket is being
+/// created) and return its id. One level only, and the parent must be live.
+fn check_parent(board: &Board, child: Option<&str>, reference: &str) -> Result<String, String> {
+    let id = resolve_id(board, reference).ok_or_else(|| format!("unknown parent: {reference}"))?;
+    let parent = &board.tickets[&id];
+    if let Some(child) = child
+        && board.tickets[child].deleted_at.is_some()
+    {
+        return Err(format!(
+            "{} is deleted; restore it before making it a subtask",
+            board.tickets[child].key
+        ));
+    }
+    if child == Some(id.as_str()) {
+        return Err(format!("{} cannot be its own parent", parent.key));
+    }
+    if parent.deleted_at.is_some() {
+        return Err(format!("parent {} is deleted", parent.key));
+    }
+    if parent.parent_id.is_some() {
+        return Err(format!(
+            "{} is itself a subtask; subtasks are one level deep",
+            parent.key
+        ));
+    }
+    if let Some(child) = child
+        && !live_children(board, child).is_empty()
+    {
+        return Err(format!(
+            "{} has subtasks and cannot become one; subtasks are one level deep",
+            board.tickets[child].key
+        ));
+    }
+    Ok(id)
+}
+
+fn parent_relation(
+    board: &Board,
+    child: &str,
+    wanted: Option<&Option<String>>,
+) -> Result<Relation, String> {
+    let current = board.tickets[child].parent_id.as_deref();
+    let Some(wanted) = wanted_reference(wanted) else {
+        return Ok(None);
+    };
+    let Some(reference) = wanted else {
+        return Ok(current.map(|_| None));
+    };
+    if resolve_id(board, &reference).as_deref() == current && current.is_some() {
+        return Ok(None);
+    }
+    check_parent(board, Some(child), &reference).map(|id| Some(Some(id)))
+}
+
+fn project_relation(
+    board: &Board,
+    wanted: Option<&Option<String>>,
+    current: Option<&str>,
+) -> Result<Relation, String> {
+    let Some(wanted) = wanted_reference(wanted) else {
+        return Ok(None);
+    };
+    let Some(reference) = wanted else {
+        return Ok(current.map(|_| None));
+    };
+    let project =
+        find_project(board, &reference).ok_or_else(|| format!("unknown project: {reference}"))?;
+    if current == Some(project.id.as_str()) {
+        return Ok(None);
+    }
+    if project.archived_at.is_some() {
+        return Err(format!(
+            "project {} is archived; restore it before filing tickets under it",
+            project.name
+        ));
+    }
+    Ok(Some(Some(project.id.clone())))
+}
+
+fn release_relation(
+    board: &Board,
+    wanted: Option<&Option<String>>,
+    current: Option<&str>,
+) -> Result<Relation, String> {
+    let Some(wanted) = wanted_reference(wanted) else {
+        return Ok(None);
+    };
+    let Some(reference) = wanted else {
+        return Ok(current.map(|_| None));
+    };
+    let release =
+        find_release(board, &reference).ok_or_else(|| format!("unknown release: {reference}"))?;
+    Ok((current != Some(release.id.as_str())).then(|| Some(release.id.clone())))
+}
+
+pub(crate) fn project_name(board: &Board, id: Option<&str>) -> Value {
+    json!(id.map(|id| {
+        board
+            .projects
+            .get(id)
+            .map_or(id, |project| project.name.as_str())
+    }))
+}
+
+pub(crate) fn release_name(board: &Board, id: Option<&str>) -> Value {
+    json!(id.map(|id| {
+        board
+            .releases
+            .get(id)
+            .map_or(id, |release| release.name.as_str())
+    }))
+}
+
+fn ticket_key(board: &Board, id: Option<&str>) -> Value {
+    json!(id.map(|id| {
+        board
+            .tickets
+            .get(id)
+            .map_or(id, |ticket| ticket.key.as_str())
+    }))
+}
+
+/// Activity on the parent side of an attach or detach: the parent changes
+/// (it is written), so its `updated_at` moves like any other write.
+fn note_subtask(
+    board: &mut Board,
+    parent: &str,
+    kind: &str,
+    change: Change,
+    actor: &str,
+    at: &str,
+) {
+    if let Some(parent) = board.tickets.get_mut(parent) {
+        parent.updated_at = at.to_string();
+        record(parent, kind, actor, at, vec![change], None);
+    }
+}
+
+fn subtask_change(from: Value, to: Value) -> Change {
+    Change {
+        field: "subtask".into(),
+        from,
+        to,
+    }
+}
+
+/// Point `child` at `next` (or at nothing) and write the matching activity
+/// on the old and new parent. Returns the child's own `parent` change and the
+/// ids of the parents written.
+fn reparent(
+    board: &mut Board,
+    child: &str,
+    next: Option<String>,
+    actor: &str,
+    at: &str,
+) -> (Change, Vec<String>) {
+    let key = board.tickets[child].key.clone();
+    let old = board.tickets[child].parent_id.clone();
+    let change = Change {
+        field: "parent".into(),
+        from: ticket_key(board, old.as_deref()),
+        to: ticket_key(board, next.as_deref()),
+    };
+    board
+        .tickets
+        .get_mut(child)
+        .expect("resolved id exists")
+        .parent_id = next.clone();
+    let mut written = Vec::new();
+    if let Some(old) = old {
+        let removed = subtask_change(json!(key), Value::Null);
+        note_subtask(board, &old, "subtask.removed", removed, actor, at);
+        written.push(old);
+    }
+    if let Some(next) = next {
+        let added = subtask_change(Value::Null, json!(key));
+        note_subtask(board, &next, "subtask.added", added, actor, at);
+        written.push(next);
+    }
+    (change, written)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CreateTicketInput {
     pub title: String,
@@ -463,6 +870,12 @@ pub struct CreateTicketInput {
     pub priority: Option<String>,
     pub assignee: Option<String>,
     pub labels: Option<Vec<String>>,
+    /// Parent ticket (uuid or key).
+    pub parent: Option<String>,
+    /// Project (id or name).
+    pub project: Option<String>,
+    /// Release (id or name).
+    pub release: Option<String>,
     pub actor: Option<String>,
 }
 
@@ -481,6 +894,14 @@ pub fn create_ticket(
     }
     let status = requested.unwrap_or_else(|| context.default_status.clone());
     let actor = actor_or_user(input.actor.as_deref());
+    // Every relation is checked before the board is touched.
+    let wrap = |value: &Option<String>| value.clone().map(Some);
+    let parent = match wanted_reference(wrap(&input.parent).as_ref()).flatten() {
+        Some(reference) => Some(check_parent(board, None, &reference)?),
+        None => None,
+    };
+    let project = project_relation(board, wrap(&input.project).as_ref(), None)?.flatten();
+    let release = release_relation(board, wrap(&input.release).as_ref(), None)?.flatten();
     let priority = trimmed(input.priority.as_deref())
         .or_else(|| context.priorities.first().cloned())
         .unwrap_or_else(|| "medium".to_string());
@@ -498,6 +919,9 @@ pub fn create_ticket(
             .as_deref()
             .map(clean_labels)
             .unwrap_or_default(),
+        parent_id: parent.clone(),
+        project_id: project.clone(),
+        release_id: release.clone(),
         order: next_order(board, &status, None),
         created_at: at.to_string(),
         updated_at: at.to_string(),
@@ -506,18 +930,29 @@ pub fn create_ticket(
         comments: Vec::new(),
         activity: Vec::new(),
     };
-    record(
-        &mut ticket,
-        "ticket.created",
-        &actor,
-        at,
-        vec![Change {
-            field: "status".into(),
-            from: Value::Null,
-            to: json!(status),
-        }],
-        None,
-    );
+    let mut created = vec![Change {
+        field: "status".into(),
+        from: Value::Null,
+        to: json!(status),
+    }];
+    for (field, to) in [
+        ("parent", ticket_key(board, parent.as_deref())),
+        ("project", project_name(board, project.as_deref())),
+        ("release", release_name(board, release.as_deref())),
+    ] {
+        if !to.is_null() {
+            created.push(Change {
+                field: field.into(),
+                from: Value::Null,
+                to,
+            });
+        }
+    }
+    record(&mut ticket, "ticket.created", &actor, at, created, None);
+    if let Some(parent) = &parent {
+        let added = subtask_change(Value::Null, json!(ticket.key));
+        note_subtask(board, parent, "subtask.added", added, &actor, at);
+    }
     board.tickets.insert(ticket.id.clone(), ticket.clone());
     Ok(ticket)
 }
@@ -537,12 +972,21 @@ pub struct UpdatePatch {
     pub labels: Option<Vec<String>>,
     pub add_labels: Option<Vec<String>>,
     pub remove_labels: Option<Vec<String>>,
+    /// Parent ticket (uuid or key); `Some(None)` detaches.
+    pub parent: Option<Option<String>>,
+    /// Project (id or name); `Some(None)` clears.
+    pub project: Option<Option<String>>,
+    /// Release (id or name); `Some(None)` clears.
+    pub release: Option<Option<String>>,
 }
 
 #[derive(Debug)]
 pub struct UpdateResult {
     pub ticket: Ticket,
     pub changes: Vec<Change>,
+    /// Ids of the other tickets this write changed: the old and the new
+    /// parent of an attach or detach.
+    pub related: Vec<String>,
 }
 
 pub fn update_ticket(
@@ -556,7 +1000,13 @@ pub fn update_ticket(
     let Some(id) = resolve_id(board, id_or_key) else {
         return Ok(None);
     };
+    // Relations are checked before the board is touched.
+    let current = &board.tickets[&id];
+    let parent = parent_relation(board, &id, patch.parent.as_ref())?;
+    let project = project_relation(board, patch.project.as_ref(), current.project_id.as_deref())?;
+    let release = release_relation(board, patch.release.as_ref(), current.release_id.as_deref())?;
     let mut changes: Vec<Change> = Vec::new();
+    let mut related: Vec<String> = Vec::new();
     {
         let ticket = board.tickets.get_mut(&id).expect("resolved id exists");
         let mut apply = |field: &str, before: Value, next: Value| {
@@ -623,9 +1073,44 @@ pub fn update_ticket(
             ticket.labels = labels;
         }
     }
+    if let Some(next) = parent {
+        let (change, written) = reparent(board, &id, next, actor, at);
+        changes.push(change);
+        related = written;
+    }
+    if let Some(next) = project {
+        let before = board.tickets[&id].project_id.clone();
+        changes.push(Change {
+            field: "project".into(),
+            from: project_name(board, before.as_deref()),
+            to: project_name(board, next.as_deref()),
+        });
+        board
+            .tickets
+            .get_mut(&id)
+            .expect("resolved id exists")
+            .project_id = next;
+    }
+    if let Some(next) = release {
+        let before = board.tickets[&id].release_id.clone();
+        changes.push(Change {
+            field: "release".into(),
+            from: release_name(board, before.as_deref()),
+            to: release_name(board, next.as_deref()),
+        });
+        board
+            .tickets
+            .get_mut(&id)
+            .expect("resolved id exists")
+            .release_id = next;
+    }
     if changes.is_empty() {
         let ticket = board.tickets[&id].clone();
-        return Ok(Some(UpdateResult { ticket, changes }));
+        return Ok(Some(UpdateResult {
+            ticket,
+            changes,
+            related,
+        }));
     }
     if changes.iter().any(|change| change.field == "status") {
         let status = board.tickets[&id].status.clone();
@@ -642,6 +1127,7 @@ pub fn update_ticket(
     Ok(Some(UpdateResult {
         ticket: ticket.clone(),
         changes,
+        related,
     }))
 }
 
@@ -726,10 +1212,44 @@ pub fn delete_ticket(board: &mut Board, id_or_key: &str, actor: &str, at: &str) 
     Some(ticket.clone())
 }
 
-pub fn restore_ticket(board: &mut Board, id_or_key: &str, actor: &str, at: &str) -> Option<Ticket> {
+/// Bring a deleted ticket back. A subtask whose parent can no longer hold it
+/// (deleted, gone, or a subtask itself by now) comes back detached, with the
+/// activity and the written parent of a normal detach: `changes` carries the
+/// `parent` change and `related` the old parent.
+pub fn restore_ticket(
+    board: &mut Board,
+    id_or_key: &str,
+    actor: &str,
+    at: &str,
+) -> Option<UpdateResult> {
     let id = resolve_id(board, id_or_key)?;
-    if board.tickets[&id].deleted_at.is_none() {
-        return Some(board.tickets[&id].clone());
+    let mut result = UpdateResult {
+        ticket: board.tickets[&id].clone(),
+        changes: Vec::new(),
+        related: Vec::new(),
+    };
+    if result.ticket.deleted_at.is_none() {
+        return Some(result);
+    }
+    let orphaned = result.ticket.parent_id.as_deref().is_some_and(|parent| {
+        board
+            .tickets
+            .get(parent)
+            .is_none_or(|parent| parent.deleted_at.is_some() || parent.parent_id.is_some())
+    });
+    if orphaned {
+        let (change, written) = reparent(board, &id, None, actor, at);
+        let ticket = board.tickets.get_mut(&id).expect("resolved id exists");
+        record(
+            ticket,
+            "ticket.updated",
+            actor,
+            at,
+            vec![change.clone()],
+            None,
+        );
+        result.changes.push(change);
+        result.related = written;
     }
     let status = board.tickets[&id].status.clone();
     let order = next_order(board, &status, Some(&id));
@@ -737,8 +1257,10 @@ pub fn restore_ticket(board: &mut Board, id_or_key: &str, actor: &str, at: &str)
     ticket.deleted_at = None;
     ticket.updated_at = at.to_string();
     ticket.order = order;
+    // Last, so the newest entry names the event: `ticket.restored`.
     record(ticket, "ticket.restored", actor, at, Vec::new(), None);
-    Some(ticket.clone())
+    result.ticket = ticket.clone();
+    Some(result)
 }
 
 #[derive(Debug, Clone, Default)]

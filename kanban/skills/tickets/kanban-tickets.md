@@ -16,7 +16,7 @@ learn about new comments through a trigger instead of polling.
 
 The board file is `<data_path>/board.json`, resolved from the `kanban`
 configuration entry; `kanban::config::info` prints the absolute path, the
-column list, the priorities and the key prefix. Tickets are soft-deleted when
+column list, the `done_status` column, the priorities and the key prefix. Tickets are soft-deleted when
 a **human** removes one from the ticket screen: the row stays in that file
 with `deleted_at` set, so a person can undo it.
 
@@ -73,6 +73,47 @@ and on a comment so does `author`. Pass your own agent-profile id in both:
 the activity timeline then reads honestly, and — the part that matters — the
 comment filters below key on exactly that string.
 
+### Subtasks, projects and releases
+
+A ticket has at most one **parent**, one **project** and one **release**.
+They are independent facets; nothing is inherited from one to another.
+`kanban::ticket::create` and `kanban::ticket::update` take all three:
+
+```json
+kanban::ticket::create { "title": "Persist filters in the URL", "parent": "KAN-7", "release": "Phase 2", "actor": "<your-profile-id>" }
+kanban::ticket::update { "id": "KAN-9", "parent": "KAN-7", "project": "iii cloud", "actor": "<your-profile-id>" }
+kanban::ticket::update { "id": "KAN-9", "release": null, "actor": "<your-profile-id>" }
+```
+
+A string sets the field, `null` clears it, an absent field leaves it alone.
+`parent` takes a key or uuid; `project` and `release` take an id or a name
+(`kanban::project::list {}` and `kanban::release::list {}` return both, with
+counts).
+
+- **One level.** The parent must be live and have no parent of its own; a
+  ticket with live children cannot get a parent, and a ticket is never its own
+  parent. A feature that needs a second level is two feature tickets.
+- **A subtask is its own ticket.** It has its own status, assignee, comments
+  and report. Moving it does not move the parent, and moving the parent does
+  not move it.
+- **Progress counts only the done column.** `kanban::ticket::get` on a parent
+  returns `children` (live ones) and `progress: { done, total }`; `done` is the
+  children sitting in `done_status`, so a child in `in_review` is not done.
+  Deleted children are not counted. A deleted parent leaves its children; their
+  `parent` brief then has `deleted_at`.
+- **Attaching writes on both tickets.** Setting or clearing `parent` adds an
+  activity line to the child and to the parent, and both fire `kanban:change`.
+- **Project and release are filed, not created.** You may set them on tickets
+  and read the lists, but creating, renaming, archiving, shipping or deleting a
+  project or a release, and converting a label into one, are console actions
+  denied to agents. An archived project refuses new tickets; a released release
+  still accepts them. Creating a ticket with a `parent` does not copy the
+  parent's project or release: pass them if they apply.
+- **Narrow the reads.** `kanban::ticket::list` and `kanban::board::get` take
+  `parent_id`, `project_id` and `release_id` (`""` means none), so a feature's
+  tickets are one small read:
+  `kanban::ticket::list { "parent_id": "<uuid of KAN-7>", "compact": true }`.
+
 ### Which profile id
 
 `kanban::agent::list {}` returns the assignable agent profiles
@@ -87,7 +128,8 @@ comment created on one ticket.
 
 | config field | meaning |
 | --- | --- |
-| `ticket_id` | **Required** — uuid or human key. A binding without it never fires. |
+| `ticket_id` | uuid or human key. A binding with neither `ticket_id` nor `parent_id` never fires. |
+| `parent_id` | Instead of `ticket_id`: fire for a comment on that ticket **or on any of its children**. One binding then covers a feature and every subtask. |
 | `author` | Fire only for comments by exactly this author. |
 | `exclude_author` | Fire for every author **except** this one. |
 | `root_only` | Ignore replies; fire only for top-level comments. |
@@ -211,8 +253,9 @@ because these types live in the **worker's** namespace. Read the namespace off
   comments back on the same ticket.
 - **Top-level only.** Add `"root_only": true` to ignore thread replies.
 
-`kanban::comment::list` accepts the **same** filters, which is how you catch
-up after a wake without re-reading everything:
+`kanban::comment::list` accepts the same `ticket_id` and author filters (not
+`parent_id`; list each ticket of a feature), which is how you catch up after a
+wake without re-reading everything:
 
 ```json
 kanban::comment::list {
@@ -224,8 +267,11 @@ kanban::comment::list {
 
 ### Do not reach for kanban:change when you need author filtering
 
-`kanban:change` is the board-wide trigger: config `{ ticket_id?, events?, ticket? }`,
-where `events` is any of `ticket.created`, `ticket.updated`, `ticket.moved`,
+`kanban:change` is the board-wide trigger: config
+`{ ticket_id?, parent_id?, release_id?, events?, ticket? }`, where `parent_id`
+fires for the parent itself and any of its children, `release_id` fires for
+tickets in that release and for the change that moved one out of it, and `events`
+is any of `ticket.created`, `ticket.updated`, `ticket.moved`,
 `ticket.deleted`, `ticket.restored`, `comment.created`, and `ticket` takes the
 same `full` / `summary` choice. It carries the ticket and is the right
 primitive for keeping a board view in sync or for a done-watch.
@@ -274,11 +320,14 @@ ids from `kanban::config::info` if the board has been reconfigured.
 ## Checklist
 
 - Address tickets by `KAN-n` or by uuid; both work every time.
+- File subtasks with `parent` (one level); set `project` / `release` on tickets
+  if they apply, never create or ship them. Progress counts only `done_status`.
 - Pass `actor` on writes and `author` on comments — your agent-profile id.
 - Read column ids and priorities from the board instead of assuming them.
 - Finish by moving the ticket: `in_review` when it needs a check, `done` when
   it is finished and verified. **Never delete a ticket** — only a human does.
-- For a feedback loop, register `kanban:comment` with
+- For a feedback loop, register `kanban:comment` with `ticket_id` (or
+  `parent_id` for a feature and its subtasks),
   `exclude_author: "<your id>"`, `"ticket": "summary"` and `once: false`, and
   never let the handler comment back on the same ticket unconditionally.
 - Read the board once per planning pass, narrowed (`statuses`, `compact`),

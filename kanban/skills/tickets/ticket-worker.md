@@ -13,8 +13,8 @@ to land as a ticket comment. Your chat is not a channel.
 
 ## Open these first
 
-- `kanban::config::info {}` — the real column ids (never assume `in_review` / `done`), the key
-  prefix, and the board file path.
+- `kanban::config::info {}` — the real column ids (never assume `in_review` / `done`), which of
+  them is `done_status`, the key prefix, and the board file path.
 - `engine::functions::info { "function_ids": ["kanban::ticket::get", "kanban::ticket::update",
   "kanban::comment::create", "kanban::comment::list", "kanban::ticket::move",
   "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"] }` —
@@ -24,7 +24,8 @@ to land as a ticket comment. Your chat is not a channel.
   those; skip it otherwise.
 - `kanban::ticket::get { "id": "KAN-8" }` — read the ticket you were dispatched onto, whole,
   its `comments` and `activity` included, before you change anything. The key (`KAN-8`) and the
-  uuid both work, case-insensitively.
+  uuid both work, case-insensitively. A subtask also carries a `parent` (a brief with key, title
+  and `status`); a feature ticket carries `children` and a `progress` count.
 
 ## The loop
 
@@ -32,18 +33,24 @@ Your profile id is the string in your frontmatter (`backend-engineer`, `frontend
 Use it verbatim as `actor` on every write and `author` on every comment — it is also the string
 the wake filters key on, so a typo silently breaks the loop.
 
-1. **Claim.** `kanban::ticket::update { "id": "KAN-8", "assignee": "<your id>", "status":
+1. **Check the parent.** If the ticket has a `parent` whose `status` is the `done_status`
+   column, the feature it belongs to already closed: do not claim. Comment on **your own ticket** saying the parent is done and that you stopped, and
+   stop. The dispatcher decides whether the ticket is cut or the parent reopens.
+2. **Claim.** `kanban::ticket::update { "id": "KAN-8", "assignee": "<your id>", "status":
    "in_progress", "actor": "<your id>" }`.
-2. **Arm your wake and its teardown — before you report.** See *The pair* below. Reporting
+3. **Arm your wake and its teardown — before you report.** See *The pair* below. Reporting
    first is the failure this step exists to prevent: the reviewer's answer arrives after your
    turn ended and wakes nobody.
-3. **Work**, then verify it the way your own profile requires.
-4. **Report on the ticket** — `kanban::comment::create { "ticket_id": "KAN-8", "author":
+4. **Work**, then verify it the way your own profile requires.
+5. **Report on the ticket** — `kanban::comment::create { "ticket_id": "KAN-8", "author":
    "<your id>", "body": "..." }` — with the calls you made and what they returned. A summary
-   in your chat is invisible to the reviewer.
-5. **Hand off** — `kanban::ticket::move` to `in_review` when someone else must check it, and to
-   `done` only when the ticket's own `Verify:` targets passed and you observed them.
-6. **On a wake** (a review comment, a rejection): re-read the ticket with `kanban::ticket::get`
+   in your chat is invisible to the reviewer. Report on your own ticket, never on the parent:
+   the parent's thread belongs to the dispatcher, and your hand-off is the ticket you own.
+6. **Hand off** — `kanban::ticket::move` to `in_review` when someone else must check it, and to
+   `done` only when the ticket's own `Verify:` targets passed and you observed them. Moving
+   your ticket never moves the parent; do not touch the parent's status, `project` or
+   `release`.
+7. **On a wake** (a review comment, a rejection): re-read the ticket with `kanban::ticket::get`
    first — a late or re-armed fire can deliver a comment for work that already closed. Answer
    on the ticket, then re-arm the pair if the work is still open.
 
@@ -76,6 +83,8 @@ engine::register_trigger {
   re-enters your handler.
 - `"ticket": "summary"` keeps the wake small: you re-read the ticket with `kanban::ticket::get`
   on every wake anyway, so the full thread in the payload is paid twice.
+- Bind on **your own ticket** (`ticket_id`), not on the parent's `parent_id`: a `parent_id`
+  binding would wake you for every sibling's comment and move.
 - **Label every binding `<KEY>-<purpose>`.** The reap below is mechanical only if you can
   recognise your own bindings by label.
 - **Bound every binding's life.** A session that dies between arming and `done` leaves nothing
@@ -155,6 +164,12 @@ kanban::comment::list {
 - **The ticket sits in `in_progress` and nobody answers.** Cause: your report was a chat message,
   or `author` was left at its `user` default so the reviewer's filters did not see it. Fix:
   comment on the ticket, and pass `author` every time.
+- **You claimed a subtask of a closed feature.** Symptom: the parent is `done`, and your work
+  lands on a ticket nobody is tracking. Cause: step 1 skipped. Fix: read `parent.status` before
+  the claim; if it is the done column, comment on your ticket and stop.
+- **You reported on the parent.** Symptom: the dispatcher's wake on the parent fires with your
+  report mixed into the feature's thread, and your own ticket's reviewer sees nothing. Fix:
+  `ticket_id` is always your ticket.
 - **You reached for a function that does not exist.** There is no `harness::send`; the wire is
   the ticket. Fix: `engine::functions::list` / `directory::search_functions` before naming an id.
 
@@ -162,6 +177,8 @@ kanban::comment::list {
 
 - [ ] `kanban::config::info` read; column ids taken from the board, not assumed.
 - [ ] Ticket read whole — description, comments, activity — before any write.
+- [ ] If the ticket has a `parent`, its `status` was read; a parent in the done column means
+      comment on your own ticket and stop, no claim.
 - [ ] Claimed with `assignee`, `status`, and `actor` all set to your profile id.
 - [ ] `kanban:comment` wake armed with `exclude_author` = your `author`, labelled `<KEY>-wake`,
       bounded by `lifecycle`.
@@ -169,7 +186,8 @@ kanban::comment::list {
       the first report.
 - [ ] A `cron` check-in reading `kanban::comment::list` with the same filters, so the loop
       cannot fall silent.
-- [ ] Report posted as a ticket comment naming what you ran and what it returned.
+- [ ] Report posted as a comment on your own ticket (never the parent) naming what you ran and
+      what it returned.
 - [ ] Ticket moved to the lane the evidence earned.
 - [ ] On `done`: every `<KEY>-*` binding unregistered, teardown binding last, then
       `harness::triggers::list` re-read to confirm none remain.

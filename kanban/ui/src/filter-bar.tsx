@@ -11,8 +11,10 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   IconButton,
   Input,
@@ -23,6 +25,7 @@ import {
   TabsList,
   TabsTrigger,
   Toolbar,
+  uiClasses,
   useConfirm,
 } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
@@ -33,6 +36,9 @@ import {
   CircleDashed,
   Clock,
   Columns3,
+  Flag,
+  Folder,
+  Layers,
   List as ListIcon,
   type LucideIcon,
   MoreHorizontal,
@@ -40,7 +46,8 @@ import {
   Tag,
   User,
 } from 'lucide-react'
-import { type ReactNode, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { coerceGroup, GROUPS, type GroupBy } from './board-state'
 import {
   ALL_VIEW,
   allLabels,
@@ -53,11 +60,22 @@ import {
   UPDATED_WINDOWS,
   type UpdatedWindow,
 } from './filters'
-import { type AgentProfile, priorityLabel, type TicketSummary } from './shared'
+import { type AgentProfile, type ProjectView, priorityLabel, type ReleaseView, type TicketSummary } from './shared'
 
-type FacetId = 'labels' | 'assignees' | 'priorities' | 'updated'
+type FacetId = 'projects' | 'releases' | 'labels' | 'assignees' | 'priorities' | 'updated'
 
-type Opt = { value: string; label: string; count: number; lead?: ReactNode; disabled?: boolean }
+type Opt = {
+  value: string
+  label: string
+  /** Tickets this choice would keep; a choice that is not a filter has none. */
+  count?: number
+  lead?: ReactNode
+  /** Quiet word after the name ("Archived"). */
+  tag?: string
+  /** A sub-heading above this row. */
+  heading?: string
+  disabled?: boolean
+}
 
 /** One filter menu: what its trigger says, what it lists, and how a choice lands in the filters. */
 type Facet = {
@@ -98,6 +116,12 @@ const flip = (list: string[], value: string) =>
 const summary = (values: string[], name: (value: string) => string) =>
   values.length === 0 ? '' : name(values[0]) + (values.length > 1 ? ` +${values.length - 1}` : '')
 
+/** Chosen options first, the rest in their own order. */
+const selectedFirst = (opts: Opt[], selected: string[]) => [
+  ...opts.filter((opt) => selected.includes(opt.value)),
+  ...opts.filter((opt) => !selected.includes(opt.value)),
+]
+
 const plural = (n: number) => `${n} ${n === 1 ? 'ticket' : 'tickets'}`
 
 export type FilterBarProps = {
@@ -116,6 +140,18 @@ export type FilterBarProps = {
   /** The current filters differ from the active view. */
   canSaveView: boolean
   onSaveView: (name: string) => void
+  /** The board's projects (archived ones included) and releases, for names. */
+  projects: ProjectView[]
+  releases: ReleaseView[]
+  /** Group-by control; absent where the layout has no swimlanes. */
+  group?: GroupControl
+}
+
+export type GroupControl = {
+  value: GroupBy
+  onChange: (next: GroupBy) => void
+  showEmpty: boolean
+  onShowEmptyChange: (next: boolean) => void
 }
 
 export function FilterBar({
@@ -129,6 +165,9 @@ export function FilterBar({
   narrow,
   canSaveView,
   onSaveView,
+  projects,
+  releases,
+  group,
 }: FilterBarProps) {
   const [open, setOpen] = useState<FacetId | null>(null)
   const [labelQuery, setLabelQuery] = useState('')
@@ -136,6 +175,56 @@ export function FilterBar({
   const phone = usePhone()
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch })
   const counts = (key: FacetId) => facetCounts(tickets, filters, ctx, key)
+
+  const projectCounts = counts('projects')
+  const projectNames = new Map(projects.map((project) => [project.id, project.name]))
+  const projectLead = (color: ProjectView['color']) => (
+    <span aria-hidden="true" className={uiClasses.treeItemIcon} data-color={color ?? undefined}>
+      <Folder size={16} />
+    </span>
+  )
+  const projectOpts = selectedFirst(
+    [
+      { value: '', label: 'No project', count: projectCounts[''] ?? 0, lead: projectLead(null) },
+      ...[...projects]
+        .sort((a, b) => Number(Boolean(a.archived_at)) - Number(Boolean(b.archived_at)))
+        .map((project) => ({
+          value: project.id,
+          label: project.name,
+          count: projectCounts[project.id] ?? 0,
+          lead: projectLead(project.color),
+          tag: project.archived_at ? 'Archived' : undefined,
+        })),
+      // A saved view can name a project this board no longer has: still a row, so it can be unticked.
+      ...filters.projects
+        .filter((id) => id !== '' && !projectNames.has(id))
+        .map((id) => ({ value: id, label: 'Unknown project', count: projectCounts[id] ?? 0, lead: projectLead(null) })),
+    ],
+    filters.projects,
+  )
+
+  const releaseCounts = counts('releases')
+  const releaseNames = new Map(releases.map((release) => [release.id, release.name]))
+  const releasedIds = new Set(releases.filter((release) => release.released_at).map((release) => release.id))
+  const releaseOpts = selectedFirst(
+    [
+      { value: '', label: 'No release', count: releaseCounts[''] ?? 0 },
+      ...releases
+        .filter((release) => !releasedIds.has(release.id))
+        .map((release) => ({ value: release.id, label: release.name, count: releaseCounts[release.id] ?? 0 })),
+      ...releases
+        .filter((release) => releasedIds.has(release.id))
+        .map((release) => ({ value: release.id, label: release.name, count: releaseCounts[release.id] ?? 0 })),
+      ...filters.releases
+        .filter((id) => id !== '' && !releaseNames.has(id))
+        .map((id) => ({ value: id, label: 'Unknown release', count: releaseCounts[id] ?? 0 })),
+    ],
+    filters.releases,
+  )
+  const firstReleased = releaseOpts.findIndex(
+    (opt) => releasedIds.has(opt.value) && !filters.releases.includes(opt.value),
+  )
+  if (firstReleased >= 0) releaseOpts[firstReleased] = { ...releaseOpts[firstReleased], heading: 'Released' }
 
   const labelCounts = counts('labels')
   const query = labelQuery.trim().toLowerCase()
@@ -205,6 +294,34 @@ export function FilterBar({
   const changed = updatedCounts.visit ?? 0
 
   const facets: Facet[] = [
+    {
+      id: 'projects',
+      name: 'Project',
+      heading: 'Filter by project',
+      Icon: Folder,
+      value: summary(filters.projects, (id) =>
+        id === '' ? 'No project' : (projectNames.get(id) ?? 'Unknown project'),
+      ),
+      opts: projectOpts,
+      selected: filters.projects,
+      empty: 'No projects on this board yet.',
+      pick: (id) => set({ projects: flip(filters.projects, id) }),
+      clear: () => set({ projects: [] }),
+    },
+    {
+      id: 'releases',
+      name: 'Release',
+      heading: 'Filter by release',
+      Icon: Flag,
+      value: summary(filters.releases, (id) =>
+        id === '' ? 'No release' : (releaseNames.get(id) ?? 'Unknown release'),
+      ),
+      opts: releaseOpts,
+      selected: filters.releases,
+      empty: 'No releases on this board yet.',
+      pick: (id) => set({ releases: flip(filters.releases, id) }),
+      clear: () => set({ releases: [] }),
+    },
     {
       id: 'labels',
       name: 'Label',
@@ -289,6 +406,8 @@ export function FilterBar({
         value={filters.q}
       />
       <div className="kanban-filter__triggers">
+        {/* Narrow panes have no room at the far end: the view option leads the row. */}
+        {group && narrow ? <GroupMenu {...group} narrow sheet={phone} /> : null}
         {facets.map((facet) => (
           <FacetMenu
             f={facet}
@@ -336,6 +455,7 @@ export function FilterBar({
             Save as view…
           </Button>
         ) : null}
+        {group && !narrow ? <GroupMenu {...group} narrow={false} sheet={false} /> : null}
       </div>
       <Dialog onOpenChange={setSaving} open={saving}>
         <DialogContent className="kanban-dialog">
@@ -379,14 +499,16 @@ function FacetMenu({
     </Button>
   )
   const rows = f.opts.map((opt) => (
-    <Row
-      checked={f.selected.includes(opt.value)}
-      key={opt.value}
-      onPick={f.pick}
-      opt={opt}
-      sheet={sheet}
-      single={f.single}
-    />
+    <Fragment key={opt.value}>
+      {opt.heading ? (
+        sheet ? (
+          <p className="kanban-filter__heading">{opt.heading}</p>
+        ) : (
+          <DropdownMenuLabel className="kanban-filter__heading">{opt.heading}</DropdownMenuLabel>
+        )
+      ) : null}
+      <Row checked={f.selected.includes(opt.value)} onPick={f.pick} opt={opt} sheet={sheet} single={f.single} />
+    </Fragment>
   ))
   const body = rows.length > 0 ? rows : <p className="kanban-filter__empty">{f.empty}</p>
 
@@ -484,6 +606,96 @@ function FacetMenu({
   )
 }
 
+/** Group by + "Show empty swimlanes": a view option, not a filter, so it has no count and no Clear. */
+function GroupMenu({
+  value,
+  onChange,
+  showEmpty,
+  onShowEmptyChange,
+  narrow,
+  sheet,
+}: GroupControl & { narrow: boolean; sheet: boolean }) {
+  const [open, setOpen] = useState(false)
+  const grouped = value !== 'none'
+  const note = grouped
+    ? `A ${value} with no ticket in the current filter keeps its swimlane.`
+    : 'Group the board to see swimlanes.'
+  const trigger = (
+    <Button className="kanban-filter__trigger" data-active={grouped ? 'true' : undefined} size="sm" variant="ghost">
+      <Layers size={16} />
+      {grouped ? 'Group:' : 'Group'}
+      {grouped ? (
+        <span className="kanban-filter__value">{GROUPS.find((group) => group.id === value)?.label}</span>
+      ) : null}
+      <ChevronDown size={16} />
+    </Button>
+  )
+  if (sheet) {
+    return (
+      <BottomSheet onOpenChange={setOpen} open={open}>
+        <BottomSheetTrigger asChild>{trigger}</BottomSheetTrigger>
+        <BottomSheetContent className="kanban-filter__sheet" description={note} heading="Group board by">
+          <div className="kanban-filter__sheet-body">
+            <div aria-label="Group by" className="kanban-filter__list" role="radiogroup">
+              {GROUPS.map((group) => (
+                <Row
+                  checked={value === group.id}
+                  key={group.id}
+                  onPick={() => onChange(group.id)}
+                  opt={{ value: group.id, label: group.label }}
+                  sheet
+                  single
+                />
+              ))}
+            </div>
+            <Row
+              checked={showEmpty}
+              onPick={() => onShowEmptyChange(!showEmpty)}
+              opt={{ value: 'empty', label: 'Show empty swimlanes', disabled: !grouped }}
+              sheet
+            />
+          </div>
+          <div className="kanban-filter__sheet-foot">
+            <Button className="kanban-filter__show" onClick={() => setOpen(false)}>
+              Done
+            </Button>
+          </div>
+        </BottomSheetContent>
+      </BottomSheet>
+    )
+  }
+  return (
+    <DropdownMenu onOpenChange={setOpen} open={open}>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="kanban-filter__menu"
+        data-facet="group"
+        data-narrow={narrow ? 'true' : undefined}
+      >
+        <DropdownMenuLabel className="kanban-filter__heading">Group by</DropdownMenuLabel>
+        <DropdownMenuRadioGroup onValueChange={(next) => onChange(coerceGroup(next))} value={value}>
+          {GROUPS.map((group) => (
+            <DropdownMenuRadioItem key={group.id} value={group.id}>
+              <span className="kanban-filter__name">{group.label}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuCheckboxItem
+          checked={showEmpty}
+          disabled={!grouped}
+          onCheckedChange={onShowEmptyChange}
+          onSelect={(event) => event.preventDefault()}
+        >
+          <span className="kanban-filter__name">Show empty swimlanes</span>
+        </DropdownMenuCheckboxItem>
+        <p className="kanban-filter__note">{note}</p>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 function Row({
   opt,
   sheet,
@@ -502,7 +714,8 @@ function Row({
     <>
       {opt.lead}
       <span className="kanban-filter__name">{opt.label}</span>
-      <span className="kanban-filter__count">{opt.count}</span>
+      {opt.tag ? <span className="kanban-filter__tag">{opt.tag}</span> : null}
+      {opt.count === undefined ? null : <span className="kanban-filter__count">{opt.count}</span>}
     </>
   )
   if (sheet) {

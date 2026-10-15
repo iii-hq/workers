@@ -1341,6 +1341,10 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
   narrowBelow?: number
   /** `inline` (default) makes narrow navigation full-width for drill-in flows; `drawer` keeps a rail beside the main column and opens navigation as an overlay. */
   narrowMode?: 'inline' | 'drawer'
+  /** Each new value expands the sidebar (opens the drawer when narrow); the first value is the baseline. Lets a rail action reveal its content. */
+  expandRequest?: number
+  /** Whether picking a button, link or tab inside the open drawer closes it (default `true`). */
+  closeDrawerOnSelect?: boolean
 }
 /** Shared host-owned navigation column; fixed by default, optionally collapsible/resizable. */
 export declare const PageSidebar: React.ComponentType<PageSidebarProps>

@@ -309,6 +309,11 @@
     color: var(--color-accent-fg);
   }
 
+  /* A passage the side chat holds a quote of (lib/chat-aside.ts). */
+  ::highlight(side-chat-quote) {
+    background-color: var(--color-surface-selected);
+  }
+
   /* Tailwind v4's preflight leaves buttons on `cursor: default`, so every
      button without an explicit `cursor-pointer` reads as inert text (the
      header's copy/export/close all did). Restore the v3 behavior once,

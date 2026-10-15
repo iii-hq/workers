@@ -1,9 +1,17 @@
-import { ArrowLeft, TriangleAlert } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, PanelRight, TriangleAlert } from 'lucide-react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { Button } from '@/components/ui/Button'
+import { IconButton } from '@/components/ui/IconButton'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -23,7 +31,11 @@ import {
   isHarnessAvailable,
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
-import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import {
+  DESKTOP_POINTER_QUERY,
+  MOBILE_LAYOUT_QUERY,
+  useMediaQuery,
+} from '@/hooks/use-media-query'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
 import { expandAttachments } from '@/lib/attachments'
@@ -59,6 +71,17 @@ import type {
   ContextUsageReport,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
+import {
+  AskInSideChatContext,
+  findSideChat,
+  type SideChatQuote,
+  SideChatQuotesContext,
+  selectionQuote,
+  sideChatMessages,
+  sideChatQuote,
+  sideChatQuotes,
+  useQuoteHighlights,
+} from '@/lib/chat-aside'
 import { claimDraftSend, requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
@@ -138,6 +161,13 @@ import {
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { idleComposerPlaceholder } from './agent-defaults'
+import {
+  type AsideRequest,
+  type AsideTab,
+  ChatAside,
+  QuoteChip,
+  SelectionToolbar,
+} from './ChatAside'
 import {
   Composer,
   type ComposerSubmitPayload,
@@ -243,6 +273,29 @@ interface ChatViewProps {
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
+  /**
+   * Render as a side chat inside another chat's side panel: no page header,
+   * no folder or memory controls, a transcript that starts at `since` (the
+   * fork copied everything before it) with `empty` shown until it has
+   * messages, and a composer that ignores inserts meant for the main chat
+   * and takes the caret only when `autoFocus` asks for it.
+   */
+  side?: {
+    since: number
+    /** The fork's copy of the entry it was cut at: messages after it are the side chat's. */
+    fromEntry?: string | null
+    empty: ReactNode
+    autoFocus?: boolean
+    /** The quote waiting in the composer: sent as a blockquote ahead of the question. */
+    quote?: SideChatQuote | null
+    onRemoveQuote?: () => void
+    onQuoteSent?: (quote: SideChatQuote) => void
+    /** Quotes this side chat sent: cards in its transcript, and the way back. */
+    quotes?: readonly SideChatQuote[]
+    onJumpToQuote?: (quote: SideChatQuote) => void
+  }
+  /** The pane edge the side panel hugs: opposite the conversation list. */
+  asideSide?: 'left' | 'right'
 }
 
 /** Coordinate a conversation's composer, transcript and file navigation using its own workspace. */
@@ -262,6 +315,8 @@ export function ChatView({
   onAppendMessage,
   onPatchMessage,
   onCompactConversation,
+  side,
+  asideSide = 'right',
 }: ChatViewProps) {
   const readOnly = conversation.sessionMetadata?.read_only === true
   const imported =
@@ -316,6 +371,78 @@ export function ChatView({
   const { functionEntries } = useFunctionsCatalog(backend.id)
   const conversationsCtx = useConversationsCtxOptional()
   const connectionState = conversationsCtx?.connectionState
+
+  // The side panel (Context + Side chat) rides beside a real, writable chat;
+  // a side chat itself has none.
+  const asideEnabled =
+    !side && !readOnly && backend.id === 'real' && conversationsCtx !== null
+  const phoneViewport = useMediaQuery(MOBILE_LAYOUT_QUERY)
+  const [asideRequest, setAsideRequest] = useState<AsideRequest | null>(null)
+  const [asideSheetOpen, setAsideSheetOpen] = useState(false)
+  const showAside = useCallback(
+    (tab: AsideTab, quote?: SideChatQuote) =>
+      setAsideRequest((current) => ({
+        seq: (current?.seq ?? 0) + 1,
+        tab,
+        ...(quote ? { quote } : {}),
+      })),
+    [],
+  )
+  // The quote waiting in the side chat's composer, and the ones it sent:
+  // their source messages stay marked here while the side chat holds them.
+  const [pendingQuote, setPendingQuote] = useState<SideChatQuote | null>(null)
+  const askInSideChat = useCallback(
+    (quote: SideChatQuote) => {
+      setPendingQuote(quote)
+      showAside('side-chat', quote)
+    },
+    [showAside],
+  )
+  // Keyed on the side chat's metadata object: the context value is rebuilt
+  // on every render, the metadata only when it changes, so the marks (and
+  // every message reading them) stay put while a reply streams.
+  const sideChatMetadata =
+    asideEnabled && conversationsCtx
+      ? findSideChat(conversationsCtx.conversations, conversation.id)
+          ?.sessionMetadata
+      : undefined
+  const heldQuotes = useMemo(() => {
+    const sent = sideChatQuotes(
+      sideChatMetadata ? { sessionMetadata: sideChatMetadata } : null,
+    )
+    return pendingQuote ? [...sent, pendingQuote] : sent
+  }, [sideChatMetadata, pendingQuote])
+  const sideChatValue = useMemo(
+    () =>
+      asideEnabled
+        ? {
+            ask: askInSideChat,
+            quotedIds: new Set(heldQuotes.map((quote) => quote.messageId)),
+          }
+        : null,
+    [asideEnabled, askInSideChat, heldQuotes],
+  )
+  // A quote card's way back: land this transcript on its source message.
+  const [quoteFocusId, setQuoteFocusId] = useState<string | null>(null)
+  const sideQuotesValue = useMemo(
+    () =>
+      side
+        ? {
+            quotes: side.quotes ?? [],
+            jump: (quote: SideChatQuote) => side.onJumpToQuote?.(quote),
+          }
+        : null,
+    [side],
+  )
+  const sideSince = side?.since
+  const sideFrom = side?.fromEntry
+  const shownMessages = useMemo(
+    () =>
+      sideSince === undefined
+        ? conversation.messages
+        : sideChatMessages(conversation.messages, sideSince, sideFrom),
+    [conversation.messages, sideSince, sideFrom],
+  )
   const workingDirEnabled =
     !readOnly &&
     backend.id === 'real' &&
@@ -1483,10 +1610,28 @@ export function ChatView({
   // only checked after that: a send it turns away goes back into the draft, and the Composer
   // remounts to pick the text and chips up again.
   const [composerGeneration, setComposerGeneration] = useState(0)
+  // The side chat quote riding on the submit in flight. It is reported sent
+  // the moment the message goes out (appended or queued), not when the turn
+  // it starts ends; a send that stops short keeps the quote in its chip and
+  // gives the composer back only the question.
+  const sendingQuoteRef = useRef<{ prefix: string; sent: () => void } | null>(
+    null,
+  )
+  const markQuoteSent = useCallback(() => {
+    const quote = sendingQuoteRef.current
+    sendingQuoteRef.current = null
+    quote?.sent()
+  }, [])
   const restoreDraft = useCallback(
     (payload: ComposerSubmitPayload) => {
       if (!conversationsCtx) return
-      conversationsCtx.setDraftText(conversation.id, payload.text)
+      const prefix = sendingQuoteRef.current?.prefix
+      conversationsCtx.setDraftText(
+        conversation.id,
+        prefix && payload.text.startsWith(prefix)
+          ? payload.text.slice(prefix.length)
+          : payload.text,
+      )
       conversationsCtx.setDraftAttachments(conversation.id, payload.attachments)
       setComposerGeneration((generation) => generation + 1)
     },
@@ -1626,7 +1771,10 @@ export function ChatView({
             willQueue,
           })
 
-      if (!willQueue) onAppendMessage(conversationId, userMsg)
+      if (!willQueue) {
+        onAppendMessage(conversationId, userMsg)
+        markQuoteSent()
+      }
 
       if (compact) {
         if (!backend.compactSession) {
@@ -1884,6 +2032,7 @@ export function ChatView({
                 : {}),
             },
           )
+          markQuoteSent()
         } catch (err) {
           setQueuedDrafts((drafts) => drafts.filter((d) => d.id !== userMsg.id))
           onAppendMessage(
@@ -2259,12 +2408,37 @@ export function ChatView({
       onCompactConversation,
       reconcileWorkingDir,
       workingDirEnabled,
+      markQuoteSent,
     ],
   )
 
   // Includes session creation, attachment preparation/uploads, queue sends
   // and /compact, before any server working/streaming event can arrive.
-  const handleSubmit = useMemo(() => withScreenWakeLock(submit), [submit])
+  // A side chat's pending quote goes out ahead of the question, in the
+  // blockquote its transcript later shows as a card.
+  const sideQuote = side?.quote ?? null
+  const onQuoteSent = side?.onQuoteSent
+  const submitWithQuote = useCallback(
+    async (payload: ComposerSubmitPayload) => {
+      if (!sideQuote) return submit(payload)
+      const prefix = sideChatQuote(sideQuote.text)
+      sendingQuoteRef.current = {
+        prefix,
+        sent: () => onQuoteSent?.(sideQuote),
+      }
+      try {
+        await submit({ ...payload, text: prefix + payload.text })
+      } finally {
+        // Blocked, turned away or failed before it went out: the quote stays.
+        sendingQuoteRef.current = null
+      }
+    },
+    [submit, sideQuote, onQuoteSent],
+  )
+  const handleSubmit = useMemo(
+    () => withScreenWakeLock(submitWithQuote),
+    [submitWithQuote],
+  )
 
   const handleStop = useCallback(() => {
     if (readOnly || stopRequestedRef.current) return
@@ -2589,6 +2763,19 @@ export function ChatView({
   // Chat's keyboard, through the same contract a worker page uses, so the
   // palette lists these rows under "Chat" with their keys.
   const viewRef = useRef<HTMLElement>(null)
+  useQuoteHighlights(viewRef, heldQuotes, conversation.messages)
+  const agentProfileName = conversation.agentProfile?.name
+  const readSelection = useCallback(() => {
+    const picked = selectionQuote(
+      viewRef.current,
+      messagesRef.current,
+      agentProfileName,
+    )
+    const list = viewRef.current?.querySelector('[data-message-list]')
+    return picked && list
+      ? { ...picked, bounds: list.getBoundingClientRect() }
+      : null
+  }, [agentProfileName])
   const working = conversation.status === 'working'
   useEffect(() => {
     if (!commands) return
@@ -2736,6 +2923,33 @@ export function ChatView({
         enabled: () => working || streamingIndicator,
         run: handleStop,
       },
+      ...(asideEnabled
+        ? [
+            {
+              id: 'show-context',
+              title: 'Show the context panel',
+              detail: 'Folder, branch, pull requests, sub-agents and links',
+              keywords: ['side panel', 'branch', 'changes', 'subagents'],
+              run: () => showAside('context'),
+            },
+            {
+              id: 'ask-in-side-chat',
+              title: 'Ask in side chat',
+              detail:
+                'A temporary chat that sees this one; quotes the selection',
+              keywords: ['side panel', 'question', 'quote', 'btw'],
+              run: () => {
+                const picked = selectionQuote(
+                  viewRef.current,
+                  messagesRef.current,
+                  conversation.agentProfile?.name,
+                )
+                if (picked) askInSideChat(picked.quote)
+                else showAside('side-chat')
+              },
+            },
+          ]
+        : []),
     ])
   }, [
     commands,
@@ -2744,22 +2958,27 @@ export function ChatView({
     working,
     streamingIndicator,
     readOnly,
+    asideEnabled,
+    showAside,
+    askInSideChat,
+    conversation.agentProfile?.name,
   ])
 
-  return (
+  const view = (
     <section
       ref={viewRef}
       data-chat-session-id={conversation.id}
       data-chat-session-hydrated={conversation.hydrated}
       className="@container flex-1 flex flex-col min-w-0 min-h-0"
     >
-      <PageHeader
-        className={headerPad}
-        onClose={onRequestClose}
-        actions={
-          readOnly ? undefined : (
-            <div className="flex items-center gap-1.5 font-sans text-sm">
-              {/* Header read-outs share ONE surface. This system draws no
+      {side ? null : (
+        <PageHeader
+          className={headerPad}
+          onClose={onRequestClose}
+          actions={
+            readOnly ? undefined : (
+              <div className="flex items-center gap-1.5 font-sans text-sm">
+                {/* Header read-outs share ONE surface. This system draws no
                 lines (index.css:44-52 — rule/rule-2 are transparent in both
                 themes), so a group is a fill, not a run of dividers. It also
                 keeps the related session metadata visually together.
@@ -2768,85 +2987,95 @@ export function ChatView({
                 system's narrow-container threshold): the context meter —
                 built-in or the harness chip — drops to its `used/usable`
                 counts, the sandbox chip is already `⬚ N`. */}
-              <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
-                {sessionChips}
-                {hasInjectedContextChip ? null : (
-                  <ContextUsage
-                    messages={conversation.messages}
-                    contextWindow={contextWindow}
-                    reported={reportedContext}
-                  />
-                )}
-              </div>
-              {/* Status sits OUTSIDE the group — it is state, not a control.
+                <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+                  {sessionChips}
+                  {hasInjectedContextChip ? null : (
+                    <ContextUsage
+                      messages={conversation.messages}
+                      contextWindow={contextWindow}
+                      reported={reportedContext}
+                    />
+                  )}
+                </div>
+                {asideEnabled && phoneViewport ? (
+                  <IconButton
+                    label="Side panel"
+                    className="size-12"
+                    onClick={() => setAsideSheetOpen(true)}
+                  >
+                    <PanelRight aria-hidden />
+                  </IconButton>
+                ) : null}
+                {/* Status sits OUTSIDE the group — it is state, not a control.
                 The dot alone carries it (green ready, pulsing accent
                 working, red error); the word lives in the tooltip and in an
                 sr-only role="status" span so transitions still announce.
                 `self-stretch px-1` turns a 6px dot into a full-height hover
                 target without letting an error widen the header. */}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  {/* viewport: phone chrome — hidden from the phone header, touch size */}
-                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
-                    <StatusDot
-                      tone={
-                        conversation.status === 'error'
-                          ? 'alert'
-                          : streamingIndicator
-                            ? 'accent'
-                            : 'ok'
-                      }
-                      pulse={streamingIndicator}
-                    />
-                    <span role="status" className="sr-only">
-                      {streamingIndicator
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    {/* viewport: phone chrome — hidden from the phone header, touch size */}
+                    <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
+                      <StatusDot
+                        tone={
+                          conversation.status === 'error'
+                            ? 'alert'
+                            : streamingIndicator
+                              ? 'accent'
+                              : 'ok'
+                        }
+                        pulse={streamingIndicator}
+                      />
+                      <span role="status" className="sr-only">
+                        {streamingIndicator
+                          ? 'working'
+                          : conversation.status === 'error'
+                            ? 'error'
+                            : 'ready'}
+                      </span>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {conversation.status === 'error'
+                      ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
+                      : streamingIndicator
                         ? 'working'
-                        : conversation.status === 'error'
-                          ? 'error'
-                          : 'ready'}
-                    </span>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {conversation.status === 'error'
-                    ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
-                    : streamingIndicator
-                      ? 'working'
-                      : 'ready'}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )
-        }
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-sm text-ink-faint">
-          {onBack ? (
-            <button
-              type="button"
-              onClick={onBack}
-              aria-label="back to conversations"
-              title="back to conversations"
-              className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
-            >
-              <span
-                className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                aria-hidden="true"
-              />
-              <ArrowLeft aria-hidden className="size-4 shrink-0" />
-            </button>
-          ) : null}
-          <span className="min-w-0 truncate font-medium text-ink">
-            {panelTitle ?? 'Chat'}
-          </span>
-          <span className="shrink-0 text-ink-ghost">·</span>
-          <span className="min-w-0 truncate">
-            {readOnly
-              ? 'Read-only'
-              : (conversation.agentProfile?.name ?? effectiveModel)}
-          </span>
-        </div>
-      </PageHeader>
-      {!readOnly && approvalSettings.settings.mode === 'full' ? (
+                        : 'ready'}
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            )
+          }
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-sm text-ink-faint">
+            {onBack ? (
+              <button
+                type="button"
+                onClick={onBack}
+                aria-label="back to conversations"
+                title="back to conversations"
+                className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
+              >
+                <span
+                  className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                  aria-hidden="true"
+                />
+                <ArrowLeft aria-hidden className="size-4 shrink-0" />
+              </button>
+            ) : null}
+            <span className="min-w-0 truncate font-medium text-ink">
+              {panelTitle ?? 'Chat'}
+            </span>
+            <span className="shrink-0 text-ink-ghost">·</span>
+            <span className="min-w-0 truncate">
+              {readOnly
+                ? 'Read-only'
+                : (conversation.agentProfile?.name ?? effectiveModel)}
+            </span>
+          </div>
+        </PageHeader>
+      )}
+      {!side && !readOnly && approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
           onDisable={() => void approvalSettings.setMode('manual')}
         />
@@ -2864,47 +3093,57 @@ export function ChatView({
           loaded={triggersSnapshotSessionId === conversation.id}
           triggersById={triggersById}
         >
-          <MessageList
-            messages={conversation.messages}
-            agentName={conversation.agentProfile?.name}
-            sessionId={conversation.id}
-            spawnContext={{
-              title: conversation.title,
-              model: effectiveModel,
-              appearance: conversation.subagentAppearance,
-            }}
-            transcriptHydrated={conversation.hydrated !== false}
-            isThinking={isThinking}
-            turnVisualPhase={turnVisualState.phase}
-            turnKey={turnVisualState.turnKey}
-            thinkingDetail={
-              conversation.status === 'working' && conversation.statusReason
-                ? conversation.statusReason
-                : (phaseDetail ?? waitingFallback)
-            }
-            density={density}
-            onResolveApproval={resolveApproval}
-            onAlwaysAllow={handleAlwaysAllow}
-            onResolveFilesystemAccess={handleFilesystemResolve}
-            onManageFilesystemAccess={handleManageFilesystemAccess}
-            onConfigureProvider={handleConfigureProvider}
-            workingDir={conversation.workingDir ?? null}
-            onWorkingDirChange={
-              workingDirEnabled ? handleWorkingDirChange : undefined
-            }
-            defaultWorkingDir={defaultWorkingDir}
-            worktreePicker={
-              worktreeEnabled
-                ? { enabled: true, onPick: handlePickWorktree }
-                : undefined
-            }
-            triggersById={triggersById}
-            focusMessageId={focusMessageId}
-            onFocusMessageHandled={handleFocusMessageHandled}
-            history={conversation.history}
-            onLoadOlder={handleLoadOlder}
-            onLoadActivityEntries={handleLoadActivityEntries}
-          />
+          <AskInSideChatContext.Provider value={sideChatValue}>
+            <SideChatQuotesContext.Provider value={sideQuotesValue}>
+              <MessageList
+                messages={shownMessages}
+                header={
+                  side && shownMessages.length === 0 ? side.empty : undefined
+                }
+                agentName={conversation.agentProfile?.name}
+                sessionId={conversation.id}
+                spawnContext={{
+                  title: conversation.title,
+                  model: effectiveModel,
+                  appearance: conversation.subagentAppearance,
+                }}
+                transcriptHydrated={conversation.hydrated !== false}
+                isThinking={isThinking}
+                turnVisualPhase={turnVisualState.phase}
+                turnKey={turnVisualState.turnKey}
+                thinkingDetail={
+                  conversation.status === 'working' && conversation.statusReason
+                    ? conversation.statusReason
+                    : (phaseDetail ?? waitingFallback)
+                }
+                density={density}
+                onResolveApproval={resolveApproval}
+                onAlwaysAllow={handleAlwaysAllow}
+                onResolveFilesystemAccess={handleFilesystemResolve}
+                onManageFilesystemAccess={handleManageFilesystemAccess}
+                onConfigureProvider={handleConfigureProvider}
+                workingDir={conversation.workingDir ?? null}
+                onWorkingDirChange={
+                  workingDirEnabled ? handleWorkingDirChange : undefined
+                }
+                defaultWorkingDir={defaultWorkingDir}
+                worktreePicker={
+                  worktreeEnabled
+                    ? { enabled: true, onPick: handlePickWorktree }
+                    : undefined
+                }
+                triggersById={triggersById}
+                focusMessageId={quoteFocusId ?? focusMessageId}
+                onFocusMessageHandled={() => {
+                  setQuoteFocusId(null)
+                  handleFocusMessageHandled()
+                }}
+                history={side ? undefined : conversation.history}
+                onLoadOlder={side ? undefined : handleLoadOlder}
+                onLoadActivityEntries={handleLoadActivityEntries}
+              />
+            </SideChatQuotesContext.Provider>
+          </AskInSideChatContext.Provider>
         </RegisteredTriggerStatusProvider>
       </ChatFileNavigation>
       <LiveRegion announcement={announcer.announcement} />
@@ -3058,9 +3297,10 @@ export function ChatView({
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={handleThinkingLevelChange}
               onModelChange={modelSwitch.request}
-              showWorkingDir={workingDirEnabled}
+              showWorkingDir={workingDirEnabled && !side}
               workingDir={conversation.workingDir ?? null}
               showMemoryBank={
+                !side &&
                 backend.id === 'real' &&
                 (conversationsCtx?.memoryAvailable ?? false)
               }
@@ -3098,7 +3338,16 @@ export function ChatView({
               blocked={harnessBlocked}
               submitBlocked={submitBlocked || modelSwitch.pending}
               claimDraftSend={claimComposerSend}
-              autoFocus={focusComposerOnOpen && !harnessBlocked}
+              autoFocus={
+                (side ? side.autoFocus === true : focusComposerOnOpen) &&
+                !harnessBlocked
+              }
+              externalInput={!side}
+              header={
+                side?.quote ? (
+                  <QuoteChip quote={side.quote} onRemove={side.onRemoveQuote} />
+                ) : undefined
+              }
               idlePlaceholder={idleComposerPlaceholder(
                 conversation.agentProfile,
                 conversation.messages.length > 0,
@@ -3126,5 +3375,28 @@ export function ChatView({
         />
       ) : null}
     </section>
+  )
+  if (!asideEnabled) return view
+  return (
+    <div
+      className={`flex min-h-0 min-w-0 flex-1${asideSide === 'left' ? ' flex-row-reverse' : ''}`}
+    >
+      {view}
+      <SelectionToolbar read={readSelection} onAsk={askInSideChat} />
+      <ChatAside
+        conversation={conversation}
+        side={asideSide}
+        phone={phoneViewport}
+        sheetOpen={asideSheetOpen}
+        onSheetOpenChange={setAsideSheetOpen}
+        request={asideRequest}
+        triggers={mergedTriggers}
+        onUnregisterTrigger={handleUnregisterTrigger}
+        landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
+        pendingQuote={pendingQuote}
+        onPendingQuoteChange={setPendingQuote}
+        onJumpToMessage={setQuoteFocusId}
+      />
+    </div>
   )
 }

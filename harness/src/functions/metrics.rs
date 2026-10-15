@@ -24,6 +24,10 @@ pub struct SessionMetricsRequestV1 {
     /// `harness::status` addresses the tree here too.
     #[serde(alias = "session_id")]
     pub root_session_id: String,
+    /// Leave each session's context snapshot out of `by_session` (and skip
+    /// reading it). For callers that only need the counters and cost.
+    #[serde(default)]
+    pub omit_context: bool,
 }
 
 // Schemars 0.8 does not publish serde aliases. Advertise both spellings and
@@ -43,12 +47,19 @@ impl JsonSchema for SessionMetricsRequestV1 {
              tree here too."
                 .into(),
         );
+        let mut omit_context = bool::json_schema(generator).into_object();
+        omit_context.metadata().description = Some(
+            "Leave each session's context snapshot out of `by_session` (and skip reading it). \
+             For callers that only need the counters and cost. Default false."
+                .into(),
+        );
         SchemaObject {
             instance_type: Some(InstanceType::Object.into()),
             object: Some(Box::new(ObjectValidation {
                 properties: [
                     ("root_session_id".into(), session_id.clone().into()),
                     ("session_id".into(), session_id.into()),
+                    ("omit_context".into(), omit_context.into()),
                 ]
                 .into(),
                 ..Default::default()
@@ -266,8 +277,10 @@ pub async fn handle(
             crate::state::get_turn_unhydrated(&deps.iii, &node.session_id, cfg.session_timeout_ms)
                 .await?
         {
-            context = turn.context_snapshot.clone();
-            if context.is_none() {
+            let (snapshot, read_back) =
+                session_context(turn.context_snapshot.clone(), req.omit_context);
+            context = snapshot;
+            if read_back {
                 missing_context.push(by_session.len());
             }
             if !terminal_snapshot(
@@ -325,6 +338,18 @@ pub async fn handle(
         by_session,
         traces,
     })
+}
+
+/// The context snapshot a session reports, and whether the durable
+/// `harness_context` row has to be read back for it: nothing, and no read,
+/// when the caller asked to omit context.
+fn session_context<T>(snapshot: Option<T>, omit: bool) -> (Option<T>, bool) {
+    if omit {
+        (None, false)
+    } else {
+        let read_back = snapshot.is_none();
+        (snapshot, read_back)
+    }
 }
 
 /// Walk `session_id` up to the root of its tree. Every other `harness::*`
@@ -790,7 +815,24 @@ mod tests {
         ] {
             let req: SessionMetricsRequestV1 = serde_json::from_value(payload.clone()).unwrap();
             assert_eq!(req.root_session_id, "s_root", "{payload}");
+            assert!(!req.omit_context, "context is reported unless asked");
         }
+        let req: SessionMetricsRequestV1 =
+            serde_json::from_value(json!({"root_session_id": "s_root", "omit_context": true}))
+                .unwrap();
+        assert!(req.omit_context);
+    }
+
+    #[test]
+    fn omitted_context_is_neither_reported_nor_read_back() {
+        assert_eq!(session_context(Some(7), true), (None, false));
+        assert_eq!(session_context(None::<u8>, true), (None, false));
+        assert_eq!(session_context(Some(7), false), (Some(7), false));
+        assert_eq!(
+            session_context(None::<u8>, false),
+            (None, true),
+            "a missing snapshot is read back from state when context is reported"
+        );
     }
 
     #[test]

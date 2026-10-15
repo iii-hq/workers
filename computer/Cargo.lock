@@ -4440,8 +4440,6 @@ dependencies = [
 [[package]]
 name = "xa11y-macos"
 version = "0.15.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca41a13fa3473e70428fdf62fcb96a0c7d91df3b64faaf762ec6e9e248cbc1d5"
 dependencies = [
  "cc",
  "core-foundation",

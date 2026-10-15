@@ -15,16 +15,20 @@ ticket and nothing else.
 
 - `kanban-tickets` — address tickets by key or uuid, pass `actor` and
   `author`, wake on `kanban:comment` with `exclude_author`, read the board
-  cheaply, finish by moving to `in_review` or `done`, never delete.
+  cheaply, file subtasks and set a project or release, finish by moving to
+  `in_review` or `done`, never delete.
 - `feature-planning` — the Product Manager turns a conversation into tickets
-  whose descriptions carry observable acceptance criteria, and edits the
-  ticket in the same turn the plan changes.
+  whose descriptions carry observable acceptance criteria, groups outcomes
+  under a parent ticket, and edits the ticket in the same turn the plan changes.
 - `acceptance-review` — the gate: one verdict per criterion backed by
-  something observed; any caveat sends the ticket back to `in_progress`.
-- `ticket-orchestration` — the Tech Lead splits a feature on its seam,
-  dispatches each ticket with `harness::spawn` and a full allow list, and
-  stays reachable on comment wakes.
-- `ticket-worker` — the dispatched engineer's loop: claim, arm the wake and
-  its done-watch before reporting, report on the ticket, reap on `done`.
+  something observed; any caveat sends the ticket back to `in_progress`, and a
+  parent is accepted only when its subtasks are done or explicitly cut.
+- `ticket-orchestration` — the Tech Lead splits a feature on its seam, makes
+  the feature ticket the parent of every dispatched ticket, dispatches each
+  with `harness::spawn` and a full allow list, and stays reachable on one
+  parent-level wake.
+- `ticket-worker` — the dispatched engineer's loop: check the parent, claim,
+  arm the wake and its done-watch before reporting, report on your own ticket,
+  reap on `done`.
 
 Fetch one with `directory::skills::get { "id": "kanban/tickets/<name>" }`.

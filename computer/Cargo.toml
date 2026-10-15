@@ -1,7 +1,7 @@
 [workspace]
 # Vendored crates build and test on their own (own Cargo.lock), outside this
 # workspace's fmt and clippy; CI runs their tests separately.
-exclude = ["vendor/xa11y-linux"]
+exclude = ["vendor/xa11y-linux", "vendor/xa11y-macos"]
 
 [package]
 name = "computer"
@@ -50,7 +50,8 @@ image = "0.25"
 # process-wide provider caches the first PermissionDenied forever and drags the
 # Linux backend into the lockfile.
 [target.'cfg(target_os = "macos")'.dependencies]
-xa11y-macos = "=0.15.2"
+# xa11y-macos 0.15.2 vendored with our patches M1-M4 (vendor/xa11y-macos/PATCHES.md).
+xa11y-macos = { path = "vendor/xa11y-macos" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 xa11y-windows = "=0.15.2"

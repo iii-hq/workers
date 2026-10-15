@@ -51,4 +51,9 @@ describe('parseShellPanelContext', () => {
   it('opens the New worker dialog on request', () => {
     expect(parseShellPanelContext({ type: 'new-worker' })).toEqual({ type: 'new-worker' })
   })
+  it('opens source control on a folder, and only with one', () => {
+    expect(parseShellPanelContext({ type: 'source-control', cwd: '/repo' })).toEqual({ type: 'source-control', cwd: '/repo' })
+    expect(parseShellPanelContext({ type: 'source-control', cwd: '' })).toBeNull()
+    expect(parseShellPanelContext({ type: 'source-control' })).toBeNull()
+  })
 })

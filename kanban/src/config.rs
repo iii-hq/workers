@@ -12,8 +12,7 @@ use serde_json::{Value, json};
 
 pub const CONFIG_ID: &str = "kanban";
 pub const CONFIG_NAME: &str = "Kanban";
-pub const CONFIG_DESCRIPTION: &str =
-    "Where the board file lives, how tickets are numbered, and which columns the board has.";
+pub const CONFIG_DESCRIPTION: &str = "Where the board file lives, how tickets are numbered, which columns the board has, and which one counts as done.";
 pub const DEFAULT_PRIORITIES: [&str; 4] = ["low", "medium", "high", "urgent"];
 const DEFAULT_PREFIX: &str = "KAN";
 
@@ -34,6 +33,9 @@ pub struct KanbanConfig {
     pub id_prefix: String,
     /// Column id a new ticket lands in when none is given.
     pub default_status: String,
+    /// Column id that counts as done: progress, release status, shipping and
+    /// the subtask warning use only this column. Defaults to the last column.
+    pub done_status: String,
     /// Board columns, left to right.
     pub columns: Vec<Column>,
     /// Priority values offered on a ticket, lowest first.
@@ -68,6 +70,7 @@ impl Default for KanbanConfig {
             data_path: iii_worker_paths::default_path("data/kanban"),
             id_prefix: DEFAULT_PREFIX.to_string(),
             default_status: "backlog".to_string(),
+            done_status: "done".to_string(),
             columns: default_columns(),
             priorities: default_priorities(),
             agents_path: iii_worker_paths::default_path("agents"),
@@ -129,6 +132,10 @@ pub fn schema() -> Value {
                 "type": "string",
                 "description": "Column id a new ticket lands in when none is given."
             },
+            "done_status": {
+                "type": "string",
+                "description": "Column id that counts as done (progress, releases, shipping, the subtask warning). Defaults to the last column; an unknown id falls back to it."
+            },
             "columns": {
                 "type": "array",
                 "minItems": 1,
@@ -173,8 +180,9 @@ fn valid_prefix(prefix: &str) -> bool {
 }
 
 /// Repair whatever is stored into a usable config: unknown default column
-/// falls to the first column, an invalid prefix falls back to `KAN`, empty
-/// lists fall back to the defaults, duplicate column ids collapse.
+/// falls to the first column, unknown done column to the last, an invalid
+/// prefix falls back to `KAN`, empty lists fall back to the defaults,
+/// duplicate column ids collapse.
 pub fn normalize(raw: &Value) -> KanbanConfig {
     let defaults = KanbanConfig::default();
     let input = raw.as_object();
@@ -212,6 +220,13 @@ pub fn normalize(raw: &Value) -> KanbanConfig {
         columns[0].id.clone()
     };
 
+    let requested_done = clean_string(field("done_status"));
+    let done_status = if columns.iter().any(|column| column.id == requested_done) {
+        requested_done
+    } else {
+        columns[columns.len() - 1].id.clone()
+    };
+
     let priorities: Vec<String> = field("priorities")
         .and_then(Value::as_array)
         .map(|entries| {
@@ -234,6 +249,7 @@ pub fn normalize(raw: &Value) -> KanbanConfig {
         },
         id_prefix,
         default_status,
+        done_status,
         columns,
         priorities: if priorities.is_empty() {
             default_priorities()
@@ -291,7 +307,22 @@ mod tests {
             repaired.default_status, "open",
             "an unknown default falls to the first column"
         );
+        assert_eq!(
+            repaired.done_status, "closed",
+            "an absent done column falls to the last column"
+        );
         assert_eq!(repaired.priorities, default_priorities());
+    }
+
+    #[test]
+    fn done_status_is_kept_when_it_is_a_column_and_repaired_otherwise() {
+        let columns = json!([{ "id": "a" }, { "id": "b" }, { "id": "c" }]);
+        let kept = normalize(&json!({ "columns": columns, "done_status": " b " }));
+        assert_eq!(kept.done_status, "b");
+        let unknown = normalize(&json!({ "columns": columns, "done_status": "nope" }));
+        assert_eq!(unknown.done_status, "c");
+        assert_eq!(normalize(&json!({})).done_status, "done");
+        assert_eq!(schema()["properties"]["done_status"]["type"], "string");
     }
 
     #[test]

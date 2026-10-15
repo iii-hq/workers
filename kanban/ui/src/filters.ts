@@ -18,9 +18,13 @@ export type Filters = {
   assignees: string[]
   priorities: string[]
   updated: UpdatedWindow
+  /** Project ids; `''` matches tickets with no project. */
+  projects: string[]
+  /** Release ids; `''` matches tickets with no release. */
+  releases: string[]
 }
 
-export type FilterKey = 'q' | 'labels' | 'assignees' | 'priorities' | 'updated'
+export type FilterKey = 'q' | 'labels' | 'assignees' | 'priorities' | 'updated' | 'projects' | 'releases'
 
 /**
  * `lastVisit` is the ISO time the board was last opened in this browser (an
@@ -39,6 +43,8 @@ export const EMPTY_FILTERS: Filters = {
   assignees: [],
   priorities: [],
   updated: 'any',
+  projects: [],
+  releases: [],
 }
 
 export const ALL_VIEW: SavedView = { id: 'all', name: 'All tickets', filters: EMPTY_FILTERS }
@@ -127,6 +133,9 @@ export function matches(ticket: TicketSummary, f: Filters, ctx: MatchContext, sk
   }
   if (skip !== 'assignees' && f.assignees.length > 0 && !f.assignees.includes(ticket.assignee ?? '')) return false
   if (skip !== 'priorities' && f.priorities.length > 0 && !f.priorities.includes(ticket.priority)) return false
+  // `?? ''`: a ticket from an older worker or a stale event has no project/release field at all.
+  if (skip !== 'projects' && f.projects.length > 0 && !f.projects.includes(ticket.project_id ?? '')) return false
+  if (skip !== 'releases' && f.releases.length > 0 && !f.releases.includes(ticket.release_id ?? '')) return false
   if (skip !== 'updated') {
     const since = updatedSince(f.updated, ctx)
     if (since !== null && !updatedAfter(ticket, f.updated, since, ctx)) return false
@@ -141,13 +150,14 @@ export function applyFilters(tickets: TicketSummary[], f: Filters, ctx: MatchCon
 /**
  * How many tickets each option would keep, given every other active filter:
  * the number shown next to each choice in a filter menu. `updated` counts by
- * window id; `assignees` uses `''` for unassigned.
+ * window id; `assignees` uses `''` for unassigned, `projects` and `releases`
+ * count by id with `''` for none.
  */
 export function facetCounts(
   tickets: TicketSummary[],
   f: Filters,
   ctx: MatchContext,
-  key: 'labels' | 'assignees' | 'priorities' | 'updated',
+  key: 'labels' | 'assignees' | 'priorities' | 'updated' | 'projects' | 'releases',
 ): Record<string, number> {
   // No prototype: a label named `constructor` or `__proto__` is just a key.
   const counts: Record<string, number> = Object.create(null)
@@ -159,6 +169,8 @@ export function facetCounts(
     if (key === 'labels') new Set(ticket.labels).forEach(bump)
     else if (key === 'assignees') bump(ticket.assignee ?? '')
     else if (key === 'priorities') bump(ticket.priority)
+    else if (key === 'projects') bump(ticket.project_id ?? '')
+    else if (key === 'releases') bump(ticket.release_id ?? '')
     else {
       for (const window of UPDATED_WINDOWS) {
         const since = updatedSince(window.id, ctx)
@@ -189,6 +201,8 @@ function normalized(f: Filters): string {
     sorted(f.assignees),
     sorted(f.priorities),
     f.updated,
+    sorted(f.projects),
+    sorted(f.releases),
   ])
 }
 
@@ -209,6 +223,8 @@ export function coerceFilters(value: unknown): Filters {
     assignees: strings(v.assignees),
     priorities: strings(v.priorities),
     updated: windows.includes(v.updated as string) ? (v.updated as UpdatedWindow) : 'any',
+    projects: strings(v.projects),
+    releases: strings(v.releases),
   }
 }
 

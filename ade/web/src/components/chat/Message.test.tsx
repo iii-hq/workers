@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { AskInSideChatContext } from '@/lib/chat-aside'
 import type { AssistantMessage, UserMessage } from '@/types/chat'
 import { Message, shouldAnimateStreamingBlockBurst } from './Message'
 
@@ -141,5 +142,31 @@ describe('UserMessage', () => {
     expect(html.match(/coder\/index/g)).toHaveLength(2)
     expect(html).not.toContain('skill:coder/index</span>')
     expect(html).toContain('>/other</span>')
+  })
+})
+
+describe('Message in a chat with a side panel', () => {
+  const reply: AssistantMessage = {
+    id: 'reply',
+    role: 'assistant',
+    content: 'The views stay local.',
+    createdAt: 1,
+  }
+  const render = (quotedIds: string[]) =>
+    renderToStaticMarkup(
+      <AskInSideChatContext.Provider
+        value={{ ask: () => {}, quotedIds: new Set(quotedIds) }}
+      >
+        <Message message={reply} />
+      </AskInSideChatContext.Provider>,
+    )
+
+  it('offers "Ask in side chat" on an agent reply', () => {
+    expect(render([])).toContain('aria-label="Ask in side chat"')
+  })
+
+  it('marks a reply the side chat holds a quote of', () => {
+    expect(render(['reply'])).toContain('In side chat')
+    expect(render([])).not.toContain('In side chat')
   })
 })
