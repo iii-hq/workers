@@ -12,7 +12,14 @@ rules:
   - '!kanban::ticket::restore'
   # Planning is the human's call, made in the console: agents file tickets
   # under a project or release, but never create, rename, ship or convert them.
-  - '!kanban::project::create'
+  # One exception: the ultracode orchestrator files each run under its own
+  # project (`lead: ultracode`). Scoped by argument, as rules cannot see the
+  # caller; any other create waits for a person.
+  - function: kanban::project::create
+    action: allow
+    rule_id: ultracode-run-project
+    args:
+      lead: { equals: ultracode }
   - '!kanban::project::update'
   - '!kanban::project::archive'
   - '!kanban::project::restore'

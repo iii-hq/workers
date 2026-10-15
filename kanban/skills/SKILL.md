@@ -48,6 +48,7 @@ board, a ticket, a releases and a projects page into the console.
 - Deleting and restoring tickets is the human's action; agents move tickets.
 - Creating, shipping or archiving projects and releases, and converting a
   label into one, are console actions; agents list them and file tickets under them.
+  The one exception is the ultracode orchestrator, which creates its run's project.
 - Agent profiles are resolved through `iii-directory` (with the configured
   agents folder as the fallback); this worker does not create profiles.
 

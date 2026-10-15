@@ -247,7 +247,8 @@ iii trigger kanban::label::convert --json '{"label":"phase-2","into":"release","
 |---|---|---|
 | `kanban::project::list` | Projects with status, totals and column counts; `include_archived` adds archived ones. | allowed |
 | `kanban::release::list` | Releases with derived status, totals, `reopened` and the per-project breakdown. | allowed |
-| `kanban::project::create` / `update` / `archive` / `restore` | Manage a project. | denied |
+| `kanban::project::create` | Create a project. | denied, except a create whose `lead` is `ultracode` (the ultracode kit files each run under its own project) |
+| `kanban::project::update` / `archive` / `restore` | Manage a project. | denied |
 | `kanban::release::create` / `update` / `ship` / `reopen` / `delete` | Manage a release. | denied |
 | `kanban::label::convert` | Put the tickets with a label into a project or release. | denied |
 
@@ -255,7 +256,8 @@ iii trigger kanban::label::convert --json '{"label":"phase-2","into":"release","
 `project_id` and `release_id` (an empty string means none), and the board
 returns `projects` and `releases` next to its columns. Agents read projects and
 releases and can set `parent`, `project` and `release` on tickets; planning
-them is a human's call in the console, which `iii-permissions.yaml` enforces.
+them is a human's call in the console, which `iii-permissions.yaml` enforces
+(the one exception: an ultracode run creates its own project).
 
 ## Custom trigger types
 

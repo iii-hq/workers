@@ -158,15 +158,40 @@ fn kanban_reads_and_the_ticket_loop_are_allowed() {
     }
 }
 
+/// The ultracode orchestrator files each run under its own project: a create
+/// whose `lead` is `ultracode` is allowed; any other create matches no rule and
+/// waits for a person (never a blanket allow or deny).
+#[test]
+fn only_an_ultracode_run_project_create_is_allowed() {
+    let permissions = repository_permissions();
+    assert!(matches!(
+        permissions.check(
+            "kanban::project::create",
+            &json!({"name": "ultracode: goal · a7f442", "lead": "ultracode"}),
+            PermissionMode::Manual
+        ),
+        Decision::Allow { .. }
+    ));
+    for args in [json!({}), json!({"name": "Q3", "lead": "tech-lead"})] {
+        assert!(
+            matches!(
+                permissions.check("kanban::project::create", &args, PermissionMode::Manual),
+                Decision::NeedsApproval
+            ),
+            "{args} should wait for a person"
+        );
+    }
+}
+
 /// Planning (projects, releases, label conversion) and ticket deletion are the
 /// human's call from the console; agents are denied, as in kanban's own policy.
+/// Project creation is the one scoped exception (above).
 #[test]
 fn kanban_planning_and_ticket_deletion_are_denied() {
     let permissions = repository_permissions();
     for id in [
         "kanban::ticket::delete",
         "kanban::ticket::restore",
-        "kanban::project::create",
         "kanban::project::update",
         "kanban::project::archive",
         "kanban::project::restore",
