@@ -21,11 +21,19 @@ import { SegmentedControl } from '@/components/ui/ModeToggle'
 import { PageSidebar } from '@/components/ui/PageChrome'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import {
+  AUTO_FIX_KEY,
+  autoFixRound,
+  autoFixState,
+  ghViewer,
+} from '@/lib/auto-fix'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
   DISMISSED_PRS_KEY,
   dismissedPullRequests,
   findSideChat,
+  folderGh,
+  githubWorkerGh,
   lastSpokenEntry,
   SIDE_CHAT_KEY,
   SIDE_CHAT_QUOTES_KEY,
@@ -58,6 +66,8 @@ export interface AsideRequest {
 }
 
 const TAB_STORAGE_KEY = 'iii-chat-aside-tab'
+/** How often auto-fix reads a watched PR while the chat is open. */
+const AUTO_FIX_EVERY_MS = 90_000
 
 /** When a side chat ends on its own (ChatPanel runs the rules). */
 const SIDE_CHAT_LIFETIME =
@@ -255,6 +265,73 @@ export function ChatAside({
     return run
   }, [conversation.id, conversation.title])
 
+  // Auto-fix rounds while this chat is open: one tab at a time (a Web Lock
+  // per chat), never while the agent is working, and what was reported
+  // kept in the session so every tab shares it (lib/auto-fix).
+  const watching = Object.keys(autoFixState(conversation)).sort().join()
+  const conversationRef = useRef(conversation)
+  conversationRef.current = conversation
+  const askRef = useRef(onAskAgent)
+  askRef.current = onAskAgent
+  const { githubAvailable, shellAvailable, setSessionMetadata } = ctx
+  const workingDir = conversation.workingDir ?? null
+  useEffect(() => {
+    const ghReach = githubAvailable
+      ? 'worker'
+      : shellAvailable && workingDir
+        ? 'folder'
+        : null
+    if (!watching || !ghReach) return
+    let alive = true
+    let viewer: string | null | undefined
+    const run = async () => {
+      const current = conversationRef.current
+      const state = autoFixState(current)
+      if (!askRef.current || current.status === 'working') return
+      if (Object.keys(state).length === 0) return
+      const client = await getIiiClient()
+      const trigger = client.trigger.bind(client)
+      const gh =
+        ghReach === 'folder' && workingDir
+          ? folderGh(trigger, workingDir)
+          : githubWorkerGh(trigger)
+      viewer ??= await ghViewer(gh)
+      const { next, message } = await autoFixRound(gh, state, viewer)
+      if (!alive) return
+      if (JSON.stringify(next) !== JSON.stringify(state)) {
+        setSessionMetadata(current.id, { [AUTO_FIX_KEY]: next })
+      }
+      if (message) askRef.current?.(message, true)
+    }
+    const round = async () => {
+      const locks =
+        typeof navigator === 'undefined' ? undefined : navigator.locks
+      if (!locks) return run()
+      await locks.request(
+        `iii-ade-autofix:${conversationRef.current.id}`,
+        { ifAvailable: true },
+        async (lock) => {
+          if (lock) await run()
+        },
+      )
+    }
+    void round().catch(() => {})
+    const timer = window.setInterval(
+      () => void round().catch(() => {}),
+      AUTO_FIX_EVERY_MS,
+    )
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [
+    watching,
+    githubAvailable,
+    shellAvailable,
+    workingDir,
+    setSessionMetadata,
+  ])
+
   const listLoading = ctx.conversationsLoading === true
   const show = useCallback(
     (next: AsideTab) => {
@@ -408,6 +485,12 @@ export function ChatAside({
         githubAvailable={ctx.githubAvailable}
         kanbanAvailable={ctx.kanbanAvailable}
         onAskAgent={onAskAgent}
+        onAutoFixChange={(key, seen) => {
+          const { [key]: _old, ...rest } = autoFixState(conversation)
+          ctx.setSessionMetadata(conversation.id, {
+            [AUTO_FIX_KEY]: seen ? { ...rest, [key]: seen } : rest,
+          })
+        }}
         onDismissPullRequest={(key) =>
           ctx.setSessionMetadata(conversation.id, {
             [DISMISSED_PRS_KEY]: [...dismissedPullRequests(conversation), key],

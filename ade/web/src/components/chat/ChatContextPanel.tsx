@@ -53,11 +53,15 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { useLazyAttachment } from '@/hooks/use-lazy-attachment'
+import {
+  type AutoFixSeen,
+  autoFixBaseline,
+  autoFixState,
+  ghViewer,
+  readPrActivity,
+} from '@/lib/auto-fix'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
-  autoFixPrompt,
-  autoFixTriggers,
-  autoFixWatchId,
   capRows,
   collectChatImages,
   collectChatLinks,
@@ -132,6 +136,8 @@ interface ChatContextPanelProps {
   onAskAgent?: (text: string, send: boolean) => void
   /** Stop listing a pull request in this chat's panel (`repo#number`). */
   onDismissPullRequest?: (key: string) => void
+  /** Start (a baseline) or stop (null) auto-fix on a PR (`repo#number`). */
+  onAutoFixChange?: (key: string, seen: AutoFixSeen | null) => void
 }
 
 function openSourceControl(cwd: string) {
@@ -171,6 +177,7 @@ export function ChatContextPanel({
   active = true,
   onAskAgent,
   onDismissPullRequest,
+  onAutoFixChange,
 }: ChatContextPanelProps) {
   const workingDir = conversation.workingDir ?? null
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -297,35 +304,25 @@ export function ChatContextPanel({
       busy(pr, false)
     }
   }
-  // Asked, not yet subscribed: the agent takes a turn to do it. Held for two
-  // minutes so a second click cannot ask twice.
-  const [autoFixAsked, setAutoFixAsked] = useState<Record<string, number>>({})
-  const autoFixPending = (pr: PullRequestRow) =>
-    Date.now() - (autoFixAsked[pullRequestKey(pr)] ?? 0) < 120_000
-  // Only the agent can subscribe this chat to the PR's events: turning
-  // auto-fix on asks it to; turning it off drops the subscription and the
-  // watch here.
+  // Auto-fix: the side panel reads the PR with gh while this chat is open
+  // and tells the agent what changed (lib/auto-fix). Turning it on records
+  // where it starts.
+  const autoFixing = useMemo(
+    () => autoFixState({ sessionMetadata }),
+    [sessionMetadata],
+  )
   const setAutoFix = async (pr: PullRequestRow, on: boolean) => {
-    if (on) {
-      setAutoFixAsked((current) => ({
-        ...current,
-        [pullRequestKey(pr)]: Date.now(),
-      }))
-      onAskAgent?.(autoFixPrompt(pr, conversation.id), true)
+    if (!onAutoFixChange) return
+    if (!on) {
+      onAutoFixChange(pullRequestKey(pr), null)
       return
     }
+    const gh = await withGh()
+    if (!gh) return
     busy(pr, true)
     try {
-      for (const trigger of autoFixTriggers(triggers, pr, conversation.id)) {
-        await onUnregisterTrigger(trigger.id)
-      }
-      // This chat's own watch: another chat's auto-fix keeps its own.
-      const client = await getIiiClient()
-      await client
-        .trigger('github::pr::unwatch', {
-          watch_id: autoFixWatchId(pr, conversation.id),
-        })
-        .catch(() => null)
+      const now = await readPrActivity(gh, pr, await ghViewer(gh))
+      onAutoFixChange(pullRequestKey(pr), autoFixBaseline(pr, now))
     } finally {
       busy(pr, false)
     }
@@ -658,11 +655,10 @@ export function ChatContextPanel({
                   pr={pr}
                   busy={!!prBusy[pullRequestKey(pr)]}
                   canWrite={ghVia !== null}
-                  autoFix={
-                    autoFixTriggers(triggers, pr, conversation.id).length > 0
+                  autoFix={pullRequestKey(pr) in autoFixing}
+                  autoFixAvailable={
+                    ghVia !== null && Boolean(onAutoFixChange && onAskAgent)
                   }
-                  autoFixPending={autoFixPending(pr)}
-                  autoFixAvailable={githubAvailable && Boolean(onAskAgent)}
                   onViewChanges={() =>
                     workingDir && pr.headRefName === branch
                       ? openSourceControl(workingDir)
@@ -1040,7 +1036,6 @@ function PullRequestMenu({
   busy,
   canWrite,
   autoFix,
-  autoFixPending,
   autoFixAvailable,
   onViewChanges,
   onAction,
@@ -1051,8 +1046,6 @@ function PullRequestMenu({
   busy: boolean
   canWrite: boolean
   autoFix: boolean
-  /** Asked of the agent, not subscribed yet. */
-  autoFixPending: boolean
   autoFixAvailable: boolean
   onViewChanges: () => void
   onAction: (action: PullRequestAction) => void
@@ -1070,11 +1063,7 @@ function PullRequestMenu({
         {text}
       </span>
     ) : null
-  const autoFixReason = !autoFixAvailable
-    ? 'needs the github worker'
-    : autoFixPending && !autoFix
-      ? 'turning on…'
-      : null
+  const autoFixReason = autoFixAvailable ? null : 'needs gh'
   const mergeReason = !canWrite ? 'needs gh' : draft ? 'draft' : null
   return (
     <DropdownMenu>
@@ -1107,8 +1096,8 @@ function PullRequestMenu({
           <>
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
-              checked={autoFix || (autoFixPending && 'indeterminate')}
-              disabled={!autoFixAvailable || (autoFixPending && !autoFix)}
+              checked={autoFix}
+              disabled={!autoFixAvailable || busy}
               aria-label="Auto-fix"
               aria-describedby={autoFixReason ? `${ids}-fix` : undefined}
               onCheckedChange={(on) => onAutoFix(on === true)}
