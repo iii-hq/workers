@@ -95,9 +95,12 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             false,
             any,
         ),
+        // The password runs to the LAST `@` before the path, query, or
+        // fragment: an unescaped `@` in it (`u:p@ss@host`) must not leave
+        // the rest visible.
         rule(
             "url_credentials",
-            r"(?i)\b[a-z][a-z0-9+.\-]*://([^:/@\s]*:[^@\s/]+)@",
+            r"(?i)\b[a-z][a-z0-9+.\-]*://([^:/@\s]*:[^\s/?#]+)@",
             1,
             false,
             any,
@@ -372,6 +375,11 @@ mod tests {
         assert_eq!(
             redact(&pg("admin:S3cr3tPass@db:5432/app")).text,
             pg("[REDACTED:url_credentials]@db:5432/app")
+        );
+        // An unescaped `@` in the password: all of it goes, the host stays.
+        assert_eq!(
+            redact(&pg("admin:p4ss@w0rd@db:5432/app?ssl=1")).text,
+            pg("[REDACTED:url_credentials]@db:5432/app?ssl=1")
         );
         assert_eq!(
             redact("api_key: Zx81!kLm0Pq").text,
