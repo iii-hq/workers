@@ -41,7 +41,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `approve` | on | the dev flow waits for you on the design, the plan and the finish; `off` runs straight through and keeps the branch |
 | `max_rounds` | 3 | retry cycles over the queue |
 | `attempts` | 2 | code (or work) attempts a lead makes per round; a rejected attempt goes back to the same code session with the reasons |
-| `concurrency` | 4 | leads per wave (max 8) |
+| `concurrency` | 8 | leads per wave (max 8). Every ticket whose `Depends on` tickets are done starts in parallel; a dependent ticket waits for a later wave (a `Depends on: KAN-12` line on a card you add counts too). In the dev flow, tickets that share a file or test target never share a wave |
 | `verify` | on | run each ticket's check step |
 | `verifier` | `ultracode-qa` | tier for verify and review (`ultracode-qa*` or `ultracode-verifier*`) |
 | `judges` | – | comma-separated model ids (at most 7 in the dev flow, 8 in the plain one): one `ultracode-verifier` per model in each check, majority wins |
@@ -50,8 +50,8 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `max_items` | 5 × K | cap on tickets the run creates; K = leads per wave = min(concurrency, 8) |
 | `budget_usd` | – | soft cap: checked with `harness::metrics` before each wave and at each round close; no new wave starts once it is reached. When a model has no catalog pricing or usage is missing, the cost is a lower bound (marked incomplete when the harness total is null; one generation without usage is left out silently), so the cap can be overshot |
 | `notify` | – | a function id called with the final report (e.g. a Slack or email send) |
-| `project` | – | an existing kanban project (id or name) to file the run ticket and every item under |
-| `release` | – | an existing kanban release (id or name), the same way. Agents can't create projects or releases: make them in the console first |
+| `project` | – | an existing kanban project (id or name) to file the run under. Without it, Ultracode creates one project per run (`ultracode: <goal> · <id>`) when `kanban::project::create` is allowed (kanban denies it to agents by default, see Prerequisites), so the board's Project filter shows just that run; subtasks you add join it when their round starts |
+| `release` | – | an existing kanban release (id or name), the same way. Agents can't create releases: make them in the console first |
 
 **With hard caps:** console runs have only the soft `budget_usd`. For a hard ceiling, start the run from the CLI (or any non-agent client):
 ```
@@ -62,7 +62,7 @@ iii trigger harness::send --json '{"message":"<goal + args>","model":"<provider:
 ## The dev flow
 
 1. **Design.** Ultracode reads the repository (`git status`, the tree) and asks you what the code can't settle, one question card at a time, with two or three approaches and its recommendation first.
-2. **Plan.** The design goes into the run ticket's description and each task becomes a subtask with a test-first card: `Files:`, `Test first:`, `Implement:`, `Verify:`, `Commit:`. A task is two to five minutes of work. You get one card: Start, Stop, or type your changes. A change rewrites the design on the run ticket first, then the affected subtasks (new ones are added, dropped ones go to Backlog with a comment), and the card comes back.
+2. **Plan.** The design goes into the run ticket's description and each task becomes a subtask with a test-first card: `Files:`, `Test first:`, `Implement:`, `Verify:`, `Commit:`. A task is two to five minutes of work. You get one card: Start, Stop, or type your changes. A change rewrites the design on the run ticket first, then the affected subtasks (new ones are added, dropped ones are `canceled` with a comment), and the card comes back.
 3. **Worktree.** `git worktree add .worktrees/<slug> -b ultracode/<slug> <your branch>` (the slug ends with part of the session id, so runs never share a branch); run Ultracode from the repository's top folder. `.worktrees/` is excluded locally (`.git/info/exclude`), so your files stay untouched. The test suite runs once for a baseline.
 4. **Per ticket**, its lead runs `tests` (write the failing test, see it fail for the right reason), `code` (the least change that passes it, then one commit `<Commit:> (<KEY>)`), then `verify` (re-runs the Verify lines) and `review` (reads the commit, checks the test files are unchanged and nothing outside `Files:` moved) at the same time. A rejection goes back to the same code session with the reasons; a reason about the test reruns the tests phase. Tickets that touch the same file never run in the same wave: they share the worktree.
 5. **Branch review.** When the queue runs dry, one reviewer runs the full suite and the linter and reviews `git diff <base>...<branch>`. Findings become tickets for the next round.
@@ -75,21 +75,21 @@ Sub-agents never push, merge, rebase, reset, switch, stash or clean, and they wo
 - The run ticket is titled `ultracode: <goal>` with the label `uc:run`. Every run item is one of its subtasks: its page lists them with a done/total progress bar, and each round adds a summary comment with the cost. Filter the board by the run ticket to see only the run.
 - The run's subtasks in To do, in board order, are the queue. In progress means its lead is running; the session tree shows each lead as `<KEY> · <title>` with its phases (`<KEY> tests`, `code`, `verify`, `review`) under it.
 - **Route a ticket:** set its assignee to a work tier (`ultracode-worker*` or `ultracode-impl*`). Any other assignee (e.g. kanban's `backend-engineer`) does not run that profile: the ticket runs as `ultracode-impl` when its Deliverable changes code or files, else as `ultracode-worker`, with a comment saying so. A new assignee takes effect on the next attempt that starts after the previous one stopped. Add your own tiers as `agents/ultracode-impl-<name>.md` with `extends: ultracode-impl` (or `ultracode-worker`) and a `model`.
-- **Change the plan mid-run:** tell Ultracode in the chat. It rewrites the design on the run ticket, edits the queued subtasks, adds new ones and drops the rest to Backlog, starting next round. Subtasks already In progress keep running; a follow-up subtask aligns each one after it is done.
+- **Change the plan mid-run:** tell Ultracode in the chat. It rewrites the design on the run ticket, edits the queued subtasks, adds new ones and cancels the rest, starting next round. Subtasks already In progress keep running; a follow-up subtask aligns each one after it is done.
 - **Steer between rounds:** add a subtask on the run ticket's page (it starts in the first column) and drag it to To do, drag To do cards to reorder, comment on a ticket to steer its retry, drag a Backlog card to To do to re-queue it (a `stuck` card runs again only after its lead has stopped; until then it goes back to Backlog).
 - **Don't** drag In progress cards: the orchestrator's next write wins. Move a queued card to Backlog to skip it (it is skipped from its wave on). A deleted card, or one detached from the run ticket, leaves the run and is listed as `removed` in the report. Deleting the run ticket only stops writes to it (round comments, report, final move) and new items; the existing items keep moving and the report goes only to the chat and to `notify`.
-- Outcomes: Done carries `verified` or `accepted`; Backlog carries `blocked`, `failed`, `unverified`, `unfinished`, `stuck`, or `pending` for a loose end. The orchestrator edits only the outcome labels, so your own labels stay.
+- Outcomes: Done carries `verified` or `accepted`; Backlog carries `blocked`, `failed`, `unverified`, `unfinished`, `stuck`, or `pending` for a loose end. A ticket dropped from the plan (or every ticket, when you stop before Start) is `canceled`: it goes to a column whose id or name is Canceled when your board has one (kanban's defaults don't), else to Backlog with the `canceled` label. A ticket whose dependency was canceled or parked is `blocked`. It still counts in the run ticket's progress total. The orchestrator edits only the outcome labels, so your own labels stay.
 
 ## Prerequisites
 
 - kanban's column ids `backlog`, `todo`, `in_progress` and `done`, with `done_status: done` (the default, the last column) so the run ticket's progress counts finished items.
 - state with the kv adapter (the redis adapter refuses `state::barrier`), `store_method: file_based` (the default; `in_memory` loses barrier progress and results on restart) and `triggers_enabled: true` (the default).
-- harness `max_depth` of at least 3 (the default): orchestrator → lead → phase.
+- harness `max_depth` of at least 3 (the default): orchestrator → lead → phase; and `max_children` of at least `concurrency` (the default 8 matches it): a wave spawns one lead per ticket in one turn, and spawns past the limit are refused.
 - **Approval gate.** Allow these to run without a prompt:
   - `state::barrier`, unattended: the harness calls it on every state write in a wave's or phase's scope.
   - for the phase sub-agents: `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, `shell::exec`, `coder::read-file` (plus `coder::create-file` and `coder::update-file` for `ultracode-impl`, and `state::get` for verifiers), and whatever else the work needs. A call held for approval in a phase sub-agent parks its ticket as `blocked` with the function to approve; a wave of leads held on approvals ends the run as `blocked`.
   - for leads: `harness::spawn`, `engine::register_trigger`, `state::list`, `state::compare-and-set`, `harness::status`, `harness::stop`, `kanban::comment::create`.
-  - for the orchestrator: `harness::spawn`, `harness::metrics`, `state::compare-and-set`, `kanban::ticket::list`, `shell::exec`, `harness::stop`, and `directory::agents::get` when `judges=` is used. Without a rule, each `harness::stop` of a timed-out lead or phase waits for your approval. The repository rule set (`iii-permissions.yaml`) denies it with `'!harness::stop'` and the first matching rule wins: to allow it, put `- harness::stop` above that line (the allow then applies to every agent). If you keep the deny, timed-out leads are parked as `stuck`.
+  - for the orchestrator: `harness::spawn`, `harness::metrics`, `state::compare-and-set`, `kanban::ticket::list`, `kanban::project::create`, `shell::exec`, `harness::stop`, and `directory::agents::get` when `judges=` is used. Without a rule, each `harness::stop` of a timed-out lead or phase waits for your approval. The repository rule set (`iii-permissions.yaml`) denies it with `'!harness::stop'` and the first matching rule wins: to allow it, put `- harness::stop` above that line (the allow then applies to every agent). If you keep the deny, timed-out leads are parked as `stuck`. The same rule set denies `kanban::project::create` (`'!kanban::project::create'`: planning is a human's call): put `- kanban::project::create` above it, or pass `project=` with a project you made in the console. Refused, the run goes on without a project and says so on the run ticket.
 - **Trust.** Any agent allowed `kanban::ticket::create` or `kanban::ticket::update` can add a subtask to the run ticket, which then runs with the orchestrator's permissions.
 
 ## How it works
@@ -103,4 +103,4 @@ Sub-agents never push, merge, rebase, reset, switch, stash or clean, and they wo
 
 **Why fan-in is on state, not on kanban events.** A `kanban:change` wake gated by the same barrier works mechanically, but it counts every change to a ticket (including the orchestrator's own moves) as an arrival, kanban delivers events fire-and-forget with no catch-up, and results kept in comments have no compare-and-set. A kanban outage would lose results instead of delaying them.
 
-**Not in 0.1:** ticket dependencies (rounds order the work), a run-level cost cap from the console, one worktree per ticket (tickets that share a file wait for a later wave instead).
+**Not in 0.1:** a run-level cost cap from the console, one worktree per ticket (tickets that share a file wait for a later wave instead).

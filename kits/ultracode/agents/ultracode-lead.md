@@ -32,7 +32,7 @@ Your task names the ticket, run, round N, result scope and key, `Phases`, `Work 
 - Every `kanban::comment::create` you make passes `"author":"ultracode-lead","compact":true`.
 - Child deny list D, passed as `options.functions.deny` unless a shape below says `allow`:
   ```json
-  ["kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::stop","harness::ask","engine::register_trigger","directory::skills::get","code-runner::*","sandbox-code-runner::*","workflow::*"]
+  ["kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::stop","harness::ask","engine::register_trigger","directory::skills::get","kanban::project::*","kanban::release::*","kanban::label::convert","code-runner::*","sandbox-code-runner::*","workflow::*"]
   ```
 - In the dev flow every child gets `"filesystem_root":"<Worktree>"` in `options`.
 
