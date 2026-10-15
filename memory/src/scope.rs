@@ -4,11 +4,12 @@
 //! tools alike (`hindsight-integrations/claude-code/scripts/lib/bank.py:93`).
 //!
 //! Order: turn metadata `memory_bank` → session metadata `memory_bank` →
-//! the parent session's bank, walked up (a sub-agent works in its parent's
-//! bank) → `default_bank`. `""` is absent. An invalid name, or a deleted
-//! bank other than the default, means NO memory — never a fallback to
-//! another bank. A failed session lookup is an error: the hook injects
-//! nothing new, extraction retries, a call fails.
+//! the parent turn's bank, else the parent session's, walked up (a sub-agent
+//! works in its parent's bank) → `default_bank`. `""` is absent. An invalid
+//! name, a deleted bank other than the default, or a parent that no longer
+//! exists means NO memory — never a fallback to another bank. A failed
+//! session lookup is an error: the hook injects nothing new, extraction
+//! retries, a call fails.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -35,37 +36,27 @@ pub(crate) fn bank_field(metadata: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The resolver over an injected session lookup (`session_id` → that
-/// session's metadata object), so tests need no engine.
+/// The resolver over injected lookups, so tests need no engine: `recorded`
+/// is the bank a turn was injected with ([`turn_bank`]), `lookup` a
+/// session's metadata object (`None`: no such session).
 pub(crate) async fn resolve_with<L, Fut>(
     turn_metadata: Option<&Value>,
     session_id: &str,
     default_bank: &str,
     deleted: impl Fn(&str) -> bool,
-    mut lookup: L,
+    recorded: impl Fn(&str) -> Option<Option<String>>,
+    lookup: L,
 ) -> Result<Option<String>, String>
 where
     L: FnMut(String) -> Fut,
-    Fut: Future<Output = Result<Value, String>>,
+    Fut: Future<Output = Result<Option<Value>, String>>,
 {
     let chosen = match bank_field(turn_metadata) {
         Some(bank) => bank,
-        None => {
-            let mut found = None;
-            let mut id = session_id.to_string();
-            for _ in 0..=MAX_PARENT_DEPTH {
-                let meta = lookup(id.clone()).await?;
-                if let Some(bank) = bank_field(Some(&meta)) {
-                    found = Some(bank);
-                    break;
-                }
-                match meta.get("parent_session_id").and_then(Value::as_str) {
-                    Some(parent) if !parent.is_empty() => id = parent.to_string(),
-                    _ => break,
-                }
-            }
-            found.unwrap_or_else(|| default_bank.to_string())
-        }
+        None => match walk(session_id, default_bank, recorded, lookup).await? {
+            Some(bank) => bank,
+            None => return Ok(None),
+        },
     };
     if validate_name(&chosen).is_err() {
         tracing::warn!(session_id, bank = %chosen, "invalid memory_bank; no memory for this session");
@@ -76,6 +67,45 @@ where
         return Ok(None);
     }
     Ok(Some(chosen))
+}
+
+/// The session's own bank, else a sub-agent's parent turn's (the bank that
+/// turn was injected with, an override included) or the parent session's,
+/// walked up; the default at the top. `None` — no memory — for a session
+/// that no longer exists, or a chain that cycles or runs past
+/// [`MAX_PARENT_DEPTH`]: never the default in their place.
+async fn walk<L, Fut>(
+    session_id: &str,
+    default_bank: &str,
+    recorded: impl Fn(&str) -> Option<Option<String>>,
+    mut lookup: L,
+) -> Result<Option<String>, String>
+where
+    L: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<Option<Value>, String>>,
+{
+    let mut id = session_id.to_string();
+    for _ in 0..=MAX_PARENT_DEPTH {
+        let Some(meta) = lookup(id.clone()).await? else {
+            return Ok(None);
+        };
+        if let Some(bank) = bank_field(Some(&meta)) {
+            return Ok(Some(bank));
+        }
+        let field = |key| {
+            meta.get(key)
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+        };
+        if let Some(bank) = field("parent_turn_id").and_then(&recorded) {
+            return Ok(bank);
+        }
+        match field("parent_session_id") {
+            Some(parent) => id = parent.to_string(),
+            None => return Ok(Some(default_bank.to_string())),
+        }
+    }
+    Ok(None)
 }
 
 /// [`resolve_with`] against the live session store.
@@ -91,13 +121,15 @@ pub async fn resolve(
         session_id,
         &cfg.default_bank,
         |bank| store.is_deleted(bank),
+        turn_bank,
         |id| session_metadata(&deps.iii, id),
     )
     .await
 }
 
-/// One session's metadata object (`Null` when it has none).
-async fn session_metadata(iii: &IIIClient, session_id: String) -> Result<Value, String> {
+/// One session's metadata object (`Null` when it has none); `None` when
+/// the session does not exist (`session::get` replies `null`).
+async fn session_metadata(iii: &IIIClient, session_id: String) -> Result<Option<Value>, String> {
     let reply = iii
         .trigger(TriggerRequest {
             function_id: "session::get".into(),
@@ -107,10 +139,15 @@ async fn session_metadata(iii: &IIIClient, session_id: String) -> Result<Value, 
         })
         .await
         .map_err(|e| format!("session::get {session_id}: {e}"))?;
-    Ok(reply
-        .pointer("/meta/metadata")
-        .cloned()
-        .unwrap_or(Value::Null))
+    if reply.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        reply
+            .pointer("/meta/metadata")
+            .cloned()
+            .unwrap_or(Value::Null),
+    ))
 }
 
 /// Recent turns tracked in [`TURN_BANKS`]; the least recently used goes
@@ -320,14 +357,32 @@ mod tests {
         store: &HashMap<String, Value>,
         deleted: &[&str],
     ) -> Result<Option<String>, String> {
+        resolve_recorded(turn, session, store, deleted, &[]).await
+    }
+
+    /// [`resolve`] with turn banks the hook recorded (`turn id → bank`).
+    async fn resolve_recorded(
+        turn: Option<Value>,
+        session: &str,
+        store: &HashMap<String, Value>,
+        deleted: &[&str],
+        recorded: &[(&str, Option<&str>)],
+    ) -> Result<Option<String>, String> {
         resolve_with(
             turn.as_ref(),
             session,
             "main",
             |b| deleted.contains(&b),
+            |t| {
+                recorded
+                    .iter()
+                    .find(|(id, _)| *id == t)
+                    .map(|(_, bank)| bank.map(str::to_string))
+            },
+            // An unknown session reads as `null`, like session::get.
             |id| {
                 let found = store.get(&id).cloned();
-                async move { found.ok_or_else(|| format!("session::get {id}: not found")) }
+                async move { Ok(found) }
             },
         )
         .await
@@ -401,15 +456,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_parent_cycle_ends_at_the_default() {
+    async fn a_sub_agent_follows_its_parent_turns_own_bank() {
+        let store = sessions(&[
+            ("root", json!({ "memory_bank": "blog" })),
+            (
+                "child",
+                json!({ "parent_session_id": "root", "parent_turn_id": "rt" }),
+            ),
+        ]);
+        let child = |recorded| resolve_recorded(None, "child", &store, &[], recorded);
+        assert_eq!(
+            child(&[("rt", Some("coding"))]).await,
+            Ok(Some("coding".into())),
+            "the parent turn ran on a turn-only override"
+        );
+        assert_eq!(child(&[("rt", None)]).await, Ok(None));
+        assert_eq!(
+            child(&[]).await,
+            Ok(Some("blog".into())),
+            "not recorded here: the parent session's bank"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_parent_or_a_cycle_is_no_memory_never_the_default() {
         let store = sessions(&[
             ("a", json!({ "parent_session_id": "b" })),
             ("b", json!({ "parent_session_id": "a" })),
+            ("orphan", json!({ "parent_session_id": "deleted" })),
         ]);
-        assert_eq!(
-            resolve(None, "a", &store, &[]).await,
-            Ok(Some("main".into()))
-        );
+        assert_eq!(resolve(None, "a", &store, &[]).await, Ok(None));
+        assert_eq!(resolve(None, "orphan", &store, &[]).await, Ok(None));
+        assert_eq!(resolve(None, "nobody", &store, &[]).await, Ok(None));
     }
 
     #[tokio::test]
@@ -434,14 +512,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_lookup_is_an_error_not_the_default() {
-        let store = sessions(&[("child", json!({ "parent_session_id": "missing" }))]);
-        assert!(resolve(None, "nobody", &store, &[]).await.is_err());
-        assert!(resolve(None, "child", &store, &[]).await.is_err());
+        let failing = |turn: Option<Value>| async move {
+            resolve_with(
+                turn.as_ref(),
+                "s",
+                "main",
+                |_| false,
+                |_| None,
+                |id| async move { Err::<Option<Value>, _>(format!("session::get {id}: timeout")) },
+            )
+            .await
+        };
+        assert!(failing(None).await.is_err());
         // A turn override needs no lookup.
         let turn = Some(json!({ "memory_bank": "blog" }));
-        assert_eq!(
-            resolve(turn, "nobody", &store, &[]).await,
-            Ok(Some("blog".into()))
-        );
+        assert_eq!(failing(turn).await, Ok(Some("blog".into())));
     }
 }

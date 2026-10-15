@@ -14,7 +14,8 @@
 //! LLM never re-pays for content it already saw. The cursor advances only
 //! after a successful pass, so a failed call retries over the same span.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
@@ -119,12 +120,33 @@ pub async fn run(deps: Arc<Deps>, job: ExtractJobInput) {
     }
 }
 
+/// Per-session pass locks; see [`session_pass`].
+// ponytail: in-process — one worker replica. Replicated, it needs a FIFO
+// queue grouped by session (`message_group_field: session_id`), which on
+// the builtin adapter serializes every session instead.
+static SESSION_PASSES: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The lock one session's passes take turns on. The queue runs jobs
+/// concurrently, and two passes over one session would read the same
+/// cursor: the older turn extracted twice (its corroboration inflated, or
+/// into the newer turn's bank), and the slower pass writing the cursor
+/// back behind the faster one's span.
+fn session_pass(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut passes = SESSION_PASSES.lock().unwrap_or_else(|e| e.into_inner());
+    // Keep only sessions with a pass in flight or queued on the lock.
+    passes.retain(|_, pass| Arc::strong_count(pass) > 1);
+    passes.entry(session_id.to_string()).or_default().clone()
+}
+
 /// One pass over the job's span. Every error is returned, so the queue
 /// retries the same span: a failed session lookup included — skipping
 /// would lose the turn, guessing a bank would leak it.
 pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
-    let cfg = deps.config().await;
     let session_id = job.session_id.as_str();
+    let pass = session_pass(session_id);
+    let _pass = pass.lock().await;
+    let cfg = deps.config().await;
     let bank_name = match (&job.bank, job.skip) {
         (_, true) => None,
         (Some(bank), false) => Some(bank.clone()),
@@ -358,9 +380,7 @@ async fn cursor_get(iii: &IIIClient, session_id: &str) -> Result<Option<String>,
         .await;
     let reply = match reply {
         Ok(reply) => reply,
-        Err(e @ (Error::Timeout | Error::NotConnected | Error::WebSocket(_))) => {
-            return Err(format!("state::get: {e}"));
-        }
+        Err(e) if transient(&e) => return Err(format!("state::get: {e}")),
         Err(_) => return Ok(None),
     };
     // state::get returns the stored value at the top level; older engines
@@ -370,6 +390,16 @@ async fn cursor_get(iii: &IIIClient, session_id: &str) -> Result<Option<String>,
         .or_else(|| reply.pointer("/value/last_entry_id"))
         .and_then(Value::as_str)
         .map(str::to_string))
+}
+
+/// A failure worth retrying. `function_not_found` is not: it is also what
+/// a stack without a state worker answers, every time.
+fn transient(e: &Error) -> bool {
+    match e {
+        Error::Timeout | Error::NotConnected | Error::WebSocket(_) => true,
+        Error::Remote { code, .. } => code == "invocation_error",
+        _ => false,
+    }
 }
 
 /// Best-effort cursor write; a miss only costs a re-read next pass
@@ -544,36 +574,40 @@ impl<'a> Span<'a> {
     }
 }
 
-/// The newest user/assistant entry of a `session::messages-tail` page — the
-/// end of the turn that just completed. Function results and custom entries
-/// never reach the pass (`roles` narrows them out), so they cannot end it.
-fn newest_turn_entry(reply: &Value) -> Option<String> {
+/// The end of `turn_id` on a `session::messages-tail` page: the newest
+/// user/assistant entry the turn wrote (`origin.turn_id`). Not merely the
+/// newest entry — the harness drains a queued user message, and may open
+/// the next turn, before it emits turn-completed. Function results and
+/// custom entries never reach the pass (`roles` narrows them out), so they
+/// cannot end it.
+fn newest_turn_entry(reply: &Value, turn_id: &str) -> Option<String> {
     reply
         .get("messages")?
         .as_array()?
         .iter()
         .rev()
         .find(|item| {
-            matches!(
-                item.pointer("/message/role").and_then(Value::as_str),
-                Some("user" | "assistant")
-            )
+            item.pointer("/origin/turn_id").and_then(Value::as_str) == Some(turn_id)
+                && matches!(
+                    item.pointer("/message/role").and_then(Value::as_str),
+                    Some("user" | "assistant")
+                )
         })?
         .get("entry_id")
         .and_then(Value::as_str)
         .map(str::to_string)
 }
 
-/// The session's newest user/assistant entry, read when its turn completes;
-/// `None` when session-manager cannot say (the job then reads to the newest
-/// entry, as before turn ends were tracked).
-pub async fn turn_end(iii: &IIIClient, session_id: &str) -> Option<String> {
+/// Where `turn_id` ended, read when it completes; `None` when
+/// session-manager cannot say or the turn wrote nothing in view (the job
+/// then reads to the newest entry, as before turn ends were tracked).
+pub async fn turn_end(iii: &IIIClient, session_id: &str, turn_id: &str) -> Option<String> {
     let reply = iii
         .trigger(TriggerRequest {
             function_id: "session::messages-tail".into(),
             payload: json!({
                 "session_id": session_id,
-                "limit": 3,
+                "limit": 10,
                 "include_custom": false,
                 "include_image_data": false,
             }),
@@ -582,7 +616,7 @@ pub async fn turn_end(iii: &IIIClient, session_id: &str) -> Option<String> {
         })
         .await
         .ok()?;
-    newest_turn_entry(&reply)
+    newest_turn_entry(&reply, turn_id)
 }
 
 /// One `session::messages` item as `(entry_id, role, text, timestamp_ms)`;
@@ -865,16 +899,59 @@ mod tests {
         );
     }
 
+    fn remote(code: &str) -> Error {
+        Error::Remote {
+            code: code.into(),
+            message: String::new(),
+            stacktrace: None,
+        }
+    }
+
     #[test]
-    fn newest_turn_entry_skips_function_results_and_custom_entries() {
+    fn only_a_transient_failure_retries_the_cursor_read() {
+        assert!(transient(&Error::Timeout));
+        assert!(transient(&Error::NotConnected));
+        assert!(transient(&remote("invocation_error")));
+        // No state worker at all: no cursor, as before.
+        assert!(!transient(&remote("function_not_found")));
+    }
+
+    #[tokio::test]
+    async fn passes_over_one_session_take_turns() {
+        let first = session_pass("s");
+        let held = first.lock().await;
+        assert!(
+            Arc::ptr_eq(&first, &session_pass("s")),
+            "same session, same pass"
+        );
+        assert!(!Arc::ptr_eq(&first, &session_pass("other")));
+        drop(held);
+        drop(first);
+        // Idle passes are dropped, so the map tracks only sessions in flight.
+        let _ = session_pass("third");
+        let passes = SESSION_PASSES.lock().unwrap();
+        assert!(!passes.contains_key("other"));
+    }
+
+    #[test]
+    fn a_turns_end_is_its_own_newest_user_or_assistant_entry() {
+        // The harness drains a queued message (and may open the next turn)
+        // before it emits turn-completed: neither ends THIS turn.
         let reply = json!({ "messages": [
             { "entry_id": "u1", "message": { "role": "user" } },
-            { "entry_id": "a1", "message": { "role": "assistant" } },
-            { "entry_id": "r1", "message": { "role": "function_result" } },
-            { "entry_id": "c1", "custom": {} },
+            { "entry_id": "a1", "message": { "role": "assistant" }, "origin": { "turn_id": "t1" } },
+            { "entry_id": "r1", "message": { "role": "function_result" }, "origin": { "turn_id": "t1" } },
+            { "entry_id": "c1", "custom": {}, "origin": { "turn_id": "t1" } },
+            { "entry_id": "q2", "message": { "role": "user" } },
+            { "entry_id": "a2", "message": { "role": "assistant" }, "origin": { "turn_id": "t2" } },
         ]});
-        assert_eq!(newest_turn_entry(&reply).as_deref(), Some("a1"));
-        assert_eq!(newest_turn_entry(&json!({ "messages": [] })), None);
+        assert_eq!(newest_turn_entry(&reply, "t1").as_deref(), Some("a1"));
+        assert_eq!(
+            newest_turn_entry(&reply, "t9"),
+            None,
+            "nothing of the turn in view"
+        );
+        assert_eq!(newest_turn_entry(&json!({ "messages": [] }), "t1"), None);
     }
 
     #[test]

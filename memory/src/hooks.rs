@@ -245,6 +245,20 @@ pub(crate) struct Injection {
     pub retrieval: &'static str,
 }
 
+impl Injection {
+    /// Nothing: no memory applies.
+    pub(crate) fn none() -> Self {
+        Self {
+            section: String::new(),
+            rules: 0,
+            rules_truncated: false,
+            memories: Vec::new(),
+            message: None,
+            retrieval: "none",
+        }
+    }
+}
+
 /// The system-prompt section for `bank_name` and the rules it carries.
 ///
 /// The ambient header: without it, models apologize that they "can't save
@@ -294,9 +308,7 @@ pub(crate) async fn injection(
         section,
         rules: rules_count,
         rules_truncated,
-        memories: Vec::new(),
-        message: None,
-        retrieval: "none",
+        ..Injection::none()
     };
     let bank = bank.filter(|_| cfg.inject_memories);
     let query = query.filter(|q| !q.trim().is_empty());
@@ -519,7 +531,10 @@ pub async fn turn_completed(
     if !cfg.extraction_enabled || input.session_id.is_empty() || is_sub_agent(&input) {
         return Ok(AckResponse { ok: true });
     }
-    let until = extract::turn_end(&deps.iii, &input.session_id).await;
+    let until = match input.turn_id.as_deref() {
+        Some(turn_id) => extract::turn_end(&deps.iii, &input.session_id, turn_id).await,
+        None => None,
+    };
     let Some(job) = plan_extraction(&input, bank, until) else {
         return Ok(AckResponse { ok: true });
     };

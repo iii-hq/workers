@@ -55,9 +55,17 @@ pub struct PreviewResponse {
 pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse, MemoryError> {
     let cfg = deps.config().await;
     let bank_name = crate::scope::request_bank(deps, req.bank).await?;
-    let bank = deps.store().await.bank(&bank_name).await.ok();
-    let injected =
-        hooks::injection(deps, &cfg, &bank_name, bank.as_deref(), Some(&req.query)).await;
+    crate::store::validate_name(&bank_name)?;
+    let store = deps.store().await;
+    let bank = store.bank(&bank_name).await.ok();
+    // A deleted bank gives a session no memory at all (`scope`), not the
+    // header an unknown one gets.
+    let deleted = bank.is_none() && bank_name != cfg.default_bank && store.is_deleted(&bank_name);
+    let injected = if deleted {
+        hooks::Injection::none()
+    } else {
+        hooks::injection(deps, &cfg, &bank_name, bank.as_deref(), Some(&req.query)).await
+    };
     Ok(PreviewResponse {
         bank: bank_name,
         system_prompt_section: injected.section,
