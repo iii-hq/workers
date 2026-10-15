@@ -324,6 +324,27 @@ impl Store {
         Ok(dest.display().to_string())
     }
 
+    /// Deleted: no live folder, but a `.trash/<name>-<ms>` one. A path that
+    /// picks the bank implicitly (a session's bank, extraction) must not
+    /// bring it back; an explicit `bank` may.
+    pub fn is_deleted(&self, name: &str) -> bool {
+        if self.root.join(name).is_dir() {
+            return false;
+        }
+        let prefix = format!("{name}-");
+        std::fs::read_dir(self.root.join(TRASH_DIR))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.strip_prefix(&prefix))
+                    .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()))
+            })
+    }
+
     /// Drop all in-RAM state and reload from disk (the recovery hatch after
     /// hand-editing files). The full-disk replay runs off the async worker
     /// thread on the multi-thread runtime.
@@ -1102,6 +1123,31 @@ mod tests {
         assert_eq!(rules[0].name, "style");
         bank.set_rule("style", "").unwrap();
         assert!(bank.list_rules().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_trashed_bank_reads_as_deleted_until_recreated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        store.ensure_bank("blog", None).await.unwrap();
+        store.ensure_bank("blog-old", None).await.unwrap();
+        store.trash_bank("blog-old").await.unwrap();
+        assert!(store.is_deleted("blog-old"));
+        assert!(
+            !store.is_deleted("blog"),
+            "another bank's trash is not this one's"
+        );
+        assert!(
+            !store.is_deleted("never"),
+            "a bank that never existed is not deleted"
+        );
+        store.trash_bank("blog").await.unwrap();
+        assert!(store.is_deleted("blog"));
+        store.ensure_bank("blog", None).await.unwrap();
+        assert!(
+            !store.is_deleted("blog"),
+            "an explicit re-create revives it"
+        );
     }
 
     #[tokio::test]

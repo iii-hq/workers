@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Target bank; the configured default when omitted.",
+        "description": "Target bank; omitted: the calling session's bank, else the configured default.",
         "type": [
           "string",
           "null"

@@ -25,8 +25,10 @@ use serde_json::{json, Map, Value};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 
+use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::extract;
+use crate::store::Bank;
 use crate::types::{local_date, now_ms, Memory};
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
@@ -44,6 +46,9 @@ pub const EXTRACTION_QUEUE: &str = "memory-extraction";
 pub struct PreGenerateInput {
     #[serde(default)]
     pub session_id: String,
+    /// The turn this step belongs to; its bank is recorded under it.
+    #[serde(default)]
+    pub turn_id: Option<String>,
     /// Step within the turn; 0 is the step that opens it.
     #[serde(default)]
     pub step: u64,
@@ -102,14 +107,29 @@ pub struct TurnCompletedInput {
     pub session_id: String,
     #[serde(default)]
     pub turn_id: Option<String>,
+    /// Set on a sub-agent's turn (its live parent link).
     #[serde(default)]
-    pub status: Option<String>,
+    pub parent: Option<Value>,
+    /// Set on a parentless spawn's turn (its display parent).
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
 }
 
 /// One durable extraction job (the `data` of a queue message).
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ExtractJobInput {
     pub session_id: String,
+    /// The bank the turn was injected with. Absent: resolved when the job
+    /// runs (the worker never saw the turn, or the job predates this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bank: Option<String>,
+    /// The turn ran without memory (an invalid or deleted bank): the job
+    /// only steps the cursor past it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip: bool,
+    /// The turn's last user/assistant entry: the pass reads no further.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -141,94 +161,63 @@ pub async fn pre_generate(
         });
     }
 
-    // Turn metadata wins, then session metadata, then the default. A
-    // session-lookup failure injects nothing new (scope-safe), but keeps
-    // the section this session's system prompt already carries.
-    let bank_name = match select_turn_bank(input.metadata.as_ref()) {
-        Some(b) => b,
-        None => {
-            match extract::resolve_bank(&deps.iii, &input.session_id, &cfg.default_bank).await {
-                Some(b) => b,
-                None => return Ok(keep_told_section(&input)),
-            }
+    // One resolver for the hook, the turn's extraction, and its agent's
+    // calls (`scope`). A failed lookup injects nothing new (scope-safe),
+    // but keeps the section this session's system prompt already carries.
+    let resolved = crate::scope::resolve(deps, &input.session_id, input.metadata.as_ref()).await;
+    let bank_name = match resolved {
+        Ok(bank) => bank,
+        Err(e) => {
+            tracing::warn!(session_id = %input.session_id, error = %e, "bank lookup failed; injecting nothing new (scope-safe)");
+            return Ok(keep_told_section(&input));
         }
+    };
+    if let Some(turn_id) = input.turn_id.as_deref() {
+        crate::scope::remember_turn(turn_id, bank_name.clone());
+    }
+    let Some(bank_name) = bank_name else {
+        // An invalid or deleted bank: no memory section applies.
+        apply_rules(&input, "", &mut mutations, &mut annotations);
+        return Ok(HookResponse {
+            decision: "continue".into(),
+            mutations: Some(mutations),
+            annotations: Some(annotations),
+        });
     };
     let bank = deps.store().await.bank(&bank_name).await.ok();
     annotations.insert("memory_bank".into(), json!(bank_name));
 
-    // The ambient header: without it, models apologize that they
-    // "can't save to memory" when a user asks them to remember something —
-    // capture is ambient and needs no function call. An unknown bank has
-    // nothing stored yet: with extraction on the header still goes in (the
-    // section does not change once extraction creates the bank); with it
-    // off nothing ever will, and the header's promise would be false.
-    let mut section = if bank.is_some() || cfg.extraction_enabled {
-        ambient_header(&bank_name)
-    } else {
-        String::new()
-    };
-
-    if let Some(bank) = bank.as_ref().filter(|_| cfg.inject_rules) {
-        if let Ok(rules) = bank.list_rules() {
-            if !rules.is_empty() {
-                let (rules_part, truncated) = build_rules_section(&rules, cfg.max_rule_chars);
-                section.push_str(&rules_part);
-                if truncated {
-                    tracing::warn!(
-                        bank = %bank_name,
-                        max_rule_chars = cfg.max_rule_chars,
-                        "memory rules exceed the injection budget; truncated"
-                    );
-                    annotations.insert("memory_rules_truncated".into(), json!(true));
-                }
-                annotations.insert("memory_rules".into(), json!(rules.len()));
-            }
-        }
-    }
-    apply_rules(&input, &section, &mut mutations, &mut annotations);
-
     // Recall only on the step that opens the turn: the appended message is
     // persisted and replayed on later steps, so re-recalling would stack copies.
-    if let Some(bank) = bank
-        .as_ref()
-        .filter(|_| cfg.inject_memories && input.step == 0)
-    {
-        let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
-        if !query.trim().is_empty() {
-            // Fail-soft semantic signal; lexical-only when it misses.
-            let query_vec = crate::embed_client::query_vector(deps, &query).await;
-            if query_vec.is_some() {
-                annotations.insert("memory_retrieval".into(), json!("bm25-entity-semantic"));
-            }
-            let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
-            let hits = bank
-                .recall(
-                    &query,
-                    qv,
-                    query_model,
-                    cfg.recall_limit,
-                    cfg.decay_half_life_days,
-                    false,
-                )
-                .await;
-            // Ambient floor: lexical recall misses identity questions and
-            // session openers entirely (their words never appear in memory
-            // texts), so pad thin results with the bank's strongest memories
-            // — still bounded by the same count and token budget.
-            let hits: Vec<Memory> = hits.into_iter().map(|(f, _)| f).collect();
-            let top = bank.top_memories(cfg.recall_limit).await;
-            let memories = apply_ambient_floor(hits, top, cfg.recall_limit);
-            if let Some((body, ids)) =
-                memories_message(&bank_name, &memories, cfg.recall_budget_tokens, now_ms())
-            {
-                let count = ids.len();
-                mutations.append_messages.push(user_text_message(body));
-                annotations.insert("memory_recalled".into(), json!(count));
-                // Ids (not texts) so chat surfaces can render "which memories
-                // fed this turn" chips and fetch details on demand.
-                annotations.insert("memory_ids".into(), json!(ids));
-            }
-        }
+    let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
+    let query = (input.step == 0).then_some(query.as_str());
+    let injected = injection(deps, &cfg, &bank_name, bank.as_deref(), query).await;
+    if injected.rules > 0 {
+        annotations.insert("memory_rules".into(), json!(injected.rules));
+    }
+    if injected.rules_truncated {
+        tracing::warn!(
+            bank = %bank_name,
+            max_rule_chars = cfg.max_rule_chars,
+            "memory rules exceed the injection budget; truncated"
+        );
+        annotations.insert("memory_rules_truncated".into(), json!(true));
+    }
+    apply_rules(&input, &injected.section, &mut mutations, &mut annotations);
+    if injected.retrieval == "bm25-entity-semantic" {
+        annotations.insert("memory_retrieval".into(), json!(injected.retrieval));
+    }
+    if let Some(body) = injected.message {
+        let ids: Vec<&str> = injected
+            .memories
+            .iter()
+            .map(|(m, _)| m.id.as_str())
+            .collect();
+        mutations.append_messages.push(user_text_message(body));
+        annotations.insert("memory_recalled".into(), json!(ids.len()));
+        // Ids (not texts) so chat surfaces can render "which memories
+        // fed this turn" chips and fetch details on demand.
+        annotations.insert("memory_ids".into(), json!(ids));
     }
 
     Ok(HookResponse {
@@ -236,6 +225,124 @@ pub async fn pre_generate(
         mutations: Some(mutations),
         annotations: Some(annotations),
     })
+}
+
+/// What one turn on a bank is given. The hook and `memory::preview` both
+/// build it with [`injection`], so preview cannot drift from the hook.
+pub(crate) struct Injection {
+    /// The system-prompt memory section (ambient header + rules); empty
+    /// when none applies.
+    pub section: String,
+    /// Rules injected, and whether `max_rule_chars` cut any.
+    pub rules: usize,
+    pub rules_truncated: bool,
+    /// The memories the appended message carries, in order, with their
+    /// recall score (0.0 for ambient-floor fill-ins).
+    pub memories: Vec<(Memory, f32)>,
+    /// The appended `<memory>` message, when a memory fits the budget.
+    pub message: Option<String>,
+    /// `none` (no recall ran), `bm25-entity`, or `bm25-entity-semantic`.
+    pub retrieval: &'static str,
+}
+
+/// The system-prompt section for `bank_name` and the rules it carries.
+///
+/// The ambient header: without it, models apologize that they "can't save
+/// to memory" when a user asks them to remember something — capture is
+/// ambient and needs no function call. An unknown bank has nothing stored
+/// yet: with extraction on the header still goes in (the section does not
+/// change once extraction creates the bank); with it off nothing ever
+/// will, and the header's promise would be false.
+pub(crate) fn rules_section(
+    cfg: &WorkerConfig,
+    bank_name: &str,
+    bank_exists: bool,
+    rules: &[crate::types::Rule],
+) -> (String, usize, bool) {
+    if !cfg.inject_rules && !cfg.inject_memories {
+        return (String::new(), 0, false);
+    }
+    let mut section = if bank_exists || cfg.extraction_enabled {
+        ambient_header(bank_name)
+    } else {
+        String::new()
+    };
+    if !cfg.inject_rules || !bank_exists || rules.is_empty() {
+        return (section, 0, false);
+    }
+    let (rules_part, truncated) = build_rules_section(rules, cfg.max_rule_chars);
+    section.push_str(&rules_part);
+    (section, rules.len(), truncated)
+}
+
+/// Build what a turn on `bank_name` is given; `query` is the user message
+/// to recall for (`None`: no recall, as on a turn's later steps).
+pub(crate) async fn injection(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    bank_name: &str,
+    bank: Option<&Bank>,
+    query: Option<&str>,
+) -> Injection {
+    let rules = bank
+        .filter(|_| cfg.inject_rules)
+        .and_then(|b| b.list_rules().ok())
+        .unwrap_or_default();
+    let (section, rules_count, rules_truncated) =
+        rules_section(cfg, bank_name, bank.is_some(), &rules);
+    let mut out = Injection {
+        section,
+        rules: rules_count,
+        rules_truncated,
+        memories: Vec::new(),
+        message: None,
+        retrieval: "none",
+    };
+    let bank = bank.filter(|_| cfg.inject_memories);
+    let query = query.filter(|q| !q.trim().is_empty());
+    let (Some(bank), Some(query)) = (bank, query) else {
+        return out;
+    };
+    // Fail-soft semantic signal; lexical-only when it misses.
+    let query_vec = crate::embed_client::query_vector(deps, query).await;
+    out.retrieval = if query_vec.is_some() {
+        "bm25-entity-semantic"
+    } else {
+        "bm25-entity"
+    };
+    let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
+    let hits = bank
+        .recall(
+            query,
+            qv,
+            query_model,
+            cfg.recall_limit,
+            cfg.decay_half_life_days,
+            false,
+        )
+        .await;
+    let mut scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
+    // Ambient floor: lexical recall misses identity questions and session
+    // openers entirely (their words never appear in memory texts), so pad
+    // thin results with the bank's strongest memories — still bounded by
+    // the same count and token budget.
+    let hits: Vec<Memory> = hits.into_iter().map(|(m, _)| m).collect();
+    let top = bank.top_memories(cfg.recall_limit).await;
+    let memories = apply_ambient_floor(hits, top, cfg.recall_limit);
+    if let Some((body, ids)) =
+        memories_message(bank_name, &memories, cfg.recall_budget_tokens, now_ms())
+    {
+        out.memories = memories
+            .into_iter()
+            .filter(|m| ids.contains(&m.id))
+            .map(|m| {
+                let score = scores.remove(&m.id).unwrap_or(0.0);
+                (m, score)
+            })
+            .collect();
+        out.message = Some(body);
+    }
+    out
 }
 
 /// A plain user-role text message for `append_messages`.
@@ -404,41 +511,83 @@ pub async fn turn_completed(
     input: TurnCompletedInput,
 ) -> Result<AckResponse, Error> {
     let cfg = deps.config().await;
-    let completed = input.status.as_deref().is_none_or(|s| s == "completed");
-    if cfg.extraction_enabled && completed && !input.session_id.is_empty() {
-        let receipt = input
-            .turn_id
-            .clone()
-            .unwrap_or_else(|| format!("t{}", now_ms()));
-        let enqueued = deps
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::queue::enqueue".into(),
-                payload: json!({
-                    "queue": EXTRACTION_QUEUE,
-                    "function_id": EXTRACT_JOB_FN,
-                    "data": { "session_id": input.session_id },
-                    "messageReceiptId": format!("memx-{receipt}"),
-                }),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        if let Err(e) = enqueued {
-            tracing::debug!(error = %e, "queue surface unavailable; extracting inline");
-            let deps = deps.clone();
-            let session_id = input.session_id;
-            tokio::spawn(async move { extract::run(deps, session_id).await });
-        }
+    // The bank the turn was injected with; forgotten either way.
+    let bank = input
+        .turn_id
+        .as_deref()
+        .and_then(crate::scope::take_turn_bank);
+    if !cfg.extraction_enabled || input.session_id.is_empty() || is_sub_agent(&input) {
+        return Ok(AckResponse { ok: true });
+    }
+    let until = extract::turn_end(&deps.iii, &input.session_id).await;
+    let Some(job) = plan_extraction(&input, bank, until) else {
+        return Ok(AckResponse { ok: true });
+    };
+    let receipt = input
+        .turn_id
+        .clone()
+        .unwrap_or_else(|| format!("t{}", now_ms()));
+    let enqueued = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "engine::queue::enqueue".into(),
+            payload: json!({
+                "queue": EXTRACTION_QUEUE,
+                "function_id": EXTRACT_JOB_FN,
+                "data": job,
+                "messageReceiptId": format!("memx-{receipt}"),
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    if let Err(e) = enqueued {
+        tracing::debug!(error = %e, "queue surface unavailable; extracting inline");
+        let deps = deps.clone();
+        tokio::spawn(async move { extract::run(deps, job).await });
     }
     Ok(AckResponse { ok: true })
+}
+
+fn is_sub_agent(input: &TurnCompletedInput) -> bool {
+    input.parent.is_some() || input.parent_session_id.is_some()
+}
+
+/// The extraction job for a finished turn, or none.
+///
+/// A sub-agent's turn is never extracted (Hindsight skips them too): its
+/// "user" message is the parent's task, and what it finds returns to the
+/// parent's transcript. Any other finished turn — failed or cancelled too,
+/// which the next turn's pass would otherwise sweep into ITS bank — is
+/// extracted into the bank it was injected with (`bank`: what the hook
+/// recorded, `None` when this process never saw the turn). A turn that ran
+/// without memory only steps the cursor past itself, which needs its end,
+/// or the skip could swallow the next turn too.
+pub(crate) fn plan_extraction(
+    input: &TurnCompletedInput,
+    bank: Option<Option<String>>,
+    until: Option<String>,
+) -> Option<ExtractJobInput> {
+    if input.session_id.is_empty() || is_sub_agent(input) {
+        return None;
+    }
+    let skip = matches!(bank, Some(None));
+    if skip && until.is_none() {
+        return None;
+    }
+    Some(ExtractJobInput {
+        session_id: input.session_id.clone(),
+        bank: if skip { None } else { bank.flatten() },
+        skip,
+        until,
+    })
 }
 
 /// Queue-delivered extraction job. Returns the error to the queue so a
 /// failed pass retries and eventually lands in the DLQ instead of
 /// vanishing.
 pub async fn extract_job(deps: &Arc<Deps>, input: ExtractJobInput) -> Result<AckResponse, Error> {
-    extract::try_run(deps, &input.session_id)
+    extract::try_run(deps, &input)
         .await
         .map_err(Error::Handler)?;
     Ok(AckResponse { ok: true })
@@ -477,15 +626,6 @@ pub(crate) fn ambient_header(bank_name: &str) -> String {
          relevant memories are provided to you when they exist. When the user asks you to \
          remember something, acknowledge it — no save call is needed.\n"
     )
-}
-
-/// Turn-scoped bank override: `memory_bank` in the turn metadata.
-pub(crate) fn select_turn_bank(metadata: Option<&Value>) -> Option<String> {
-    metadata
-        .and_then(|m| m.get("memory_bank"))
-        .and_then(Value::as_str)
-        .filter(|b| !b.is_empty())
-        .map(str::to_string)
 }
 
 /// The rules part of the injected system-prompt section, hard-bounded by
@@ -655,16 +795,91 @@ mod tests {
         }
     }
 
+    fn finished() -> TurnCompletedInput {
+        serde_json::from_value(json!({ "session_id": "s", "turn_id": "t", "status": "failed" }))
+            .unwrap()
+    }
+
     #[test]
-    fn turn_bank_override_wins_and_empty_is_none() {
+    fn any_finished_turn_is_extracted_into_the_bank_it_was_injected_with() {
+        // Failed or cancelled included: the next turn's pass would otherwise
+        // sweep it into that turn's bank.
+        let job =
+            plan_extraction(&finished(), Some(Some("blog".into())), Some("e9".into())).unwrap();
         assert_eq!(
-            select_turn_bank(Some(&json!({ "memory_bank": "blog" }))),
-            Some("blog".to_string())
+            (job.bank.as_deref(), job.skip, job.until.as_deref()),
+            (Some("blog"), false, Some("e9"))
         );
-        assert_eq!(select_turn_bank(Some(&json!({ "memory_bank": "" }))), None);
-        assert_eq!(select_turn_bank(Some(&json!({ "memory_bank": 7 }))), None);
-        assert_eq!(select_turn_bank(Some(&json!({ "other": "x" }))), None);
-        assert_eq!(select_turn_bank(None), None);
+        // Not seen by this process (a restart): the job resolves it.
+        let job = plan_extraction(&finished(), None, None).unwrap();
+        assert_eq!((job.bank, job.skip), (None, false));
+    }
+
+    #[test]
+    fn a_turn_without_memory_only_steps_the_cursor() {
+        let job = plan_extraction(&finished(), Some(None), Some("e9".into())).unwrap();
+        assert_eq!((job.skip, job.until.as_deref()), (true, Some("e9")));
+        // Skipping without the turn's end could skip the next turn too.
+        assert!(plan_extraction(&finished(), Some(None), None).is_none());
+    }
+
+    #[test]
+    fn a_sub_agent_turn_is_never_extracted() {
+        let child = TurnCompletedInput {
+            parent: Some(json!({ "session_id": "p", "turn_id": "pt" })),
+            ..finished()
+        };
+        assert!(plan_extraction(&child, Some(Some("blog".into())), Some("e9".into())).is_none());
+        let detached = TurnCompletedInput {
+            parent_session_id: Some("p".into()),
+            ..finished()
+        };
+        assert!(plan_extraction(&detached, None, Some("e9".into())).is_none());
+    }
+
+    #[test]
+    fn an_extraction_job_from_before_turn_ends_still_parses() {
+        let job: ExtractJobInput = serde_json::from_value(json!({ "session_id": "s" })).unwrap();
+        assert_eq!((job.bank, job.skip, job.until), (None, false, None));
+        let wire = serde_json::to_value(ExtractJobInput {
+            session_id: "s".into(),
+            ..ExtractJobInput::default()
+        })
+        .unwrap();
+        assert_eq!(wire, json!({ "session_id": "s" }));
+    }
+
+    fn config(inject_rules: bool, inject_memories: bool, extraction: bool) -> WorkerConfig {
+        WorkerConfig {
+            inject_rules,
+            inject_memories,
+            extraction_enabled: extraction,
+            ..WorkerConfig::default()
+        }
+    }
+
+    #[test]
+    fn the_section_follows_the_injection_switches() {
+        let rules = vec![rule("style", "No em-dashes.")];
+        let (section, n, _) = rules_section(&config(true, true, true), "b", true, &rules);
+        assert!(section.starts_with(&ambient_header("b")) && section.contains("No em-dashes."));
+        assert_eq!(n, 1);
+        let (section, n, _) = rules_section(&config(false, true, true), "b", true, &rules);
+        assert_eq!(
+            (section, n),
+            (ambient_header("b"), 0),
+            "rules off: header only"
+        );
+        let (section, n, _) = rules_section(&config(false, false, true), "b", true, &rules);
+        assert_eq!((section.as_str(), n), ("", 0), "memory off: nothing");
+    }
+
+    #[test]
+    fn an_unknown_bank_gets_the_header_only_while_extraction_can_create_it() {
+        let (section, ..) = rules_section(&config(true, true, true), "new", false, &[]);
+        assert_eq!(section, ambient_header("new"));
+        let (section, ..) = rules_section(&config(true, true, false), "new", false, &[]);
+        assert_eq!(section, "");
     }
 
     #[test]
@@ -828,8 +1043,9 @@ Formal."
         });
         let input: PreGenerateInput = serde_json::from_value(raw).unwrap();
         assert_eq!(input.session_id, "s_123");
+        assert_eq!(input.turn_id.as_deref(), Some("t_9"));
         assert_eq!(
-            select_turn_bank(input.metadata.as_ref()),
+            crate::scope::bank_field(input.metadata.as_ref()),
             Some("blog".to_string())
         );
         let generate = input.generate.unwrap();
@@ -1002,16 +1218,6 @@ Formal."
         assert_eq!(told.len(), TOLD_RULES_CAP);
         assert!(told.contains_key("s0"));
         assert!(!told.contains_key("s1"), "least recently used goes first");
-    }
-
-    #[test]
-    fn turn_completed_input_defaults_status_to_completed_semantics() {
-        let input: TurnCompletedInput =
-            serde_json::from_value(json!({ "session_id": "s_1", "turn_id": "t_1" })).unwrap();
-        assert!(input.status.as_deref().is_none_or(|s| s == "completed"));
-        let failed: TurnCompletedInput =
-            serde_json::from_value(json!({ "session_id": "s_1", "status": "failed" })).unwrap();
-        assert!(failed.status.as_deref().is_some_and(|s| s != "completed"));
     }
 
     #[test]

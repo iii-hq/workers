@@ -20,6 +20,7 @@ pub mod hooks;
 pub mod index;
 pub mod manifest;
 pub mod redact;
+pub mod scope;
 pub mod store;
 pub mod types;
 pub mod ui;

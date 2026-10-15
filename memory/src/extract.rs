@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
@@ -23,6 +24,7 @@ use serde_json::{json, Value};
 
 use crate::deps::Deps;
 use crate::events::ItemEvent;
+use crate::hooks::ExtractJobInput;
 use crate::store::CommitKind;
 use crate::types::{fingerprint, local_date, now_ms, Confidence, Memory, Provenance};
 
@@ -108,57 +110,52 @@ fn merge_learned(existing: &str, additions: &[String]) -> (String, usize) {
     (out, fresh.len())
 }
 
-/// Resolve the bank for a session: session metadata `memory_bank` wins,
-/// then the configured default. A metadata FETCH FAILURE resolves to
-/// `None` — injecting or writing the default bank when the session's real
-/// bank is unknown would leak across contexts.
-pub async fn resolve_bank(iii: &IIIClient, session_id: &str, default_bank: &str) -> Option<String> {
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "session::get".into(),
-            payload: json!({ "session_id": session_id }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
-    match reply {
-        Ok(v) => {
-            let from_meta = v
-                .pointer("/meta/metadata/memory_bank")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            Some(from_meta.unwrap_or_else(|| default_bank.to_string()))
-        }
-        Err(e) => {
-            tracing::warn!(session_id, error = %e, "session::get failed; skipping memory for this turn (scope-safe)");
-            None
-        }
-    }
-}
-
 /// Run one extraction pass for a completed turn. Errors are logged, never
 /// propagated — extraction is a background enrichment, not a turn
 /// dependency.
-pub async fn run(deps: Arc<Deps>, session_id: String) {
-    if let Err(e) = try_run(&deps, &session_id).await {
-        tracing::warn!(session_id = %session_id, error = %e, "extraction pass failed");
+pub async fn run(deps: Arc<Deps>, job: ExtractJobInput) {
+    if let Err(e) = try_run(&deps, &job).await {
+        tracing::warn!(session_id = %job.session_id, error = %e, "extraction pass failed");
     }
 }
 
-pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
+/// One pass over the job's span. Every error is returned, so the queue
+/// retries the same span: a failed session lookup included — skipping
+/// would lose the turn, guessing a bank would leak it.
+pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
     let cfg = deps.config().await;
-    let Some(bank_name) = resolve_bank(&deps.iii, session_id, &cfg.default_bank).await else {
-        return Ok(());
+    let session_id = job.session_id.as_str();
+    let bank_name = match (&job.bank, job.skip) {
+        (_, true) => None,
+        (Some(bank), false) => Some(bank.clone()),
+        (None, false) => crate::scope::resolve(deps, session_id, None).await?,
+    };
+    // Deleted after the turn ran: the pass must not bring it back.
+    let bank_name = match bank_name {
+        Some(b) if b != cfg.default_bank && deps.store().await.is_deleted(&b) => None,
+        other => other,
     };
 
-    let since = cursor_get(&deps.iii, session_id).await;
-    let (transcript, newest_id, content_len) = fetch_transcript_since(
+    let since = cursor_get(&deps.iii, session_id).await?;
+    let (entries, until_seen) = fetch_span(
         &deps.iii,
         session_id,
         since.as_deref(),
+        job.until.as_deref(),
         cfg.extraction_window,
     )
     .await?;
+    let Some(bank_name) = bank_name else {
+        // The turn ran without memory (an invalid or deleted bank):
+        // step past it, so a later turn's pass never sweeps it into that
+        // turn's bank — but never past a turn end it could not find.
+        let newest = entries.last().map(|(id, ..)| id.as_str());
+        if let Some(id) = newest.filter(|_| until_seen || job.until.is_none()) {
+            cursor_set(&deps.iii, session_id, id).await;
+        }
+        return Ok(());
+    };
+    let (transcript, newest_id, content_len) = excerpt(entries, cfg.extraction_window);
     // Measured on message text, not the dated transcript: the per-line
     // `role [date]: ` prefix alone would clear any threshold.
     if content_len < 20 {
@@ -202,10 +199,13 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
     }
 
     let store = deps.store().await;
-    let (bank, _) = store
+    let (bank, created) = store
         .ensure_bank(&bank_name, None)
         .await
         .map_err(|e| e.to_string())?;
+    if created {
+        deps.emitter.bank("created", &bank_name).await;
+    }
 
     // Standing instructions graduate straight into the always-injected
     // `learned` rule (visible + editable in the rules tab) instead of the
@@ -343,10 +343,11 @@ const CURSOR_SCOPE: &str = "memory_cursor";
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 10_000;
 
-/// Last processed entry id for a session, from the state worker. Any
-/// failure (state absent, no cursor yet) means "no cursor" — the pass
-/// falls back to the newest `window` messages.
-async fn cursor_get(iii: &IIIClient, session_id: &str) -> Option<String> {
+/// Last processed entry id for a session, from the state worker. No cursor
+/// yet, or no state worker at all, is `None` — the pass falls back to the
+/// newest `window` messages. A transient failure is an error, so the job
+/// retries instead of re-reading old turns into this turn's bank.
+async fn cursor_get(iii: &IIIClient, session_id: &str) -> Result<Option<String>, String> {
     let reply = iii
         .trigger(TriggerRequest {
             function_id: "state::get".into(),
@@ -354,15 +355,21 @@ async fn cursor_get(iii: &IIIClient, session_id: &str) -> Option<String> {
             action: None,
             timeout_ms: Some(5_000),
         })
-        .await
-        .ok()?;
+        .await;
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(e @ (Error::Timeout | Error::NotConnected | Error::WebSocket(_))) => {
+            return Err(format!("state::get: {e}"));
+        }
+        Err(_) => return Ok(None),
+    };
     // state::get returns the stored value at the top level; older engines
     // wrapped it under `value` — accept both.
-    reply
+    Ok(reply
         .pointer("/last_entry_id")
         .or_else(|| reply.pointer("/value/last_entry_id"))
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .map(str::to_string))
 }
 
 /// Best-effort cursor write; a miss only costs a re-read next pass
@@ -397,21 +404,19 @@ pub async fn cursor_delete(iii: &IIIClient, session_id: &str) {
         .await;
 }
 
-/// User/assistant messages NEWER than `since` (all of them, capped to the
-/// most recent `window`), the newest entry id seen, and the kept message
-/// text length (excluding the per-line date prefix). Walks the
-/// session page by page — `session::messages` returns root→leaf, so the
-/// new turn lives on the LAST page. `roles` narrowing also excludes
-/// custom + function_result entries, so memory's own calls never feed
-/// back into extraction.
-async fn fetch_transcript_since(
+/// The [`Span`] of user/assistant messages after `since` through `until`,
+/// and whether `until` was on the path. Walks the session page by page —
+/// `session::messages` returns root→leaf, so the new turn lives on the
+/// LAST page. `roles` narrowing also excludes custom + function_result
+/// entries, so memory's own calls never feed back into extraction.
+async fn fetch_span(
     iii: &IIIClient,
     session_id: &str,
     since: Option<&str>,
+    until: Option<&str>,
     window: usize,
-) -> Result<(String, Option<String>, usize), String> {
-    let mut collected: Vec<(String, String, String, u64)> = Vec::new();
-    let mut since_seen = false;
+) -> Result<(Vec<Entry>, bool), String> {
+    let mut span = Span::new(since, until, window);
     let mut cursor: Option<String> = None;
     for _ in 0..MAX_PAGES {
         let mut payload = json!({
@@ -432,39 +437,27 @@ async fn fetch_transcript_since(
             .await
             .map_err(|e| format!("session::messages: {e}"))?;
         if let Some(items) = reply.get("messages").and_then(Value::as_array) {
-            collected.extend(items.iter().filter_map(parse_entry));
+            span.push(items.iter().filter_map(parse_entry));
         }
-        // Bound RAM on long sessions: everything at or before the stored
-        // cursor is already extracted, so once the cursor id streams past
-        // we only need what follows it; without a cursor only the window
-        // tail is ever read.
-        if let Some(s) = since {
-            if let Some(pos) = collected.iter().position(|(id, _, _, _)| id == s) {
-                since_seen = true;
-                collected.drain(..=pos);
-            } else if !since_seen && collected.len() > window {
-                let excess = collected.len() - window;
-                collected.drain(..excess);
-            }
-        } else if collected.len() > window {
-            let excess = collected.len() - window;
-            collected.drain(..excess);
+        if span.done() {
+            break;
         }
         match reply.get("next_cursor").and_then(Value::as_str) {
             Some(next) => cursor = Some(next.to_string()),
             None => break,
         }
     }
+    Ok(span.finish())
+}
 
-    let newest_id = collected.last().map(|(id, _, _, _)| id.clone());
-
-    // `collected` now holds entries strictly after the stored cursor (or
-    // the tail when the cursor id was never seen: branch switch, trimmed
-    // history); cap the LLM excerpt to the newest `window` either way.
-    let start = collected.len().saturating_sub(window);
-
+/// The dated excerpt of a span (its newest `window` entries), the span's
+/// newest entry id, and the kept message text length (excluding the
+/// per-line date prefix).
+fn excerpt(entries: Vec<Entry>, window: usize) -> (String, Option<String>, usize) {
+    let newest_id = entries.last().map(|(id, ..)| id.clone());
+    let start = entries.len().saturating_sub(window);
     let mut content_len = 0;
-    let lines: Vec<String> = collected
+    let lines: Vec<String> = entries
         .into_iter()
         .skip(start)
         .filter_map(|(_, role, text, ts)| {
@@ -473,7 +466,123 @@ async fn fetch_transcript_since(
             Some(line)
         })
         .collect();
-    Ok((lines.join("\n"), newest_id, content_len))
+    (lines.join("\n"), newest_id, content_len)
+}
+
+/// One transcript entry: `(entry_id, role, text, timestamp_ms)`.
+type Entry = (String, String, String, u64);
+
+/// What one pass reads off a root → leaf walk: the entries after the cursor
+/// `since`, through `until` (the end of the job's turn), or the newest
+/// `window` of them when the cursor is never seen (no cursor yet, a branch
+/// switch). Stopping at `until` keeps a late job from sweeping the NEXT
+/// turn into its own, maybe different, bank.
+struct Span<'a> {
+    since: Option<&'a str>,
+    until: Option<&'a str>,
+    window: usize,
+    entries: Vec<Entry>,
+    since_seen: bool,
+    until_seen: bool,
+    /// The cursor sits past `until`: an earlier pass already read this turn.
+    stale: bool,
+}
+
+impl<'a> Span<'a> {
+    fn new(since: Option<&'a str>, until: Option<&'a str>, window: usize) -> Self {
+        Self {
+            since,
+            until,
+            window,
+            entries: Vec::new(),
+            since_seen: false,
+            until_seen: false,
+            stale: false,
+        }
+    }
+
+    fn push(&mut self, page: impl IntoIterator<Item = Entry>) {
+        for entry in page {
+            if self.until_seen {
+                // Only watched for the cursor: one after `until` means stale.
+                self.stale |= self.since == Some(entry.0.as_str());
+                continue;
+            }
+            self.until_seen = self.until == Some(entry.0.as_str());
+            self.entries.push(entry);
+        }
+        // Bound RAM on long sessions: everything at or before the stored
+        // cursor is already extracted, so once the cursor id streams past
+        // only what follows it is kept; without a cursor only the window
+        // tail is ever read.
+        if let Some(since) = self.since {
+            if let Some(pos) = self.entries.iter().position(|(id, ..)| id == since) {
+                self.since_seen = true;
+                self.entries.drain(..=pos);
+                return;
+            }
+            if self.since_seen {
+                return;
+            }
+        }
+        let excess = self.entries.len().saturating_sub(self.window);
+        self.entries.drain(..excess);
+    }
+
+    /// Later pages can change nothing: the turn's end is in, and the cursor
+    /// was found before it (or there is none to look for).
+    fn done(&self) -> bool {
+        self.until_seen && (self.since.is_none() || self.since_seen)
+    }
+
+    /// The entries to read, and whether the turn's end was on the path.
+    fn finish(self) -> (Vec<Entry>, bool) {
+        if self.stale {
+            return (Vec::new(), true);
+        }
+        (self.entries, self.until_seen)
+    }
+}
+
+/// The newest user/assistant entry of a `session::messages-tail` page — the
+/// end of the turn that just completed. Function results and custom entries
+/// never reach the pass (`roles` narrows them out), so they cannot end it.
+fn newest_turn_entry(reply: &Value) -> Option<String> {
+    reply
+        .get("messages")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|item| {
+            matches!(
+                item.pointer("/message/role").and_then(Value::as_str),
+                Some("user" | "assistant")
+            )
+        })?
+        .get("entry_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The session's newest user/assistant entry, read when its turn completes;
+/// `None` when session-manager cannot say (the job then reads to the newest
+/// entry, as before turn ends were tracked).
+pub async fn turn_end(iii: &IIIClient, session_id: &str) -> Option<String> {
+    let reply = iii
+        .trigger(TriggerRequest {
+            function_id: "session::messages-tail".into(),
+            payload: json!({
+                "session_id": session_id,
+                "limit": 3,
+                "include_custom": false,
+                "include_image_data": false,
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .ok()?;
+    newest_turn_entry(&reply)
 }
 
 /// One `session::messages` item as `(entry_id, role, text, timestamp_ms)`;
@@ -686,6 +795,86 @@ mod tests {
         );
         assert_eq!(added, 1);
         assert_eq!(batch.matches("- ").count(), 1);
+    }
+
+    fn entry(id: &str) -> Entry {
+        (id.into(), "user".into(), format!("text of {id}"), 1)
+    }
+
+    /// Walk `ids` as two pages, like `session::messages` root → leaf.
+    fn walk(
+        ids: &[&str],
+        since: Option<&str>,
+        until: Option<&str>,
+        window: usize,
+    ) -> (Vec<String>, bool) {
+        let mut span = Span::new(since, until, window);
+        let (a, b) = ids.split_at(ids.len() / 2);
+        span.push(a.iter().map(|id| entry(id)));
+        if !span.done() {
+            span.push(b.iter().map(|id| entry(id)));
+        }
+        let (entries, until_seen) = span.finish();
+        (entries.into_iter().map(|e| e.0).collect(), until_seen)
+    }
+
+    #[test]
+    fn a_span_runs_from_the_cursor_through_the_turns_end() {
+        let ids = ["e1", "e2", "e3", "e4", "e5", "e6"];
+        assert_eq!(
+            walk(&ids, Some("e2"), Some("e4"), 12),
+            (vec!["e3".into(), "e4".into()], true),
+            "the next turn (e5, e6) is not this job's"
+        );
+        assert_eq!(
+            walk(&ids, Some("e2"), None, 12),
+            (
+                vec!["e3".into(), "e4".into(), "e5".into(), "e6".into()],
+                false
+            ),
+            "a job without a turn end reads to the newest entry"
+        );
+    }
+
+    #[test]
+    fn a_cursor_at_or_past_the_turns_end_leaves_nothing_to_read() {
+        let ids = ["e1", "e2", "e3", "e4", "e5", "e6"];
+        assert_eq!(walk(&ids, Some("e5"), Some("e3"), 12), (vec![], true));
+        assert_eq!(walk(&ids, Some("e3"), Some("e3"), 12), (vec![], true));
+    }
+
+    #[test]
+    fn without_a_known_cursor_the_window_ends_at_the_turns_end() {
+        let ids = ["e1", "e2", "e3", "e4", "e5", "e6"];
+        assert_eq!(
+            walk(&ids, None, Some("e4"), 2),
+            (vec!["e3".into(), "e4".into()], true)
+        );
+        assert_eq!(
+            walk(&ids, Some("gone"), Some("e4"), 2),
+            (vec!["e3".into(), "e4".into()], true),
+            "a cursor off the active path falls back to the window"
+        );
+        assert_eq!(
+            walk(&ids, Some("e2"), Some("absent"), 12),
+            (
+                vec!["e3".into(), "e4".into(), "e5".into(), "e6".into()],
+                false
+            ),
+            "a turn end off the path reads to the newest entry"
+        );
+    }
+
+    #[test]
+    fn newest_turn_entry_skips_function_results_and_custom_entries() {
+        let reply = json!({ "messages": [
+            { "entry_id": "u1", "message": { "role": "user" } },
+            { "entry_id": "a1", "message": { "role": "assistant" } },
+            { "entry_id": "r1", "message": { "role": "function_result" } },
+            { "entry_id": "c1", "custom": {} },
+        ]});
+        assert_eq!(newest_turn_entry(&reply).as_deref(), Some("a1"));
+        assert_eq!(newest_turn_entry(&json!({ "messages": [] })), None);
     }
 
     #[test]

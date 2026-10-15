@@ -38,6 +38,9 @@ rule; point-in-time information belongs in memories.
 - Separate contexts deserve separate banks (`blog` vs `coding`): a session
   selects its bank via session metadata `memory_bank` (`session::set-meta`)
   or the console composer's bank picker; `memory::bank::create` makes one.
+  Calls without `bank` act on your session's bank (the one named in your
+  `# Memory` header; a sub-agent shares its parent's), so leave it out unless
+  the user names another bank.
 - Memory seems absent — `memory::doctor {}` runs a real save→recall roundtrip
   and names which sibling (router, session-manager) is degraded.
 

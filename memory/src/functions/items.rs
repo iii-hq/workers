@@ -9,10 +9,6 @@ use crate::error::MemoryError;
 use crate::events::ItemEvent;
 use crate::types::{fingerprint, now_ms, Confidence, Memory, Provenance};
 
-fn default_bank_name(req_bank: &Option<String>, cfg_default: &str) -> String {
-    req_bank.clone().unwrap_or_else(|| cfg_default.to_string())
-}
-
 /// Normalized entity handles: trimmed, lowercased, empty dropped, capped.
 fn normalize_entities(entities: Vec<String>) -> Vec<String> {
     entities
@@ -105,7 +101,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveRequest {
-    /// Target bank; the configured default when omitted.
+    /// Target bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// The memory, one self-contained sentence.
@@ -149,8 +145,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     let mut labels = redaction.labels;
     labels.extend(crate::redact::drop_secrets(&mut entities));
     labels.extend(crate::redact::drop_secrets(&mut tags));
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let (bank, bank_created) = store.ensure_bank(&bank_name, None).await?;
     if bank_created {
@@ -183,6 +178,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
@@ -194,8 +190,7 @@ pub struct GetResponse {
 }
 
 pub async fn get(deps: &Deps, req: GetRequest) -> Result<GetResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let memory = bank
@@ -207,6 +202,7 @@ pub async fn get(deps: &Deps, req: GetRequest) -> Result<GetResponse, MemoryErro
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// Page size, default 50, max 500.
@@ -229,8 +225,7 @@ pub struct ListResponse {
 }
 
 pub async fn list(deps: &Deps, req: ListRequest) -> Result<ListResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let limit = req.limit.unwrap_or(50).min(500);
@@ -253,6 +248,7 @@ pub struct MemoryResponse {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
@@ -268,8 +264,7 @@ pub struct UpdateRequest {
 }
 
 pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let mut memory = bank
@@ -323,14 +318,14 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeleteRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
 }
 
 pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<MemoryResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let mut memory = bank
@@ -351,6 +346,7 @@ pub async fn delete(deps: &Deps, req: DeleteRequest) -> Result<MemoryResponse, M
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PinRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub id: String,
@@ -374,6 +370,7 @@ pub async fn pin(deps: &Deps, req: PinRequest) -> Result<MemoryResponse, MemoryE
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SupersedeRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// Memory to retire.
@@ -451,8 +448,7 @@ pub async fn supersede(
             "a memory cannot supersede itself".into(),
         ));
     }
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let winner = bank
@@ -678,6 +674,7 @@ mod tests {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TagsRequest {
+    /// Bank; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
 }
@@ -695,8 +692,7 @@ pub struct TagsResponse {
 }
 
 pub async fn tags(deps: &Deps, req: TagsRequest) -> Result<TagsResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     Ok(TagsResponse {

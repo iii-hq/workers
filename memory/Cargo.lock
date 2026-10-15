@@ -853,6 +853,7 @@ dependencies = [
  "chrono",
  "clap",
  "iii-console-ui",
+ "iii-helpers",
  "iii-sdk",
  "iii-worker-paths",
  "regex",

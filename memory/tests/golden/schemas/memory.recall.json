@@ -16,7 +16,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to search; the configured default when omitted.",
+        "description": "Bank to search; omitted: the calling session's bank, else the configured default.",
         "type": [
           "string",
           "null"

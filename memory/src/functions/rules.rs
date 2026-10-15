@@ -10,7 +10,7 @@ use crate::types::Rule;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RuleListRequest {
-    /// Bank whose rules to list; the configured default when omitted.
+    /// Bank whose rules to list; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
 }
@@ -22,8 +22,7 @@ pub struct RuleListResponse {
 }
 
 pub async fn list(deps: &Deps, req: RuleListRequest) -> Result<RuleListResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = req.bank.unwrap_or_else(|| cfg.default_bank.clone());
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     Ok(RuleListResponse {
@@ -34,8 +33,8 @@ pub async fn list(deps: &Deps, req: RuleListRequest) -> Result<RuleListResponse,
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RuleSetRequest {
-    /// Bank to write into; the configured default when omitted. Created
-    /// on first use.
+    /// Bank to write into; omitted: the calling session's bank, else the configured default.
+    /// Created on first use.
     #[serde(default)]
     pub bank: Option<String>,
     /// Rule name, `[a-z0-9][a-z0-9_-]{0,63}` (it becomes `<name>.md`).
@@ -52,8 +51,7 @@ pub struct RuleSetResponse {
 }
 
 pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, MemoryError> {
-    let cfg = deps.config().await;
-    let bank_name = req.bank.unwrap_or_else(|| cfg.default_bank.clone());
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let exists = !req.content.trim().is_empty();
     // Deleting from a bank that does not exist must not create it: an

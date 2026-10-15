@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to preview; the configured default when omitted.",
+        "description": "Bank to preview; omitted: the calling session's bank, else the configured default.",
         "type": [
           "string",
           "null"
@@ -217,7 +217,7 @@
         ]
       },
       "retrieval": {
-        "description": "Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`).",
+        "description": "Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`; `none` when memories are not injected).",
         "type": "string"
       },
       "rules": {

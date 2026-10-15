@@ -13,7 +13,7 @@ use crate::types::Memory;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecallRequest {
-    /// Bank to search; the configured default when omitted.
+    /// Bank to search; omitted: the calling session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     pub query: String,
@@ -63,7 +63,7 @@ pub struct RecallResponse {
 
 pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, MemoryError> {
     let cfg = deps.config().await;
-    let bank_name = req.bank.clone().unwrap_or_else(|| cfg.default_bank.clone());
+    let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let bank = store.bank(&bank_name).await?;
     let query_vec = match req.mode {

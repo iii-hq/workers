@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to write into; the configured default when omitted. Created on first use.",
+        "description": "Bank to write into; omitted: the calling session's bank, else the configured default. Created on first use.",
         "type": [
           "string",
           "null"

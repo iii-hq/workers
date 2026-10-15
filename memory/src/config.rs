@@ -25,8 +25,9 @@ pub struct WorkerConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
 
-    /// Bank used when a session selects none (session metadata
-    /// `memory_bank` wins, then turn metadata, then this).
+    /// Bank used when nothing selects one. Turn metadata `memory_bank`
+    /// wins, then session metadata, then a sub-agent's parent session,
+    /// then this — for injection, extraction, and agent calls alike.
     #[serde(default = "default_bank")]
     pub default_bank: String,
 

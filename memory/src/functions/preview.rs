@@ -1,10 +1,10 @@
 //! `memory::preview` — the full injection dry-run. Where `memory::recall`
 //! ranks memories, preview composes the ENTIRE memory payload a turn on
 //! this bank would receive: the rules section exactly as it lands in the
-//! system prompt (same budget, same truncation markers), the recalled
-//! memories AFTER the ambient floor and token budget, and the appended
-//! `<memory>` message verbatim. Runs the same code the pre-generate hook
-//! runs — this cannot drift from production behavior.
+//! system prompt (same budget, same truncation markers, same on/off
+//! switches), the recalled memories AFTER the ambient floor and token
+//! budget, and the appended `<memory>` message verbatim. Built by the
+//! pre-generate hook's own [`hooks::injection`] — it cannot drift.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,8 @@ use crate::types::Memory;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PreviewRequest {
-    /// Bank to preview; the configured default when omitted.
+    /// Bank to preview; omitted: the calling session's bank, else the
+    /// configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// The hypothetical user message (what someone would type in chat).
@@ -46,71 +47,28 @@ pub struct PreviewResponse {
     /// memory fits the budget.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`).
+    /// Retrieval mode that ran (`bm25-entity` or `bm25-entity-semantic`;
+    /// `none` when memories are not injected).
     pub retrieval: String,
 }
 
 pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse, MemoryError> {
     let cfg = deps.config().await;
-    let bank_name = req.bank.unwrap_or_else(|| cfg.default_bank.clone());
-    let store = deps.store().await;
-    let bank = store.bank(&bank_name).await?;
-
-    let mut section = hooks::ambient_header(&bank_name);
-    let rules = bank.list_rules().unwrap_or_default();
-    let (rules_part, rules_truncated) = hooks::build_rules_section(&rules, cfg.max_rule_chars);
-    if cfg.inject_rules {
-        section.push_str(&rules_part);
-    }
-
-    let query_vec = crate::embed_client::query_vector(deps, &req.query).await;
-    let retrieval = if query_vec.is_some() {
-        "bm25-entity-semantic"
-    } else {
-        "bm25-entity"
-    };
-    let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
-    let hits = bank
-        .recall(
-            &req.query,
-            qv,
-            query_model,
-            cfg.recall_limit,
-            cfg.decay_half_life_days,
-            false,
-        )
-        .await;
-    let mut scores: std::collections::HashMap<String, f32> =
-        hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
-    let hit_memories: Vec<Memory> = hits.into_iter().map(|(m, _)| m).collect();
-    let top = bank.top_memories(cfg.recall_limit).await;
-    let memories = hooks::apply_ambient_floor(hit_memories, top, cfg.recall_limit);
-
-    let (message, included) = match hooks::memories_message(
-        &bank_name,
-        &memories,
-        cfg.recall_budget_tokens,
-        crate::types::now_ms(),
-    ) {
-        Some((body, ids)) => (Some(body), ids),
-        None => (None, Vec::new()),
-    };
-    let included: std::collections::HashSet<String> = included.into_iter().collect();
-
+    let bank_name = crate::scope::request_bank(deps, req.bank).await?;
+    let bank = deps.store().await.bank(&bank_name).await.ok();
+    let injected =
+        hooks::injection(deps, &cfg, &bank_name, bank.as_deref(), Some(&req.query)).await;
     Ok(PreviewResponse {
         bank: bank_name,
-        system_prompt_section: section,
-        rules: rules.len(),
-        rules_truncated,
-        memories: memories
+        system_prompt_section: injected.section,
+        rules: injected.rules,
+        rules_truncated: injected.rules_truncated,
+        memories: injected
+            .memories
             .into_iter()
-            .filter(|m| included.contains(&m.id))
-            .map(|m| {
-                let score = scores.remove(&m.id).unwrap_or(0.0);
-                PreviewMemory { memory: m, score }
-            })
+            .map(|(memory, score)| PreviewMemory { memory, score })
             .collect(),
-        message: if cfg.inject_memories { message } else { None },
-        retrieval: retrieval.into(),
+        message: injected.message,
+        retrieval: injected.retrieval.into(),
     })
 }
