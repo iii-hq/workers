@@ -128,6 +128,19 @@ fn metrics_request_schema_accepts_exactly_one_session_id_spelling() {
         (json!({"session_id": null}), false),
         (json!({"root_session_id": 42}), false),
         (json!({"session_id": 42}), false),
+        (
+            json!({"root_session_id": "s_root", "omit_context": true}),
+            true,
+        ),
+        (
+            json!({"session_id": "s_child", "omit_context": false}),
+            true,
+        ),
+        (
+            json!({"root_session_id": "s_root", "omit_context": "yes"}),
+            false,
+        ),
+        (json!({"omit_context": true}), false),
     ] {
         assert_eq!(
             validator.is_valid(&payload),

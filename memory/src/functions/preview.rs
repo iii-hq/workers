@@ -69,11 +69,12 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
     } else {
         "bm25-entity"
     };
+    let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
     let hits = bank
         .recall(
             &req.query,
-            query_vec.as_deref(),
-            &cfg.embedding_model,
+            qv,
+            query_model,
             cfg.recall_limit,
             cfg.decay_half_life_days,
             false,

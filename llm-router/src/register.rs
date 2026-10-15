@@ -144,9 +144,14 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::EMBED_ID,
-        RegisterFunction::new_async(crate::embed::make_embed(iii.clone(), registry.clone()))
-            .description(surface::EMBED_DESC)
-            .metadata(internal_meta()),
+        RegisterFunction::new_async(crate::embed::make_embed(
+            iii.clone(),
+            registry.clone(),
+            config.clone(),
+            secrets.clone(),
+        ))
+        .description(surface::EMBED_DESC)
+        .metadata(internal_meta()),
     );
     iii.register_function(
         surface::TRANSCRIBE_ID,

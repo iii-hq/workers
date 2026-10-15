@@ -7,8 +7,9 @@
  * binding, GC'd with the tab), which fires on every generate step. Click opens
  * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — with the
  * window (stacked bar, legend, last step), the conversation's usage from
- * `harness::metrics` (plus a with-sub-agents column and one row per
- * sub-agent when it spawned any), and the session id with copy.
+ * `harness::metrics` (plus a with-sub-agents column when it spawned any),
+ * where that subtree's cost went (with a page listing every sub-agent), and
+ * the session id with copy.
  *
  * The chip answers to the PANE, not the viewport: under a 30rem-wide chat
  * pane (a phone, or a narrow split) it drops to its counts — the bar and the
@@ -34,6 +35,8 @@ import {
   type LiveAnnouncement,
   ListItem,
   LiveRegion,
+  SearchField,
+  SegmentedControl,
   Skeleton,
   StatusPanel,
   Table,
@@ -45,19 +48,21 @@ import {
   TableViewport,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { errorMessage } from '@iii-dev/console-ui/format'
+import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import {
+  ArrowLeft,
   ArrowUpRight,
   Check,
   ChevronDown,
   ChevronRight,
   Copy,
   CornerDownRight,
+  Info,
   TriangleAlert,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { formatCost, formatTokens } from '../lib/format'
 import { COLOR_FREE, categories, type LegendEntry, legendRows, percentOf } from '../lib/legend'
 import {
@@ -65,20 +70,30 @@ import {
   type ConversationTree,
   cacheHitPct,
   conversationTree,
+  filterGroups,
+  type GroupSort,
   isSnapshot,
   type MetricsResponse,
   parseMetrics,
-  type SubAgentRow,
+  type SessionUsage,
+  type SubAgentGroup,
+  type SummedKey,
+  sortGroups,
+  subAgentGroups,
+  sumUsage,
+  treeTotals,
   type UsageCounters,
+  type UsageTotals,
 } from '../lib/metrics'
 import { TONE_COLOR, toneFor } from '../lib/tone'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
 const METRICS_FN = 'harness::metrics'
-/** `harness::metrics` re-reads every transcript of the tree; a big tree takes
-    seconds. Past this the skeleton gives way to the error and its retry. */
-const METRICS_TIMEOUT_MS = 30_000
+/** `harness::metrics` re-reads every transcript of the tree: a 179-session
+    tree took over 30 s. Past this the skeleton gives way to the error and its
+    retry. */
+const METRICS_TIMEOUT_MS = 90_000
 /** Phone chrome only (sheet vs dialog), the console's one viewport breakpoint. */
 const PHONE_QUERY = '(max-width: 639px)'
 
@@ -297,49 +312,70 @@ function WindowSection({ snapshot }: { snapshot: ContextSnapshot }) {
   )
 }
 
-interface UsageRowSpec {
-  key: string
-  label: string
-  value: (usage: UsageCounters) => ReactNode
-  strong?: boolean
-}
-
 const tokensOrDash = (n: number | undefined) => (n == null ? '—' : formatTokens(n))
+const costOrDash = (n: number | undefined) => (n == null ? '—' : formatCost(n))
+/** Grouped the English way, whatever the browser locale: the copy is English. */
+const num = (n: number) => n.toLocaleString('en-US')
+const plural = (n: number, word: string) => `${num(n)} ${word}${n === 1 ? '' : 's'}`
+
+/** A lower bound — some session left the counter unreported — reads `≥`. */
+function Bound({ partial, children }: { partial: boolean; children: ReactNode }) {
+  return partial ? (
+    <>
+      <span className="harness-ui-bound">≥ </span>
+      {children}
+    </>
+  ) : (
+    <>{children}</>
+  )
+}
 
 /** Cache hit tone: a cold or broken prefix re-bills the whole prompt at the
     write premium every turn, which is worth a mark. */
 const hitTone = (pct: number) => (pct >= 70 ? 'ok' : pct < 30 ? 'warn' : undefined)
 
+interface UsageRowSpec {
+  key: string
+  label: string
+  /** The counters a row reads; any of them partial makes the value `≥`. */
+  reads: SummedKey[]
+  value: (usage: UsageCounters) => ReactNode
+  strong?: boolean
+}
+
 /** `turns` on the wire counts assistant messages — model steps, not the
     user's turns — so the label says steps. */
 const USAGE_ROWS: UsageRowSpec[] = [
-  {
-    key: 'cost',
-    label: 'Cost',
-    strong: true,
-    value: (u) => (u.cost_usd == null ? '—' : formatCost(u.cost_usd)),
-  },
-  { key: 'steps', label: 'Model steps', value: (u) => String(u.turns) },
+  { key: 'cost', label: 'Cost', strong: true, reads: ['cost_usd'], value: (u) => costOrDash(u.cost_usd) },
+  { key: 'steps', label: 'Model steps', reads: [], value: (u) => num(u.turns) },
   {
     key: 'calls',
     label: 'Function calls',
+    reads: [],
     value: (u) =>
       u.function_call_errors > 0
-        ? `${u.function_calls} · ${u.function_call_errors} failed`
-        : String(u.function_calls),
+        ? `${num(u.function_calls)} · ${num(u.function_call_errors)} failed`
+        : num(u.function_calls),
   },
-  { key: 'in', label: 'Uncached input', value: (u) => tokensOrDash(u.input_tokens) },
-  { key: 'out', label: 'Output', value: (u) => tokensOrDash(u.output_tokens) },
+  { key: 'in', label: 'Uncached input', reads: ['input_tokens'], value: (u) => tokensOrDash(u.input_tokens) },
+  { key: 'out', label: 'Output', reads: ['output_tokens'], value: (u) => tokensOrDash(u.output_tokens) },
   {
     key: 'cache',
     label: 'Cache read · write',
-    value: (u) => `${tokensOrDash(u.cache_read_tokens)} · ${tokensOrDash(u.cache_write_tokens)}`,
+    reads: ['cache_read_tokens', 'cache_write_tokens'],
+    value: (u) =>
+      u.cache_read_tokens == null && u.cache_write_tokens == null
+        ? '—'
+        : `${tokensOrDash(u.cache_read_tokens)} · ${tokensOrDash(u.cache_write_tokens)}`,
   },
   {
     key: 'hit',
     label: 'Cache hit',
+    // A ratio, so never `≥`: a sum carries its own ratio over the sessions
+    // that reported both counts (see `UsageTotals.cacheHit`).
+    reads: [],
     value: (u) => {
-      const pct = cacheHitPct(u)
+      const pct = 'cacheHit' in u ? (u as UsageTotals).cacheHit : cacheHitPct(u)
       return pct == null ? (
         '—'
       ) : (
@@ -351,20 +387,15 @@ const USAGE_ROWS: UsageRowSpec[] = [
   },
 ]
 
-/**
- * The snapshot's running session cost moves on every generate step, while
- * `harness::metrics` is read once per turn: the live figure wins for this
- * conversation, and the subtree total moves with it.
- */
-function withLiveCost(
-  tree: ConversationTree,
-  liveCost: number | null | undefined,
-): { self: UsageCounters; total: UsageCounters | null } {
-  if (liveCost == null) return { self: tree.self, total: tree.withSubAgents }
-  const self = { ...tree.self, cost_usd: liveCost }
-  const total = tree.withSubAgents
-  if (!total || total.cost_usd == null || tree.self.cost_usd == null) return { self, total }
-  return { self, total: { ...total, cost_usd: total.cost_usd - tree.self.cost_usd + liveCost } }
+function usageCell(row: UsageRowSpec, usage: UsageCounters, partial: readonly SummedKey[] = []) {
+  return <Bound partial={row.reads.some((key) => partial.includes(key))}>{row.value(usage)}</Bound>
+}
+
+/** "a, b and 3 more" — a long list of ids would bury the sentence. */
+function idList(ids: string[], self: string, limit = 3) {
+  const names = ids.map((id) => (id === self ? 'this conversation' : id))
+  const shown = names.slice(0, limit).join(', ')
+  return names.length > limit ? `${shown} and ${names.length - limit} more` : shown
 }
 
 /**
@@ -419,7 +450,7 @@ function UsageSection({
       </section>
     )
   }
-  if (tree && tree.self.turns === 0 && !tree.withSubAgents) {
+  if (tree && tree.self.turns === 0 && tree.subAgents.length === 0) {
     return costOnly ? (
       <section className="harness-ui-section" aria-labelledby={headingId}>
         <SectionHead id={headingId} title="Usage" />
@@ -427,7 +458,7 @@ function UsageSection({
       </section>
     ) : null
   }
-  const shown = tree ? withLiveCost(tree, liveCost) : null
+  const shown = tree ? treeTotals(tree, liveCost) : null
   const self = shown?.self
   const total = shown?.total ?? null
   const subCount = tree?.subAgents.length ?? 0
@@ -455,93 +486,417 @@ function UsageSection({
                 <TableHead scope="row">{row.label}</TableHead>
                 <TableCell className="harness-ui-num">
                   {self ? (
-                    row.value(self)
+                    usageCell(row, self)
                   ) : row.key === 'cost' && liveCost != null ? (
                     formatCost(liveCost)
                   ) : (
                     <Skeleton className="harness-ui-skeleton" />
                   )}
                 </TableCell>
-                {total ? <TableCell className="harness-ui-num">{row.value(total)}</TableCell> : null}
+                {total ? (
+                  <TableCell className="harness-ui-num">{usageCell(row, total, total.partial)}</TableCell>
+                ) : null}
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </TableViewport>
+      {total && total.partial.length > 0 && tree ? (
+        <p className="harness-ui-note harness-ui-footnote">
+          <Info size={16} aria-hidden />
+          <span>
+            ≥ leaves out what {total.unreported.length === 1 ? 'one session' : `${total.unreported.length} sessions`}{' '}
+            did not report: {idList(total.unreported, tree.self.session_id)}.
+          </span>
+        </p>
+      ) : null}
       {failure}
     </section>
   )
 }
 
-/** One row per descendant, depth-first; a click opens that conversation. */
-function SubAgentsSection({
+/** The steps / calls / failures / context / age line of one session. */
+function sessionMeta(usage: SessionUsage, lead?: string) {
+  const parts = lead ? [lead] : []
+  parts.push(plural(usage.turns, 'step'))
+  if (usage.function_call_errors > 0) parts.push(`${num(usage.function_call_errors)} failed`)
+  const context = usage.context
+  if (context && context.usable > 0) parts.push(`context ${percentOf(context.total, context.usable)}`)
+  if (context?.timestamp) parts.push(ago(context.timestamp))
+  return parts.join(' · ')
+}
+
+/** The same line for a group: its size (and how many a filter left), steps,
+    failures, unpriced rows, age. Steps and failures are the whole group's. */
+function groupMeta(group: SubAgentGroup) {
+  const shown = group.rows.length - 1
+  const t = group.totals
+  const parts = [
+    shown < group.size ? `${num(shown)} of ${plural(group.size, 'sub-agent')}` : plural(group.size, 'sub-agent'),
+    plural(t.turns, 'step'),
+  ]
+  if (t.function_call_errors > 0) parts.push(`${num(t.function_call_errors)} failed`)
+  const unpriced = t.unreported.length
+  if (t.partial.includes('cost_usd') && unpriced) parts.push(`${num(unpriced)} without cost`)
+  if (group.lastActive) parts.push(ago(group.lastActive))
+  return parts.join(' · ')
+}
+
+function ago(ms: number) {
+  const rel = formatRelative(ms)
+  return rel === 'just now' || !rel ? 'just now' : `${rel} ago`
+}
+
+/** Share of the known total, as text and as a bar width. */
+function share(cost: number | undefined, total: number | undefined) {
+  if (cost == null || total == null || total <= 0) return null
+  const pct = (cost / total) * 100
+  return { label: pct > 0 && pct < 1 ? '<1%' : `${Math.round(pct)}%`, width: `${Math.max(pct, cost > 0 ? 1 : 0)}%` }
+}
+
+/** One ranked row: label, meta line, cost, share, and a bar of the share. */
+function CostRow({
+  label,
+  mono = true,
+  meta,
+  cost,
+  partial = false,
+  total,
+  expanded,
+  onClick,
+  action,
+}: {
+  label: string
+  mono?: boolean
+  meta: string
+  cost: number | undefined
+  partial?: boolean
+  total: number | undefined
+  expanded?: boolean
+  onClick?: () => void
+  /** The verb a screen reader hears before the label ("Open"); the row's
+      own text — cost, share, steps — stays its accessible name. */
+  action?: string
+}) {
+  const part = share(cost, total)
+  const body = (
+    <>
+      <span className="harness-ui-cost-line">
+        {expanded !== undefined ? (
+          expanded ? (
+            <ChevronDown className="harness-ui-sub-icon" size={16} aria-hidden />
+          ) : (
+            <ChevronRight className="harness-ui-sub-icon" size={16} aria-hidden />
+          )
+        ) : null}
+        <span className="harness-ui-cost-main">
+          <span className={mono ? 'harness-ui-sub-id' : 'harness-ui-cost-label'}>
+            {action && onClick ? <span className="harness-ui-sr-only">{action} </span> : null}
+            {label}
+          </span>
+          <span className="harness-ui-sub-meta">{meta}</span>
+        </span>
+        <span className="harness-ui-sub-cost">
+          <Bound partial={partial}>{costOrDash(cost)}</Bound>
+        </span>
+        <span className="harness-ui-cost-share">{part?.label ?? ''}</span>
+      </span>
+      <span className="harness-ui-cost-bar" aria-hidden data-indent={expanded !== undefined ? '' : undefined}>
+        <span style={{ width: part?.width ?? 0 }} />
+      </span>
+    </>
+  )
+  return onClick ? (
+    <button
+      type="button"
+      className="harness-ui-cost-row"
+      onClick={onClick}
+      aria-expanded={expanded}
+    >
+      {body}
+    </button>
+  ) : (
+    <div className="harness-ui-cost-row">{body}</div>
+  )
+}
+
+/** How many of the biggest direct sub-agents the overview ranks. */
+const RANKED = 5
+
+/**
+ * Where the subtree's cost went: this conversation, then its direct
+ * sub-agents (each with everything it spawned) by cost, the rest folded into
+ * one row. The full list is the sub-agents page; navigating between
+ * conversations is the chat side panel's job.
+ */
+function CostSection({
   tree,
-  totalCost,
+  liveCost,
   onOpenSession,
+  onShowAll,
+  restoreFocus,
 }: {
   tree: ConversationTree
-  totalCost: number | undefined
+  liveCost: number | null | undefined
   onOpenSession?: (sessionId: string) => void
+  onShowAll: (expand?: string) => void
+  restoreFocus: boolean
 }) {
   const headingId = useId()
+  const allButton = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (restoreFocus) allButton.current?.focus()
+  }, [restoreFocus])
   if (tree.subAgents.length === 0) return null
+  const { self, total } = treeTotals(tree, liveCost)
+  const totalCost = total?.cost_usd
+  const groups = sortGroups(subAgentGroups(tree), 'cost')
+  // Folding a single leftover into "1 more" hides it for nothing.
+  const cut = groups.length > RANKED + 1 ? RANKED : groups.length
+  const ranked = groups.slice(0, cut)
+  const rest = groups.slice(cut)
+  const nested = groups.some((group) => group.rows.length > 1)
+  const restTotals = rest.length ? sumUsage(rest.flatMap((group) => group.rows)) : null
+  const count = tree.subAgents.length
   return (
     <section className="harness-ui-section" aria-labelledby={headingId}>
-      <SectionHead id={headingId} title="Sub-agents" meta={tree.subAgents.length} />
-      <div className="harness-ui-subs">
-        {tree.subAgents.map((row) => (
-          <SubAgent
-            key={row.usage.session_id}
-            row={row}
-            totalCost={totalCost}
-            onOpenSession={onOpenSession}
+      <SectionHead
+        id={headingId}
+        title="Where the cost went"
+        meta={nested ? `${plural(count, 'sub-agent')} · ${num(groups.length)} direct` : plural(count, 'sub-agent')}
+      />
+      <div className="harness-ui-cost-list">
+        <CostRow
+          label="This conversation"
+          mono={false}
+          meta={[
+            plural(self.turns, 'step'),
+            plural(self.function_calls, 'call'),
+            self.function_call_errors ? `${num(self.function_call_errors)} failed` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+          cost={self.cost_usd}
+          total={totalCost}
+        />
+        {ranked.map((group) => (
+          <CostRow
+            key={group.head.session_id}
+            label={group.head.session_id}
+            meta={group.rows.length > 1 ? groupMeta(group) : sessionMeta(group.head)}
+            cost={group.totals.cost_usd}
+            partial={group.totals.partial.includes('cost_usd')}
+            total={totalCost}
+            action={group.rows.length > 1 ? 'Show the sub-agents of' : 'Open'}
+            onClick={
+              group.rows.length > 1
+                ? () => onShowAll(group.head.session_id)
+                : onOpenSession
+                  ? () => onOpenSession(group.head.session_id)
+                  : undefined
+            }
           />
         ))}
+        {restTotals ? (
+          <CostRow
+            label={`${rest.length} more`}
+            mono={false}
+            meta={[
+              plural(
+                rest.reduce((n, g) => n + g.rows.length, 0),
+                'sub-agent',
+              ),
+              plural(restTotals.turns, 'step'),
+              restTotals.function_call_errors ? `${num(restTotals.function_call_errors)} failed` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+            cost={restTotals.cost_usd}
+            partial={restTotals.partial.includes('cost_usd')}
+            total={totalCost}
+            action="Show"
+            onClick={() => onShowAll()}
+          />
+        ) : null}
       </div>
+      {nested || rest.length ? (
+        <Button ref={allButton} variant="ghost" size="sm" className="harness-ui-all" onClick={() => onShowAll()}>
+          All {plural(count, 'sub-agent')}
+          <ChevronRight size={16} aria-hidden />
+        </Button>
+      ) : null}
     </section>
   )
 }
 
-function SubAgent({
-  row,
-  totalCost,
+const SORTS: { value: GroupSort; label: string; icon: false }[] = [
+  { value: 'cost', label: 'Cost', icon: false },
+  { value: 'recent', label: 'Recent', icon: false },
+  { value: 'failed', label: 'Failed', icon: false },
+]
+
+/** Rows inside a group: the head first, the rest by the page's sort. */
+function sortRows(rows: SessionUsage[], by: GroupSort) {
+  const [head, ...rest] = rows
+  const cost = (row: SessionUsage) => row.cost_usd ?? 0
+  rest.sort((a, b) =>
+    by === 'recent'
+      ? (b.context?.timestamp ?? 0) - (a.context?.timestamp ?? 0) || cost(b) - cost(a)
+      : by === 'failed'
+        ? b.function_call_errors - a.function_call_errors || cost(b) - cost(a)
+        : cost(b) - cost(a),
+  )
+  return [head, ...rest]
+}
+
+/**
+ * Every sub-agent, grouped under the conversation's direct sub-agents: a
+ * page inside the same dialog or sheet, with a filter by id and three sorts.
+ * A group opens and closes in place; a row opens that conversation.
+ */
+function SubAgentsPage({
+  tree,
+  liveCost,
+  initialExpanded,
+  onBack,
   onOpenSession,
 }: {
-  row: SubAgentRow
-  totalCost: number | undefined
+  tree: ConversationTree
+  liveCost: number | null | undefined
+  initialExpanded?: string
+  onBack: () => void
   onOpenSession?: (sessionId: string) => void
 }) {
-  const { usage, depth } = row
-  const context = usage.context
-  const meta = [
-    `${usage.turns} step${usage.turns === 1 ? '' : 's'}`,
-    `${usage.function_calls} call${usage.function_calls === 1 ? '' : 's'}`,
+  const back = useRef<HTMLButtonElement>(null)
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState<GroupSort>('cost')
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(initialExpanded ? [initialExpanded] : []),
+  )
+  useEffect(() => {
+    back.current?.focus()
+  }, [])
+  const all = subAgentGroups(tree)
+  const subTotals = sumUsage(tree.subAgents.map((row) => row.usage))
+  const totalCost = treeTotals(tree, liveCost).total?.cost_usd
+  const groups = filterGroups(sortGroups(all, sort), query)
+  const needle = query.trim().toLowerCase()
+  const filtering = needle !== ''
+  const matches = filtering
+    ? tree.subAgents.filter((row) => row.usage.session_id.toLowerCase().includes(needle)).length
+    : 0
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
+  useEffect(() => {
+    if (!needle) return
+    setAnnouncement((prev) => ({
+      seq: (prev?.seq ?? 0) + 1,
+      text: `${plural(matches, 'sub-agent')} match`,
+      urgency: 'polite',
+    }))
+  }, [needle, matches])
+  const toggle = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const summary = [
+    num(tree.subAgents.length),
+    subTotals.cost_usd != null
+      ? `${subTotals.partial.includes('cost_usd') ? '≥ ' : ''}${formatCost(subTotals.cost_usd)}`
+      : null,
+    plural(subTotals.turns, 'step'),
+    subTotals.function_call_errors ? `${num(subTotals.function_call_errors)} failed` : null,
   ]
-  if (usage.function_call_errors > 0) meta.push(`${usage.function_call_errors} failed`)
-  if (context && context.usable > 0) meta.push(`context ${percentOf(context.total, context.usable)}`)
-  const share =
-    usage.cost_usd != null && totalCost != null && totalCost > 0
-      ? `${Math.round((usage.cost_usd / totalCost) * 100)}% of cost`
-      : null
+    .filter(Boolean)
+    .join(' · ')
   return (
-    <ListItem
-      as={onOpenSession ? 'button' : 'div'}
-      // Deeper levels indent under their parent row.
-      style={{ paddingLeft: `${12 + (depth - 1) * 16}px` }}
-      onClick={onOpenSession ? () => onOpenSession(usage.session_id) : undefined}
-      leading={<CornerDownRight size={16} aria-hidden />}
-      label={<span className="harness-ui-sub-id">{usage.session_id}</span>}
-      description={meta.join(' · ')}
-      trailing={
-        <span className="harness-ui-sub-trailing">
-          <span className="harness-ui-sub-cost">
-            <span>{usage.cost_usd == null ? '—' : formatCost(usage.cost_usd)}</span>
-            {share ? <span className="harness-ui-sub-share">{share}</span> : null}
-          </span>
-          {onOpenSession ? <ChevronRight className="harness-ui-sub-icon" size={16} aria-hidden /> : null}
-        </span>
-      }
-    />
+    <div className="harness-ui-pop" data-page="sub-agents">
+      <div className="harness-ui-pop-head harness-ui-page-head">
+        <IconButton ref={back} label="Back to context" tooltip={false} onClick={onBack}>
+          <ArrowLeft size={16} aria-hidden />
+        </IconButton>
+        <div className="harness-ui-page-title">
+          <DialogTitle>Sub-agents</DialogTitle>
+          <DialogDescription className="harness-ui-pop-usage">{summary}</DialogDescription>
+        </div>
+      </div>
+      <div className="harness-ui-page-tools">
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          aria-label="Filter sub-agents by id"
+          placeholder="Filter by id"
+          className="harness-ui-page-search"
+        />
+        <SegmentedControl variant="radio" aria-label="Sort by" value={sort} onChange={setSort} options={SORTS} />
+      </div>
+      {filtering && matches > 0 ? (
+        <p className="harness-ui-note">
+          {num(matches)} of {plural(tree.subAgents.length, 'sub-agent')} match
+        </p>
+      ) : null}
+      <LiveRegion announcement={announcement} />
+      <div className="harness-ui-cost-list">
+        {groups.map((group) => {
+          const nested = group.rows.length > 1
+          const open = nested && (filtering || expanded.has(group.head.session_id))
+          const id = group.head.session_id
+          return (
+            <div key={id} className="harness-ui-group">
+              <CostRow
+                label={id}
+                meta={nested ? groupMeta(group) : sessionMeta(group.head)}
+                cost={group.totals.cost_usd}
+                partial={group.totals.partial.includes('cost_usd')}
+                total={totalCost}
+                expanded={nested ? open : undefined}
+                action={nested ? undefined : 'Open'}
+                // While filtering every matching group is open; a toggle
+                // there would do nothing visible.
+                onClick={
+                  nested
+                    ? filtering
+                      ? undefined
+                      : () => toggle(id)
+                    : onOpenSession
+                      ? () => onOpenSession(id)
+                      : undefined
+                }
+              />
+              {open ? (
+                <div className="harness-ui-group-rows">
+                  {sortRows(group.rows, sort).map((row, index) => (
+                    <ListItem
+                      key={row.session_id}
+                      as={onOpenSession ? 'button' : 'div'}
+                      onClick={onOpenSession ? () => onOpenSession(row.session_id) : undefined}
+                      leading={<CornerDownRight size={16} aria-hidden />}
+                      label={<span className="harness-ui-sub-id">{row.session_id}</span>}
+                      description={sessionMeta(row, index === 0 ? 'spawned the rest' : undefined)}
+                      trailing={
+                        <span className="harness-ui-sub-trailing">
+                          <span className="harness-ui-sub-cost" data-unpriced={row.cost_usd == null && row.turns > 0 ? '' : undefined}>
+                            {row.cost_usd == null ? (row.turns > 0 ? 'no cost' : '—') : formatCost(row.cost_usd)}
+                          </span>
+                          {onOpenSession ? (
+                            <ChevronRight className="harness-ui-sub-icon" size={16} aria-hidden />
+                          ) : null}
+                        </span>
+                      }
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
+        {filtering && groups.length === 0 ? (
+          <p className="harness-ui-note">No sub-agent id contains “{query.trim()}”.</p>
+        ) : null}
+      </div>
+    </div>
   )
 }
 
@@ -671,6 +1026,11 @@ interface ContextPopoverProps {
   onOpenSession?: (sessionId: string) => void
 }
 
+/** Which page of the breakdown is showing; the sub-agents page may open on
+    one group. Closing the dialog unmounts it, so it always reopens on the
+    overview. */
+type PopoverView = { page: 'overview'; returned?: boolean } | { page: 'sub-agents'; expand?: string }
+
 function ContextPopover({
   snapshot,
   modelId,
@@ -680,10 +1040,44 @@ function ContextPopover({
   onRetry,
   onOpenSession,
 }: ContextPopoverProps) {
+  const [view, setView] = useState<PopoverView>({ page: 'overview' })
+  const root = useRef<HTMLDivElement>(null)
+  // A new page starts at its top: the dialog content (desktop) or the sheet
+  // body (phone) is the scroller. A layout effect, so it runs before the
+  // overview's effect focuses (and scrolls to) the "All sub-agents" button.
+  useLayoutEffect(() => {
+    const el = root.current
+    if (!el) return
+    el.scrollTop = 0
+    const dialog = el.closest('[role="dialog"]')
+    if (dialog) dialog.scrollTop = 0
+  }, [view.page])
   const data = metrics.status === 'idle' ? undefined : metrics.data
   const tree = data ? conversationTree(data, sessionId) : null
   const live = snapshot && snapshot.usable > 0 ? snapshot : null
   const liveCost = live?.session_cost_usd
+  // A refresh that no longer carries this session (deleted mid-flight)
+  // takes the sub-agents page away: fall back to the overview for good
+  // rather than jump back to the page if a later answer carries it again.
+  // Focus is the dialog's: Radix's focus scope refocuses its container when
+  // the focused Back button unmounts.
+  const hasTree = tree !== null
+  useEffect(() => {
+    if (view.page === 'sub-agents' && !hasTree) setView({ page: 'overview' })
+  }, [view.page, hasTree])
+  if (view.page === 'sub-agents' && tree) {
+    return (
+      <div ref={root} className="harness-ui-pop-root">
+        <SubAgentsPage
+          tree={tree}
+          liveCost={liveCost}
+          initialExpanded={view.expand}
+          onBack={() => setView({ page: 'overview', returned: true })}
+          onOpenSession={onOpenSession}
+        />
+      </div>
+    )
+  }
   const parentId = tree?.self.parent_session_id
   let usage: string
   if (live) {
@@ -694,7 +1088,7 @@ function ContextPopover({
     usage = 'waiting for the first step'
   }
   return (
-    <div className="harness-ui-pop">
+    <div ref={root} className="harness-ui-pop">
       <PopoverHead model={live?.model || modelId || 'model'} usage={usage} />
       {live ? (
         <WindowSection snapshot={live} />
@@ -720,10 +1114,12 @@ function ContextPopover({
       )}
       <UsageSection state={metrics} tree={tree} liveCost={liveCost} onRetry={onRetry} />
       {tree ? (
-        <SubAgentsSection
+        <CostSection
           tree={tree}
-          totalCost={withLiveCost(tree, liveCost).total?.cost_usd}
+          liveCost={liveCost}
           onOpenSession={onOpenSession}
+          onShowAll={(expand) => setView({ page: 'sub-agents', expand })}
+          restoreFocus={view.page === 'overview' && view.returned === true}
         />
       ) : null}
       <div className="harness-ui-pop-foot">

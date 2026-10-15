@@ -299,6 +299,16 @@ own example gets the chat's generic hint. Whitespace collapses to single
 spaces, blank means absent, and more than 200 characters is rejected like any
 other invalid frontmatter.
 
+An optional `skills_index:` boolean turns off the skills index for sessions
+running as that profile: with `skills_index: false` the harness starts them
+without the names-only `<available_skills>` block in the prompt (this is the
+prompt block, not the `directory::skills::index` function). It inherits
+through `extends` like `model` — the nearest profile that sets it wins, and
+`true` in a child turns the index back on. The profile's preloaded `skills`
+still render, and `directory::skills::get` stays callable when the session's
+policy allows it. A value that is not a YAML boolean makes the profile
+invalid, like `hidden`.
+
 A second, READ-ONLY root — `agents_skills_folder` (default `.agents/skills`
 under the same Compose or standalone base) — serves agent skills. It is
 scanned **shallowly**: only `<skill-dir>/SKILL.md` becomes an entry
@@ -674,7 +684,7 @@ other adapter.
 | Function ID | Description |
 |---|---|
 | `directory::agents::list` | Metadata-only listing of every agent profile — fs-backed plus the bundled `default` / `iii` / `iii-minimal` profiles (`builtin: true` until a local file shadows one): `{ id, name, description, logo, skill_count, model, reasoning_effort, icon, color, extends, hidden, composer_placeholder, modified_at }` per row (`hidden` and `composer_placeholder` omitted when unset; `composer_placeholder` never inherits), `skill_count`/`model`/`reasoning_effort` resolved through `extends` (`skill_count: null` = every skill; `model: null` = the send decides). A row whose chain does not resolve carries `inheritance_error`. Every row carries `source: { kind: kit \| worker \| local \| global \| builtin, kit?, worker?, version?, modified? }` — see [Precedence and collisions](#precedence-and-collisions). |
-| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (filter entries matching no visible skill — warnings), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `hidden`, the profile's own `composer_placeholder` (omitted when unset), `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile), and the same `source` as `list`. Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
+| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (preloaded ids matching no visible skill — warnings), `skills_index` (resolved through `extends`; `false` = sessions start without the skills index, omitted when unset), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `hidden`, the profile's own `composer_placeholder` (omitted when unset), `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile), and the same `source` as `list`. Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
 | `directory::agents::update` | Overwrite one EXISTING agent profile file with new full-file content: `{ id, content }`. Same rules the scanner enforces (required frontmatter with non-empty `name`, emoji-only `logo`; the body — the system prompt — may be empty); the id stays the file stem. Updating a bundled profile creates the local file that shadows it. Atomic write; fans out `directory::agents::on-change` with `op: "update"`. |
 | `directory::agents::create` | Create a NEW agent profile at `<agents_folder>/<id>.md` from full-file content: `{ id, content }`. Refuses an `id` that already exists in the configured agent-profile root, and a target path that already exists on disk even if the scanner would skip it; creating a bundled id shadows the bundled copy. Atomic write; fans out `directory::agents::on-change` with `op: "create"`. Returns `{ id, name, description, logo, bytes, modified_at }`. |
 | `directory::agents::delete` | Permanently remove one EXISTING agent profile file by `{ id }`. Resolves against the same configured root as `list`/`get`, fans out `directory::agents::on-change` with `op: "delete"`, and returns `{ id }`. Deleting the local shadow of a bundled profile falls back to the bundled copy; a bundled profile with no local file has nothing to delete (`D414`). Sessions already using the profile are unaffected; profiles extending it stop resolving until fixed. |

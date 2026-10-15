@@ -119,6 +119,35 @@ pub async fn unresolved_reference(
     }
 }
 
+/// Whether `provider` saying "not configured" can only change by someone
+/// reconfiguring it: nothing configured, a stored credential it rejected, a
+/// malformed reference, or a reference the secrets worker reports missing
+/// or forbidden. A reference that has not resolved yet, or whose secrets
+/// worker is unavailable or failing, is transient.
+pub async fn unconfigured_for_good(
+    config: &ConfigSnapshot,
+    provider: &str,
+    secrets: &SecretCache,
+) -> bool {
+    let Some(slice) = config.provider_slice(provider) else {
+        return true;
+    };
+    match slice_credential(slice) {
+        SliceCredential::Absent
+        | SliceCredential::Stored(_)
+        | SliceCredential::Reference(Err(_)) => true,
+        SliceCredential::Reference(Ok(reference)) => {
+            ensure_provider_secret(config, provider, secrets).await;
+            matches!(
+                secrets.lookup(&reference),
+                Some(Err(SecretError::NotFound
+                    | SecretError::Forbidden
+                    | SecretError::InvalidReference))
+            )
+        }
+    }
+}
+
 /// Core resolution — shared by the resolve handler, provider::list, and chat.
 /// Sync over the snapshot and the secret cache; references the cache has not
 /// resolved yet report so (async callers `ensure` them first).
@@ -635,5 +664,34 @@ mod tests {
             .await
             .unwrap()
             .starts_with("secret GONE not found"));
+    }
+
+    #[tokio::test]
+    async fn only_a_lasting_credential_state_is_unconfigured_for_good() {
+        let fake = FakeSecrets::default();
+        fake.set("secret://GONE", Err(SecretError::NotFound));
+        fake.set("secret://DENIED", Err(SecretError::Forbidden));
+        // secret://DOWN is unanswered: the fake reports Unavailable.
+        let secrets = fake.cache();
+        let for_good = |slice: Value| {
+            let secrets = &secrets;
+            async move { unconfigured_for_good(&config(slice), "anthropic", secrets).await }
+        };
+        assert!(for_good(json!({})).await, "nothing configured");
+        assert!(
+            for_good(json!({ "api_key": "sk-literal" })).await,
+            "stored key rejected"
+        );
+        assert!(for_good(json!({ "api_key": "secret://GONE" })).await);
+        assert!(for_good(json!({ "api_key": "secret://DENIED" })).await);
+        assert!(
+            !for_good(json!({ "api_key": "secret://DOWN" })).await,
+            "secrets worker down"
+        );
+        let none = ConfigSnapshot::from_value(json!({ "providers": {} }));
+        assert!(
+            unconfigured_for_good(&none, "anthropic", &secrets).await,
+            "no slice"
+        );
     }
 }

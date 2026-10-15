@@ -23,8 +23,10 @@ const EMBED_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmbedRequest {
-    /// Model name echoed for parity with the other providers; llama-server
-    /// embeds with its loaded model regardless.
+    /// Forwarded only when set (a llama-server in router mode selects by
+    /// it). Unset, the server answers with its loaded model and names it, so
+    /// the reply reports the real model and a model swap on the server is
+    /// visible to callers that key vectors by model.
     #[serde(default)]
     pub model: Option<String>,
     /// Texts to embed, one vector returned per input, order preserved.
@@ -50,6 +52,18 @@ struct WireResponse {
     data: Vec<WireEmbedding>,
     #[serde(default)]
     model: Option<String>,
+}
+
+/// The `/embeddings` body. No `model` unless the caller named one:
+/// llama-server echoes a sent `model` back verbatim, so sending a
+/// placeholder would make every reply claim that placeholder whatever model
+/// is loaded.
+fn request_body(model: Option<&str>, input: &[String]) -> serde_json::Value {
+    let mut body = serde_json::json!({ "input": input });
+    if let Some(model) = model {
+        body["model"] = serde_json::json!(model);
+    }
+    body
 }
 
 /// Embeddings endpoint for the configured chat `api_url`: the sibling
@@ -82,10 +96,8 @@ pub async fn handle(
             "invalid_input: input must contain 1..=512 texts".into(),
         ));
     }
-    let model = req
-        .model
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| "default".to_string());
+    let requested = req.model.filter(|m| !m.trim().is_empty());
+    let model = requested.clone().unwrap_or_else(|| "default".to_string());
 
     // Token + resolve are cached (ScaffoldCache): zero engine round trips
     // on the hot path within the TTL. An auth-classified resolve failure
@@ -114,7 +126,7 @@ pub async fn handle(
     let mut request = http
         .post(embed_url(&cfg.api_url))
         .timeout(std::time::Duration::from_secs(EMBED_TIMEOUT_SECS))
-        .json(&serde_json::json!({ "model": model, "input": req.input }));
+        .json(&request_body(requested.as_deref(), &req.input));
     // Local llama-server usually runs with no --api-key; only send the
     // header when a credential resolved.
     if let Some(credential) = &cfg.credential_value {
@@ -201,5 +213,13 @@ mod tests {
         data.sort_by_key(|d| d.index);
         assert!(data.iter().enumerate().any(|(i, d)| d.index != i));
         assert!(wire.model.is_none());
+    }
+
+    #[test]
+    fn the_body_names_a_model_only_when_the_caller_did() {
+        let input = vec!["hi".to_string()];
+        let unset = request_body(None, &input);
+        assert!(unset.get("model").is_none(), "{unset}");
+        assert_eq!(request_body(Some("nomic"), &input)["model"], "nomic");
     }
 }

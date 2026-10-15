@@ -106,7 +106,9 @@ pub struct WorkerConfig {
     pub embeddings_enabled: bool,
 
     /// Embedding model id passed to `router::embed`. Empty uses the
-    /// provider's default.
+    /// provider's default. Vectors are tagged with the model the provider
+    /// reports, so changing this (or the provider's default changing)
+    /// re-embeds them instead of mixing spaces.
     #[serde(default)]
     pub embedding_model: String,
 }

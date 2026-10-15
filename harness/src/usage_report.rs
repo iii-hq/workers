@@ -147,6 +147,8 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
                 deps,
                 SessionMetricsRequestV1 {
                     root_session_id: session_id.clone(),
+                    // Only the totals are reported; skip the context reads.
+                    omit_context: true,
                 },
             )
             .await

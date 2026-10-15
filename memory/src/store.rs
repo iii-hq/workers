@@ -62,15 +62,61 @@ struct BankInner {
 }
 
 /// One sidecar line: a memory's embedding (last-wins by id on replay).
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct VectorRecord {
     id: String,
     model: String,
-    /// Memory revision the text was embedded at; an older revision means
-    /// the text changed since, so the vector is stale.
-    #[serde(default)]
-    revision: u64,
+    /// The exact text embedded: the vector is current while the memory
+    /// still has this text (pin/tag/reinforce bumps leave it valid).
+    text: String,
     v: Vec<f32>,
+}
+
+/// The write side of [`VectorRecord`], borrowing instead of cloning.
+#[derive(serde::Serialize)]
+struct VectorLine<'a> {
+    id: &'a str,
+    model: &'a str,
+    text: &'a str,
+    v: &'a [f32],
+}
+
+/// Serializes every vector sidecar replay+compaction with every append.
+/// During `memory::reload` (or a `data_dir` swap) the OLD store's banks can
+/// still append while the NEW store's bank compacts the same file: an
+/// append landing on the inode the rename replaces would be lost.
+static SIDECAR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn sidecar_lock() -> std::sync::MutexGuard<'static, ()> {
+    SIDECAR.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Rewrite the sidecar to exactly the vectors `open` kept: temp file,
+/// fsync, rename over. A crash leaves the old file or the new one, never a
+/// torn one; a failed rewrite removes its temp (a partial copy would only
+/// eat the disk the authoritative memories.jsonl appends need).
+fn compact_vectors(
+    path: &Path,
+    vectors: &HashMap<String, (String, Vec<f32>)>,
+    memories: &HashMap<String, Memory>,
+) -> std::io::Result<()> {
+    // The caller holds `sidecar_lock()`, so no concurrent open writes the
+    // same temp file and no append slips in between replay and rename.
+    let tmp = path.with_extension("jsonl.tmp");
+    let rewrite = || -> std::io::Result<()> {
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        for (id, (model, v)) in vectors {
+            // Kept means it embeds the record's current text.
+            let text = memories.get(id).map_or("", |m| m.text.as_str());
+            serde_json::to_writer(&mut out, &VectorLine { id, model, text, v })?;
+            out.write_all(b"\n")?;
+        }
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    rewrite().inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -335,10 +381,13 @@ impl Bank {
             index.add(memory);
         }
 
-        // Vector sidecar: last-wins by id, entries for unknown memories
-        // dropped (they belong to trimmed history), corrupt lines skipped.
+        // Vector sidecar: last-wins by id; entries of retired or unknown
+        // memories, of text since edited, and corrupt or pre-text-key lines
+        // are skipped (those memories are backfill work again).
         let mut vectors: HashMap<String, (String, Vec<f32>)> = HashMap::new();
         let vectors_path = dir.join(VECTORS_FILE);
+        let mut lines = 0usize;
+        let sidecar = sidecar_lock();
         if vectors_path.exists() {
             let file = std::fs::File::open(&vectors_path)?;
             for line in std::io::BufReader::new(file).lines() {
@@ -346,18 +395,30 @@ impl Bank {
                 if line.trim().is_empty() {
                     continue;
                 }
+                lines += 1;
                 if let Ok(rec) = serde_json::from_str::<VectorRecord>(&line) {
-                    // Keep only vectors embedded at the record's CURRENT
-                    // revision — an edit since the embed makes it stale.
+                    // Keep only vectors of the record's CURRENT text — a
+                    // text edit since the embed makes it stale.
                     let current = memories
                         .get(&rec.id)
-                        .is_some_and(|m| m.revision == rec.revision);
+                        .is_some_and(|m| m.is_live() && m.text == rec.text);
                     if current {
                         vectors.insert(rec.id, (rec.model, rec.v));
                     }
                 }
             }
         }
+        // Dead lines (edited text, retired records, re-embeds, pre-text-key
+        // lines, torn writes) are re-parsed every open and never reclaimed
+        // otherwise; ~19 KB each for a 1536-dim vector.
+        // ponytail: compacts at open only; a long uptime grows until the
+        // next boot or memory::reload.
+        if lines > 2 * vectors.len() {
+            if let Err(e) = compact_vectors(&vectors_path, &vectors, &memories) {
+                tracing::warn!(bank = name, error = %e, "vector sidecar compaction failed");
+            }
+        }
+        drop(sidecar);
 
         Ok(Self {
             name: name.to_string(),
@@ -382,26 +443,32 @@ impl Bank {
         v: Vec<f32>,
     ) -> Result<bool, MemoryError> {
         let mut inner = self.inner.write().await;
-        let revision = match inner.memories.get(id) {
-            Some(m) if m.text == embedded_text => m.revision,
-            // The record vanished, or its text was edited while the embed was
-            // in flight: this vector is of text the record no longer has, and
-            // the record stays listed by `unembedded` for the new text.
-            _ => return Ok(false),
-        };
-        let line = serde_json::to_string(&VectorRecord {
-            id: id.to_string(),
-            model: model.to_string(),
-            revision,
-            v: v.clone(),
+        // The record vanished, or its text was edited while the embed was
+        // in flight: this vector is of text the record no longer has, and
+        // the record stays listed by `unembedded` for the new text.
+        if !inner
+            .memories
+            .get(id)
+            .is_some_and(|m| m.is_live() && m.text == embedded_text)
+        {
+            return Ok(false);
+        }
+        let line = serde_json::to_string(&VectorLine {
+            id,
+            model,
+            text: embedded_text,
+            v: &v,
         })
         .map_err(|e| MemoryError::Storage(format!("serialize vector: {e}")))?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(VECTORS_FILE))?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
+        {
+            let _sidecar = sidecar_lock();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.dir.join(VECTORS_FILE))?;
+            file.write_all(line.as_bytes())?;
+            file.write_all(b"\n")?;
+        }
         inner.vectors.insert(id.to_string(), (model.to_string(), v));
         Ok(true)
     }
@@ -416,9 +483,10 @@ impl Bank {
                 f.is_live()
                     && match inner.vectors.get(&f.id) {
                         None => true,
-                        // A vector from a different model than the active
-                        // one is due a re-embed; empty active model means
-                        // "provider default" and accepts whatever exists.
+                        // A vector from another model than the one the
+                        // provider currently reports is in another space:
+                        // due a re-embed. Empty = that model is not known
+                        // yet, so whatever exists is accepted.
                         Some((model, _)) => !active_model.is_empty() && model != active_model,
                     }
             })
@@ -468,10 +536,11 @@ impl Bank {
         }
         // The text changed under this id: any stored vector embeds the old
         // text. Drop it so unembedded() re-lists the record for backfill.
-        let stale_vector = inner
-            .memories
-            .get(&memory.id)
-            .is_some_and(|prev| prev.text != memory.text);
+        let stale_vector = !memory.is_live()
+            || inner
+                .memories
+                .get(&memory.id)
+                .is_some_and(|prev| prev.text != memory.text);
         if stale_vector {
             inner.vectors.remove(&memory.id);
         }
@@ -540,12 +609,11 @@ impl Bank {
     /// to the `user` entity handle so identity questions reach the memories
     /// phrased third-person about the user.
     ///
-    /// `embedding_model` is the model `query_vec` was embedded with: stored
-    /// vectors from another model live in an incomparable space and are
-    /// skipped (the same acceptance rule as [`Bank::unembedded`], so every
-    /// skipped vector is due a re-embed). The guard only bites when the
-    /// model is pinned — empty means "provider default", and vectors
-    /// stored under it carry no real model id.
+    /// `embedding_model` is the model the provider REPORTED for `query_vec`;
+    /// vectors are tagged the same way, so ones from any other model (an
+    /// earlier provider default, a previously pinned model) live in an
+    /// incomparable space and are skipped — and backfill re-embeds them.
+    /// Empty (no query vector, the ops probe) accepts any.
     pub async fn recall(
         &self,
         query: &str,
@@ -767,6 +835,114 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn open_compacts_the_sidecar_once_dead_lines_outnumber_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let (mut a, mut b, c) = (memory("alpha"), memory("bravo"), memory("charlie"));
+        for (m, v) in [(&a, 0.1), (&b, 0.2), (&c, 0.3)] {
+            bank.commit(m.clone()).await.unwrap();
+            bank.set_vector(&m.id, "m", &m.text, vec![v, 1.0])
+                .await
+                .unwrap();
+        }
+        let path = bank.dir().join(VECTORS_FILE);
+        let c_line = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .find(|l| l.contains(&c.id))
+            .unwrap()
+            .to_string();
+        // a's text edited, b retired: both lines dead; c's stays live.
+        a.text = "alpha edited".into();
+        a.revision += 1;
+        bank.commit(a.clone()).await.unwrap();
+        b.invalid_at = Some(now_ms());
+        b.revision += 1;
+        bank.commit(b.clone()).await.unwrap();
+        // A crash left a torn temp file behind.
+        std::fs::write(path.with_extension("jsonl.tmp"), b"{\"torn").unwrap();
+
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{c_line}\n")
+        );
+        assert!(!path.with_extension("jsonl.tmp").exists());
+
+        // The re-embed appends; at 2 lines for 2 kept, nothing is rewritten.
+        bank2
+            .set_vector(&a.id, "m", &a.text, vec![0.1, 1.0])
+            .await
+            .unwrap();
+        let store3 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank3 = store3.bank("main").await.unwrap();
+        assert_eq!(bank3.vector_count().await, 2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_failed_compaction_removes_its_temp_and_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("alpha");
+        bank.commit(m.clone()).await.unwrap();
+        // Three re-embeds of one text: 1 live vector, 2 dead lines.
+        for _ in 0..3 {
+            bank.set_vector(&m.id, "m", &m.text, vec![0.1; 64])
+                .await
+                .unwrap();
+        }
+        let path = bank.dir().join(VECTORS_FILE);
+        let before = std::fs::read_to_string(&path).unwrap();
+        let tmp = path.with_extension("jsonl.tmp");
+        // The compaction's writes land on /dev/full: ENOSPC mid-rewrite.
+        std::os::unix::fs::symlink("/dev/full", &tmp).unwrap();
+
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 1);
+        assert!(std::fs::symlink_metadata(&tmp).is_err(), "temp removed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "untouched");
+    }
+
+    #[tokio::test]
+    async fn retired_records_hold_no_vector_in_ram_or_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("beta to retire");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "m", &m.text, vec![0.5])
+            .await
+            .unwrap();
+        let mut gone = m.clone();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone.clone()).await.unwrap();
+        assert_eq!(bank.vector_count().await, 0, "dropped in RAM");
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0, "and on reopen");
+
+        // A vector landing after the retirement is refused.
+        assert!(!bank
+            .set_vector(&m.id, "m", &m.text, vec![0.5])
+            .await
+            .unwrap());
+        // Revived, the record is backfill work again.
+        let mut back = gone;
+        back.invalid_at = None;
+        back.revision += 1;
+        bank.commit(back).await.unwrap();
+        assert_eq!(bank.unembedded(10, "m").await.len(), 1);
+    }
+
     #[test]
     fn query_tokens_drop_stopwords_but_never_empty_the_query() {
         assert_eq!(
@@ -908,7 +1084,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reload_drops_vectors_from_older_revisions() {
+    async fn reopen_keeps_vectors_until_the_text_changes() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
@@ -917,17 +1093,41 @@ mod tests {
         bank.set_vector(&m.id, "test-model", &m.text, vec![0.5])
             .await
             .unwrap();
-        // Bump the record AFTER the vector was written.
+        // Reinforce / pin / tag: revision moves, text does not.
+        m.revision += 1;
+        m.pinned = true;
+        bank.commit(m.clone()).await.unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.bank("main").await.unwrap().vector_count().await, 1);
+
+        // A text edit (embed not yet landed) makes the stored vector stale.
+        m.text = "edited memory".into();
         m.revision += 1;
         bank.commit(m.clone()).await.unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0);
+        assert_eq!(bank2.unembedded(10, "").await.len(), 1);
+    }
 
-        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
-        let bank2 = store2.bank("main").await.unwrap();
-        assert_eq!(
-            bank2.vector_count().await,
-            0,
-            "a vector stamped with an older revision is stale on load"
-        );
+    #[tokio::test]
+    async fn legacy_revision_stamped_vectors_are_dropped_for_re_embed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let m = memory("legacy memory");
+        bank.commit(m.clone()).await.unwrap();
+        std::fs::write(
+            bank.dir().join(VECTORS_FILE),
+            format!(
+                "{{\"id\":\"{}\",\"model\":\"\",\"revision\":0,\"v\":[0.5]}}\n",
+                m.id
+            ),
+        )
+        .unwrap();
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = reopened.bank("main").await.unwrap();
+        assert_eq!(bank2.vector_count().await, 0);
         assert_eq!(bank2.unembedded(10, "").await.len(), 1);
     }
 

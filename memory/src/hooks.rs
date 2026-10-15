@@ -200,11 +200,12 @@ pub async fn pre_generate(
             if query_vec.is_some() {
                 annotations.insert("memory_retrieval".into(), json!("bm25-entity-semantic"));
             }
+            let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
             let hits = bank
                 .recall(
                     &query,
-                    query_vec.as_deref(),
-                    &cfg.embedding_model,
+                    qv,
+                    query_model,
                     cfg.recall_limit,
                     cfg.decay_half_life_days,
                     false,

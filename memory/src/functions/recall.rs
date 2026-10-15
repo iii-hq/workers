@@ -70,7 +70,8 @@ pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, M
         RecallMode::Lexical => None,
         _ => crate::embed_client::query_vector(deps, &req.query).await,
     };
-    let memories = rank(&bank, &req, query_vec.as_deref(), &cfg).await;
+    let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
+    let memories = rank(&bank, &req, qv, query_model, &cfg).await;
     Ok(RecallResponse {
         bank: bank_name,
         memories,
@@ -90,10 +91,13 @@ fn retrieval_label(mode: RecallMode, embedded: bool) -> &'static str {
 
 /// Score, tag-filter, then cap — in that order: capping first would drop
 /// tagged hits ranked past `limit` before the filter ever saw them.
+/// `query_model` is the model the provider reported for `query_vec`: only
+/// vectors stored under exactly that model are comparable with it.
 async fn rank(
     bank: &Bank,
     req: &RecallRequest,
     query_vec: Option<&[f32]>,
+    query_model: &str,
     cfg: &WorkerConfig,
 ) -> Vec<ScoredMemory> {
     let limit = req.limit.unwrap_or(cfg.recall_limit).min(100);
@@ -104,7 +108,7 @@ async fn rank(
             bank.recall(
                 &req.query,
                 query_vec,
-                &cfg.embedding_model,
+                query_model,
                 fetch,
                 cfg.decay_half_life_days,
                 include,
@@ -113,10 +117,7 @@ async fn rank(
         }
         RecallMode::Lexical => bank.lexical(&req.query, fetch, include).await,
         RecallMode::Semantic => match query_vec {
-            Some(qv) => {
-                bank.semantic(qv, &cfg.embedding_model, fetch, include)
-                    .await
-            }
+            Some(qv) => bank.semantic(qv, query_model, fetch, include).await,
             None => Vec::new(),
         },
     };
@@ -176,13 +177,13 @@ mod tests {
         let cfg = WorkerConfig::default();
 
         let req = request(serde_json::json!({"query": "coffee", "limit": 1, "tag": "x"}));
-        let hits = rank(&bank, &req, None, &cfg).await;
+        let hits = rank(&bank, &req, None, "", &cfg).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].memory.text, "coffee three");
 
         // Untagged: `limit` still caps.
         let req = request(serde_json::json!({"query": "coffee", "limit": 2}));
-        assert_eq!(rank(&bank, &req, None, &cfg).await.len(), 2);
+        assert_eq!(rank(&bank, &req, None, "", &cfg).await.len(), 2);
     }
 
     #[tokio::test]
@@ -201,7 +202,7 @@ mod tests {
 
         let lexical =
             request(serde_json::json!({"query": "kiwi mango smoothie recipe", "mode": "lexical"}));
-        let hits = rank(&bank, &lexical, None, &cfg).await;
+        let hits = rank(&bank, &lexical, None, "", &cfg).await;
         assert_eq!(
             hits[0].memory.id, old_twin.id,
             "raw BM25: age does not sink the twin"
@@ -210,7 +211,7 @@ mod tests {
         // 400-day-old twin's score by the recency factor (x0.8).
         let hybrid =
             request(serde_json::json!({"query": "kiwi mango smoothie recipe", "mode": "hybrid"}));
-        let fused = rank(&bank, &hybrid, None, &cfg).await;
+        let fused = rank(&bank, &hybrid, None, "", &cfg).await;
         let fused_twin = fused.iter().find(|h| h.memory.id == old_twin.id).unwrap();
         assert!(
             hits[0].score > 1.2 * fused_twin.score,
@@ -219,10 +220,10 @@ mod tests {
 
         let semantic = request(serde_json::json!({"query": "anything", "mode": "semantic"}));
         assert!(
-            rank(&bank, &semantic, None, &cfg).await.is_empty(),
+            rank(&bank, &semantic, None, "", &cfg).await.is_empty(),
             "no vector, no semantic arm"
         );
-        let hits = rank(&bank, &semantic, Some(&[1.0, 0.0]), &cfg).await;
+        let hits = rank(&bank, &semantic, Some(&[1.0, 0.0]), "", &cfg).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].memory.id, fresh.id);
         assert!(

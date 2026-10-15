@@ -447,8 +447,15 @@ pub struct FsAgent {
     pub description: String,
     /// Emoji logo, verbatim from frontmatter. v1 is emoji-only.
     pub logo: Option<String>,
-    /// Skill-id filter. Empty = every skill.
+    /// Preloaded skill ids: skills whose bodies the harness pre-loads into the
+    /// system prompt of every session running as this profile. Empty = none.
+    /// Never a filter on the skills index.
     pub skills: Vec<String>,
+    /// `skills_index: false`: sessions running as this profile start without
+    /// the names-only `<available_skills>` index in their prompt (not the
+    /// `directory::skills::index` function). Inherits nearest-wins through
+    /// `extends`; preloaded `skills` still render. `None` = the default (on).
+    pub skills_index: Option<bool>,
     /// Preloaded function ids: engine functions whose contracts the harness pre-loads into the
     /// system prompt of every session running as this profile — verbatim
     /// engine function ids such as `coder::tree`. Empty = none.
@@ -514,11 +521,16 @@ pub struct AgentFrontmatter {
     pub color: Option<String>,
     /// Parent profile id: the resolved profile is the parent's resolved
     /// prompt followed by this file's body, and `skills` / `model` /
-    /// `reasoning_effort` fall back to the parent when omitted here.
+    /// `reasoning_effort` / `skills_index` fall back to the parent when
+    /// omitted here.
     #[serde(default)]
     pub extends: Option<String>,
     #[serde(default)]
     pub hidden: bool,
+    /// `false` starts sessions without the skills index (see
+    /// [`FsAgent::skills_index`]).
+    #[serde(default)]
+    pub skills_index: Option<bool>,
     /// Optional example request for the chat's empty composer (see
     /// [`FsAgent::composer_placeholder`]).
     #[serde(default)]
@@ -772,6 +784,7 @@ pub(crate) fn agent_from_frontmatter(
             .to_string(),
         logo: fm.logo.map(|l| l.trim().to_string()),
         skills: fm.skills,
+        skills_index: fm.skills_index,
         functions: normalize_function_ids(fm.functions),
         model: trimmed(fm.model),
         reasoning_effort: trimmed(fm.reasoning_effort),
