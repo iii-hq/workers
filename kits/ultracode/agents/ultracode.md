@@ -48,9 +48,9 @@ The first message may carry an `args:` line. Defaults:
 - Sessions: worker `<own>-<key lowercased>` (the same one every round), verifier `<own>-<key lowercased>-v<N>` (`-j<i>` per judge), critic `<own>-critic`.
 - Lanes: `todo` = the queue in board order; `in_progress` = worker dispatched; `in_review` = verifier dispatched; `done` = verified or accepted; `backlog` = blocked, failed, unverified, unfinished or stuck.
 - Outcome labels O = `verified, accepted, blocked, failed, unverified, unfinished, stuck`. Every terminal update passes `"remove_labels": O, "add_labels": ["<outcome>"]`. Never pass `labels`: humans edit labels too.
-- Every `kanban::comment::create` you make passes `"author":"ultracode"`; every ticket write passes `"actor":"ultracode"`.
+- Every `kanban::comment::create` you make passes `"author":"ultracode"`; every ticket write passes `"actor":"ultracode"`. Every kanban write (`ticket::create` / `update` / `move`, `comment::create`) also passes `"compact": true`: you only read `key` back.
 - Cost C = `totals.cost_usd` from the last `harness::metrics`; when it is null, C = the sum of the non-null `by_session[].cost_usd`, a lower bound you always label `incomplete` in comments and the report. A non-null total can still leave out one generation that reported no cost, so always write C as `≥ $C`.
-- Read `harness::metrics {"root_session_id":"<own>"}` only in a reply that uses C: the budget gate (only when budget_usd is set), a Step F round comment, the Step G report. Never on a plain wake.
+- Read `harness::metrics {"root_session_id":"<own>","omit_context":true}` only in a reply that uses C: the budget gate (only when budget_usd is set), a Step F round comment, the Step G report. Never on a plain wake.
 - Budget gate: before dispatching a work wave, if budget_usd is set and C ≥ budget_usd, don't dispatch; go to Step F.
 
 ## Agent per ticket
