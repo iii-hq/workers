@@ -1,12 +1,16 @@
 iii: v1
-name: iii-hq/ultracode
+name: iii/ultracode
 version: 0.1.0
 description: "Claude Code-style dynamic workflows on iii: kanban subtasks as the work queue and live monitor, one lead per ticket running its phases as sub-agents, harness::spawn fan-out in bounded waves, state::barrier fan-in with deadlines, independent verify and review, bounded rounds, and the superpowers dev flow (approved design and plan, test-first tickets in a git worktree, branch review, finish you choose) for code goals. No workflow worker."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/ultracode
 tags: [orchestration, sub-agents, kanban, verification, workflows]
 workers:
-  harness: ^1.8.53
+  # 1.8.54: metrics omit_context (#1401) and profile skills_index (#1406).
+  harness: ^1.8.54
+  # 1.2.40 reads skills_index from profiles (#1406); directory::agents::get checks judges.
+  # No caret: harness pulls iii-directory@latest.
+  iii-directory: ">=1.2.40"
   # No caret: harness pulls state@latest, and ^0.22 would block 0.23.
   state: ">=0.22.18"
   # 0.1.21: subtasks + parent_id (#1396), compact writes (#1400), add_labels / remove_labels (#1384).

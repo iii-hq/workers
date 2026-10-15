@@ -2,7 +2,7 @@
 
 Claude Code-style dynamic workflows on iii, with the kanban board as the task manager. Give **Ultracode** a goal: it breaks the goal into tickets, gives each ticket a lead that runs it through its phases with its own sub-agents, runs the leads in parallel in bounded waves, and loops in bounded rounds until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
 
-A goal that changes code in a git repository gets the [superpowers](https://github.com/obra/superpowers) flow: you approve the design and the plan, every ticket is built test-first in a git worktree with one commit, an independent verifier and a code reviewer check every commit, the whole branch is reviewed, and you choose how it finishes.
+A goal that changes code in a git repository gets the [superpowers](https://github.com/obra/superpowers) flow: you approve the design and the plan, every code ticket (`ultracode-impl`) is built test-first in a git worktree with one commit, an independent verifier and a code reviewer check every commit, the whole branch is reviewed, and you choose how it finishes. Reading and research tickets (`ultracode-worker`) in the same run are done and verified without a commit.
 
 | Profile | Role | Model |
 |---|---|---|
@@ -17,10 +17,8 @@ No `workflow` worker, code runner or fp pipeline: just `harness`, `state`, `kanb
 
 ## Install
 
-Not in the registry yet: the command below works once `iii-hq/ultracode@0.1.0` is published.
-
 ```
-iii trigger directory::download-kit kit=iii-hq/ultracode apply=true --timeout-ms 1200000
+iii trigger directory::download-kit kit=iii/ultracode apply=true --timeout-ms 1200000
 ```
 
 `apply=true` installs at once when the plan has no warnings, blocks or pending decisions (for example, a profile with the same id already exists). Otherwise the reply is a plan: review and apply it in the ADE (Directory → Kits), or run `iii trigger directory::kits::apply plan_id=<plan_id from the reply> --timeout-ms 1200000`. Applying adds or updates workers through Compose and can take minutes; if the command still times out, the apply keeps running: check Directory → Kits instead of re-running it.
@@ -50,7 +48,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `max_items` | 5 × K | cap on tickets the run creates; K = leads per wave = min(concurrency, 8) |
 | `budget_usd` | – | soft cap: checked with `harness::metrics` before each wave and at each round close; no new wave starts once it is reached. When a model has no catalog pricing or usage is missing, the cost is a lower bound (marked incomplete when the harness total is null; one generation without usage is left out silently), so the cap can be overshot |
 | `notify` | – | a function id called with the final report (e.g. a Slack or email send) |
-| `project` | – | an existing kanban project (id or name) to file the run under. Without it, Ultracode creates one project per run (`ultracode: <goal> · <id>`) when `kanban::project::create` is allowed (kanban denies it to agents by default, see Prerequisites), so the board's Project filter shows just that run; subtasks you add join it when their round starts |
+| `project` | – | an existing kanban project (id or name) to file the run under. Without it, Ultracode creates one project per run (`ultracode: <goal> · <id>`) (the repository rule set allows a create whose `lead` is `ultracode`, see Prerequisites), so the board's Project filter shows just that run; subtasks you add join it when their round starts |
 | `release` | – | an existing kanban release (id or name), the same way. Agents can't create releases: make them in the console first |
 
 **With hard caps:** console runs have only the soft `budget_usd`. For a hard ceiling, start the run from the CLI (or any non-agent client):
@@ -64,7 +62,7 @@ iii trigger harness::send --json '{"message":"<goal + args>","model":"<provider:
 1. **Design.** Ultracode reads the repository (`git status`, the tree) and asks you what the code can't settle, one question card at a time, with two or three approaches and its recommendation first.
 2. **Plan.** The design goes into the run ticket's description and each task becomes a subtask with a test-first card: `Files:`, `Test first:`, `Implement:`, `Verify:`, `Commit:`. A task is two to five minutes of work. You get one card: Start, Stop, or type your changes. A change rewrites the design on the run ticket first, then the affected subtasks (new ones are added, dropped ones are `canceled` with a comment), and the card comes back.
 3. **Worktree.** `git worktree add .worktrees/<slug> -b ultracode/<slug> <your branch>` (the slug ends with part of the session id, so runs never share a branch); run Ultracode from the repository's top folder. `.worktrees/` is excluded locally (`.git/info/exclude`), so your files stay untouched. The test suite runs once for a baseline.
-4. **Per ticket**, its lead runs `tests` (write the failing test, see it fail for the right reason), `code` (the least change that passes it, then one commit `<Commit:> (<KEY>)`), then `verify` (re-runs the Verify lines) and `review` (reads the commit, checks the test files are unchanged and nothing outside `Files:` moved) at the same time. A rejection goes back to the same code session with the reasons; a reason about the test reruns the tests phase. Tickets that touch the same file never run in the same wave: they share the worktree.
+4. **Per code ticket** (`ultracode-impl`; a research ticket runs `work` then `verify`, without tests or a commit), its lead runs `tests` (write the failing test, see it fail for the right reason), `code` (the least change that passes it, then one commit `<Commit:> (<KEY>)`), then `verify` (re-runs the Verify lines) and `review` (reads the commit, checks the test files are unchanged and nothing outside `Files:` moved) at the same time. A rejection goes back to the same code session with the reasons; a reason about the test reruns the tests phase. Tickets that touch the same file never run in the same wave: they share the worktree.
 5. **Branch review.** When the queue runs dry, one reviewer runs the full suite and the linter and reviews `git diff <base>...<branch>`. Findings become tickets for the next round.
 6. **Finish.** A card: merge into your branch (then the worktree is removed), push and open a PR, keep the branch, or discard it. Ultracode does only what you pick; it never pushes, merges or deletes on its own.
 
