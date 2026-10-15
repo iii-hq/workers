@@ -347,16 +347,35 @@ describe('ChatAside side chat', () => {
     expect(view.querySelector('[data-side-chat]')).toBeNull()
   })
 
-  it('keeps a side chat by removing its tag', () => {
+  it('keeps a side chat once the server dropped its tag', async () => {
+    mocks.setSessionMeta.mockReset().mockResolvedValue({})
     const ctx = makeCtx([main, fork])
     mocks.ctx = ctx
     window.localStorage.setItem('iii-chat-aside-tab', 'side-chat')
     const view = render()
     act(() => button('Keep as conversation')?.click())
+    await settle()
+    expect(mocks.setSessionMeta).toHaveBeenCalledWith({
+      session_id: 'fork-1',
+      metadata: {},
+    })
     expect(ctx.setSessionMetadata).toHaveBeenCalledWith('fork-1', {
       side_chat_of: undefined,
     })
     expect(view.textContent).toContain('Kept as a conversation')
+  })
+
+  it('stays a side chat when the server refuses to keep it', async () => {
+    mocks.setSessionMeta.mockReset().mockRejectedValue(new Error('offline'))
+    const ctx = makeCtx([main, fork])
+    mocks.ctx = ctx
+    window.localStorage.setItem('iii-chat-aside-tab', 'side-chat')
+    const view = render()
+    act(() => button('Keep as conversation')?.click())
+    await settle()
+    expect(ctx.setSessionMetadata).not.toHaveBeenCalled()
+    expect(view.textContent).toContain('Side chat not kept')
+    expect(view.textContent).not.toContain('Kept as a conversation')
   })
 })
 
@@ -378,6 +397,25 @@ describe('ChatAside unread reply', () => {
   it('counts what was there on arrival as read', async () => {
     localStorage.clear()
     mocks.ctx = makeCtx([main, answered(1)])
+    render()
+    await settle()
+    expect(dot()).toBeNull()
+  })
+
+  it('counts only a reply as news, not the notes a turn writes first', async () => {
+    localStorage.clear()
+    mocks.ctx = makeCtx([main, answered(0)])
+    render()
+    await settle()
+    const noted = chat('fork-1', {
+      createdAt: 20,
+      hydrated: true,
+      sessionMetadata: { side_chat_of: 'main' },
+      messages: [
+        { id: 'n1', role: 'system', content: 'runtime context', createdAt: 30 },
+      ] as Conversation['messages'],
+    })
+    mocks.ctx = makeCtx([main, noted])
     render()
     await settle()
     expect(dot()).toBeNull()

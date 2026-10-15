@@ -28,6 +28,7 @@ import {
   forwardRef,
   type ReactNode,
   useEffect,
+  useId,
   useMemo,
   useState,
 } from 'react'
@@ -245,16 +246,17 @@ export function ChatContextPanel({
     let alive = true
     void (async () => {
       const gh = await withGh()
-      const rows = gh
+      const read = gh
         ? await readPullRequests(ghSource(gh), {
             repo,
             branch,
             mentioned,
-          }).catch(() => [])
-        : []
+          }).catch(() => null)
+        : null
       if (!alive) return
-      setPullRequests(rows)
-      setPrsReadFor(`${repo}@${branch}`)
+      setPullRequests(read?.rows ?? [])
+      // Only a read that answered for the branch says it has no PR.
+      setPrsReadFor(read?.branchListed ? `${repo}@${branch}` : null)
     })()
     return () => {
       alive = false
@@ -268,6 +270,7 @@ export function ChatContextPanel({
     mentionedKey,
     conversation.status,
     prTick,
+    focusTick,
   ])
   const sessionMetadata = conversation.sessionMetadata
   const dismissed = useMemo(
@@ -277,40 +280,54 @@ export function ChatContextPanel({
   const listedPrs = pullRequests.filter(
     (pr) => !dismissed.has(pullRequestKey(pr)),
   )
-  const [prBusy, setPrBusy] = useState<string | null>(null)
+  const [prBusy, setPrBusy] = useState<Record<string, boolean>>({})
+  const busy = (pr: PullRequestRow, on: boolean) =>
+    setPrBusy((current) => ({ ...current, [pullRequestKey(pr)]: on }))
   const [prError, setPrError] = useState<string | null>(null)
   const actOnPr = async (pr: PullRequestRow, action: PullRequestAction) => {
     const gh = await withGh()
     if (!gh) return
-    setPrBusy(pullRequestKey(pr))
+    busy(pr, true)
     setPrError(null)
     try {
       const error = await runPullRequestAction(gh, pr, action)
       if (error) setPrError(`#${pr.number}: ${error}`)
       else setPrTick((tick) => tick + 1)
     } finally {
-      setPrBusy(null)
+      busy(pr, false)
     }
   }
+  // Asked, not yet subscribed: the agent takes a turn to do it. Held for two
+  // minutes so a second click cannot ask twice.
+  const [autoFixAsked, setAutoFixAsked] = useState<Record<string, number>>({})
+  const autoFixPending = (pr: PullRequestRow) =>
+    Date.now() - (autoFixAsked[pullRequestKey(pr)] ?? 0) < 120_000
   // Only the agent can subscribe this chat to the PR's events: turning
   // auto-fix on asks it to; turning it off drops the subscription and the
   // watch here.
   const setAutoFix = async (pr: PullRequestRow, on: boolean) => {
     if (on) {
-      onAskAgent?.(autoFixPrompt(pr), true)
+      setAutoFixAsked((current) => ({
+        ...current,
+        [pullRequestKey(pr)]: Date.now(),
+      }))
+      onAskAgent?.(autoFixPrompt(pr, conversation.id), true)
       return
     }
-    setPrBusy(pullRequestKey(pr))
+    busy(pr, true)
     try {
-      for (const trigger of autoFixTriggers(triggers, pr)) {
+      for (const trigger of autoFixTriggers(triggers, pr, conversation.id)) {
         await onUnregisterTrigger(trigger.id)
       }
+      // This chat's own watch: another chat's auto-fix keeps its own.
       const client = await getIiiClient()
       await client
-        .trigger('github::pr::unwatch', { watch_id: autoFixWatchId(pr) })
+        .trigger('github::pr::unwatch', {
+          watch_id: autoFixWatchId(pr, conversation.id),
+        })
         .catch(() => null)
     } finally {
-      setPrBusy(null)
+      busy(pr, false)
     }
   }
   // The folder's branch has work and no pull request of its own yet.
@@ -639,9 +656,12 @@ export function ChatContextPanel({
               actions={
                 <PullRequestMenu
                   pr={pr}
-                  busy={prBusy === pullRequestKey(pr)}
+                  busy={!!prBusy[pullRequestKey(pr)]}
                   canWrite={ghVia !== null}
-                  autoFix={autoFixTriggers(triggers, pr).length > 0}
+                  autoFix={
+                    autoFixTriggers(triggers, pr, conversation.id).length > 0
+                  }
+                  autoFixPending={autoFixPending(pr)}
                   autoFixAvailable={githubAvailable && Boolean(onAskAgent)}
                   onViewChanges={() =>
                     workingDir && pr.headRefName === branch
@@ -673,6 +693,15 @@ export function ChatContextPanel({
               className="mx-2 mt-1"
               headline="Pull request not changed"
               detail={prError}
+              action={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPrError(null)}
+                >
+                  Dismiss
+                </Button>
+              }
             />
           ) : null}
         </Section>
@@ -913,7 +942,11 @@ function TicketItem({ row }: { row: TicketRow }) {
         </span>
       }
       title={`${ticket.key} · ${ticket.title}`}
-      ariaLabel={`Open ${ticket.key} ${ticket.title} in a new panel (${status})`}
+      ariaLabel={`Open ${ticket.key} ${ticket.title} in a new panel (${status}${
+        ticket.priority === 'urgent' || ticket.priority === 'high'
+          ? `, ${ticket.priority} priority`
+          : ''
+      })`}
       onActivate={() =>
         requestPanelOpen({
           pageId: 'kanban-ticket',
@@ -1007,6 +1040,7 @@ function PullRequestMenu({
   busy,
   canWrite,
   autoFix,
+  autoFixPending,
   autoFixAvailable,
   onViewChanges,
   onAction,
@@ -1017,6 +1051,8 @@ function PullRequestMenu({
   busy: boolean
   canWrite: boolean
   autoFix: boolean
+  /** Asked of the agent, not subscribed yet. */
+  autoFixPending: boolean
   autoFixAvailable: boolean
   onViewChanges: () => void
   onAction: (action: PullRequestAction) => void
@@ -1025,16 +1061,28 @@ function PullRequestMenu({
 }) {
   const live = pr.state === 'open' || pr.state === 'draft'
   const draft = pr.state === 'draft'
-  const reason = (text: string) => (
-    <span className="ml-auto pl-3 text-[11px] text-ink-faint">{text}</span>
-  )
+  // Why an item cannot run: shown beside it and read as its description,
+  // never as part of its name.
+  const ids = useId()
+  const reason = (key: string, text: string | null) =>
+    text ? (
+      <span id={`${ids}-${key}`} className="ml-auto pl-3 text-[11px]">
+        {text}
+      </span>
+    ) : null
+  const autoFixReason = !autoFixAvailable
+    ? 'needs the github worker'
+    : autoFixPending && !autoFix
+      ? 'turning on…'
+      : null
+  const mergeReason = !canWrite ? 'needs gh' : draft ? 'draft' : null
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           className={uiClasses.treeItemAction}
-          aria-label={`Actions for #${pr.number}`}
+          aria-label={`Actions for ${pr.repo}#${pr.number}`}
           title="More actions"
           disabled={busy}
           onClick={(event) => event.stopPropagation()}
@@ -1059,16 +1107,20 @@ function PullRequestMenu({
           <>
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
-              checked={autoFix}
-              disabled={!autoFixAvailable}
+              checked={autoFix || (autoFixPending && 'indeterminate')}
+              disabled={!autoFixAvailable || (autoFixPending && !autoFix)}
+              aria-label="Auto-fix"
+              aria-describedby={autoFixReason ? `${ids}-fix` : undefined}
               onCheckedChange={(on) => onAutoFix(on === true)}
             >
               Auto-fix
-              {autoFixAvailable ? null : reason('needs the github worker')}
+              {reason('fix', autoFixReason)}
             </DropdownMenuCheckboxItem>
             <DropdownMenuCheckboxItem
               checked={pr.autoMerge}
               disabled={!canWrite || draft}
+              aria-label="Merge when ready"
+              aria-describedby={mergeReason ? `${ids}-merge` : undefined}
               onCheckedChange={(on) =>
                 onAction(
                   on === true ? 'merge-when-ready' : 'cancel-merge-when-ready',
@@ -1076,7 +1128,7 @@ function PullRequestMenu({
               }
             >
               Merge when ready
-              {!canWrite ? reason('needs gh') : draft ? reason('draft') : null}
+              {reason('merge', mergeReason)}
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem
               disabled={!canWrite}

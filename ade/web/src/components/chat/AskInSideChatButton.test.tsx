@@ -96,4 +96,26 @@ describe('AskInSideChatButton', () => {
       agent: 'Frontend',
     })
   })
+
+  it('ignores a selection that runs on into the next message', () => {
+    const ask = vi.fn()
+    const view = render(ask)
+    const range = document.createRange()
+    range.setStart(
+      (view.querySelector('[data-prose]') as Element).firstChild as Node,
+      0,
+    )
+    range.setEnd(
+      (view.querySelector('[data-outside]') as Element).firstChild as Node,
+      4,
+    )
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    act(() => askButton()?.click())
+    expect(ask).toHaveBeenCalledWith({
+      messageId: 'm1',
+      text: 'the whole message',
+      agent: 'Frontend',
+    })
+  })
 })
