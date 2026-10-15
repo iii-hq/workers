@@ -1,7 +1,6 @@
 //! Which bank a turn, its extraction pass, and its agent's `memory::*`
 //! calls use: one resolver for all three, so a session reads and writes
-//! the same bank. Hindsight derives one bank id for inject, capture and its
-//! tools alike (`hindsight-integrations/claude-code/scripts/lib/bank.py:93`).
+//! the same bank.
 //!
 //! Order: turn metadata `memory_bank` → session metadata `memory_bank` →
 //! the parent turn's bank, else the parent session's, walked up (a sub-agent
@@ -229,8 +228,14 @@ pub async fn request_bank(deps: &Deps, explicit: Option<String>) -> Result<Strin
         return Ok(bank);
     }
     let caller = Caller::from_baggage();
-    let recorded = caller.turn_id.as_deref().and_then(turn_bank);
     let cfg = deps.config().await;
+    let store = deps.store().await;
+    // Deleted since the turn was injected: no memory, never a resurrection.
+    let recorded = caller
+        .turn_id
+        .as_deref()
+        .and_then(turn_bank)
+        .map(|bank| bank.filter(|b| *b == cfg.default_bank || !store.is_deleted(b)));
     request_bank_with(caller, &cfg.default_bank, recorded, |session| async move {
         resolve(deps, &session, None).await
     })

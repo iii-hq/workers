@@ -150,6 +150,14 @@ pub async fn pre_generate(
     }
     let mut mutations = Mutations::default();
     let mut annotations = Map::new();
+
+    // One resolver for the hook, the turn's extraction, and its agent's
+    // calls (`scope`). Recorded even with injection off: extraction and
+    // the agent's calls still use the bank, a turn-only override included.
+    let resolved = crate::scope::resolve(deps, &input.session_id, input.metadata.as_ref()).await;
+    if let (Ok(bank), Some(turn_id)) = (&resolved, input.turn_id.as_deref()) {
+        crate::scope::remember_turn(turn_id, bank.clone());
+    }
     if !cfg.inject_rules && !cfg.inject_memories {
         // Memory off is an empty section, told like any rules change: a
         // section this session already froze stays in its system prompt.
@@ -160,11 +168,8 @@ pub async fn pre_generate(
             annotations: Some(annotations),
         });
     }
-
-    // One resolver for the hook, the turn's extraction, and its agent's
-    // calls (`scope`). A failed lookup injects nothing new (scope-safe),
-    // but keeps the section this session's system prompt already carries.
-    let resolved = crate::scope::resolve(deps, &input.session_id, input.metadata.as_ref()).await;
+    // A failed lookup injects nothing new (scope-safe), but keeps the
+    // section this session's system prompt already carries.
     let bank_name = match resolved {
         Ok(bank) => bank,
         Err(e) => {
@@ -172,9 +177,6 @@ pub async fn pre_generate(
             return Ok(keep_told_section(&input));
         }
     };
-    if let Some(turn_id) = input.turn_id.as_deref() {
-        crate::scope::remember_turn(turn_id, bank_name.clone());
-    }
     let Some(bank_name) = bank_name else {
         // An invalid or deleted bank: no memory section applies.
         apply_rules(&input, "", &mut mutations, &mut annotations);
@@ -570,9 +572,8 @@ fn is_sub_agent(input: &TurnCompletedInput) -> bool {
 
 /// The extraction job for a finished turn, or none.
 ///
-/// A sub-agent's turn is never extracted (Hindsight skips them too): its
-/// "user" message is the parent's task, and what it finds returns to the
-/// parent's transcript. Any other finished turn — failed or cancelled too,
+/// A sub-agent's turn is never extracted: its "user" message is the
+/// parent's task, and what it finds returns to the parent's transcript. Any other finished turn — failed or cancelled too,
 /// which the next turn's pass would otherwise sweep into ITS bank — is
 /// extracted into the bank it was injected with (`bank`: what the hook
 /// recorded, `None` when this process never saw the turn). A turn that ran
