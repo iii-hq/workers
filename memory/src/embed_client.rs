@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 
 use crate::deps::Deps;
 use crate::store::Bank;
+use crate::types::Memory;
 
 /// Query-path budget: the pre-generate hook runs inside a 3s harness
 /// timeout, so the embed call must fail fast and fail open.
@@ -113,6 +114,65 @@ fn bank_lock(bank: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+/// Per `bank\0id`, how often that memory's text failed to embed. A text the
+/// provider rejects outright (one over a llama.cpp server's batch size, say)
+/// would otherwise head every window and fail every batch it is in, so no
+/// memory in the bank ever got a vector. Known failures go to the back of
+/// the window instead, and a failed batch is retried one text at a time.
+fn failures() -> &'static Mutex<HashMap<String, u32>> {
+    static FAILURES: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+    FAILURES.get_or_init(Default::default)
+}
+
+fn failure_key(bank: &str, id: &str) -> String {
+    format!("{bank}\0{id}")
+}
+
+/// The next window of backfill work: unembedded memories, those that failed
+/// before last (only re-sorted when this bank has any).
+async fn next_window(bank: &Bank, model: &str) -> Vec<Memory> {
+    let prefix = failure_key(&bank.name, "");
+    let failed: HashMap<String, u32> = failures()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter_map(|(k, n)| k.strip_prefix(&prefix).map(|id| (id.to_string(), *n)))
+        .collect();
+    if failed.is_empty() {
+        return bank.unembedded(BACKFILL_BATCH, model).await;
+    }
+    let mut pending = bank.unembedded(usize::MAX, model).await;
+    pending.sort_by_key(|m| (failed.get(&m.id).copied().unwrap_or(0), m.id.clone()));
+    pending.truncate(BACKFILL_BATCH);
+    pending
+}
+
+fn note_failure(bank: &Bank, memory: &Memory) {
+    *failures()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(failure_key(&bank.name, &memory.id))
+        .or_default() += 1;
+}
+
+/// Store one embedding; `Err` when the sidecar write failed (stop the pass).
+async fn store(bank: &Bank, model: &str, memory: &Memory, v: Vec<f32>) -> Result<bool, ()> {
+    match bank.set_vector(&memory.id, model, &memory.text, v).await {
+        Ok(stored) => {
+            let key = failure_key(&bank.name, &memory.id);
+            failures()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&key);
+            Ok(stored)
+        }
+        Err(e) => {
+            tracing::warn!(bank = %bank.name, error = %e, "vector write failed");
+            Err(())
+        }
+    }
+}
+
 /// The backfill loop with the embedder injected (`router::embed` in
 /// production). Returns how many vectors it stored.
 async fn backfill_pass<F, Fut>(bank: &Bank, model: &str, mut embed: F) -> usize
@@ -124,21 +184,46 @@ where
     let _pass = lock.lock().await;
     let mut total = 0usize;
     for _ in 0..BACKFILL_ROUNDS {
-        let pending = bank.unembedded(BACKFILL_BATCH, model).await;
+        let pending = next_window(bank, model).await;
         if pending.is_empty() {
             break;
         }
         let texts: Vec<String> = pending.iter().map(|f| f.text.clone()).collect();
-        let Some(vectors) = embed(texts).await else {
-            // Router or provider unavailable; a later pass retries.
-            break;
-        };
-        for (memory, v) in pending.iter().zip(vectors) {
-            match bank.set_vector(&memory.id, model, &memory.text, v).await {
-                Ok(stored) => total += usize::from(stored),
-                Err(e) => {
-                    tracing::warn!(bank = %bank.name, error = %e, "vector write failed");
+        if let Some(vectors) = embed(texts).await {
+            for (memory, v) in pending.iter().zip(vectors) {
+                let Ok(stored) = store(bank, model, memory, v).await else {
                     return total;
+                };
+                total += usize::from(stored);
+            }
+            continue;
+        }
+        // The batch failed: the provider is down, or it rejects one of the
+        // texts. One at a time tells them apart: two failures before any
+        // success reads as "down" (a later pass retries); otherwise only the
+        // rejected texts miss out, and go last in later windows.
+        if pending.len() == 1 {
+            note_failure(bank, &pending[0]);
+            break;
+        }
+        let (mut ok, mut failed) = (0usize, 0usize);
+        for memory in &pending {
+            match embed(vec![memory.text.clone()]).await {
+                Some(mut v) if v.len() == 1 => {
+                    let Ok(stored) = store(bank, model, memory, v.remove(0)).await else {
+                        return total;
+                    };
+                    total += usize::from(stored);
+                    ok += 1;
+                }
+                _ => {
+                    note_failure(bank, memory);
+                    failed += 1;
+                    // ponytail: "down" costs 3 calls per pass (batch + 2
+                    // singles); classify router errors if that ever matters.
+                    if ok == 0 && failed >= 2 {
+                        return total;
+                    }
                 }
             }
         }
@@ -296,5 +381,75 @@ mod tests {
 
         assert_eq!(backfill_pass(&bank, "m", |_| async { None }).await, 0);
         assert_eq!(bank.unembedded(10, "m").await.len(), 1);
+    }
+
+    /// A provider that rejects any batch holding a "REJECTED" text.
+    fn picky(
+        calls: &AtomicUsize,
+    ) -> impl FnMut(Vec<String>) -> std::future::Ready<Option<Vec<Vec<f32>>>> + '_ {
+        move |texts: Vec<String>| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let ok = !texts.iter().any(|t| t.contains("REJECTED"));
+            std::future::ready(ok.then(|| texts.iter().map(|_| vec![1.0, 0.0]).collect()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_text_does_not_block_the_rest_of_the_bank() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-rejected").await;
+        for t in [
+            "REJECTED oversized text",
+            "user owns a bike",
+            "user likes tea",
+        ] {
+            bank.commit(memory(t)).await.unwrap();
+        }
+        let calls = AtomicUsize::new(0);
+        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 2);
+
+        // A later save: the known failure goes last, the new text lands.
+        bank.commit(memory("user plays chess")).await.unwrap();
+        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        let left = bank.unembedded(10, "m").await;
+        assert_eq!(left.len(), 1);
+        assert!(left[0].text.starts_with("REJECTED"));
+    }
+
+    #[tokio::test]
+    async fn two_rejected_texts_up_front_cost_at_most_one_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-rejected-two").await;
+        for t in [
+            "REJECTED one",
+            "REJECTED two",
+            "user owns a bike",
+            "user likes tea",
+        ] {
+            bank.commit(memory(t)).await.unwrap();
+        }
+        let calls = AtomicUsize::new(0);
+        // Both rejected texts may come first and read as "provider down";
+        // the next pass tries them last and embeds the rest.
+        let first = backfill_pass(&bank, "m", picky(&calls)).await;
+        let second = backfill_pass(&bank, "m", picky(&calls)).await;
+        assert_eq!(first + second, 2);
+        assert_eq!(bank.unembedded(10, "m").await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_down_provider_costs_one_batch_and_two_singles() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-down").await;
+        for t in ["user owns a bike", "user likes tea", "user plays chess"] {
+            bank.commit(memory(t)).await.unwrap();
+        }
+        let calls = AtomicUsize::new(0);
+        let down = |_: Vec<String>| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { None }
+        };
+        assert_eq!(backfill_pass(&bank, "m", down).await, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }
