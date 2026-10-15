@@ -55,6 +55,7 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import {
   allGroupsFolded,
   foldAllGroups,
+  useContextSections,
   useFoldedGroups,
 } from '@/lib/context-groups'
 import { useConversationsCtx } from '@/lib/conversations-context'
@@ -66,6 +67,7 @@ import { PortalScope } from '@/lib/ui-scope'
 import type { Conversation } from '@/types/chat'
 import { ChatContextPanel } from './ChatContextPanel'
 import { ChatView } from './ChatView'
+import { ContextSectionsMenu } from './ContextSectionsMenu'
 
 export type AsideTab = 'context' | 'side-chat'
 
@@ -486,13 +488,14 @@ export function ChatAside({
     />
   )
 
-  const allFolded = allGroupsFolded(useFoldedGroups())
+  const sectionIds = useContextSections().map((section) => section.id)
+  const allFolded = allGroupsFolded(useFoldedGroups(), sectionIds)
   const foldAll =
     tab === 'context' ? (
       <IconButton
         label={allFolded ? 'Expand all groups' : 'Collapse all groups'}
-        className={phone ? 'size-11 shrink-0' : 'size-7 shrink-0'}
-        onClick={() => foldAllGroups(!allFolded)}
+        className="size-7 shrink-0"
+        onClick={() => foldAllGroups(!allFolded, sectionIds)}
       >
         {allFolded ? (
           <ChevronsUpDown aria-hidden />
@@ -692,9 +695,9 @@ export function ChatAside({
                   : discard()
               }
             />
-          ) : (
-            foldAll
-          )
+          ) : tab === 'context' ? (
+            <ContextSectionsMenu phone />
+          ) : null
         }
       >
         {content}
@@ -720,6 +723,7 @@ export function ChatAside({
       header={
         <>
           {tabs}
+          {tab === 'context' ? <ContextSectionsMenu phone={false} /> : null}
           {foldAll}
         </>
       }

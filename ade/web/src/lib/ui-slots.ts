@@ -12,6 +12,7 @@ import type {
   ComposerControlRegistration,
   ConfigFormLayout,
   ConfigFormProps,
+  ContextSectionRegistration,
   FunctionTriggerRenderer,
   MentionRendererRegistration,
   OverlayRegistration,
@@ -68,6 +69,11 @@ export interface RegisteredSessionChip extends SessionChipRegistration {
 
 export interface RegisteredSessionTurnSummary
   extends SessionTurnSummaryRegistration {
+  scope: string
+  path: string
+}
+
+export interface RegisteredContextSection extends ContextSectionRegistration {
   scope: string
   path: string
 }
@@ -163,6 +169,7 @@ const configFormsStore = createStore<RegisteredConfigForm>()
 const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
 const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
+const contextSectionsStore = createStore<RegisteredContextSection>()
 const composerActionsStore = createStore<RegisteredComposerAction>()
 const composerControlsStore = createStore<RegisteredComposerControl>()
 const overlaysStore = createStore<RegisteredOverlay>()
@@ -511,6 +518,36 @@ export function useExtSessionTurnSummaries(): readonly RegisteredSessionTurnSumm
     () => EMPTY,
   )
   return useMemo(() => dedupeSessionTurnSummaries(summaries), [summaries])
+}
+
+/** Duplicate section id: last registration wins in the Context panel. */
+export function registerExtContextSection(
+  entry: RegisteredContextSection,
+): () => void {
+  const duplicate = contextSectionsStore
+    .get()
+    .find((section) => section.id === entry.id)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate context section id '${entry.id}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return contextSectionsStore.add(entry)
+}
+
+/** Workers' Context panel sections deduplicated by id; last registration wins. */
+export function useExtContextSections(): readonly RegisteredContextSection[] {
+  const sections = useSyncExternalStore(
+    contextSectionsStore.subscribe,
+    contextSectionsStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => {
+    const byId = new Map<string, RegisteredContextSection>()
+    for (const section of sections) byId.set(section.id, section)
+    return [...byId.values()]
+  }, [sections])
 }
 
 function dedupeComposerActions(

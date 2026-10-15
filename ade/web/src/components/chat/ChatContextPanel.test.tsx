@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { resetFoldedGroups } from '@/lib/context-groups'
+import { registerExtContextSection } from '@/lib/ui-slots'
 import type { Conversation, Message } from '@/types/chat'
-
+import type { ContextSectionSummary } from '@/types/injectable-ui'
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
@@ -406,7 +407,7 @@ describe('ChatContextPanel', () => {
     let view = await render(main)
     const header = () =>
       view.querySelector(
-        'section[aria-label="Links"] > button',
+        'section[aria-label="Links"] button[aria-expanded]',
       ) as HTMLButtonElement
     expect(header().getAttribute('aria-expanded')).toBe('true')
     act(() => header().click())
@@ -421,6 +422,94 @@ describe('ChatContextPanel', () => {
     expect(header().getAttribute('aria-expanded')).toBe('false')
     act(() => header().click())
     expect(header().getAttribute('aria-expanded')).toBe('true')
+  })
+
+  describe('sections', () => {
+    const labels = (view: HTMLElement) =>
+      [...view.querySelectorAll('section[data-reorder-item]')]
+        .filter((section) => !(section as HTMLElement).hidden)
+        .map((section) => section.getAttribute('aria-label'))
+    const withLinks = chat('main', {
+      messages: [say('see https://example.com/a')],
+    })
+
+    it('follows the order kept in this browser and leaves hidden ones out', async () => {
+      window.localStorage.setItem(
+        'iii-context-order',
+        JSON.stringify(['links', 'project']),
+      )
+      expect(labels(await render(withLinks))).toEqual(['Links', 'Project'])
+
+      act(() => root?.unmount())
+      container?.remove()
+      resetFoldedGroups()
+      window.localStorage.setItem(
+        'iii-context-hidden',
+        JSON.stringify(['project']),
+      )
+      expect(labels(await render(withLinks))).toEqual(['Links'])
+    })
+
+    it('moves a section with its handle and keeps the move', async () => {
+      const view = await render(withLinks)
+      expect(labels(view)).toEqual(['Project', 'Links'])
+      const handle = view.querySelector(
+        'button[aria-label="Move Links"]',
+      ) as HTMLButtonElement
+      act(() => {
+        handle.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
+        )
+      })
+      expect(labels(view)).toEqual(['Links', 'Project'])
+      const kept: string[] = JSON.parse(
+        window.localStorage.getItem('iii-context-order') ?? '[]',
+      )
+      expect(kept.indexOf('links')).toBeLessThan(kept.indexOf('project'))
+    })
+
+    it("shows a worker's section with its summary, folded or empty", async () => {
+      let report: (summary: ContextSectionSummary) => void = () => {}
+      const dispose = registerExtContextSection({
+        id: 'sentinel-errors',
+        title: 'Sentinel',
+        order: 50,
+        scope: 'sentinel',
+        path: 'sentinel/ui.js',
+        render: ({ sessionId, setSummary }) => {
+          report = setSummary
+          return <p>errors of {sessionId}</p>
+        },
+      })
+      try {
+        const view = await render(withLinks)
+        expect(labels(view)).toEqual(['Sentinel', 'Project', 'Links'])
+        const section = () =>
+          view.querySelector('section[aria-label="Sentinel"]') as HTMLElement
+        expect(section().textContent).toContain('sentinel')
+        expect(section().textContent).toContain('errors of main')
+
+        act(() => report({ count: 2, brief: '2 new errors', tone: 'alert' }))
+        act(() =>
+          (
+            section().querySelector(
+              'button[aria-expanded]',
+            ) as HTMLButtonElement
+          ).click(),
+        )
+        // Folded, the body stays mounted so its summary keeps up.
+        const header = section().querySelector('button[aria-expanded]')
+        expect(header?.textContent).toContain('2 new errors')
+        expect(header?.textContent).toContain('2')
+        expect(section().textContent).toContain('errors of main')
+
+        act(() => report({ empty: true }))
+        expect(section().hidden).toBe(true)
+        expect(labels(view)).toEqual(['Project', 'Links'])
+      } finally {
+        dispose()
+      }
+    })
   })
 
   describe('pull request actions', () => {

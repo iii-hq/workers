@@ -29,8 +29,11 @@ import {
 import {
   type ButtonHTMLAttributes,
   type CSSProperties,
+  createContext,
+  Fragment,
   forwardRef,
   type ReactNode,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -52,11 +55,13 @@ import {
   ImageViewer,
   useImageViewer,
 } from '@/components/ui/ImageViewer'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { useLazyAttachment } from '@/hooks/use-lazy-attachment'
+import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import {
   type AutoFixSeen,
   autoFixBaseline,
@@ -93,15 +98,22 @@ import {
 } from '@/lib/chat-aside'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import {
-  type ContextGroup,
+  moveSection,
   toggleGroup,
+  useContextSections,
   useFoldedGroups,
+  useHiddenSections,
 } from '@/lib/context-groups'
 import { openChatFile } from '@/lib/file-navigation'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
+import {
+  type RegisteredContextSection,
+  useExtContextSections,
+} from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import type { Attachment, Conversation } from '@/types/chat'
+import type { ContextSectionSummary } from '@/types/injectable-ui'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import {
   downloadStoredAttachment,
@@ -114,6 +126,7 @@ import {
   resolveSubagentAppearance,
   type SubagentVisualStatus,
 } from './active-subagents'
+import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
 import { TriggerDetailDialog } from './SessionTriggers'
 
 /**
@@ -458,27 +471,29 @@ export function ChatContextPanel({
   const ticketsWorked = tickets.filter((row) => row.action || row.by).length
   const failingPrs = listedPrs.filter((pr) => pr.failing > 0).length
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-2 pt-1 pb-3">
-      {landBlocked && workingDir ? (
-        <StatusPanel
-          variant="warn"
-          role="status"
-          icon={<TriangleAlert className="h-full w-full" />}
-          headline="Landing blocked"
-          detail="The worktree conflicts with its base. Resolve the conflicts, then land again."
-          action={
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => openSourceControl(workingDir)}
-            >
-              Open changes
-            </Button>
-          }
-        />
-      ) : null}
+  const order = useContextSections()
+  const hiddenSections = useHiddenSections()
+  const workerSections = useExtContextSections()
+  const { announcement, announce } = useLiveAnnouncer()
+  const onMove = (id: string, target: ReorderTarget) => {
+    moveSection(
+      order.map((section) => section.id),
+      id,
+      target,
+    )
+    const name = (key: string) =>
+      order.find((section) => section.id === key)?.label ?? key
+    announce(
+      'before' in target
+        ? `${name(id)}, now above ${name(target.before)}`
+        : `${name(id)}, now below ${name(target.after)}`,
+    )
+  }
 
+  // Each section by id, null while it has nothing to show. The order
+  // kept in this browser places them; hidden ones are left out.
+  const groups: Record<string, ReactNode> = {
+    project: (
       <Section
         id="project"
         label="Project"
@@ -653,38 +668,38 @@ export function ChatContextPanel({
           />
         )}
       </Section>
-
-      {ticketsLoading ? (
-        <Section id="tickets" label="Tickets">
-          <div className="flex flex-col gap-2 px-3 py-1.5" aria-hidden>
-            <Skeleton className="h-3 w-44" />
-            <Skeleton className="h-3 w-28" />
-          </div>
-        </Section>
-      ) : tickets.length > 0 ? (
-        <Section
-          id="tickets"
-          label="Tickets"
-          count={tickets.length}
-          brief={plural([
-            [ticketsWorked, 'worked here', 'worked here'],
-            [tickets.length - ticketsWorked, 'mentioned', 'mentioned'],
-          ])}
-        >
-          {ticketRowsShown.shown.map((row) => (
-            <TicketItem key={row.ticket.key} row={row} />
-          ))}
-          <ShowMore
-            hidden={ticketRowsShown.hidden}
-            expanded={!!expanded.tickets}
-            total={tickets.length}
-            cap={SECTION_CAP}
-            onToggle={() => toggle('tickets')}
-          />
-        </Section>
-      ) : null}
-
-      {listedPrs.length > 0 ? (
+    ),
+    tickets: ticketsLoading ? (
+      <Section id="tickets" label="Tickets">
+        <div className="flex flex-col gap-2 px-3 py-1.5" aria-hidden>
+          <Skeleton className="h-3 w-44" />
+          <Skeleton className="h-3 w-28" />
+        </div>
+      </Section>
+    ) : tickets.length > 0 ? (
+      <Section
+        id="tickets"
+        label="Tickets"
+        count={tickets.length}
+        brief={plural([
+          [ticketsWorked, 'worked here', 'worked here'],
+          [tickets.length - ticketsWorked, 'mentioned', 'mentioned'],
+        ])}
+      >
+        {ticketRowsShown.shown.map((row) => (
+          <TicketItem key={row.ticket.key} row={row} />
+        ))}
+        <ShowMore
+          hidden={ticketRowsShown.hidden}
+          expanded={!!expanded.tickets}
+          total={tickets.length}
+          cap={SECTION_CAP}
+          onToggle={() => toggle('tickets')}
+        />
+      </Section>
+    ) : null,
+    prs:
+      listedPrs.length > 0 ? (
         <Section
           id="prs"
           label="Pull requests"
@@ -757,9 +772,9 @@ export function ChatContextPanel({
             />
           ) : null}
         </Section>
-      ) : null}
-
-      {images.length + files.length > 0 ? (
+      ) : null,
+    assets:
+      images.length + files.length > 0 ? (
         <Section
           id="assets"
           label="Assets"
@@ -815,9 +830,9 @@ export function ChatContextPanel({
             onToggle={() => toggle('files')}
           />
         </Section>
-      ) : null}
-
-      {subagents.length > 0 ? (
+      ) : null,
+    subagents:
+      subagents.length > 0 ? (
         <Section
           id="subagents"
           label="Sub-agents"
@@ -854,9 +869,9 @@ export function ChatContextPanel({
             onToggle={() => toggle('subagents')}
           />
         </Section>
-      ) : null}
-
-      {liveTriggers.length > 0 ? (
+      ) : null,
+    triggers:
+      liveTriggers.length > 0 ? (
         <Section
           id="triggers"
           label="Triggers"
@@ -913,9 +928,9 @@ export function ChatContextPanel({
             onToggle={() => toggle('triggers')}
           />
         </Section>
-      ) : null}
-
-      {links.length > 0 ? (
+      ) : null,
+    links:
+      links.length > 0 ? (
         <Section
           id="links"
           label="Links"
@@ -951,31 +966,76 @@ export function ChatContextPanel({
             onToggle={() => toggle('links')}
           />
         </Section>
-      ) : null}
+      ) : null,
+  }
+  for (const section of workerSections) {
+    groups[section.id] = (
+      <WorkerSection
+        section={section}
+        sessionId={conversation.id}
+        workingDir={workingDir ?? undefined}
+        active={active}
+        isStreaming={conversation.status === 'working'}
+      />
+    )
+  }
 
-      <TriggerDetailDialog
-        trigger={openTrigger}
-        busy={openTrigger !== null && busyTriggerId === openTrigger.id}
-        onOpenChange={(open) => {
-          if (!open) setOpenTriggerId(null)
-        }}
-        onUnregister={(id) => void unregister(id)}
-      />
-      <ConfirmDialog
-        open={confirmTrigger !== null}
-        onOpenChange={(open) => {
-          if (!open) setConfirmTrigger(null)
-        }}
-        title="Unregister this trigger?"
-        description="Nothing will notify this chat from it afterwards."
-        confirmLabel="Unregister"
-        tone="danger"
-        onConfirm={() => {
-          if (confirmTrigger) void unregister(confirmTrigger.id)
-          setConfirmTrigger(null)
-        }}
-      />
-    </div>
+  return (
+    <SectionMover.Provider value={onMove}>
+      <div
+        data-reorder-list=""
+        className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-3"
+      >
+        {landBlocked && workingDir ? (
+          <StatusPanel
+            variant="warn"
+            role="status"
+            icon={<TriangleAlert className="h-full w-full" />}
+            headline="Landing blocked"
+            detail="The worktree conflicts with its base. Resolve the conflicts, then land again."
+            action={
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => openSourceControl(workingDir)}
+              >
+                Open changes
+              </Button>
+            }
+          />
+        ) : null}
+
+        {order.map((section) =>
+          hiddenSections.has(section.id) ? null : (
+            <Fragment key={section.id}>{groups[section.id] ?? null}</Fragment>
+          ),
+        )}
+
+        <TriggerDetailDialog
+          trigger={openTrigger}
+          busy={openTrigger !== null && busyTriggerId === openTrigger.id}
+          onOpenChange={(open) => {
+            if (!open) setOpenTriggerId(null)
+          }}
+          onUnregister={(id) => void unregister(id)}
+        />
+        <ConfirmDialog
+          open={confirmTrigger !== null}
+          onOpenChange={(open) => {
+            if (!open) setConfirmTrigger(null)
+          }}
+          title="Unregister this trigger?"
+          description="Nothing will notify this chat from it afterwards."
+          confirmLabel="Unregister"
+          tone="danger"
+          onConfirm={() => {
+            if (confirmTrigger) void unregister(confirmTrigger.id)
+            setConfirmTrigger(null)
+          }}
+        />
+        <LiveRegion announcement={announcement} />
+      </div>
+    </SectionMover.Provider>
   )
 }
 
@@ -1272,58 +1332,147 @@ function plural(parts: [number, string, string][]): string | null {
   return text || null
 }
 
+/** Moves a section among the others; absent outside the Context panel. */
+const SectionMover = createContext<
+  ((id: string, target: ReorderTarget) => void) | null
+>(null)
+
 /**
- * A group whose header folds it. Folded, the header keeps a one-line brief
- * of what is inside, so a failing check or a running agent stays in sight.
- * Which groups are folded is remembered in this browser, for every chat.
+ * A section card whose header folds it. Folded, the header keeps a one-line
+ * brief of what is inside, so a failing check or a running agent stays in
+ * sight. Its handle moves it among the others. Which sections are folded,
+ * and where they go, is remembered in this browser, for every chat.
  */
 function Section({
   id,
   label,
+  source,
   count,
   extra,
   brief,
+  hidden,
+  keepMounted,
   children,
 }: {
-  id: ContextGroup
+  id: string
   label: string
+  /** The worker that adds it. */
+  source?: string
   count?: number
   extra?: ReactNode
   brief?: ReactNode
+  /** Left out for now, its body still mounted (a worker's, while empty). */
+  hidden?: boolean
+  /** Keep the body mounted while folded, so a worker's summary keeps up. */
+  keepMounted?: boolean
   children: ReactNode
 }) {
   const open = !useFoldedGroups().has(id)
+  const onMove = useContext(SectionMover)
   return (
-    <section aria-label={label} className="flex flex-col">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => toggleGroup(id)}
-        className={cn(
-          uiClasses.listGroupLabel,
-          'flex items-center gap-2 rounded-sm text-left hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus pointer-coarse:min-h-11',
-        )}
-      >
-        <span className="shrink-0">{label}</span>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-[11px] font-normal whitespace-nowrap">
-          {open ? null : brief}
-        </span>
-        {extra}
-        {count !== undefined ? (
-          <span className="font-mono text-[11px] font-normal text-ink-ghost tabular-nums">
-            {count}
-          </span>
-        ) : null}
-        <ChevronDown
-          aria-hidden
+    <section
+      aria-label={label}
+      data-reorder-item={id}
+      hidden={hidden}
+      className={cn(
+        'group/section flex shrink-0 flex-col rounded-md border border-edge bg-panel-raised data-[dragging]:relative data-[dragging]:z-10 data-[dragging]:shadow-floating data-[dragging]:ring-1 data-[dragging]:ring-rule-focus',
+        open && 'pb-1',
+      )}
+    >
+      <div className="flex items-center gap-0.5 pr-1">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => toggleGroup(id)}
           className={cn(
-            'size-4 shrink-0 text-ink-ghost motion-safe:transition-transform',
-            !open && '-rotate-90',
+            uiClasses.listGroupLabel,
+            'flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus pointer-coarse:min-h-11',
           )}
-        />
-      </button>
-      {open ? <div className={uiClasses.tree}>{children}</div> : null}
+        >
+          <span className="shrink-0">{label}</span>
+          {source ? (
+            <span className="shrink-0 font-mono text-[11px] font-normal text-ink-ghost">
+              {source}
+            </span>
+          ) : null}
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-[11px] font-normal whitespace-nowrap">
+            {open ? null : brief}
+          </span>
+          {extra}
+          {count !== undefined ? (
+            <span className="font-mono text-[11px] font-normal text-ink-ghost tabular-nums">
+              {count}
+            </span>
+          ) : null}
+          <ChevronDown
+            aria-hidden
+            className={cn(
+              'size-4 shrink-0 text-ink-ghost motion-safe:transition-transform',
+              !open && '-rotate-90',
+            )}
+          />
+        </button>
+        {onMove ? (
+          <ReorderHandle
+            label={label}
+            onMove={(target) => onMove(id, target)}
+            className="size-7 opacity-0 group-hover/section:opacity-100 group-data-[dragging]/section:opacity-100 focus-visible:opacity-100 pointer-coarse:hidden"
+          />
+        ) : null}
+      </div>
+      {open || keepMounted ? (
+        <div hidden={!open} className={uiClasses.tree}>
+          {children}
+        </div>
+      ) : null}
     </section>
+  )
+}
+
+/**
+ * A worker's section: the panel's header around the worker's body, which
+ * reports the count and brief and leaves the section out while empty.
+ */
+function WorkerSection({
+  section,
+  sessionId,
+  workingDir,
+  active,
+  isStreaming,
+}: {
+  section: RegisteredContextSection
+  sessionId: string
+  workingDir?: string
+  active: boolean
+  isStreaming: boolean
+}) {
+  const [summary, setSummary] = useState<ContextSectionSummary>({})
+  const Body = section.render
+  return (
+    <Section
+      id={section.id}
+      label={section.title}
+      source={section.scope}
+      count={summary.count}
+      hidden={summary.empty === true}
+      keepMounted
+      brief={
+        summary.brief ? (
+          <>
+            {summary.tone ? <StatusDot tone={summary.tone} /> : null}
+            <span className="truncate text-ink">{summary.brief}</span>
+          </>
+        ) : null
+      }
+    >
+      <Body
+        sessionId={sessionId}
+        workingDir={workingDir}
+        active={active}
+        isStreaming={isStreaming}
+        setSummary={setSummary}
+      />
+    </Section>
   )
 }
 

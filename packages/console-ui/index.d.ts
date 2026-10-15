@@ -410,6 +410,51 @@ export interface SessionTurnSummaryRegistration {
   render: React.ComponentType<SessionTurnSummaryProps>
 }
 
+/** What a worker's Context section shows in its header. */
+export interface ContextSectionSummary {
+  /** Shown beside the title. */
+  count?: number
+  /** One line kept in the header while the section is folded. */
+  brief?: string
+  /** A status dot before the brief. */
+  tone?: 'accent' | 'alert' | 'warn' | 'ok'
+  /** Nothing to show: the section is left out until this turns false. */
+  empty?: boolean
+}
+
+/** Props a worker's section in the chat's Context panel receives. */
+export interface ContextSectionProps {
+  sessionId: string
+  /** The chat's project folder, when it has one. */
+  workingDir?: string
+  /** The panel is open: read only while it is. */
+  active: boolean
+  /** A turn is running; read again when it ends. */
+  isStreaming: boolean
+  /** The header's count and brief; `empty` leaves the section out. */
+  setSummary(summary: ContextSectionSummary): void
+}
+
+/**
+ * A section of the chat's Context side panel. The console draws its header
+ * (title, worker, count, brief, fold and drag handle) and keeps where the
+ * user put it, folded or hidden; the render draws the body, and stays
+ * mounted while folded so its summary keeps up. Duplicate `id`: last
+ * registration wins.
+ */
+export interface ContextSectionRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  title: string
+  /**
+   * Its first place among the panel's sections, whose own run from 100
+   * (Project) to 700 (Links) in steps of 100; 1000 when left out. The
+   * order the user drags wins.
+   */
+  order?: number
+  render: React.ComponentType<ContextSectionProps>
+}
+
 /** Props a composer toolbar action receives. */
 export interface ComposerActionProps {
   /** Active session id, or `null` while the conversation has none yet. */
@@ -681,6 +726,8 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
+    /** Optional on consoles that predate the chat's Context panel sections. */
+    registerContextSection?(section: ContextSectionRegistration): () => void
     /** Optional on consoles that predate the composer toolbar slot. */
     registerComposerAction?(action: ComposerActionRegistration): () => void
     /** Optional on consoles that predate the composer footer control slot. */

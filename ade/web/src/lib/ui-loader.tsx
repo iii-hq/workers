@@ -36,6 +36,7 @@ import {
   registerExtComposerAction,
   registerExtComposerControl,
   registerExtConfigForm,
+  registerExtContextSection,
   registerExtMentionRenderer,
   registerExtOverlay,
   registerExtPage,
@@ -53,6 +54,7 @@ import type {
   ComposerControlProps,
   ConfigFormProps,
   ConsoleApi,
+  ContextSectionProps,
   Host,
   ProviderConfigFormProps,
   SessionChipProps,
@@ -369,6 +371,21 @@ function makeHost(
             render: (props: SessionTurnSummaryProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Summary {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      registerContextSection(section) {
+        const Body = section.render
+        return track(
+          registerExtContextSection({
+            ...section,
+            scope,
+            path,
+            render: (props: ContextSectionProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Body {...props} />
               </ScopedExtension>
             ),
           }),
