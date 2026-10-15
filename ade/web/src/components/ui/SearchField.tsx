@@ -24,7 +24,9 @@ export interface SearchFieldProps
  * capture phase, before any React handler runs, so stopping the event in
  * `onKeyDown` comes too late: the dialog has already closed. The field
  * claims the key on the window, earlier still, while there is a query to
- * clear; `preventDefault` is what tells the dialog to stay.
+ * clear; `preventDefault` is what tells the dialog to stay. The clear itself
+ * still happens in `onKeyDown`, after the caller's own handler, which can
+ * veto it with `preventDefault` as before.
  */
 export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
   (
@@ -44,8 +46,6 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
     const generatedId = React.useId()
     const inputId = id ?? generatedId
     const input = React.useRef<HTMLInputElement | null>(null)
-    const clear = React.useRef(onChange)
-    clear.current = onChange
     const claimed = React.useRef<Event | null>(null)
     React.useEffect(() => {
       const node = input.current
@@ -55,7 +55,6 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
         if (event.key !== 'Escape' || event.target !== node || !node.value) return
         event.preventDefault()
         claimed.current = event
-        clear.current('')
       }
       view.addEventListener('keydown', claim, true)
       return () => view.removeEventListener('keydown', claim, true)
@@ -94,13 +93,20 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
             aria-label={label ? undefined : (ariaLabel ?? placeholder)}
             className="pl-8 pr-8 [&::-webkit-search-cancel-button]:hidden"
             onKeyDown={(event) => {
-              // Already cleared on the way down; keep it from React parents.
-              if (event.nativeEvent === claimed.current) {
-                event.stopPropagation()
-                return
+              // A claimed Escape arrives already default-prevented (that is
+              // what kept the dialog open), so the caller's veto is its own
+              // preventDefault call, watched here.
+              const ours = event.nativeEvent === claimed.current
+              let vetoed = false
+              if (ours) {
+                const prevent = event.preventDefault.bind(event)
+                event.preventDefault = () => {
+                  vetoed = true
+                  prevent()
+                }
               }
               onKeyDown?.(event)
-              if (event.defaultPrevented) return
+              if (ours ? vetoed : event.defaultPrevented) return
               if (event.key === 'Escape' && value) {
                 event.stopPropagation()
                 onChange('')

@@ -1056,6 +1056,15 @@ function ContextPopover({
   const tree = data ? conversationTree(data, sessionId) : null
   const live = snapshot && snapshot.usable > 0 ? snapshot : null
   const liveCost = live?.session_cost_usd
+  // A refresh that no longer carries this session (deleted mid-flight)
+  // takes the sub-agents page away: fall back to the overview for good
+  // rather than jump back to the page if a later answer carries it again.
+  // Focus is the dialog's: Radix's focus scope refocuses its container when
+  // the focused Back button unmounts.
+  const hasTree = tree !== null
+  useEffect(() => {
+    if (view.page === 'sub-agents' && !hasTree) setView({ page: 'overview' })
+  }, [view.page, hasTree])
   if (view.page === 'sub-agents' && tree) {
     return (
       <div ref={root} className="harness-ui-pop-root">

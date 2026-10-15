@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type * as React from 'react'
 import { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -13,14 +14,17 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup()
 })
 
-function mount(onOpenChange: (open: boolean) => void) {
+function mount(
+  onOpenChange: (open: boolean) => void,
+  onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void,
+) {
   function Probe() {
     const [query, setQuery] = useState('')
     return (
       <Dialog open onOpenChange={onOpenChange}>
         <DialogContent>
           <DialogTitle>Sub-agents</DialogTitle>
-          <SearchField aria-label="Filter" value={query} onChange={setQuery} />
+          <SearchField aria-label="Filter" value={query} onChange={setQuery} onKeyDown={onKeyDown} />
         </DialogContent>
       </Dialog>
     )
@@ -59,6 +63,20 @@ describe('SearchField inside a dialog', () => {
     expect(input.value).toBe('kan129')
     escape(input)
     expect(input.value).toBe('')
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
+
+  it('runs the caller\'s onKeyDown once, which can veto the clear', () => {
+    const onOpenChange = vi.fn()
+    const onKeyDown = vi.fn((event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Escape') event.preventDefault()
+    })
+    const input = mount(onOpenChange, onKeyDown)
+    input.focus()
+    type(input, 'kan129')
+    escape(input)
+    expect(onKeyDown).toHaveBeenCalledTimes(1)
+    expect(input.value).toBe('kan129')
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
