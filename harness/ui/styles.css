@@ -142,6 +142,7 @@
 /* The empty part of the bar is the Free row's swatch colour. */
 [data-iii-ui="harness"] .harness-ui-stack {
   display: flex;
+  column-gap: 1px;
   width: 100%;
   height: 8px;
   border-radius: var(--radius-full);
@@ -309,13 +310,7 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-/* Sub-agents: one ListItem per descendant, the whole row opens it. The rows
-   bleed into the dialog padding so the hover fill frames the text. */
-[data-iii-ui="harness"] .harness-ui-subs {
-  display: flex;
-  flex-direction: column;
-  margin: 0 -12px;
-}
+/* Sub-agent rows (cost ranking and the sub-agents page). */
 [data-iii-ui="harness"] .harness-ui-sub-id {
   display: block;
   overflow: hidden;
@@ -336,18 +331,151 @@
   color: var(--color-ink-ghost);
 }
 [data-iii-ui="harness"] .harness-ui-sub-cost {
-  display: flex;
   flex: none;
-  flex-direction: column;
-  align-items: flex-end;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--color-ink);
 }
-[data-iii-ui="harness"] .harness-ui-sub-share {
+[data-iii-ui="harness"] .harness-ui-sub-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-sub-cost[data-unpriced] {
+  color: var(--color-ink-faint);
+}
+/* A lower bound: some session left the counter unreported. */
+[data-iii-ui="harness"] .harness-ui-bound {
+  color: var(--color-ink-faint);
+  font-weight: 400;
+}
+[data-iii-ui="harness"] .harness-ui-footnote {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 16px;
+}
+[data-iii-ui="harness"] .harness-ui-footnote > svg {
+  flex: none;
+  margin-top: 0;
+}
+/* Where the cost went: ranked rows, each with a bar of its share. They
+   bleed into the dialog padding so the hover fill frames the text. */
+[data-iii-ui="harness"] .harness-ui-cost-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -12px;
+}
+[data-iii-ui="harness"] .harness-ui-cost-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-height: 44px;
+  padding: 7px 12px 8px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+[data-iii-ui="harness"] button.harness-ui-cost-row {
+  cursor: pointer;
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+[data-iii-ui="harness"] button.harness-ui-cost-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="harness"] button.harness-ui-cost-row:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="harness"] .harness-ui-cost-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-cost-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-cost-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+[data-iii-ui="harness"] .harness-ui-cost-share {
+  flex: none;
+  width: 34px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-cost-bar {
+  display: flex;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-active);
+  overflow: hidden;
+}
+[data-iii-ui="harness"] .harness-ui-cost-bar[data-indent] {
+  margin-left: 24px;
+}
+[data-iii-ui="harness"] .harness-ui-cost-bar > span {
+  display: block;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-ink) 55%, transparent);
+}
+[data-iii-ui="harness"] .harness-ui-all {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+/* The sub-agents page: back, title, filter and sort, then the groups. */
+[data-iii-ui="harness"] .harness-ui-pop-root {
+  display: contents;
+}
+[data-iii-ui="harness"] .harness-ui-page-head {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  margin-left: -6px;
+}
+[data-iii-ui="harness"] .harness-ui-page-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 4px;
+}
+[data-iii-ui="harness"] .harness-ui-page-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+[data-iii-ui="harness"] .harness-ui-page-search {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-group {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="harness"] .harness-ui-group-rows {
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 6px 20px;
 }
 /* Footer: the session id with copy, and the conversation that spawned it. */
 [data-iii-ui="harness"] .harness-ui-pop-foot {
@@ -454,6 +582,9 @@
 }
 [data-iii-ui="harness"] .harness-ui-sheet .harness-ui-field-input {
   font-size: 16px;
+}
+[data-iii-ui="harness"] .harness-ui-sheet .harness-ui-cost-row {
+  min-height: 48px;
 }
 /* Too narrow for label and value on one line: stack them. */
 [data-iii-ui="harness"] .harness-ui-sheet .harness-ui-step {

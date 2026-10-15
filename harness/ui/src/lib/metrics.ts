@@ -135,6 +135,30 @@ export type UsageCounters = Pick<
   | 'cost_usd'
 >
 
+const SUMMED = [
+  'input_tokens',
+  'output_tokens',
+  'cache_read_tokens',
+  'cache_write_tokens',
+  'cost_usd',
+] as const
+
+export type SummedKey = (typeof SUMMED)[number]
+
+/** A sum over several sessions. */
+export interface UsageTotals extends UsageCounters {
+  /** Counters some session with steps left unreported (`null` on the wire):
+      the value sums the sessions that did report it, so it is a lower bound
+      and reads `≥`. */
+  partial: SummedKey[]
+  /** The sessions behind `partial`. */
+  unreported: string[]
+  /** Cache hit over the sessions that reported both fresh input and cache
+      read — a session missing one of them would skew the ratio, one missing
+      both just is not in it. `null` when no session reported both. */
+  cacheHit: number | null
+}
+
 export interface SubAgentRow {
   usage: SessionUsage
   /** Levels below the conversation the modal is open on (children are 1). */
@@ -145,8 +169,6 @@ export interface ConversationTree {
   self: SessionUsage
   /** Every descendant, depth-first, so a grandchild follows its parent. */
   subAgents: SubAgentRow[]
-  /** This conversation plus every descendant; `null` without descendants. */
-  withSubAgents: UsageCounters | null
 }
 
 /**
@@ -180,45 +202,151 @@ export function conversationTree(
     }
   }
   walk(sessionId, 1)
-  return {
-    self,
-    subAgents,
-    withSubAgents: subAgents.length
-      ? sumUsage([self, ...subAgents.map((row) => row.usage)])
-      : null,
-  }
+  return { self, subAgents }
 }
 
-const SUMMED = [
-  'input_tokens',
-  'output_tokens',
-  'cache_read_tokens',
-  'cache_write_tokens',
-  'cost_usd',
-] as const
-
 /**
- * Sum of the counters. The server reports an optional counter as `null` when
- * it cannot vouch for it (a session's generations left it unreported), so a
- * sum over such a row would be a partial total shown as a whole one: the
- * counter becomes unknown (absent) instead. A session with no steps yet has
- * nothing to report and does not count against the sum.
+ * Sum of the counters. A counter some session with steps left unreported
+ * still sums what the others reported — with 175 sub-agents, two unpriced
+ * ones must not blank the total — and is listed in `partial`. A counter no
+ * session reported stays absent. A session with no steps yet has nothing to
+ * report and counts against nothing.
  */
-export function sumUsage(rows: UsageCounters[]): UsageCounters {
-  const total: UsageCounters = { turns: 0, function_calls: 0, function_call_errors: 0 }
-  const unknown = new Set<(typeof SUMMED)[number]>()
+export function sumUsage(rows: SessionUsage[]): UsageTotals {
+  const total: UsageTotals = {
+    turns: 0,
+    function_calls: 0,
+    function_call_errors: 0,
+    partial: [],
+    unreported: [],
+    cacheHit: null,
+  }
+  const missing: [string, SummedKey[]][] = []
+  let hitRead = 0
+  let hitPrompt = 0
   for (const row of rows) {
     total.turns += row.turns ?? 0
     total.function_calls += row.function_calls ?? 0
     total.function_call_errors += row.function_call_errors ?? 0
+    const gaps: SummedKey[] = []
     for (const key of SUMMED) {
       const value = row[key]
       if (value != null) total[key] = (total[key] ?? 0) + value
-      else if (row.turns > 0) unknown.add(key)
+      else if (row.turns > 0) gaps.push(key)
+    }
+    if (gaps.length) missing.push([row.session_id, gaps])
+    if (row.input_tokens != null && row.cache_read_tokens != null) {
+      hitRead += row.cache_read_tokens
+      hitPrompt += row.input_tokens + row.cache_read_tokens + (row.cache_write_tokens ?? 0)
     }
   }
-  for (const key of unknown) delete total[key]
+  total.cacheHit = hitPrompt > 0 ? Math.round((hitRead / hitPrompt) * 100) : null
+  // A counter nobody reported stays absent (not a partial zero) — and a
+  // session missing only such counters (cache write on a provider that never
+  // reports it) is not one the `≥` leaves out.
+  total.partial = SUMMED.filter(
+    (key) => total[key] != null && missing.some(([, gaps]) => gaps.includes(key)),
+  )
+  total.unreported = missing
+    .filter(([, gaps]) => gaps.some((key) => total.partial.includes(key)))
+    .map(([id]) => id)
   return total
+}
+
+/**
+ * The conversation's own counters with its cost taken from the live snapshot
+ * when there is one (it moves every generate step; `harness::metrics` is read
+ * once per turn), and the same sum over its whole subtree — `null` without
+ * sub-agents.
+ */
+export function treeTotals(
+  tree: ConversationTree,
+  liveCost?: number | null,
+): { self: SessionUsage; total: UsageTotals | null } {
+  const self = liveCost == null ? tree.self : { ...tree.self, cost_usd: liveCost }
+  const total = tree.subAgents.length
+    ? sumUsage([self, ...tree.subAgents.map((row) => row.usage)])
+    : null
+  return { self, total }
+}
+
+/** One direct child of the conversation with everything it spawned. */
+export interface SubAgentGroup {
+  head: SessionUsage
+  /** `head` first, then its descendants depth-first (after a filter, only
+      the ones that matched). */
+  rows: SessionUsage[]
+  /** How many descendants the group has, filtered or not. */
+  size: number
+  totals: UsageTotals
+  /** Newest context snapshot in the group (ms), when any session has one. */
+  lastActive?: number
+}
+
+/** Groups the subtree by the conversation's direct children — with a big
+    fan-out those are the orchestrators, and the rows under each are their
+    agents. */
+export function subAgentGroups(tree: ConversationTree): SubAgentGroup[] {
+  const groups: SubAgentGroup[] = []
+  let current: SessionUsage[] | null = null
+  const lists: SessionUsage[][] = []
+  for (const row of tree.subAgents) {
+    if (row.depth === 1 || !current) {
+      current = []
+      lists.push(current)
+    }
+    current.push(row.usage)
+  }
+  for (const rows of lists) {
+    const stamps = rows
+      .map((row) => row.context?.timestamp)
+      .filter((stamp): stamp is number => typeof stamp === 'number')
+    groups.push({
+      head: rows[0],
+      rows,
+      size: rows.length - 1,
+      totals: sumUsage(rows),
+      lastActive: stamps.length ? Math.max(...stamps) : undefined,
+    })
+  }
+  return groups
+}
+
+export type GroupSort = 'cost' | 'recent' | 'failed'
+
+const costOf = (usage: { cost_usd?: number }) => usage.cost_usd ?? 0
+const byCost = (a: SubAgentGroup, b: SubAgentGroup) => costOf(b.totals) - costOf(a.totals)
+
+/** A sorted copy: by subtree cost, by the newest snapshot, or by failed
+    calls (cost breaks ties). */
+export function sortGroups(groups: SubAgentGroup[], by: GroupSort): SubAgentGroup[] {
+  const sorted = [...groups]
+  if (by === 'cost') return sorted.sort(byCost)
+  if (by === 'recent') return sorted.sort((a, b) => (b.lastActive ?? 0) - (a.lastActive ?? 0) || byCost(a, b))
+  return sorted.sort(
+    (a, b) => b.totals.function_call_errors - a.totals.function_call_errors || byCost(a, b),
+  )
+}
+
+/**
+ * Groups whose head or any row matches `query` (session id substring, case
+ * insensitive). A group matched by its head keeps every row; otherwise it
+ * keeps its head for context plus the rows that match.
+ */
+export function filterGroups(groups: SubAgentGroup[], query: string): SubAgentGroup[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return groups
+  const hit = (row: SessionUsage) => row.session_id.toLowerCase().includes(q)
+  const out: SubAgentGroup[] = []
+  for (const group of groups) {
+    if (hit(group.head)) {
+      out.push(group)
+      continue
+    }
+    const rows = group.rows.slice(1).filter(hit)
+    if (rows.length) out.push({ ...group, rows: [group.head, ...rows] })
+  }
+  return out
 }
 
 /** Cached share of the whole prompt (fresh input + cache read + cache write),

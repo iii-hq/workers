@@ -6,10 +6,16 @@
 
 import type { ContextSnapshot } from './metrics'
 
+/**
+ * Lightness only, no hue: the console's accent is neutral (it no longer
+ * tells the conversation apart), and accent is rationed to live state
+ * anyway. What the window is built from (prompt, skills, schemas, guidance,
+ * overhead) sits dim; the conversation that grows turn by turn sits bright.
+ * The dimmest step stays a clear notch above the empty track, and the bar
+ * puts a 1px gap between segments, so neighbours never merge.
+ */
 const ink = (opacity: number) =>
   `color-mix(in srgb, var(--color-ink) ${opacity}%, transparent)`
-const accent = (opacity: number) =>
-  `color-mix(in srgb, var(--color-accent) ${opacity}%, transparent)`
 
 /** The bar's empty track (styles.css `.harness-ui-stack`). */
 export const COLOR_FREE = 'var(--color-surface-active)'
@@ -39,26 +45,26 @@ export function categories(snapshot: ContextSnapshot): Category[] {
   const cats = snapshot.categories
   const messages = cats.messages
   return [
-    { key: 'system', label: 'System prompt', color: ink(80), tokens: cats.system_prompt },
-    { key: 'skills', label: 'Skills', color: ink(65), tokens: cats.skills ?? 0 },
-    { key: 'tools', label: 'Function schemas', color: ink(55), tokens: cats.tools },
-    { key: 'user', label: 'Your messages', color: accent(95), tokens: messages.user },
-    { key: 'assistant', label: 'Assistant', color: accent(70), tokens: messages.assistant },
+    { key: 'system', label: 'System prompt', color: ink(46), tokens: cats.system_prompt },
+    { key: 'skills', label: 'Skills', color: ink(38), tokens: cats.skills ?? 0 },
+    { key: 'tools', label: 'Function schemas', color: ink(32), tokens: cats.tools },
+    { key: 'user', label: 'Your messages', color: ink(95), tokens: messages.user },
+    { key: 'assistant', label: 'Assistant', color: ink(76), tokens: messages.assistant },
     {
       key: 'results',
       label: 'Function results',
-      color: accent(45),
+      color: ink(60),
       tokens: messages.function_result + messages.custom,
     },
     {
       key: 'hooks',
       label: 'Hook guidance',
-      color: ink(35),
+      color: ink(28),
       // Optional on the wire (serde default): absent in snapshots written
       // before the category existed.
       tokens: cats.hook_guidance ?? 0,
     },
-    { key: 'overhead', label: 'Overhead', color: ink(20), tokens: cats.overhead },
+    { key: 'overhead', label: 'Overhead', color: ink(24), tokens: cats.overhead },
   ]
 }
 
@@ -87,7 +93,7 @@ export function legendRows(snapshot: ContextSnapshot, cats: Category[]): LegendE
       const parts = cats.filter((c) => CONVERSATION_KEYS.includes(c.key) && c.tokens > 0)
       const tokens = parts.reduce((sum, entry) => sum + entry.tokens, 0)
       if (tokens > 0) {
-        rows.push({ key: 'conversation', label: 'Conversation', color: accent(70), tokens, group: true })
+        rows.push({ key: 'conversation', label: 'Conversation', color: ink(76), tokens, group: true })
         for (const part of parts) rows.push({ ...part, sub: true })
       }
       continue

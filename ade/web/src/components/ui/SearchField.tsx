@@ -19,6 +19,12 @@ export interface SearchFieldProps
 /**
  * The search box: leading magnifier, clear button while non-empty, Escape
  * clears (and stops there, so an enclosing dialog stays open).
+ *
+ * A Radix Dialog or BottomSheet listens for Escape on the document in the
+ * capture phase, before any React handler runs, so stopping the event in
+ * `onKeyDown` comes too late: the dialog has already closed. The field
+ * claims the key on the window, earlier still, while there is a query to
+ * clear; `preventDefault` is what tells the dialog to stay.
  */
 export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
   (
@@ -37,6 +43,31 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
   ) => {
     const generatedId = React.useId()
     const inputId = id ?? generatedId
+    const input = React.useRef<HTMLInputElement | null>(null)
+    const clear = React.useRef(onChange)
+    clear.current = onChange
+    const claimed = React.useRef<Event | null>(null)
+    React.useEffect(() => {
+      const node = input.current
+      const view = node?.ownerDocument.defaultView
+      if (!node || !view) return
+      const claim = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape' || event.target !== node || !node.value) return
+        event.preventDefault()
+        claimed.current = event
+        clear.current('')
+      }
+      view.addEventListener('keydown', claim, true)
+      return () => view.removeEventListener('keydown', claim, true)
+    }, [])
+    const setRef = React.useCallback(
+      (node: HTMLInputElement | null) => {
+        input.current = node
+        if (typeof ref === 'function') ref(node)
+        else if (ref) ref.current = node
+      },
+      [ref],
+    )
     return (
       <div className={cn('flex min-w-0 flex-col gap-1', className)}>
         {label ? (
@@ -53,7 +84,7 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
             className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-ghost"
           />
           <Input
-            ref={ref}
+            ref={setRef}
             {...rest}
             id={inputId}
             type="search"
@@ -63,6 +94,11 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
             aria-label={label ? undefined : (ariaLabel ?? placeholder)}
             className="pl-8 pr-8 [&::-webkit-search-cancel-button]:hidden"
             onKeyDown={(event) => {
+              // Already cleared on the way down; keep it from React parents.
+              if (event.nativeEvent === claimed.current) {
+                event.stopPropagation()
+                return
+              }
               onKeyDown?.(event)
               if (event.defaultPrevented) return
               if (event.key === 'Escape' && value) {

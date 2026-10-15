@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   cacheHitPct,
   conversationTree,
+  filterGroups,
   type MetricsResponse,
   type SessionUsage,
+  sortGroups,
+  subAgentGroups,
   sumUsage,
+  treeTotals,
 } from './metrics'
 
 function usage(
@@ -54,9 +58,11 @@ describe('conversationTree', () => {
       'kan178-author',
     ])
     // The sibling orchestrator and its worker are not this conversation's.
-    expect(tree?.withSubAgents?.turns).toBe(1 + 14 + 1)
-    expect(tree?.withSubAgents?.function_call_errors).toBe(1)
-    expect(tree?.withSubAgents?.cost_usd).toBeCloseTo(3.19)
+    const total = tree ? treeTotals(tree).total : null
+    expect(total?.turns).toBe(1 + 14 + 1)
+    expect(total?.function_call_errors).toBe(1)
+    expect(total?.cost_usd).toBeCloseTo(3.19)
+    expect(total?.partial).toEqual([])
   })
 
   it('walks depth-first with depth relative to the conversation', () => {
@@ -70,13 +76,13 @@ describe('conversationTree', () => {
       ['kan176-implementer', 2],
       ['kan178-author', 2],
     ])
-    expect(tree?.withSubAgents?.turns).toBe(19)
+    expect(tree && treeTotals(tree).total?.turns).toBe(19)
   })
 
   it('has no aggregate for a conversation without sub-agents', () => {
     const tree = conversationTree(TREE, 'kan176-implementer')
     expect(tree?.subAgents).toEqual([])
-    expect(tree?.withSubAgents).toBeNull()
+    expect(tree && treeTotals(tree).total).toBeNull()
     expect(tree?.self.parent_session_id).toBe('kan176-ultracode')
   })
 
@@ -94,14 +100,55 @@ describe('conversationTree', () => {
 })
 
 describe('sumUsage', () => {
-  it('makes a counter unknown when a session with steps did not report it', () => {
+  it('sums what was reported and marks a counter a session left out', () => {
     const sum = sumUsage([
       usage('a', undefined, 0, { cost_usd: undefined, input_tokens: 5 }),
       usage('b', 'a', 1, { cost_usd: 0.4, input_tokens: 7 }),
     ])
-    // $0.40 would be a partial total shown as the whole.
-    expect(sum.cost_usd).toBeUndefined()
+    // Two unpriced sub-agents out of 175 must not blank the total: it is a
+    // lower bound, and says who is missing.
+    expect(sum.cost_usd).toBe(0.4)
+    expect(sum.partial).toEqual(['cost_usd'])
+    expect(sum.unreported).toEqual(['a'])
     expect(sum.input_tokens).toBe(12)
+  })
+
+  it('takes the cache hit over sessions that reported both counts', () => {
+    const sum = sumUsage([
+      // Unpriced and unreported everything: not in the ratio.
+      usage('gone', undefined, 0, {
+        input_tokens: undefined,
+        cache_read_tokens: undefined,
+        cache_write_tokens: undefined,
+        cost_usd: undefined,
+      }),
+      // A provider without cache reads would drag the ratio to 0: left out.
+      usage('nocache', 'gone', 1, { input_tokens: 1000, cache_read_tokens: undefined }),
+      usage('a', 'gone', 1, { input_tokens: 10, cache_read_tokens: 90, cache_write_tokens: 0 }),
+    ])
+    expect(sum.cacheHit).toBe(90)
+    expect(sum.partial).toContain('cache_read_tokens')
+  })
+
+  it('names only the sessions behind a partial counter', () => {
+    // Nobody reports cache write (OpenAI, DeepSeek); only `c` lacks a cost.
+    const sum = sumUsage([
+      usage('root', undefined, 0, { cache_write_tokens: undefined }),
+      usage('a', 'root', 1, { cache_write_tokens: undefined }),
+      usage('c', 'root', 1, { cache_write_tokens: undefined, cost_usd: undefined }),
+    ])
+    expect(sum.partial).toEqual(['cost_usd'])
+    expect(sum.unreported).toEqual(['c'])
+    expect(sum.cache_write_tokens).toBeUndefined()
+  })
+
+  it('leaves a counter nobody reported absent, not a partial zero', () => {
+    const sum = sumUsage([
+      usage('a', undefined, 0, { cost_usd: undefined }),
+      usage('b', 'a', 1, { cost_usd: undefined }),
+    ])
+    expect(sum.cost_usd).toBeUndefined()
+    expect(sum.partial).toEqual([])
   })
 
   it('ignores a session that has no steps yet', () => {
@@ -110,7 +157,52 @@ describe('sumUsage', () => {
       usage('b', 'a', 1, { turns: 0, cost_usd: undefined, input_tokens: undefined }),
     ])
     expect(sum.cost_usd).toBe(1)
-    expect(sum.input_tokens).toBe(10)
+    expect(sum.partial).toEqual([])
+    expect(sum.unreported).toEqual([])
+  })
+})
+
+describe('treeTotals', () => {
+  it('takes this conversation\'s cost from the live snapshot', () => {
+    const tree = conversationTree(TREE, 'kan176-ultracode')
+    const { self, total } = tree ? treeTotals(tree, 2) : { self: null, total: null }
+    expect(self?.cost_usd).toBe(2)
+    expect(total?.cost_usd).toBeCloseTo(2 + 1.19 + 1)
+  })
+})
+
+describe('sub-agent groups', () => {
+  const tree = conversationTree(TREE, 'console-root')
+  const groups = tree ? subAgentGroups(tree) : []
+
+  it('groups each direct child with what it spawned', () => {
+    expect(groups.map((g) => [g.head.session_id, g.rows.length])).toEqual([
+      ['kan129-ultracode', 2],
+      ['kan176-ultracode', 3],
+    ])
+    expect(groups[1].totals.cost_usd).toBeCloseTo(3.19)
+  })
+
+  it('sorts by subtree cost, by failures, and by the newest snapshot', () => {
+    expect(sortGroups(groups, 'cost')[0].head.session_id).toBe('kan176-ultracode')
+    expect(sortGroups(groups, 'failed')[0].totals.function_call_errors).toBe(1)
+    const stamped = groups.map((g, i) => ({ ...g, lastActive: i === 0 ? 2 : 1 }))
+    expect(sortGroups(stamped, 'recent')[0].head.session_id).toBe('kan129-ultracode')
+    // A copy: the input order is untouched.
+    expect(groups[0].head.session_id).toBe('kan129-ultracode')
+  })
+
+  it('filters by id, keeping the head of a group matched by a child', () => {
+    expect(filterGroups(groups, '  ')).toBe(groups)
+    const filtered = filterGroups(groups, 'IMPLEMENTER')
+    expect(filtered.map((g) => g.rows.map((r) => r.session_id))).toEqual([
+      ['kan176-ultracode', 'kan176-implementer'],
+    ])
+    // The group still knows its full size and totals.
+    expect(filtered[0].size).toBe(2)
+    expect(filtered[0].totals.cost_usd).toBeCloseTo(3.19)
+    expect(filterGroups(groups, 'kan129-ultra')[0].rows).toHaveLength(2)
+    expect(filterGroups(groups, 'nothing')).toEqual([])
   })
 })
 
