@@ -1,6 +1,6 @@
 # ultracode
 
-Claude Code-style dynamic workflows on iii, with the kanban board as the task manager. Give **Ultracode** a goal: it breaks the goal into tickets, gives each ticket a lead that runs it through its phases with its own sub-agents, runs the leads in parallel in bounded waves, and loops in bounded rounds until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
+Dynamic multi-agent workflows on iii, with the kanban board as the task manager. Give **Ultracode** a goal: it breaks the goal into tickets, gives each ticket a lead that runs it through its phases with its own sub-agents, runs the leads in parallel in bounded waves, and loops in bounded rounds until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
 
 A goal that changes code in a git repository gets the [superpowers](https://github.com/obra/superpowers) flow: you approve the design and the plan, every code ticket (`ultracode-impl`) is built test-first in a git worktree with one commit, an independent verifier and a code reviewer check every commit, the whole branch is reviewed, and you choose how it finishes. Reading and research tickets (`ultracode-worker`) in the same run are done and verified without a commit.
 

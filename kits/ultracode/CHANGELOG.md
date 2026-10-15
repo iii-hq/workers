@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Reworded the kit description and the README introduction. No behaviour change.
+
 ## 0.1.0
 
 - First release: the **ultracode** orchestrator, the hidden **ultracode-lead** that runs one ticket through its phases, the **ultracode-worker** and **ultracode-impl** work tiers, and the **ultracode-verifier** and **ultracode-qa** check tiers.
