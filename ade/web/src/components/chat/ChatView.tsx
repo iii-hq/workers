@@ -2439,6 +2439,20 @@ export function ChatView({
     () => withScreenWakeLock(submitWithQuote),
     [submitWithQuote],
   )
+  // The side panel's way to hand this chat's agent an instruction: sent now,
+  // or put in this chat's draft (the composer remounts to pick it up). The
+  // composer buses are global, so neither goes through them.
+  const askAgent = useCallback(
+    (text: string, send: boolean) => {
+      if (send) {
+        void handleSubmit({ text, attachments: [] })
+        return
+      }
+      conversationsCtx?.setDraftText(conversation.id, text)
+      setComposerGeneration((generation) => generation + 1)
+    },
+    [handleSubmit, conversationsCtx, conversation.id],
+  )
 
   const handleStop = useCallback(() => {
     if (readOnly || stopRequestedRef.current) return
@@ -3396,6 +3410,7 @@ export function ChatView({
         pendingQuote={pendingQuote}
         onPendingQuoteChange={setPendingQuote}
         onJumpToMessage={setQuoteFocusId}
+        onAskAgent={askAgent}
       />
     </div>
   )

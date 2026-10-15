@@ -388,7 +388,8 @@ a.iii-ui-tree-item {
 
 .iii-ui-tree-item:hover .iii-ui-tree-item__action,
 .iii-ui-tree-item:focus-within .iii-ui-tree-item__action,
-.iii-ui-tree[data-narrow] .iii-ui-tree-item__action {
+.iii-ui-tree[data-narrow] .iii-ui-tree-item__action,
+.iii-ui-tree-item__action[data-state="open"] {
   opacity: 1;
 }
 

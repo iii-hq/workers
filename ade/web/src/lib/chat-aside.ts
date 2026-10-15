@@ -684,6 +684,13 @@ export interface PullRequestRow extends PullRequestRef {
   title: string
   state: PullRequestState
   checks: ChecksState | null
+  /** How many checks fail; 0 when they were not read. */
+  failing: number
+  additions: number | null
+  deletions: number | null
+  /** GitHub merges it once its checks pass. */
+  autoMerge: boolean
+  headRefName: string | null
   /** Named in the conversation rather than found by the branch. */
   mentioned: boolean
 }
@@ -695,6 +702,9 @@ export interface GhPullRequest {
   state: string
   isDraft?: boolean
   headRefName?: string
+  additions?: number
+  deletions?: number
+  autoMergeRequest?: unknown
 }
 
 /**
@@ -704,6 +714,10 @@ export interface GhPullRequest {
  */
 const DEFAULT_BRANCHES = new Set(['main', 'master'])
 
+export function isDefaultBranch(branch: string): boolean {
+  return DEFAULT_BRANCHES.has(branch)
+}
+
 function prState(pr: GhPullRequest): PullRequestState {
   const state = pr.state.toUpperCase()
   if (state === 'MERGED') return 'merged'
@@ -711,64 +725,92 @@ function prState(pr: GhPullRequest): PullRequestState {
   return pr.isDraft ? 'draft' : 'open'
 }
 
+const failed = (check: { bucket?: string }) =>
+  check.bucket === 'fail' || check.bucket === 'cancel'
+
 /** One word for a PR's checks, from `gh pr checks`' buckets. */
 export function summarizeChecks(
   checks: readonly { bucket?: string }[],
 ): ChecksState | null {
   if (checks.length === 0) return null
-  if (checks.some((c) => c.bucket === 'fail' || c.bucket === 'cancel'))
-    return 'fail'
+  if (checks.some(failed)) return 'fail'
   if (checks.some((c) => c.bucket === 'pending')) return 'pending'
   return 'pass'
 }
 
 const MENTIONED_PR_LIMIT = 3
 
-/** Where pull requests are read: the `github` worker, or `gh` in the folder. */
+/** `gh` run somewhere; null when it could not run at all. */
+export type GhRunner = (
+  args: string[],
+) => Promise<{ exitCode: number | null; stdout: string; stderr: string } | null>
+
+interface GhOutcome {
+  exit_code?: number | null
+  stdout?: string
+  stderr?: string
+}
+
+/** `gh` through the optional `github` worker (`github::exec`). */
+export function githubWorkerGh(trigger: Trigger): GhRunner {
+  return async (args) => {
+    const out = await trigger<GhOutcome & { value?: GhOutcome }>(
+      'github::exec',
+      { args, timeout_ms: 20_000 },
+    ).catch(() => null)
+    const outcome = out?.value ?? out
+    return outcome
+      ? {
+          exitCode: outcome.exit_code ?? null,
+          stdout: outcome.stdout ?? '',
+          stderr: outcome.stderr ?? '',
+        }
+      : null
+  }
+}
+
+/**
+ * `gh` in the folder over `shell::exec`, for a stack without the `github`
+ * worker; `gh` keeps its own login.
+ */
+export function folderGh(trigger: Trigger, cwd: string): GhRunner {
+  return async (args) => {
+    const out = await trigger<GhOutcome>('shell::exec', {
+      command: 'gh',
+      args,
+      cwd,
+      timeout_ms: 20_000,
+    }).catch(() => null)
+    return out
+      ? {
+          exitCode: out.exit_code ?? null,
+          stdout: out.stdout ?? '',
+          stderr: out.stderr ?? '',
+        }
+      : null
+  }
+}
+
+/** Where pull requests are read. */
 export interface PullRequestSource {
   list(repo: string, branch: string): Promise<GhPullRequest[] | null>
   view(repo: string, number: number): Promise<GhPullRequest | null>
   checks(repo: string, number: number): Promise<{ bucket?: string }[] | null>
 }
 
-/** Pull requests through the optional `github` worker. */
-export function githubWorkerSource(trigger: Trigger): PullRequestSource {
-  const value = async <T>(fn: string, payload: Record<string, unknown>) =>
-    (await trigger<{ value?: T }>(fn, payload).catch(() => null))?.value ?? null
-  return {
-    // `head:` matches by prefix and across forks; the caller filters.
-    list: (repo, branch) =>
-      value<GhPullRequest[]>('github::pr::list', {
-        repo,
-        state: 'all',
-        search: `head:${branch}`,
-        limit: 5,
-      }),
-    view: (repo, number) =>
-      value<GhPullRequest>('github::pr::view', { repo, number }),
-    checks: (repo, number) =>
-      value<{ bucket?: string }[]>('github::pr::checks', { repo, number }),
-  }
-}
-
-const PR_FIELDS = 'number,title,url,state,isDraft,headRefName'
+const PR_FIELDS =
+  'number,title,url,state,isDraft,headRefName,additions,deletions,autoMergeRequest'
 
 /**
- * Pull requests through the `gh` CLI in the folder, over `shell::exec`, for a
- * stack without the `github` worker. Read-only commands; `gh` keeps its own
- * login. A failure (no `gh`, no login) reads as no pull requests.
+ * Pull requests read with `gh`, through either runner. A failure (no `gh`,
+ * no login) reads as no pull requests.
  */
-export function ghCliSource(trigger: Trigger, cwd: string): PullRequestSource {
-  const gh = async <T>(args: string[]): Promise<T | null> => {
-    const out = await trigger<ExecResult>('shell::exec', {
-      command: 'gh',
-      args,
-      cwd,
-      timeout_ms: 20_000,
-    }).catch(() => null)
+export function ghSource(gh: GhRunner): PullRequestSource {
+  const json = async <T>(args: string[]): Promise<T | null> => {
+    const out = await gh(args)
     // `gh pr checks` exits 1 or 8 on failing or pending checks: the JSON on
     // stdout is the answer either way.
-    if (!out?.stdout?.trim()) return null
+    if (!out?.stdout.trim()) return null
     try {
       return JSON.parse(out.stdout) as T
     } catch {
@@ -777,7 +819,7 @@ export function ghCliSource(trigger: Trigger, cwd: string): PullRequestSource {
   }
   return {
     list: (repo, branch) =>
-      gh<GhPullRequest[]>([
+      json<GhPullRequest[]>([
         'pr',
         'list',
         '-R',
@@ -792,7 +834,7 @@ export function ghCliSource(trigger: Trigger, cwd: string): PullRequestSource {
         PR_FIELDS,
       ]),
     view: (repo, number) =>
-      gh<GhPullRequest>([
+      json<GhPullRequest>([
         'pr',
         'view',
         String(number),
@@ -802,7 +844,7 @@ export function ghCliSource(trigger: Trigger, cwd: string): PullRequestSource {
         PR_FIELDS,
       ]),
     checks: (repo, number) =>
-      gh<{ bucket?: string }[]>([
+      json<{ bucket?: string }[]>([
         'pr',
         'checks',
         String(number),
@@ -812,6 +854,110 @@ export function ghCliSource(trigger: Trigger, cwd: string): PullRequestSource {
         'bucket',
       ]),
   }
+}
+
+export type PullRequestAction =
+  | 'merge-when-ready'
+  | 'cancel-merge-when-ready'
+  | 'draft'
+  | 'ready'
+
+/**
+ * The `gh` argv of an action on a PR. ponytail: merge when ready squashes,
+ * as these repositories do; one that forbids squash says so in the error.
+ */
+export function pullRequestCommand(
+  pr: PullRequestRef,
+  action: PullRequestAction,
+): string[] {
+  const target = [String(pr.number), '-R', pr.repo]
+  switch (action) {
+    case 'merge-when-ready':
+      return ['pr', 'merge', ...target, '--auto', '--squash']
+    case 'cancel-merge-when-ready':
+      return ['pr', 'merge', ...target, '--disable-auto']
+    case 'draft':
+      return ['pr', 'ready', ...target, '--undo']
+    case 'ready':
+      return ['pr', 'ready', ...target]
+  }
+}
+
+/** Run an action on a PR; its error text, or null when it went through. */
+export async function runPullRequestAction(
+  gh: GhRunner,
+  pr: PullRequestRef,
+  action: PullRequestAction,
+): Promise<string | null> {
+  const out = await gh(pullRequestCommand(pr, action))
+  if (!out) return 'gh could not run.'
+  if (out.exitCode === 0) return null
+  return out.stderr.trim() || out.stdout.trim() || 'gh failed.'
+}
+
+/** Session metadata key: the PRs this chat's panel no longer lists. */
+export const DISMISSED_PRS_KEY = 'context_dismissed_prs'
+
+export function pullRequestKey(pr: PullRequestRef): string {
+  return `${pr.repo.toLowerCase()}#${pr.number}`
+}
+
+export function dismissedPullRequests(
+  conversation: Pick<Conversation, 'sessionMetadata'> | null | undefined,
+): string[] {
+  const list = conversation?.sessionMetadata?.[DISMISSED_PRS_KEY]
+  return Array.isArray(list)
+    ? list.filter((key): key is string => typeof key === 'string')
+    : []
+}
+
+/** The `github` worker's PR events, which wake a chat subscribed to them. */
+export const PR_EVENT_TRIGGER = 'github::pr::event'
+
+/** The watch an auto-fix arms for a PR: one per PR, so a repeat reuses it. */
+export function autoFixWatchId(pr: PullRequestRef): string {
+  return `ade-autofix-${pr.repo.toLowerCase().replace('/', '-')}-${pr.number}`
+}
+
+/** The chat's live subscriptions to this PR's events. */
+export function autoFixTriggers<
+  T extends { triggerType: string; config?: unknown; fired?: boolean },
+>(triggers: readonly T[], pr: PullRequestRef): T[] {
+  const watchId = autoFixWatchId(pr)
+  return triggers.filter((trigger) => {
+    if (trigger.triggerType !== PR_EVENT_TRIGGER || trigger.fired) return false
+    const config = asRecord(trigger.config)
+    return (
+      config?.watch_id === watchId ||
+      (typeof config?.repo === 'string' &&
+        config.repo.toLowerCase() === pr.repo.toLowerCase() &&
+        Number(config.number) === pr.number)
+    )
+  })
+}
+
+/**
+ * What the agent is asked to turn auto-fix on: only it can subscribe, so the
+ * wake reaches this chat. The trigger goes first, as the worker asks, so no
+ * event falls between the watch and the subscription.
+ */
+export function autoFixPrompt(pr: PullRequestRef): string {
+  const watchId = autoFixWatchId(pr)
+  return [
+    `Turn on auto-fix for ${pr.url}.`,
+    `1. Subscribe this chat to the \`${PR_EVENT_TRIGGER}\` trigger with config \`{"watch_id":"${watchId}"}\`.`,
+    `2. Call \`github::pr::watch\` with watch_id \`${watchId}\`, repo \`${pr.repo}\`, number ${pr.number}, stop_on merged or closed, and expires_at 7 days from now.`,
+    'When an event wakes you: a failing check, fix it and push to the PR branch; a review comment, address it, push, and reply on the thread; a merge conflict, resolve it and push. Ask me before anything beyond the fix (force-push, settings, secrets).',
+  ].join('\n')
+}
+
+/** What the agent is asked to open a pull request for the folder's branch. */
+export function createPullRequestPrompt(opts: {
+  folder: string
+  branch: string
+  repo: string
+}): string {
+  return `Commit the changes in ${opts.folder} on \`${opts.branch}\`, push the branch to ${opts.repo} and open a pull request for it. Write the title and the description from what changed.`
 }
 
 /**
@@ -837,6 +983,11 @@ export async function readPullRequests(
       title: pr.title,
       state: prState(pr),
       checks: null,
+      failing: 0,
+      additions: typeof pr.additions === 'number' ? pr.additions : null,
+      deletions: typeof pr.deletions === 'number' ? pr.deletions : null,
+      autoMerge: Boolean(pr.autoMergeRequest),
+      headRefName: pr.headRefName ?? null,
       mentioned,
     })
   }
@@ -868,6 +1019,7 @@ export async function readPullRequests(
       .map(async (row) => {
         const checks = await source.checks(row.repo, row.number)
         row.checks = Array.isArray(checks) ? summarizeChecks(checks) : null
+        row.failing = Array.isArray(checks) ? checks.filter(failed).length : 0
       }),
   )
   const rank = (row: PullRequestRow) =>

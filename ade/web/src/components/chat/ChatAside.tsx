@@ -23,6 +23,8 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
+  DISMISSED_PRS_KEY,
+  dismissedPullRequests,
   findSideChat,
   lastSpokenEntry,
   SIDE_CHAT_KEY,
@@ -96,6 +98,8 @@ interface ChatAsideProps {
   onPendingQuoteChange: (quote: SideChatQuote | null) => void
   /** Land the main chat on a message (a quote card's way back). */
   onJumpToMessage: (messageId: string) => void
+  /** Hand the main chat's agent an instruction (see ChatContextPanel). */
+  onAskAgent?: (text: string, send: boolean) => void
 }
 
 /**
@@ -117,6 +121,7 @@ export function ChatAside({
   pendingQuote,
   onPendingQuoteChange,
   onJumpToMessage,
+  onAskAgent,
 }: ChatAsideProps) {
   const ctx = useConversationsCtx()
   const [tab, setTabState] = useState<AsideTab>(readStoredTab)
@@ -375,6 +380,12 @@ export function ChatAside({
         shellAvailable={ctx.shellAvailable}
         githubAvailable={ctx.githubAvailable}
         kanbanAvailable={ctx.kanbanAvailable}
+        onAskAgent={onAskAgent}
+        onDismissPullRequest={(key) =>
+          ctx.setSessionMetadata(conversation.id, {
+            [DISMISSED_PRS_KEY]: [...dismissedPullRequests(conversation), key],
+          })
+        }
         landBlocked={landBlocked}
         active={visible}
       />

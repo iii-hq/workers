@@ -6,11 +6,15 @@ import {
   ChevronsUp,
   ChevronUp,
   Copy,
+  EllipsisVertical,
   ExternalLink,
+  EyeOff,
   FileDiff,
   Folder,
   GitBranch,
   GitPullRequest,
+  GitPullRequestCreate,
+  GitPullRequestDraft,
   Globe,
   ImageIcon,
   SquareTerminal,
@@ -31,6 +35,7 @@ import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -49,18 +54,29 @@ import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { useLazyAttachment } from '@/hooks/use-lazy-attachment'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import {
+  autoFixPrompt,
+  autoFixTriggers,
+  autoFixWatchId,
   capRows,
   collectChatImages,
   collectChatLinks,
   collectChatTickets,
+  createPullRequestPrompt,
+  dismissedPullRequests,
+  folderGh,
+  type GhRunner,
   type GitSummary,
-  ghCliSource,
-  githubWorkerSource,
+  ghSource,
+  githubWorkerGh,
+  isDefaultBranch,
   type KanbanBoard,
+  type PullRequestAction,
   type PullRequestRow,
+  pullRequestKey,
   readGitSummary,
   readKanbanBoard,
   readPullRequests,
+  runPullRequestAction,
   type TicketRow,
   ticketRows,
 } from '@/lib/chat-aside'
@@ -108,6 +124,13 @@ interface ChatContextPanelProps {
   landBlocked?: boolean
   /** Whether the panel is in sight; git and GitHub are read only then. */
   active?: boolean
+  /**
+   * Hand the chat's agent an instruction: sent at once, or left in this
+   * chat's composer for the person to send.
+   */
+  onAskAgent?: (text: string, send: boolean) => void
+  /** Stop listing a pull request in this chat's panel (`repo#number`). */
+  onDismissPullRequest?: (key: string) => void
 }
 
 function openSourceControl(cwd: string) {
@@ -145,6 +168,8 @@ export function ChatContextPanel({
   kanbanAvailable = false,
   landBlocked,
   active = true,
+  onAskAgent,
+  onDismissPullRequest,
 }: ChatContextPanelProps) {
   const workingDir = conversation.workingDir ?? null
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -191,46 +216,117 @@ export function ChatContextPanel({
   const mentionedKey = mentioned.map((pr) => `${pr.repo}#${pr.number}`).join()
   const repo = summary?.repo ?? null
   const branch = summary?.branch ?? null
+  // `gh` for reads and actions: the github worker when it is there,
+  // otherwise `gh` in the folder.
+  const ghVia = githubAvailable
+    ? 'worker'
+    : shellAvailable && workingDir
+      ? 'folder'
+      : null
+  const withGh = async (): Promise<GhRunner | null> => {
+    if (!ghVia) return null
+    const client = await getIiiClient()
+    const trigger = client.trigger.bind(client)
+    return ghVia === 'worker' || !workingDir
+      ? githubWorkerGh(trigger)
+      : folderGh(trigger, workingDir)
+  }
   const [pullRequests, setPullRequests] = useState<PullRequestRow[]>([])
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mentionedKey stands for `mentioned`; status re-reads after a turn
+  /** The repo and branch whose PRs were read: no Create PR before that. */
+  const [prsReadFor, setPrsReadFor] = useState<string | null>(null)
+  const [prTick, setPrTick] = useState(0)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mentionedKey stands for `mentioned`; status and prTick re-read
   useEffect(() => {
     if (!active) return
-    // The github worker when it is there; otherwise `gh` in the folder.
-    const viaGh = !githubAvailable && shellAvailable && workingDir
-    if (
-      (!githubAvailable && !viaGh) ||
-      (!(repo && branch) && mentioned.length === 0)
-    ) {
+    if (!ghVia || (!(repo && branch) && mentioned.length === 0)) {
       setPullRequests([])
       return
     }
     let alive = true
     void (async () => {
-      const client = await getIiiClient()
-      const trigger = client.trigger.bind(client)
-      const source = viaGh
-        ? ghCliSource(trigger, viaGh)
-        : githubWorkerSource(trigger)
-      const rows = await readPullRequests(source, {
-        repo,
-        branch,
-        mentioned,
-      }).catch(() => [])
-      if (alive) setPullRequests(rows)
+      const gh = await withGh()
+      const rows = gh
+        ? await readPullRequests(ghSource(gh), {
+            repo,
+            branch,
+            mentioned,
+          }).catch(() => [])
+        : []
+      if (!alive) return
+      setPullRequests(rows)
+      setPrsReadFor(`${repo}@${branch}`)
     })()
     return () => {
       alive = false
     }
   }, [
     active,
-    githubAvailable,
-    shellAvailable,
+    ghVia,
     workingDir,
     repo,
     branch,
     mentionedKey,
     conversation.status,
+    prTick,
   ])
+  const sessionMetadata = conversation.sessionMetadata
+  const dismissed = useMemo(
+    () => new Set(dismissedPullRequests({ sessionMetadata })),
+    [sessionMetadata],
+  )
+  const listedPrs = pullRequests.filter(
+    (pr) => !dismissed.has(pullRequestKey(pr)),
+  )
+  const [prBusy, setPrBusy] = useState<string | null>(null)
+  const [prError, setPrError] = useState<string | null>(null)
+  const actOnPr = async (pr: PullRequestRow, action: PullRequestAction) => {
+    const gh = await withGh()
+    if (!gh) return
+    setPrBusy(pullRequestKey(pr))
+    setPrError(null)
+    try {
+      const error = await runPullRequestAction(gh, pr, action)
+      if (error) setPrError(`#${pr.number}: ${error}`)
+      else setPrTick((tick) => tick + 1)
+    } finally {
+      setPrBusy(null)
+    }
+  }
+  // Only the agent can subscribe this chat to the PR's events: turning
+  // auto-fix on asks it to; turning it off drops the subscription and the
+  // watch here.
+  const setAutoFix = async (pr: PullRequestRow, on: boolean) => {
+    if (on) {
+      onAskAgent?.(autoFixPrompt(pr), true)
+      return
+    }
+    setPrBusy(pullRequestKey(pr))
+    try {
+      for (const trigger of autoFixTriggers(triggers, pr)) {
+        await onUnregisterTrigger(trigger.id)
+      }
+      const client = await getIiiClient()
+      await client
+        .trigger('github::pr::unwatch', { watch_id: autoFixWatchId(pr) })
+        .catch(() => null)
+    } finally {
+      setPrBusy(null)
+    }
+  }
+  // The folder's branch has work and no pull request of its own yet.
+  const canCreatePr = Boolean(
+    onAskAgent &&
+      workingDir &&
+      repo &&
+      branch &&
+      !isDefaultBranch(branch) &&
+      summary &&
+      (summary.changed > 0 || summary.ahead > 0) &&
+      prsReadFor === `${repo}@${branch}` &&
+      !pullRequests.some(
+        (pr) => !pr.mentioned && (pr.state === 'open' || pr.state === 'draft'),
+      ),
+  )
 
   const images = useMemo(
     () => collectChatImages(conversation.messages),
@@ -319,7 +415,7 @@ export function ChatContextPanel({
     liveTriggers.find((trigger) => trigger.id === openTriggerId) ?? null
 
   const ticketRowsShown = capRows(tickets, SECTION_CAP, !!expanded.tickets)
-  const prRows = capRows(pullRequests, SECTION_CAP, !!expanded.prs)
+  const prRows = capRows(listedPrs, SECTION_CAP, !!expanded.prs)
   const subagentRows = capRows(subagents, SUBAGENT_CAP, !!expanded.subagents)
   const triggerRows = capRows(liveTriggers, SECTION_CAP, !!expanded.triggers)
   const linkRows = capRows(links, SECTION_CAP, !!expanded.links)
@@ -477,6 +573,26 @@ export function ChatContextPanel({
                 }
               />
             ) : null}
+            {canCreatePr && workingDir && repo && branch ? (
+              <Row
+                icon={<GitPullRequestCreate aria-hidden />}
+                label="Create pull request"
+                title="Ask the agent to commit, push and open a pull request"
+                onActivate={() =>
+                  onAskAgent?.(
+                    createPullRequestPrompt({
+                      folder: workingDir,
+                      branch,
+                      repo,
+                    }),
+                    false,
+                  )
+                }
+                meta={
+                  <span className={uiClasses.treeItemMeta}>draft in chat</span>
+                }
+              />
+            ) : null}
           </>
         ) : (
           <EmptyState
@@ -510,8 +626,8 @@ export function ChatContextPanel({
         </Section>
       ) : null}
 
-      {pullRequests.length > 0 ? (
-        <Section label="Pull requests" count={pullRequests.length}>
+      {listedPrs.length > 0 ? (
+        <Section label="Pull requests" count={listedPrs.length}>
           {prRows.shown.map((pr) => (
             <Row
               key={`${pr.repo}#${pr.number}`}
@@ -520,16 +636,45 @@ export function ChatContextPanel({
               title={pr.url}
               onActivate={() => openExternal(pr.url)}
               description={<PullRequestFacts pr={pr} />}
-              actions={<CopyAction text={pr.url} label="Copy link" />}
+              actions={
+                <PullRequestMenu
+                  pr={pr}
+                  busy={prBusy === pullRequestKey(pr)}
+                  canWrite={ghVia !== null}
+                  autoFix={autoFixTriggers(triggers, pr).length > 0}
+                  autoFixAvailable={githubAvailable && Boolean(onAskAgent)}
+                  onViewChanges={() =>
+                    workingDir && pr.headRefName === branch
+                      ? openSourceControl(workingDir)
+                      : openExternal(`${pr.url}/files`)
+                  }
+                  onAction={(action) => void actOnPr(pr, action)}
+                  onAutoFix={(on) => void setAutoFix(pr, on)}
+                  onDismiss={
+                    onDismissPullRequest
+                      ? () => onDismissPullRequest(pullRequestKey(pr))
+                      : undefined
+                  }
+                />
+              }
             />
           ))}
           <ShowMore
             hidden={prRows.hidden}
             expanded={!!expanded.prs}
-            total={pullRequests.length}
+            total={listedPrs.length}
             cap={SECTION_CAP}
             onToggle={() => toggle('prs')}
           />
+          {prError ? (
+            <StatusPanel
+              variant="alert"
+              role="alert"
+              className="mx-2 mt-1"
+              headline="Pull request not changed"
+              detail={prError}
+            />
+          ) : null}
         </Section>
       ) : null}
 
@@ -819,6 +964,14 @@ function PullRequestFacts({ pr }: { pr: PullRequestRow }) {
         #{pr.number} · {pr.state}
         {pr.mentioned ? ' · mentioned' : ''}
       </span>
+      {pr.additions !== null && pr.deletions !== null ? (
+        <>
+          <span className={cn(deltaClassName, 'text-ok')}>+{pr.additions}</span>
+          <span className={cn(deltaClassName, 'text-alert-strong')}>
+            −{pr.deletions}
+          </span>
+        </>
+      ) : null}
       {pr.checks ? (
         <>
           <StatusDot
@@ -833,14 +986,125 @@ function PullRequestFacts({ pr }: { pr: PullRequestRow }) {
           />
           <span className="text-ink">
             {pr.checks === 'fail'
-              ? 'checks failing'
+              ? `${pr.failing || 1} failing`
               : pr.checks === 'pending'
                 ? 'checks running'
                 : 'checks passed'}
           </span>
         </>
       ) : null}
+      {pr.autoMerge ? <span>· merge when ready</span> : null}
     </>
+  )
+}
+
+/**
+ * A pull request's actions. Auto-fix and merge when ready show their state
+ * as a check; one that cannot run says why beside it.
+ */
+function PullRequestMenu({
+  pr,
+  busy,
+  canWrite,
+  autoFix,
+  autoFixAvailable,
+  onViewChanges,
+  onAction,
+  onAutoFix,
+  onDismiss,
+}: {
+  pr: PullRequestRow
+  busy: boolean
+  canWrite: boolean
+  autoFix: boolean
+  autoFixAvailable: boolean
+  onViewChanges: () => void
+  onAction: (action: PullRequestAction) => void
+  onAutoFix: (on: boolean) => void
+  onDismiss?: () => void
+}) {
+  const live = pr.state === 'open' || pr.state === 'draft'
+  const draft = pr.state === 'draft'
+  const reason = (text: string) => (
+    <span className="ml-auto pl-3 text-[11px] text-ink-faint">{text}</span>
+  )
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={uiClasses.treeItemAction}
+          aria-label={`Actions for #${pr.number}`}
+          title="More actions"
+          disabled={busy}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <EllipsisVertical aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => openExternal(pr.url)}>
+          <ExternalLink aria-hidden className="size-4 text-ink-faint" />
+          Open on GitHub
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void copyTextToClipboard(pr.url)}>
+          <Copy aria-hidden className="size-4 text-ink-faint" />
+          Copy link
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onViewChanges}>
+          <FileDiff aria-hidden className="size-4 text-ink-faint" />
+          View changes
+        </DropdownMenuItem>
+        {live ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={autoFix}
+              disabled={!autoFixAvailable}
+              onCheckedChange={(on) => onAutoFix(on === true)}
+            >
+              Auto-fix
+              {autoFixAvailable ? null : reason('needs the github worker')}
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={pr.autoMerge}
+              disabled={!canWrite || draft}
+              onCheckedChange={(on) =>
+                onAction(
+                  on === true ? 'merge-when-ready' : 'cancel-merge-when-ready',
+                )
+              }
+            >
+              Merge when ready
+              {!canWrite ? reason('needs gh') : draft ? reason('draft') : null}
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuItem
+              disabled={!canWrite}
+              onSelect={() => onAction(draft ? 'ready' : 'draft')}
+            >
+              {draft ? (
+                <GitPullRequest aria-hidden className="size-4 text-ink-faint" />
+              ) : (
+                <GitPullRequestDraft
+                  aria-hidden
+                  className="size-4 text-ink-faint"
+                />
+              )}
+              {draft ? 'Ready for review' : 'Convert to draft'}
+            </DropdownMenuItem>
+          </>
+        ) : null}
+        {onDismiss ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onDismiss}>
+              <EyeOff aria-hidden className="size-4 text-ink-faint" />
+              Dismiss
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

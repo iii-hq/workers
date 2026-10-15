@@ -1,21 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import type { Conversation, Message } from '@/types/chat'
 import {
+  autoFixTriggers,
+  autoFixWatchId,
   capRows,
   collectChatImages,
   collectChatLinks,
   collectChatTickets,
+  dismissedPullRequests,
   findSideChat,
-  ghCliSource,
-  githubWorkerSource,
+  folderGh,
+  ghSource,
+  githubWorkerGh,
   hideSideChats,
   type KanbanBoard,
   lastSpokenEntry,
   parseGithubRemote,
   parseNumstat,
   parseStatusHeader,
+  pullRequestCommand,
   readGitSummary,
   readPullRequests,
+  runPullRequestAction,
   sideChatMessages,
   sideChatMetadata,
   sideChatQuote,
@@ -209,20 +215,24 @@ describe('pull requests', () => {
 
   it('merges the branch PR with mentioned ones, open first, checks on open only', async () => {
     const calls: string[] = []
-    const trigger = (async (fn: string, payload?: Record<string, unknown>) => {
-      calls.push(`${fn} ${payload?.number ?? payload?.search ?? ''}`)
-      if (fn === 'github::pr::list')
-        return {
-          value: [{ number: 9, title: 'Branch PR', url: 'u9', state: 'OPEN' }],
-        }
-      if (fn === 'github::pr::view')
-        return {
-          value: { number: 4, title: 'Old', url: 'u4', state: 'MERGED' },
-        }
-      if (fn === 'github::pr::checks') return { value: [{ bucket: 'fail' }] }
-      throw new Error(fn)
-    }) as Parameters<typeof githubWorkerSource>[0]
-    const rows = await readPullRequests(githubWorkerSource(trigger), {
+    const trigger = workerExec((verb) => {
+      if (verb === 'list')
+        return [
+          {
+            number: 9,
+            title: 'Branch PR',
+            url: 'u9',
+            state: 'OPEN',
+            additions: 447,
+            deletions: 50,
+            autoMergeRequest: { enabledAt: 'x' },
+          },
+        ]
+      if (verb === 'view')
+        return { number: 4, title: 'Old', url: 'u4', state: 'MERGED' }
+      return [{ bucket: 'fail' }, { bucket: 'pass' }, { bucket: 'cancel' }]
+    }, calls)
+    const rows = await readPullRequests(ghSource(githubWorkerGh(trigger)), {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [
@@ -230,19 +240,42 @@ describe('pull requests', () => {
         { repo: 'o/r', number: 9, url: 'u9' },
       ],
     })
-    expect(rows.map((r) => [r.number, r.state, r.checks, r.mentioned])).toEqual(
-      [
-        [9, 'open', 'fail', false],
-        [4, 'merged', null, true],
-      ],
-    )
-    expect(calls).toEqual([
-      'github::pr::list head:feat/x',
-      'github::pr::view 4',
-      'github::pr::checks 9',
+    expect(
+      rows.map((r) => [
+        r.number,
+        r.state,
+        r.checks,
+        r.failing,
+        r.additions,
+        r.autoMerge,
+        r.mentioned,
+      ]),
+    ).toEqual([
+      [9, 'open', 'fail', 2, 447, true, false],
+      [4, 'merged', null, 0, null, false, true],
     ])
+    expect(calls).toEqual(['list feat/x', 'view 4', 'checks 9'])
   })
 })
+
+/** The github worker's `github::exec`: answers `gh pr list|view|checks`. */
+function workerExec(
+  answer: (verb: string, args: string[]) => unknown,
+  calls: string[] = [],
+) {
+  return (async (fn: string, payload?: Record<string, unknown>) => {
+    if (fn !== 'github::exec') throw new Error(fn)
+    const args = payload?.args as string[]
+    const verb = args[1]
+    calls.push(
+      `${verb} ${verb === 'list' ? args[args.indexOf('--head') + 1] : args[2]}`,
+    )
+    const value = answer(verb, args)
+    return {
+      value: { exit_code: 0, stdout: JSON.stringify(value), stderr: '' },
+    }
+  }) as Parameters<typeof githubWorkerGh>[0]
+}
 
 describe('review fixes', () => {
   it('keeps a link whose path has a malformed escape instead of throwing', () => {
@@ -300,43 +333,42 @@ describe('review fixes', () => {
   })
 
   it('keeps only PRs whose head is the branch and skips default branches', async () => {
-    const searched: unknown[] = []
-    const trigger = (async (fn: string, payload?: Record<string, unknown>) => {
-      if (fn === 'github::pr::list') {
-        searched.push(payload?.search)
-        return {
-          value: [
-            {
-              number: 1,
-              title: 'Mine',
-              url: 'u1',
-              state: 'OPEN',
-              headRefName: 'feat/x',
-            },
-            {
-              number: 2,
-              title: 'Prefix',
-              url: 'u2',
-              state: 'OPEN',
-              headRefName: 'feat/x-2',
-            },
-          ],
-        }
-      }
-      return { value: [] }
-    }) as Parameters<typeof githubWorkerSource>[0]
-    const rows = await readPullRequests(githubWorkerSource(trigger), {
+    const calls: string[] = []
+    const trigger = workerExec(
+      (verb) =>
+        verb === 'list'
+          ? [
+              {
+                number: 1,
+                title: 'Mine',
+                url: 'u1',
+                state: 'OPEN',
+                headRefName: 'feat/x',
+              },
+              {
+                number: 2,
+                title: 'Prefix',
+                url: 'u2',
+                state: 'OPEN',
+                headRefName: 'feat/x-2',
+              },
+            ]
+          : [],
+      calls,
+    )
+    const source = ghSource(githubWorkerGh(trigger))
+    const rows = await readPullRequests(source, {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [],
     })
     expect(rows.map((r) => r.number)).toEqual([1])
-    await readPullRequests(githubWorkerSource(trigger), {
+    await readPullRequests(source, {
       repo: 'o/r',
       branch: 'main',
       mentioned: [],
     })
-    expect(searched).toEqual(['head:feat/x'])
+    expect(calls.filter((c) => c.startsWith('list'))).toEqual(['list feat/x'])
   })
 
   it('reads git with fsmonitor off, counting untracked files like the IDE', async () => {
@@ -477,8 +509,8 @@ describe('pull requests through gh in the folder', () => {
         }
       // `gh pr checks` exits 8 while checks are pending.
       return { exit_code: 8, stdout: '[{"bucket":"pending"}]' }
-    }) as Parameters<typeof ghCliSource>[0]
-    const rows = await readPullRequests(ghCliSource(trigger, '/repo'), {
+    }) as Parameters<typeof folderGh>[0]
+    const rows = await readPullRequests(ghSource(folderGh(trigger, '/repo')), {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [],
@@ -496,16 +528,16 @@ describe('pull requests through gh in the folder', () => {
       '--limit',
       '5',
       '--json',
-      'number,title,url,state,isDraft,headRefName',
+      'number,title,url,state,isDraft,headRefName,additions,deletions,autoMergeRequest',
     ])
   })
 
   it('reads no pull requests when gh is missing or prints nothing', async () => {
     const trigger = (async () => {
       throw new Error('gh: not found')
-    }) as Parameters<typeof ghCliSource>[0]
+    }) as Parameters<typeof folderGh>[0]
     expect(
-      await readPullRequests(ghCliSource(trigger, '/repo'), {
+      await readPullRequests(ghSource(folderGh(trigger, '/repo')), {
         repo: 'o/r',
         branch: 'feat/x',
         mentioned: [],
@@ -686,5 +718,102 @@ describe('ticketRows', () => {
       ['KAN-3', 'created'],
     ])
     expect(rows[0].status).toBe('In review')
+  })
+})
+
+describe('pull request actions', () => {
+  const pr = { repo: 'o/r', number: 7, url: 'https://github.com/o/r/pull/7' }
+
+  it('spells each action as gh does', () => {
+    expect(pullRequestCommand(pr, 'merge-when-ready')).toEqual([
+      'pr',
+      'merge',
+      '7',
+      '-R',
+      'o/r',
+      '--auto',
+      '--squash',
+    ])
+    expect(pullRequestCommand(pr, 'cancel-merge-when-ready')).toEqual([
+      'pr',
+      'merge',
+      '7',
+      '-R',
+      'o/r',
+      '--disable-auto',
+    ])
+    expect(pullRequestCommand(pr, 'draft')).toEqual([
+      'pr',
+      'ready',
+      '7',
+      '-R',
+      'o/r',
+      '--undo',
+    ])
+    expect(pullRequestCommand(pr, 'ready')).toEqual([
+      'pr',
+      'ready',
+      '7',
+      '-R',
+      'o/r',
+    ])
+  })
+
+  it('reports what gh said when an action fails', async () => {
+    const ok = async () => ({ exitCode: 0, stdout: '', stderr: '' })
+    const refused = async () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'Pull request is in clean status\n',
+    })
+    expect(await runPullRequestAction(ok, pr, 'ready')).toBeNull()
+    expect(await runPullRequestAction(refused, pr, 'merge-when-ready')).toBe(
+      'Pull request is in clean status',
+    )
+    expect(await runPullRequestAction(async () => null, pr, 'draft')).toBe(
+      'gh could not run.',
+    )
+  })
+
+  it('finds the chat subscriptions that wake it on a PR', () => {
+    const triggers = [
+      {
+        id: 'a',
+        triggerType: 'github::pr::event',
+        config: { watch_id: autoFixWatchId(pr) },
+      },
+      {
+        id: 'b',
+        triggerType: 'github::pr::event',
+        config: { repo: 'O/R', number: 7 },
+      },
+      {
+        id: 'c',
+        triggerType: 'github::pr::event',
+        config: { repo: 'o/r', number: 8 },
+      },
+      {
+        id: 'd',
+        triggerType: 'cron',
+        config: { watch_id: autoFixWatchId(pr) },
+      },
+      {
+        id: 'e',
+        triggerType: 'github::pr::event',
+        fired: true,
+        config: { repo: 'o/r', number: 7 },
+      },
+    ]
+    expect(autoFixTriggers(triggers, pr).map((t) => t.id)).toEqual(['a', 'b'])
+    expect(autoFixWatchId(pr)).toBe('ade-autofix-o-r-7')
+  })
+
+  it('reads the dismissed PRs off the session metadata', () => {
+    expect(
+      dismissedPullRequests({
+        sessionMetadata: { context_dismissed_prs: ['o/r#7', 3] },
+      }),
+    ).toEqual(['o/r#7'])
+    expect(dismissedPullRequests(null)).toEqual([])
   })
 })
