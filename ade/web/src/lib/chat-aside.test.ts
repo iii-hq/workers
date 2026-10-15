@@ -232,7 +232,7 @@ describe('pull requests', () => {
         return { number: 4, title: 'Old', url: 'u4', state: 'MERGED' }
       return [{ bucket: 'fail' }, { bucket: 'pass' }, { bucket: 'cancel' }]
     }, calls)
-    const rows = await readPullRequests(ghSource(githubWorkerGh(trigger)), {
+    const { rows } = await readPullRequests(ghSource(githubWorkerGh(trigger)), {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [
@@ -357,7 +357,7 @@ describe('review fixes', () => {
       calls,
     )
     const source = ghSource(githubWorkerGh(trigger))
-    const rows = await readPullRequests(source, {
+    const { rows } = await readPullRequests(source, {
       repo: 'o/r',
       branch: 'feat/x',
       mentioned: [],
@@ -510,11 +510,14 @@ describe('pull requests through gh in the folder', () => {
       // `gh pr checks` exits 8 while checks are pending.
       return { exit_code: 8, stdout: '[{"bucket":"pending"}]' }
     }) as Parameters<typeof folderGh>[0]
-    const rows = await readPullRequests(ghSource(folderGh(trigger, '/repo')), {
-      repo: 'o/r',
-      branch: 'feat/x',
-      mentioned: [],
-    })
+    const { rows } = await readPullRequests(
+      ghSource(folderGh(trigger, '/repo')),
+      {
+        repo: 'o/r',
+        branch: 'feat/x',
+        mentioned: [],
+      },
+    )
     expect(rows.map((r) => [r.number, r.checks])).toEqual([[3, 'pending']])
     expect(calls[0]).toEqual([
       'pr',
@@ -542,7 +545,7 @@ describe('pull requests through gh in the folder', () => {
         branch: 'feat/x',
         mentioned: [],
       }),
-    ).toEqual([])
+    ).toEqual({ rows: [], branchListed: false })
   })
 })
 
@@ -780,7 +783,7 @@ describe('pull request actions', () => {
       {
         id: 'a',
         triggerType: 'github::pr::event',
-        config: { watch_id: autoFixWatchId(pr) },
+        config: { watch_id: autoFixWatchId(pr, 'console-1') },
       },
       {
         id: 'b',
@@ -795,7 +798,7 @@ describe('pull request actions', () => {
       {
         id: 'd',
         triggerType: 'cron',
-        config: { watch_id: autoFixWatchId(pr) },
+        config: { watch_id: autoFixWatchId(pr, 'console-1') },
       },
       {
         id: 'e',
@@ -804,8 +807,17 @@ describe('pull request actions', () => {
         config: { repo: 'o/r', number: 7 },
       },
     ]
-    expect(autoFixTriggers(triggers, pr).map((t) => t.id)).toEqual(['a', 'b'])
-    expect(autoFixWatchId(pr)).toBe('ade-autofix-o-r-7')
+    expect(autoFixTriggers(triggers, pr, 'console-1').map((t) => t.id)).toEqual(
+      ['a'],
+    )
+    expect(autoFixWatchId(pr, 'console-1')).toBe('ade-autofix:console-1:o:r:7')
+    // Two chats, and two repos that a dash would confuse, never share a watch.
+    expect(autoFixWatchId(pr, 'console-2')).not.toBe(
+      autoFixWatchId(pr, 'console-1'),
+    )
+    expect(autoFixWatchId({ ...pr, repo: 'acme/web-app' }, 'c')).not.toBe(
+      autoFixWatchId({ ...pr, repo: 'acme-web/app' }, 'c'),
+    )
   })
 
   it('reads the dismissed PRs off the session metadata', () => {

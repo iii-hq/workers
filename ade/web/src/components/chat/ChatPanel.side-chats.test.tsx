@@ -161,10 +161,23 @@ describe('ChatPanel side chats', () => {
       expect(ctx.remove).not.toHaveBeenCalled()
       list[1].updatedAt = Date.now() - 3 * HOUR
       act(() => vi.advanceTimersByTime(5 * 60 * 1000))
+      await settle()
       expect(ctx.remove).toHaveBeenCalledWith('later')
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('never sweeps one that is still working', async () => {
+    const list = [
+      chat('a'),
+      side('running', 'b', { updatedAt: 0, status: 'working' }),
+    ]
+    const ctx = makeCtx(list, 'a')
+    mocks.ctx = ctx
+    render()
+    await settle()
+    expect(ctx.remove).not.toHaveBeenCalled()
   })
 
   it('ends them with their main chat', async () => {

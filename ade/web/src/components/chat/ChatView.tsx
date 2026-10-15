@@ -2442,13 +2442,20 @@ export function ChatView({
   // The side panel's way to hand this chat's agent an instruction: sent now,
   // or put in this chat's draft (the composer remounts to pick it up). The
   // composer buses are global, so neither goes through them.
+  // A chat that cannot send now (no model, setup missing) gets the text as
+  // a draft instead, so the click is never silently lost; a draft adds to
+  // what was already typed.
   const askAgent = useCallback(
     (text: string, send: boolean) => {
-      if (send) {
+      if (send && !submitBlockedRef.current) {
         void handleSubmit({ text, attachments: [] })
         return
       }
-      conversationsCtx?.setDraftText(conversation.id, text)
+      const typed = conversationsCtx?.getDraftText(conversation.id)?.trim()
+      conversationsCtx?.setDraftText(
+        conversation.id,
+        typed ? `${typed}\n\n${text}` : text,
+      )
       setComposerGeneration((generation) => generation + 1)
     },
     [handleSubmit, conversationsCtx, conversation.id],
@@ -3409,7 +3416,13 @@ export function ChatView({
         landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
         pendingQuote={pendingQuote}
         onPendingQuoteChange={setPendingQuote}
-        onJumpToMessage={setQuoteFocusId}
+        onJumpToMessage={(id) => {
+          // A source outside the loaded history would leave the jump
+          // pending until some later page happened to load it.
+          if (messagesRef.current.some((message) => message.id === id)) {
+            setQuoteFocusId(id)
+          }
+        }}
         onAskAgent={askAgent}
       />
     </div>

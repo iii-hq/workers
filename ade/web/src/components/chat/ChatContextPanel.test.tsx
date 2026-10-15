@@ -339,7 +339,7 @@ describe('ChatContextPanel', () => {
     const open = async () => {
       const view = await render(chat('main', { workingDir: '/work/repo' }))
       const trigger = view.querySelector(
-        'button[aria-label="Actions for #9"]',
+        'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
         trigger.dispatchEvent(
@@ -407,12 +407,12 @@ describe('ChatContextPanel', () => {
             id: 'sub-1',
             triggerType: 'github::pr::event',
             delivery: 'notify',
-            config: { watch_id: 'ade-autofix-o-r-9' },
+            config: { watch_id: 'ade-autofix:main:o:r:9' },
           } as unknown as SessionTriggerInfo,
         ],
       })
       const trigger = view.querySelector(
-        'button[aria-label="Actions for #9"]',
+        'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
         trigger.dispatchEvent(
@@ -426,7 +426,7 @@ describe('ChatContextPanel', () => {
       })
       expect(mocks.unregister).toHaveBeenCalledWith('sub-1')
       expect(mocks.trigger).toHaveBeenCalledWith('github::pr::unwatch', {
-        watch_id: 'ade-autofix-o-r-9',
+        watch_id: 'ade-autofix:main:o:r:9',
       })
     })
 
@@ -451,7 +451,7 @@ describe('ChatContextPanel', () => {
         githubAvailable: false,
       })
       const trigger = view.querySelector(
-        'button[aria-label="Actions for #9"]',
+        'button[aria-label="Actions for o/r#9"]',
       ) as HTMLButtonElement
       await act(async () => {
         trigger.dispatchEvent(
@@ -481,6 +481,39 @@ describe('ChatContextPanel', () => {
         expect.stringContaining('open a pull request'),
         false,
       )
+    })
+
+    it('offers no PR creation when the branch could not be read', async () => {
+      mocks.trigger.mockImplementation((fn: string, payload) =>
+        fn === 'github::exec'
+          ? Promise.resolve({
+              value: { exit_code: 4, stdout: '', stderr: 'gh auth login' },
+            })
+          : respond(fn, payload),
+      )
+      const view = await render(chat('main', { workingDir: '/work/repo' }))
+      expect(view.textContent).not.toContain('Create pull request')
+    })
+
+    it('asks for auto-fix once while the agent turns it on', async () => {
+      const view = await open()
+      await act(async () => item('Auto-fix')?.click())
+      const trigger = view.querySelector(
+        'button[aria-label="Actions for o/r#9"]',
+      ) as HTMLButtonElement
+      await act(async () => {
+        trigger.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+        )
+      })
+      expect(item('Auto-fix')?.textContent).toContain('turning on…')
+      expect(item('Auto-fix')?.getAttribute('data-disabled')).not.toBeNull()
+      await act(async () => item('Auto-fix')?.click())
+      expect(mocks.askAgent).toHaveBeenCalledTimes(1)
+      expect(mocks.askAgent.mock.calls[0][0]).toContain(
+        'ade-autofix:main:o:r:9',
+      )
+      expect(mocks.askAgent.mock.calls[0][0]).toContain('"merged"')
     })
 
     it('offers no PR creation while the branch has an open one', async () => {
@@ -515,7 +548,7 @@ describe('ChatContextPanel', () => {
         ...(section?.querySelectorAll('button[aria-label^="Open"]') ?? []),
       ]
       expect(rows.map((row) => row.getAttribute('aria-label'))).toEqual([
-        'Open KAN-141 Filters by label in a new panel (In review)',
+        'Open KAN-141 Filters by label in a new panel (In review, high priority)',
         'Open KAN-117 Empty board in a new panel (Done)',
       ])
       expect(

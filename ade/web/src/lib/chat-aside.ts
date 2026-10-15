@@ -237,15 +237,57 @@ export function endSideChat(
 
 /** How many of this tab's chat panels show each conversation. */
 const displayedHere = new Map<string, number>()
+/** Release of the shared lock that tells other tabs this one shows an id. */
+const shownLocks = new Map<string, () => void>()
+const SHOWN_LOCK = 'iii-ade-shown:'
 
-/** Count `id` as shown by one more panel; the returned function undoes it. */
+/**
+ * Count `id` as shown by one more panel; the returned function undoes it.
+ * While any panel of the tab shows it, the tab holds a shared Web Lock on
+ * it, which other tabs read (see `shownInAnyTab`) and the browser drops if
+ * the tab dies.
+ */
 export function markDisplayed(id: string): () => void {
   displayedHere.set(id, (displayedHere.get(id) ?? 0) + 1)
+  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+  if (locks && !shownLocks.has(id)) {
+    let release: () => void = () => {}
+    shownLocks.set(id, () => release())
+    void locks
+      .request(
+        `${SHOWN_LOCK}${id}`,
+        { mode: 'shared' },
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve
+          }),
+      )
+      .catch(() => {})
+  }
   return () => {
     const left = (displayedHere.get(id) ?? 1) - 1
-    if (left <= 0) displayedHere.delete(id)
-    else displayedHere.set(id, left)
+    if (left > 0) {
+      displayedHere.set(id, left)
+      return
+    }
+    displayedHere.delete(id)
+    shownLocks.get(id)?.()
+    shownLocks.delete(id)
   }
+}
+
+/** The ids some ADE tab of this browser shows now, this one included. */
+export async function shownInAnyTab(): Promise<Set<string>> {
+  const shown = new Set(displayedHere.keys())
+  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+  if (!locks) return shown
+  const { held = [] } = await locks.query().catch(() => ({ held: [] }))
+  for (const lock of held) {
+    if (lock.name?.startsWith(SHOWN_LOCK)) {
+      shown.add(lock.name.slice(SHOWN_LOCK.length))
+    }
+  }
+  return shown
 }
 
 /** Whether a panel of this tab still shows `id`. */
@@ -353,8 +395,10 @@ export function selectionQuote(
   if (!row || row !== rowOf(range.endContainer) || !root.contains(row)) {
     return null
   }
-  const messageId = row.getAttribute('data-message-row') ?? ''
-  const source = messages.find((message) => message.id === messageId)
+  // A row that took in a notification names both: `"<message> <notice>"`.
+  const ids = (row.getAttribute('data-message-row') ?? '').split(/\s+/)
+  const source = messages.find((message) => ids.includes(message.id))
+  const messageId = source?.id ?? ids[0] ?? ''
   return {
     quote: {
       messageId,
@@ -914,39 +958,52 @@ export function dismissedPullRequests(
 /** The `github` worker's PR events, which wake a chat subscribed to them. */
 export const PR_EVENT_TRIGGER = 'github::pr::event'
 
-/** The watch an auto-fix arms for a PR: one per PR, so a repeat reuses it. */
-export function autoFixWatchId(pr: PullRequestRef): string {
-  return `ade-autofix-${pr.repo.toLowerCase().replace('/', '-')}-${pr.number}`
+/**
+ * The watch a chat's auto-fix arms for a PR: one per chat and PR, so turning
+ * it off in one chat never stops another chat's. `:` cannot occur in a
+ * GitHub name, so two repos never share an id. ponytail: cut at the worker's
+ * 128 characters; only absurdly long names could collide.
+ */
+export function autoFixWatchId(pr: PullRequestRef, sessionId: string): string {
+  const [owner, name] = pr.repo.toLowerCase().split('/')
+  return `ade-autofix:${sessionId.slice(-12)}:${owner}:${name}:${pr.number}`.slice(
+    0,
+    128,
+  )
 }
 
-/** The chat's live subscriptions to this PR's events. */
+/**
+ * The chat's live auto-fix subscription to this PR, by its watch: another
+ * subscription to the same PR (the agent's own) is not auto-fix's to show
+ * or drop.
+ */
 export function autoFixTriggers<
   T extends { triggerType: string; config?: unknown; fired?: boolean },
->(triggers: readonly T[], pr: PullRequestRef): T[] {
-  const watchId = autoFixWatchId(pr)
-  return triggers.filter((trigger) => {
-    if (trigger.triggerType !== PR_EVENT_TRIGGER || trigger.fired) return false
-    const config = asRecord(trigger.config)
-    return (
-      config?.watch_id === watchId ||
-      (typeof config?.repo === 'string' &&
-        config.repo.toLowerCase() === pr.repo.toLowerCase() &&
-        Number(config.number) === pr.number)
-    )
-  })
+>(triggers: readonly T[], pr: PullRequestRef, sessionId: string): T[] {
+  const watchId = autoFixWatchId(pr, sessionId)
+  return triggers.filter(
+    (trigger) =>
+      trigger.triggerType === PR_EVENT_TRIGGER &&
+      !trigger.fired &&
+      asRecord(trigger.config)?.watch_id === watchId,
+  )
 }
+
+/** How long auto-fix lasts: the subscription and the watch end together. */
+const AUTO_FIX_DAYS = 7
 
 /**
  * What the agent is asked to turn auto-fix on: only it can subscribe, so the
  * wake reaches this chat. The trigger goes first, as the worker asks, so no
  * event falls between the watch and the subscription.
  */
-export function autoFixPrompt(pr: PullRequestRef): string {
-  const watchId = autoFixWatchId(pr)
+export function autoFixPrompt(pr: PullRequestRef, sessionId: string): string {
+  const watchId = autoFixWatchId(pr, sessionId)
+  const ms = AUTO_FIX_DAYS * 24 * 60 * 60 * 1000
   return [
     `Turn on auto-fix for ${pr.url}.`,
-    `1. Subscribe this chat to the \`${PR_EVENT_TRIGGER}\` trigger with config \`{"watch_id":"${watchId}"}\`.`,
-    `2. Call \`github::pr::watch\` with watch_id \`${watchId}\`, repo \`${pr.repo}\`, number ${pr.number}, stop_on merged or closed, and expires_at 7 days from now.`,
+    `1. Subscribe this chat to the \`${PR_EVENT_TRIGGER}\` trigger with config \`{"watch_id":"${watchId}"}\` and lifecycle \`{"expires_in_ms":${ms}}\`.`,
+    `2. Call \`github::pr::watch\` with watch_id \`${watchId}\`, repo \`${pr.repo}\`, number ${pr.number}, stop_on \`"merged"\`, and expires_at ${AUTO_FIX_DAYS} days from now (an absolute RFC 3339 time).`,
     'When an event wakes you: a failing check, fix it and push to the PR branch; a review comment, address it, push, and reply on the thread; a merge conflict, resolve it and push. Ask me before anything beyond the fix (force-push, settings, secrets).',
   ].join('\n')
 }
@@ -971,8 +1028,13 @@ export async function readPullRequests(
     branch: string | null
     mentioned: readonly PullRequestRef[]
   },
-): Promise<PullRequestRow[]> {
+): Promise<{
+  rows: PullRequestRow[]
+  /** The branch's own PRs were read: none found means it has none. */
+  branchListed: boolean
+}> {
   const rows: PullRequestRow[] = []
+  let branchListed = false
   const add = (repo: string, pr: GhPullRequest, mentioned: boolean) => {
     if (rows.some((row) => row.repo === repo && row.number === pr.number))
       return
@@ -994,6 +1056,7 @@ export async function readPullRequests(
   const branch = opts.branch
   if (opts.repo && branch && !DEFAULT_BRANCHES.has(branch)) {
     const listed = await source.list(opts.repo, branch)
+    branchListed = Array.isArray(listed)
     // Keep the branch's own PRs only.
     for (const pr of listed ?? []) {
       if (pr.headRefName === undefined || pr.headRefName === branch) {
@@ -1024,7 +1087,7 @@ export async function readPullRequests(
   )
   const rank = (row: PullRequestRow) =>
     row.state === 'open' || row.state === 'draft' ? 0 : 1
-  return rows.sort((a, b) => rank(a) - rank(b))
+  return { rows: rows.sort((a, b) => rank(a) - rank(b)), branchListed }
 }
 
 /** Images found in one message, cached by message like its links. */

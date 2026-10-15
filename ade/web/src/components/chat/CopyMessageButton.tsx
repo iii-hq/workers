@@ -63,9 +63,13 @@ export function CopyMessageButton({
 /** Text selected inside the message `button` belongs to, if any. */
 function selectionWithin(button: HTMLElement): string {
   const selection = window.getSelection()
-  const node = selection?.anchorNode ?? null
-  if (!selection || selection.isCollapsed || !node) return ''
-  return button.closest('article')?.contains(node) ? selection.toString() : ''
+  const article = button.closest('article')
+  if (!selection || selection.isCollapsed || !article) return ''
+  // Both ends: a selection running on into the next message is not this one's.
+  const inside = (node: Node | null) => node !== null && article.contains(node)
+  return inside(selection.anchorNode) && inside(selection.focusNode)
+    ? selection.toString()
+    : ''
 }
 
 /**

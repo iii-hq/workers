@@ -15,9 +15,9 @@ import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   endSideChat,
-  isDisplayedHere,
   isSideChat,
   markDisplayed,
+  shownInAnyTab,
   sideChatOf,
   sideChatsLeftByClosedTabs,
   sideChatsMadeHere,
@@ -136,24 +136,28 @@ export function ChatPanel({
   const listed = !conversationsLoading && !conversationsError
   useEffect(() => {
     if (!listed) return
-    const sweep = () => {
+    // Never one still working, nor one any tab of the browser shows.
+    const sweep = async () => {
       const cutoff = Date.now() - SIDE_CHAT_IDLE_MS
-      for (const conversation of conversationsRef.current) {
-        const main = sideChatOf(conversation)
-        if (
-          main !== null &&
+      const idle = conversationsRef.current.filter(
+        (conversation) =>
+          sideChatOf(conversation) !== null &&
           conversation.updatedAt < cutoff &&
-          !isDisplayedHere(main) &&
-          !isDisplayedHere(conversation.id)
-        ) {
+          conversation.status !== 'working',
+      )
+      if (idle.length === 0) return
+      const shown = await shownInAnyTab()
+      for (const conversation of idle) {
+        const main = sideChatOf(conversation)
+        if (main !== null && !shown.has(main) && !shown.has(conversation.id)) {
           endSideChat(conversation.id, remove)
         }
       }
     }
     // A microtask: a pane mounted in the same commit has marked what it
     // shows by then.
-    queueMicrotask(sweep)
-    const timer = window.setInterval(sweep, SIDE_CHAT_SWEEP_MS)
+    queueMicrotask(() => void sweep())
+    const timer = window.setInterval(() => void sweep(), SIDE_CHAT_SWEEP_MS)
     return () => window.clearInterval(timer)
   }, [listed, remove])
   const [leftByClosedTabs, setLeftByClosedTabs] = useState<readonly string[]>(

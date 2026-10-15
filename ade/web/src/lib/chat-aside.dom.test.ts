@@ -84,6 +84,20 @@ describe('selectionQuote', () => {
     })
   })
 
+  it('names the message of a row that also holds a notification', () => {
+    root = document.createElement('section')
+    root.innerHTML =
+      '<div data-message-row="note-1 m1"><p>The views stay local.</p></div>'
+    document.body.appendChild(root)
+    const reply = root.querySelector('p') as HTMLElement
+    select(reply, 0, reply, 3)
+    expect(selectionQuote(root, messages, 'Frontend')?.quote).toEqual({
+      messageId: 'm1',
+      text: 'The',
+      agent: 'Frontend',
+    })
+  })
+
   it('names no agent on a user message', () => {
     const [, question] = transcript()
     select(question, 0, question, 2)
@@ -154,5 +168,35 @@ describe('sideChatsLeftByClosedTabs', () => {
     vi.stubGlobal('navigator', {})
     const aside = await fresh()
     expect(await aside.sideChatsLeftByClosedTabs()).toEqual([])
+  })
+})
+
+describe('shownInAnyTab', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('sees what this tab and the other tabs show, and forgets a release', async () => {
+    vi.resetModules()
+    const requested: string[] = []
+    let held = [{ name: 'iii-ade-shown:other-tab-chat' }]
+    vi.stubGlobal('navigator', {
+      locks: {
+        query: async () => ({ held }),
+        request: (name: string) => {
+          requested.push(name)
+          return new Promise(() => {})
+        },
+      },
+    })
+    const aside = await import('./chat-aside')
+    const release = aside.markDisplayed('mine')
+    aside.markDisplayed('mine')
+    expect(requested).toEqual(['iii-ade-shown:mine'])
+    expect([...(await aside.shownInAnyTab())].sort()).toEqual([
+      'mine',
+      'other-tab-chat',
+    ])
+    release()
+    held = []
+    expect([...(await aside.shownInAnyTab())]).toEqual(['mine'])
   })
 })
