@@ -293,6 +293,8 @@ interface ChatViewProps {
     /** Quotes this side chat sent: cards in its transcript, and the way back. */
     quotes?: readonly SideChatQuote[]
     onJumpToQuote?: (quote: SideChatQuote) => void
+    /** On a phone: the one-row composer and a one-line quote. */
+    compact?: boolean
   }
   /** The pane edge the side panel hugs: opposite the conversation list. */
   asideSide?: 'left' | 'right'
@@ -3364,9 +3366,14 @@ export function ChatView({
                 !harnessBlocked
               }
               externalInput={!side}
+              compact={side?.compact}
               header={
                 side?.quote ? (
-                  <QuoteChip quote={side.quote} onRemove={side.onRemoveQuote} />
+                  <QuoteChip
+                    quote={side.quote}
+                    onRemove={side.onRemoveQuote}
+                    compact={side.compact}
+                  />
                 ) : undefined
               }
               idlePlaceholder={idleComposerPlaceholder(

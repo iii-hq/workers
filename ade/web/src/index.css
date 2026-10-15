@@ -1105,6 +1105,23 @@
     padding-bottom: 12px;
   }
 
+  /* The compact row (a side chat's composer) keeps its buttons beside the
+     field: one 44px line, focused or not, that grows as the text does. */
+  .composer-shell[data-composer-compact] .composer-editor-slot {
+    padding-bottom: 0;
+  }
+
+  .composer-shell[data-composer-compact] .composer-editor {
+    min-height: 44px;
+  }
+
+  .composer-shell[data-composer-compact]:not(:focus-within)
+    .composer-editor[data-composer-height-ready]:not(
+      [data-composer-height-measuring]
+    ) {
+    height: 44px;
+  }
+
   /* While a turn runs the send/stop button is the only way to stop it on
      a phone, so it alone survives the blur, parked at the card's edge. */
   .composer-shell:not(:focus-within)[data-composer-streaming]

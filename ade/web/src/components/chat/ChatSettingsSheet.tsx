@@ -1,4 +1,4 @@
-import { Brain, Folder, ShieldCheck, Sparkles } from 'lucide-react'
+import { Brain, Folder, Paperclip, ShieldCheck, Sparkles } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { FullModeConfirmContent } from '@/components/permissions/FullModeConfirmDialog'
 import { PermissionModePickerPanel } from '@/components/permissions/PermissionModePicker'
@@ -58,6 +58,8 @@ interface ChatSettingsSheetProps {
   onWorkingDirChange?: (next: string) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
   onPermissionModeChange: (next: PermissionMode) => void
+  /** A compact composer has no attach button of its own: it lives here. */
+  onAttachFiles?: () => void
 }
 
 interface SettingsSectionProps {
@@ -121,6 +123,7 @@ export function ChatSettingsSheet({
   onWorkingDirChange,
   onThinkingLevelChange,
   onPermissionModeChange,
+  onAttachFiles,
 }: ChatSettingsSheetProps) {
   const navigation = useSheetNavigation<ChatSettingsPage>('settings')
   const [configurationProvider, setConfigurationProvider] = useState<
@@ -160,6 +163,16 @@ export function ChatSettingsSheet({
             description="Applies to your next message."
             contentClassName="space-y-5 px-4 pb-1"
           >
+            {onAttachFiles ? (
+              <SettingsSection id="chat-settings-files" label="Files">
+                <SheetMenuRow
+                  label="Attach files"
+                  icon={<Paperclip className="size-[18px]" aria-hidden />}
+                  disabled={disabled}
+                  onClick={onAttachFiles}
+                />
+              </SettingsSection>
+            ) : null}
             <SettingsSection id="chat-settings-model" label="Model">
               <SheetMenuRow
                 label={modelPresentation.label}

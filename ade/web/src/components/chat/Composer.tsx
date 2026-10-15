@@ -5,6 +5,7 @@ import {
   ChevronUp,
   Loader2,
   MoreHorizontal,
+  Plus,
   Square,
 } from 'lucide-react'
 import {
@@ -247,6 +248,12 @@ interface ComposerProps {
   externalInput?: boolean
   /** Shown at the top of the card, above attachments: a side chat's quote. */
   header?: ReactNode
+  /**
+   * On a phone, one row: settings (+, attachments included), the field and
+   * send. For the side chat, where every line counts; the agent and model
+   * pickers live in the settings sheet. Wider layouts are unchanged.
+   */
+  compact?: boolean
   /** Initial editor content (applied once on mount). */
   initialContent?: (editor: LexicalEditor) => void
   /**
@@ -369,6 +376,7 @@ export function Composer({
   autoFocus,
   externalInput = true,
   header,
+  compact = false,
   initialContent,
   initialText,
   onTextChange,
@@ -667,10 +675,51 @@ export function Composer({
       </button>
     )
 
+  const editor = (
+    <LexicalShell
+      onChange={(text) => {
+        textRef.current = text
+        setHasText(text.trim().length > 0)
+        if (browseIdRef.current === null) onTextChange?.(text)
+        // The editor has the inserted text now, so a send that came in
+        // with it can go. Out of band: `handleSubmit` clears the editor,
+        // which must not run inside its own change.
+        if (pendingSubmitRef.current && text.trim().length > 0) {
+          pendingSubmitRef.current = false
+          queueMicrotask(handleSubmit)
+        }
+      }}
+      onSubmit={handleSubmit}
+      clearToken={clearToken}
+      placeholder={
+        blocked
+          ? blockedPlaceholder
+          : isStreaming
+            ? queueWhileStreaming
+              ? 'queue a message…'
+              : 'streaming response…'
+            : idlePlaceholder
+      }
+      disabled={inputDisabled}
+      autoFocus={autoFocus}
+      externalInput={externalInput}
+      initialContent={resolvedInitialContent}
+      functionEntries={functionEntries}
+      searchFiles={searchFiles}
+      mentionContext={mentionContext}
+      onOpenFileMention={onOpenFileMention}
+      menuFrameRef={card}
+      onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
+    />
+  )
+  const compactRow = compact && mobileLayout
+  const attachInputRef = useRef<HTMLInputElement>(null)
+
   return (
     <div
       ref={shell}
       data-composer-streaming={isStreaming ? 'true' : undefined}
+      data-composer-compact={compactRow ? 'true' : undefined}
       className={cn(
         // onboarding-composer: tour anchor (workers/onboarding). Do not remove.
         'onboarding-composer composer-shell relative',
@@ -767,88 +816,85 @@ export function Composer({
           </div>
         ) : null}
 
-        <div className="composer-editor-slot px-1 pt-1">
-          <LexicalShell
-            onChange={(text) => {
-              textRef.current = text
-              setHasText(text.trim().length > 0)
-              if (browseIdRef.current === null) onTextChange?.(text)
-              // The editor has the inserted text now, so a send that came in
-              // with it can go. Out of band: `handleSubmit` clears the editor,
-              // which must not run inside its own change.
-              if (pendingSubmitRef.current && text.trim().length > 0) {
-                pendingSubmitRef.current = false
-                queueMicrotask(handleSubmit)
-              }
-            }}
-            onSubmit={handleSubmit}
-            clearToken={clearToken}
-            placeholder={
-              blocked
-                ? blockedPlaceholder
-                : isStreaming
-                  ? queueWhileStreaming
-                    ? 'queue a message…'
-                    : 'streaming response…'
-                  : idlePlaceholder
-            }
-            disabled={inputDisabled}
-            autoFocus={autoFocus}
-            externalInput={externalInput}
-            initialContent={resolvedInitialContent}
-            functionEntries={functionEntries}
-            searchFiles={searchFiles}
-            mentionContext={mentionContext}
-            onOpenFileMention={onOpenFileMention}
-            menuFrameRef={card}
-            onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
-          />
-        </div>
-
-        {/* Tapping a toolbar button must not take the caret: on a phone the
-            blur folds the card to one line and drops the keyboard, so the
-            tap would land on a surface that just moved. The pickers open on
-            click, which a cancelled pointerdown leaves alone. */}
-        <div
-          className="composer-mobile-toolbar flex min-w-0 items-center gap-1 px-2 pb-2 sm:hidden"
-          onPointerDown={(event) => event.preventDefault()}
-        >
-          <AttachmentButton
-            onAttach={handleAttach}
-            disabled={inputDisabled}
-            className={toolbarIconButtonClass}
-          />
-          <ComposerActionsSlot layout="narrow">
-            {composerActions}
-          </ComposerActionsSlot>
-          <button
-            type="button"
-            onClick={() => setMobileSettingsOpen(true)}
-            aria-label="chat settings"
-            className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-          >
-            <span
-              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-              aria-hidden="true"
+        {compactRow ? (
+          <div className="flex items-end gap-1 p-1">
+            <button
+              type="button"
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => setMobileSettingsOpen(true)}
+              aria-label="attach files, model and settings"
+              className="relative flex size-11 shrink-0 items-center justify-center rounded-full text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+            >
+              <Plus className="size-5 shrink-0" aria-hidden />
+            </button>
+            <div className="composer-editor-slot min-w-0 flex-1">{editor}</div>
+            <div onPointerDown={(event) => event.preventDefault()}>
+              {renderActionButton()}
+            </div>
+            <input
+              ref={attachInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={async (event) => {
+                const files = Array.from(event.target.files ?? [])
+                event.target.value = ''
+                if (files.length > 0) {
+                  handleAttach(await attachmentsFromFiles(files))
+                }
+              }}
             />
-            <MoreHorizontal className="size-5 shrink-0" aria-hidden />
-          </button>
-          {composerControls}
-          <ModelPicker
-            value={model}
-            options={modelOptions}
-            openRequest={modelPickerOpenRequest}
-            thinkingLevel={thinkingLevel}
-            onChange={onModelChange}
-            onThinkingLevelChange={onThinkingLevelChange}
-            disabled={optionsDisabled || modelLocked}
-            loading={catalogLoading}
-            showRefresh={false}
-            triggerAppearance="subtle"
-            className="ml-auto min-w-0"
-          />
-          {renderActionButton()}
-        </div>
+          </div>
+        ) : (
+          <>
+            <div className="composer-editor-slot px-1 pt-1">{editor}</div>
+
+            {/* Tapping a toolbar button must not take the caret: on a phone the
+              blur folds the card to one line and drops the keyboard, so the
+              tap would land on a surface that just moved. The pickers open on
+              click, which a cancelled pointerdown leaves alone. */}
+            <div
+              className="composer-mobile-toolbar flex min-w-0 items-center gap-1 px-2 pb-2 sm:hidden"
+              onPointerDown={(event) => event.preventDefault()}
+            >
+              <AttachmentButton
+                onAttach={handleAttach}
+                disabled={inputDisabled}
+                className={toolbarIconButtonClass}
+              />
+              <ComposerActionsSlot layout="narrow">
+                {composerActions}
+              </ComposerActionsSlot>
+              <button
+                type="button"
+                onClick={() => setMobileSettingsOpen(true)}
+                aria-label="chat settings"
+                className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              >
+                <span
+                  className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                  aria-hidden="true"
+                />
+                <MoreHorizontal className="size-5 shrink-0" aria-hidden />
+              </button>
+              {composerControls}
+              <ModelPicker
+                value={model}
+                options={modelOptions}
+                openRequest={modelPickerOpenRequest}
+                thinkingLevel={thinkingLevel}
+                onChange={onModelChange}
+                onThinkingLevelChange={onThinkingLevelChange}
+                disabled={optionsDisabled || modelLocked}
+                loading={catalogLoading}
+                showRefresh={false}
+                triggerAppearance="subtle"
+                className="ml-auto min-w-0"
+              />
+              {renderActionButton()}
+            </div>
+          </>
+        )}
 
         {/* Desktop toolbar: attach (and the optional memory / permission
             pickers) on the left; the quiet model label and the send button
@@ -931,6 +977,15 @@ export function Composer({
         onWorkingDirChange={onWorkingDirChange}
         onThinkingLevelChange={onThinkingLevelChange}
         onPermissionModeChange={onPermissionModeChange}
+        onAttachFiles={
+          compactRow
+            ? () => {
+                // Inside the tap, so the browser lets the picker open.
+                attachInputRef.current?.click()
+                setMobileSettingsOpen(false)
+              }
+            : undefined
+        }
       />
     </div>
   )
