@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
+import type { Conversation } from '@/types/chat'
 import { ConversationRow } from './ConversationRow'
 
 /** Render an isolated conversation row for static accessibility assertions. */
@@ -65,5 +66,83 @@ describe('ConversationRow row actions', () => {
     expect(renderRow('Chat "one"')).toContain(
       'aria-label="rename Chat &quot;one&quot;"',
     )
+  })
+})
+
+/** Render a row with its glyph inputs: profile, origin and spawn appearance. */
+function renderGlyphRow(
+  conversation: Partial<Conversation>,
+  depth: number,
+): string {
+  return renderToStaticMarkup(
+    <ConversationRow
+      conversation={{
+        id: 'glyph',
+        title: 'KAN-21 tests',
+        model: null,
+        messages: [],
+        createdAt: 1,
+        updatedAt: 1,
+        ...conversation,
+      }}
+      depth={depth}
+      active={false}
+      onSelect={vi.fn()}
+      onRename={vi.fn()}
+      onRemove={vi.fn()}
+    />,
+  )
+}
+
+const IMPL_PROFILE = {
+  id: 'ultracode-impl',
+  name: 'Ultracode Implementer',
+  icon: 'code',
+} as const
+
+describe('ConversationRow glyph', () => {
+  it("shows a sub-agent's spawn icon over its profile's", () => {
+    /* Two phases on one profile (tests and code on ultracode-impl) differ
+       only by the icon their spawn picked. */
+    const html = renderGlyphRow(
+      {
+        agentProfile: IMPL_PROFILE,
+        spawnedBy: 'agent',
+        subagentAppearance: {
+          name: 'KAN-21 tests',
+          icon: 'test',
+          color: 'amber',
+        },
+      },
+      2,
+    )
+    expect(html).toContain('lucide-flask-conical')
+    expect(html).not.toContain('lucide-code')
+    expect(html).toContain('title="Ultracode Implementer"')
+  })
+
+  it("keeps the profile's icon when the spawn picked none", () => {
+    const html = renderGlyphRow(
+      {
+        agentProfile: IMPL_PROFILE,
+        spawnedBy: 'agent',
+        subagentAppearance: { name: 'KAN-21 code' },
+      },
+      2,
+    )
+    expect(html).toContain('lucide-code')
+  })
+
+  it("keeps the profile's icon on a root session", () => {
+    const html = renderGlyphRow(
+      {
+        agentProfile: IMPL_PROFILE,
+        spawnedBy: 'agent',
+        subagentAppearance: { name: 'KAN-21 tests', icon: 'test' },
+      },
+      0,
+    )
+    expect(html).toContain('lucide-code')
+    expect(html).not.toContain('lucide-flask-conical')
   })
 })

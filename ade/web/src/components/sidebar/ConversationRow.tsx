@@ -73,13 +73,24 @@ interface RowGlyph {
 }
 
 /**
- * Which mark opens the row. A selected agent profile owns the glyph at
- * every depth; a spawned child shows its origin (trigger bolt or the
- * spawning agent's appearance); a plain chat keeps a quiet message mark so
- * every label starts on the same column.
+ * Which mark opens the row. A sub-agent whose spawn picked an icon shows
+ * it, so phases run on one profile stay apart (the harness already falls
+ * back to the profile's icon when the spawn named none); otherwise a
+ * selected agent profile owns the glyph at every depth; a spawned child
+ * shows its origin (trigger bolt or the spawning agent's appearance); a
+ * plain chat keeps a quiet message mark so every label starts on the same
+ * column.
  */
 function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
   const profile = conversation.agentProfile
+  const appearance = conversation.subagentAppearance
+  if (depth > 0 && conversation.spawnedBy === 'agent' && appearance?.icon) {
+    return {
+      Icon: SUBAGENT_ICON_COMPONENTS[appearance.icon],
+      color: appearance.color ?? profile?.color,
+      title: profile?.name ?? appearance.name,
+    }
+  }
   if (profile) {
     return {
       Icon: (profile.icon && SUBAGENT_ICON_COMPONENTS[profile.icon]) || Bot,
@@ -91,7 +102,6 @@ function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
     return { Icon: TriggerIcon, title: 'spawned by a trigger' }
   }
   if (depth > 0 && conversation.spawnedBy === 'agent') {
-    const appearance = conversation.subagentAppearance
     return {
       Icon:
         (appearance?.icon && SUBAGENT_ICON_COMPONENTS[appearance.icon]) || Bot,
