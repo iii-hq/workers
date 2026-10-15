@@ -138,7 +138,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
 /// semantic match. "us" is kept (US), as Snowball's English list does.
 #[rustfmt::skip]
-const STOPWORDS: &[&str] = &[
+pub(crate) const STOPWORDS: &[&str] = &[
     "a", "about", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
     "been", "being", "but", "by", "can", "could", "d", "did", "do", "does", "doing", "for",
     "from", "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how",

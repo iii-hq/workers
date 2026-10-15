@@ -228,10 +228,13 @@ pub async fn pre_generate(
             .map(|(m, _)| m.id.as_str())
             .collect();
         mutations.append_messages.push(user_text_message(body));
-        annotations.insert("memory_recalled".into(), json!(ids.len()));
-        // Ids (not texts) so chat surfaces can render "which memories
-        // fed this turn" chips and fetch details on demand.
-        annotations.insert("memory_ids".into(), json!(ids));
+        // A message carrying only the rules reminder recalled nothing.
+        if !ids.is_empty() {
+            annotations.insert("memory_recalled".into(), json!(ids.len()));
+            // Ids (not texts) so chat surfaces can render "which memories
+            // fed this turn" chips and fetch details on demand.
+            annotations.insert("memory_ids".into(), json!(ids));
+        }
     }
 
     Ok(HookResponse {
@@ -324,9 +327,12 @@ pub(crate) async fn injection(
         rules_truncated,
         ..Injection::none()
     };
-    let bank = bank.filter(|_| cfg.inject_memories);
     let query = query.filter(|q| !q.trim().is_empty());
+    // On the turn's opening step, like recall: the message is persisted.
+    let reminder = query.and_then(|_| rules_reminder(&rules));
+    let bank = bank.filter(|_| cfg.inject_memories);
     let (Some(bank), Some(query)) = (bank, query) else {
+        out.message = append_reminder(None, bank_name, reminder);
         return out;
     };
     // Fail-soft semantic signal; lexical-only when it misses.
@@ -368,6 +374,7 @@ pub(crate) async fn injection(
             .collect();
         out.message = Some(body);
     }
+    out.message = append_reminder(out.message.take(), bank_name, reminder);
     out
 }
 
@@ -656,6 +663,69 @@ pub(crate) fn ambient_header(bank_name: &str) -> String {
     )
 }
 
+/// A rule as the model reads it. Redacted at render time too: a
+/// hand-edited or reloaded rules/*.md never went through Bank::set_rule.
+/// The learned rule's header speaks to the human editing the file, not to
+/// the model.
+fn rule_body(rule: &crate::types::Rule) -> String {
+    let redacted = crate::redact::redact(rule.content.trim()).text;
+    redacted
+        .strip_prefix(crate::extract::LEARNED_HEADER)
+        .unwrap_or(&redacted)
+        .trim()
+        .to_string()
+}
+
+/// Opens the per-turn rules reminder.
+pub(crate) const REMINDER_OPEN: &str = "Standing instructions — apply every one to this reply:";
+
+/// Rules up to this size are repeated in full next to the reply; a longer
+/// set is pointed at by name.
+pub(crate) const REMINDER_MAX_CHARS: usize = 800;
+
+/// The rules again, at the end of the turn's context. In the system prompt
+/// alone they lose to the user's message ("keep answers under five
+/// sentences" held about one reply in three); repeated next to the reply
+/// they hold. Short sets are repeated in full, long ones named.
+pub(crate) fn rules_reminder(rules: &[crate::types::Rule]) -> Option<String> {
+    if rules.is_empty() {
+        return None;
+    }
+    let bodies: Vec<String> = rules.iter().map(rule_body).collect();
+    if bodies.iter().map(String::len).sum::<usize>() <= REMINDER_MAX_CHARS {
+        return Some(format!("{REMINDER_OPEN}\n{}", bodies.join("\n")));
+    }
+    let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
+    Some(format!(
+        "{REMINDER_OPEN} the rules in the memory section of your system prompt ({}).",
+        names.join(", ")
+    ))
+}
+
+/// The turn's `<memory>` message with the rules reminder as its last
+/// lines; the reminder alone when no memory was recalled.
+pub(crate) fn append_reminder(
+    message: Option<String>,
+    bank: &str,
+    reminder: Option<String>,
+) -> Option<String> {
+    let Some(reminder) = reminder else {
+        return message;
+    };
+    Some(match message {
+        Some(body) => match body.strip_suffix("\n</memory>") {
+            Some(open) => format!("{open}\n{reminder}\n</memory>"),
+            None => format!("{body}\n{reminder}"),
+        },
+        None => format!("<memory bank=\"{bank}\">\n{reminder}\n</memory>"),
+    })
+}
+
+/// Opens the rules: they are the user's standing instructions, binding on
+/// every reply — not background reading.
+pub(crate) const RULES_INTRO: &str = "\nThe rules below are the user's standing instructions. \
+     Follow every one of them in every reply, without being reminded.\n";
+
 /// The rules part of the injected system-prompt section, hard-bounded by
 /// `max_rule_chars`. Over-budget content truncates on a char boundary
 /// with a visible marker when at least 200 chars of budget remain, and is
@@ -664,14 +734,15 @@ pub(crate) fn build_rules_section(
     rules: &[crate::types::Rule],
     max_rule_chars: usize,
 ) -> (String, bool) {
-    let mut out = String::new();
+    if rules.is_empty() {
+        return (String::new(), false);
+    }
+    let mut out = RULES_INTRO.to_string();
     let mut budget = max_rule_chars;
     let mut truncated = false;
     for rule in rules {
-        // Also at render time: a hand-edited or reloaded rules/*.md never
-        // went through Bank::set_rule.
-        let redacted = crate::redact::redact(rule.content.trim()).text;
-        let content = redacted.as_str();
+        let body = rule_body(rule);
+        let content = body.as_str();
         if content.len() <= budget {
             budget -= content.len();
             out.push_str(&format!("\n## {}\n{content}\n", rule.name));
@@ -756,7 +827,7 @@ pub(crate) fn memories_message(
         return None;
     }
     let body = format!(
-        "<memory bank=\"{bank}\">\nRelevant remembered memories (recalled {}; each dated when last updated; verify anything surprising):\n{}\n</memory>",
+        "<memory bank=\"{bank}\">\nRelevant remembered memories (\"the user\" is the person you are talking to; recalled {}; each dated when last updated; verify anything surprising):\n{}\n</memory>",
         local_date(now, "%Y-%m-%d %A"),
         lines.join("\n")
     );
@@ -1027,6 +1098,76 @@ Formal."
         assert!(body.contains(&recalled), "{body}");
         // Persisted and replayed on later turns: "today" would turn false.
         assert!(!body.contains("today"), "{body}");
+        // Memories say "The user …": the model must know that is who it is
+        // talking to, not a third party.
+        assert!(
+            body.contains("\"the user\" is the person you are talking to"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn injected_rules_are_framed_as_standing_instructions() {
+        let (section, _) = build_rules_section(&[rule("style", "No em-dashes.")], 6_000);
+        assert!(section.starts_with(RULES_INTRO), "{section}");
+        assert!(section.contains("## style\nNo em-dashes."));
+        assert_eq!(build_rules_section(&[], 6_000).0, "", "no rules, no intro");
+    }
+
+    #[test]
+    fn short_rules_are_repeated_next_to_the_reply_long_ones_by_name() {
+        let learned = format!(
+            "{}- Never use emoji in replies.\n- Keep answers under five sentences.\n",
+            crate::extract::LEARNED_HEADER
+        );
+        let reminder = rules_reminder(&[rule("learned", &learned)]).unwrap();
+        assert!(reminder.starts_with(REMINDER_OPEN), "{reminder}");
+        assert!(reminder
+            .contains("- Never use emoji in replies.\n- Keep answers under five sentences."));
+        assert!(!reminder.contains("Edit or delete lines freely"));
+
+        let long = "x".repeat(REMINDER_MAX_CHARS + 1);
+        let reminder = rules_reminder(&[rule("style", &long), rule("learned", &learned)]).unwrap();
+        assert!(
+            !reminder.contains(&long),
+            "a long rule set is pointed at, not repeated"
+        );
+        assert!(reminder.contains("style, learned"), "{reminder}");
+        assert_eq!(rules_reminder(&[]), None);
+    }
+
+    #[test]
+    fn the_reminder_closes_the_turns_memory_message() {
+        let with_memories = append_reminder(
+            Some("<memory bank=\"b\">\n- a fact\n</memory>".into()),
+            "b",
+            Some("R".into()),
+        );
+        assert_eq!(
+            with_memories.as_deref(),
+            Some("<memory bank=\"b\">\n- a fact\nR\n</memory>")
+        );
+        let alone = append_reminder(None, "b", Some("R".into()));
+        assert_eq!(alone.as_deref(), Some("<memory bank=\"b\">\nR\n</memory>"));
+        assert_eq!(append_reminder(None, "b", None), None);
+    }
+
+    #[test]
+    fn the_learned_rules_boilerplate_is_not_injected() {
+        let learned = format!(
+            "{}- Never use emoji in replies.\n",
+            crate::extract::LEARNED_HEADER
+        );
+        let (section, _) = build_rules_section(&[rule("learned", &learned)], 6_000);
+        assert!(
+            section.contains("## learned\n- Never use emoji in replies."),
+            "{section}"
+        );
+        assert!(
+            !section.contains("Edit or delete lines freely"),
+            "{section}"
+        );
+        assert!(!section.contains("# Learned"), "{section}");
     }
 
     #[test]

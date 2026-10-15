@@ -2,9 +2,13 @@
 //! turn, off the hot path (spawned from the `harness::turn-completed`
 //! handler, never inside a turn).
 //!
-//! ADD-only by design: extraction never rewrites or deletes existing memories.
-//! The content fingerprint makes redelivery and re-observation idempotent —
-//! a known memory is reinforced (`corroboration += 1`), never duplicated.
+//! Extraction adds; it never edits a memory in place or deletes one. The
+//! model sees what the bank already holds about the excerpt, so it returns
+//! only what is new, and a known memory re-observed — the same text, or a
+//! rewording [`near_duplicate`] catches — is reinforced (`corroboration +=
+//! 1`), never duplicated. A correction ("moved from Lisbon to Porto")
+//! supersedes the memory it corrects: a recoverable tombstone pointing at
+//! the corrected one. Pinned memories are never touched.
 //! Memory's own function calls never reach this path: the transcript is
 //! fetched with `roles: [user, assistant]`, and only text parts are read.
 //!
@@ -14,7 +18,7 @@
 //! LLM never re-pays for content it already saw. The cursor advances only
 //! after a successful pass, so a failed call retries over the same span.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use iii_sdk::errors::Error;
@@ -32,33 +36,45 @@ use crate::types::{fingerprint, local_date, now_ms, Confidence, Memory, Provenan
 const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation excerpt.\n\
 Return ONLY a JSON array (no prose, no code fences). Each element:\n\
 {\"text\": string, \"entities\": [string], \"tags\": [string], \
-\"confidence\": \"extracted\"|\"inferred\", \"kind\": \"memory\"|\"rule\"}\n\
+\"confidence\": \"extracted\"|\"inferred\", \"kind\": \"memory\"|\"rule\", \
+\"replaces\": number (optional)}\n\
 Rules:\n\
 - Only durable content worth remembering across sessions: stable preferences, corrections, \
 identities, project constants, standing instructions.\n\
 - Never ephemeral state (current task progress, one-off values), never secrets, API keys, \
 tokens, or passwords.\n\
+- The input may first list memories already remembered, numbered [1], [2], …. Never return \
+one of them again, nor the same fact in other words: return only what is new. When the \
+excerpt corrects or updates one (the user moved, changed a preference, fixed a mistake), \
+return the corrected memory in full, keeping what is still true, with \"replaces\": its \
+number.\n\
 - Each excerpt line starts with its message date in brackets. Dated events (appointments, \
 deadlines, trips) are worth keeping even though they happen once: rewrite relative \
 expressions (today, tomorrow, next Friday, in two weeks) as the absolute date, resolved \
 against the date of the line that contains them, and write the event's own date in the \
 text. Never add \"as of <date>\" or \"currently\" stamps to stable facts: each memory \
 already carries its own date.\n\
-- text: one self-contained sentence, max 200 characters, in the language of the source.\n\
-- entities: short lowercase handles for the people/projects/tools the memory is about.\n\
+- text: one self-contained sentence, max 200 characters, in the language of the source. \
+Write facts about the person you are talking with as \"The user …\", never by their name or \
+in the first person; when they state their name, write \"The user's name is <name>.\" Other \
+people keep their names.\n\
+- entities: short lowercase handles for the people/projects/tools the memory is about; \
+include \"user\" in every memory about the user.\n\
 - tags: 0-3 short lowercase topical labels for filtering within the bank (e.g. \"billing\", \
 \"deploy\"); omit when nothing fits.\n\
 - confidence: \"extracted\" when stated directly, \"inferred\" when derived.\n\
 - kind \"rule\" ONLY for standing instructions about how the assistant should behave going \
 forward — style directives, formatting conventions, workflow corrections (\"never use \
-em-dashes\", \"always write tests first\"). Facts about the user, projects, or the world are \
-kind \"memory\". When unsure, use \"memory\".\n\
+em-dashes\", \"always write tests first\"). Write a rule as a direct instruction to the \
+assistant (\"Never use emoji.\"), not as a fact about the user. Facts about the user, \
+projects, or the world are kind \"memory\". When unsure, use \"memory\".\n\
 - Return [] when nothing qualifies. Most turns have nothing worth keeping.";
 
 /// Name of the auto-managed rule that captured standing instructions
 /// append to. Hand-authored rules are never touched by extraction.
 const LEARNED_RULE: &str = "learned";
-const LEARNED_HEADER: &str = "# Learned\nStanding instructions captured automatically from \
+pub(crate) const LEARNED_HEADER: &str =
+    "# Learned\nStanding instructions captured automatically from \
 conversations. Edit or delete lines freely — extraction only ever appends new ones.\n";
 /// Cap on rule promotions accepted from a single extraction pass.
 const MAX_RULES_PER_TURN: usize = 3;
@@ -74,12 +90,111 @@ struct ExtractedItem {
     confidence: Option<String>,
     #[serde(default)]
     kind: Option<String>,
+    /// The number of the already-remembered memory this one corrects.
+    #[serde(default)]
+    replaces: Option<usize>,
 }
 
 impl ExtractedItem {
     fn is_rule(&self) -> bool {
         self.kind.as_deref() == Some("rule")
     }
+}
+
+/// Already-remembered memories listed in the extraction input: the ones the
+/// bank recalls for the excerpt. The model is told not to restate them (an
+/// assistant reply echoing an injected memory would otherwise come back as a
+/// paraphrased duplicate) and may correct one by its number.
+const MAX_KNOWN: usize = 12;
+
+/// What the bank already holds about an excerpt: lexical recall over its
+/// message text. A bank that does not exist yet holds nothing.
+async fn known_memories(
+    deps: &Deps,
+    bank_name: &str,
+    query: &str,
+    half_life_days: u64,
+) -> Vec<Memory> {
+    let Ok(bank) = deps.store().await.bank(bank_name).await else {
+        return Vec::new();
+    };
+    bank.recall(query, None, "", MAX_KNOWN, half_life_days, false)
+        .await
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect()
+}
+
+/// The extraction model's input: the numbered known memories, then the
+/// excerpt.
+fn extraction_input(known: &[Memory], transcript: &str) -> String {
+    let mut input = String::new();
+    if !known.is_empty() {
+        input.push_str("Already remembered:\n");
+        for (i, m) in known.iter().enumerate() {
+            input.push_str(&format!("[{}] {}\n", i + 1, m.text));
+        }
+        input.push('\n');
+    }
+    input.push_str("Conversation excerpt:\n");
+    input.push_str(transcript);
+    input
+}
+
+/// The known memory a correction retires: listed (`replaces` is 1-based),
+/// live, and not pinned — pinned memories are untouchable by automatic
+/// paths.
+fn correction_target(known: &[Memory], replaces: Option<usize>) -> Option<&Memory> {
+    known
+        .get(replaces?.checked_sub(1)?)
+        .filter(|m| m.is_live() && !m.pinned)
+}
+
+/// Words that flip a statement: texts that differ in them never state the
+/// same fact.
+const NEGATIONS: &[&str] = &["no", "not", "never", "nor", "without"];
+
+/// A memory text's content words: its tokens minus English stopwords, with
+/// negations kept.
+fn content_words(text: &str) -> BTreeSet<String> {
+    crate::index::tokenize(text)
+        .into_iter()
+        .filter(|t| {
+            NEGATIONS.contains(&t.as_str()) || !crate::store::STOPWORDS.contains(&t.as_str())
+        })
+        .collect()
+}
+
+/// The same fact in other words: at least four in five content words shared
+/// (Jaccard), the same numbers, the same negations, three content words or
+/// more each. Deliberately strict — joining two facts loses one.
+// ponytail: lexical — "deploys on Thursdays" vs "ships every Thursday" slips
+// through to the prompt rule; an embedding check would catch it but also
+// joins Thursday and Friday.
+fn near_duplicate(a: &str, b: &str) -> bool {
+    let (a, b) = (content_words(a), content_words(b));
+    if a.len().min(b.len()) < 3 {
+        return false;
+    }
+    let marked = |words: &BTreeSet<String>| -> BTreeSet<String> {
+        words
+            .iter()
+            .filter(|t| t.bytes().any(|c| c.is_ascii_digit()) || NEGATIONS.contains(&t.as_str()))
+            .cloned()
+            .collect()
+    };
+    if marked(&a) != marked(&b) {
+        return false;
+    }
+    a.intersection(&b).count() * 5 >= a.union(&b).count() * 4
+}
+
+/// The first live memory among `candidates` that `text` restates.
+fn near_twin<'a>(
+    text: &str,
+    mut candidates: impl Iterator<Item = &'a Memory>,
+) -> Option<&'a Memory> {
+    candidates.find(|m| m.is_live() && near_duplicate(text, &m.text))
 }
 
 /// Append new standing instructions to the learned rule, skipping any whose
@@ -177,6 +292,11 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         }
         return Ok(());
     };
+    let query = entries
+        .iter()
+        .map(|(_, _, text, _)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let (transcript, newest_id, content_len) = excerpt(entries, cfg.extraction_window);
     // Measured on message text, not the dated transcript: the per-line
     // `role [date]: ` prefix alone would clear any threshold.
@@ -188,6 +308,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         }
         return Ok(());
     }
+    let known = known_memories(deps, &bank_name, &query, cfg.decay_half_life_days).await;
 
     let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
     let reply = deps
@@ -199,7 +320,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
                 "system_prompt": EXTRACT_SYSTEM,
                 "messages": [{
                     "role": "user",
-                    "content": [{ "type": "text", "text": transcript }],
+                    "content": [{ "type": "text", "text": extraction_input(&known, &transcript) }],
                     "timestamp": now_ms() as i64,
                 }],
                 "max_output_tokens": 1024,
@@ -272,7 +393,23 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         }
         let id = fingerprint(text);
         let now = now_ms();
-        let (memory, event) = match bank.get(&id).await {
+        let target = correction_target(&known, item.replaces).cloned();
+        let existing = match bank.get(&id).await {
+            Some(m) => Some(m),
+            // A rewording of a fact the bank holds is that fact observed
+            // again. Not for a correction: it differs from its target on
+            // purpose.
+            None if target.is_none() => {
+                let nearby = bank.lexical(text, 5, false).await;
+                let candidates = known.iter().chain(nearby.iter().map(|(m, _)| m));
+                match near_twin(text, candidates).map(|m| m.id.clone()) {
+                    Some(twin) => bank.get(&twin).await,
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        let (memory, event) = match existing {
             // Known memory re-observed: reinforce, never duplicate. A pinned
             // or tombstoned record is left exactly as it is.
             Some(existing) if existing.is_live() && !existing.pinned => {
@@ -298,6 +435,27 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             // writes did not all land. The queue retries the pass;
             // fingerprints make the retry reinforce, not duplicate.
             Err(e) => return Err(format!("memory commit failed: {e}")),
+        }
+        // A correction retires what it corrects: a tombstone pointing at
+        // the corrected memory, recoverable like any supersede.
+        let old = match target {
+            Some(old) => bank.get(&old.id).await,
+            None => None,
+        };
+        if let Some(old) = old.filter(|m| m.is_live() && !m.pinned && m.id != memory.id) {
+            let (retired, _) =
+                crate::functions::items::supersede_transition(old, memory.clone(), false, now);
+            bank.commit(retired.clone())
+                .await
+                .map_err(|e| format!("memory commit failed: {e}"))?;
+            deps.emitter
+                .item_with(
+                    ItemEvent::Superseded,
+                    &bank_name,
+                    &retired,
+                    Some("corrected in a later conversation"),
+                )
+                .await;
         }
     }
     // Every durable write landed: NOW the span is processed.
@@ -899,6 +1057,135 @@ mod tests {
         );
     }
 
+    fn known(text: &str) -> Memory {
+        let item = ExtractedItem {
+            text: text.into(),
+            entities: vec![],
+            tags: vec![],
+            confidence: None,
+            kind: None,
+            replaces: None,
+        };
+        new_memory(item, "s", None, 1)
+    }
+
+    #[test]
+    fn the_extraction_input_numbers_what_is_already_remembered() {
+        let ms = vec![
+            known("The user's name is Rafael Costa."),
+            known("ledger-sync uses pnpm."),
+        ];
+        assert_eq!(
+            extraction_input(&ms, "user [d]: hi"),
+            "Already remembered:\n[1] The user's name is Rafael Costa.\n[2] ledger-sync uses pnpm.\n\n\
+             Conversation excerpt:\nuser [d]: hi"
+        );
+        assert_eq!(
+            extraction_input(&[], "user [d]: hi"),
+            "Conversation excerpt:\nuser [d]: hi"
+        );
+    }
+
+    #[test]
+    fn the_prompt_asks_for_one_user_subject_and_no_restatements() {
+        for rule in [
+            "\"The user …\"",
+            "\"The user's name is <name>.\"",
+            "include \"user\"",
+            "already remembered",
+            "\"replaces\"",
+            "direct instruction to the assistant",
+        ] {
+            assert!(EXTRACT_SYSTEM.contains(rule), "missing: {rule}");
+        }
+    }
+
+    #[test]
+    fn parse_reads_replaces() {
+        let items = parse_items(r#"[{"text":"The user lives in Porto.","replaces":2}]"#).unwrap();
+        assert_eq!(items[0].replaces, Some(2));
+        let items = parse_items(r#"[{"text":"The user lives in Porto."}]"#).unwrap();
+        assert_eq!(items[0].replaces, None);
+    }
+
+    #[test]
+    fn a_correction_targets_a_listed_live_unpinned_memory() {
+        let mut pinned = known("A pinned fact.");
+        pinned.pinned = true;
+        let mut retired = known("An old fact.");
+        retired.invalid_at = Some(5);
+        let ms = vec![known("The user lives in Lisbon."), pinned, retired];
+        assert_eq!(
+            correction_target(&ms, Some(1)).map(|m| m.text.as_str()),
+            Some("The user lives in Lisbon.")
+        );
+        assert!(
+            correction_target(&ms, Some(2)).is_none(),
+            "pinned is untouchable"
+        );
+        assert!(correction_target(&ms, Some(3)).is_none(), "already retired");
+        for n in [Some(0), Some(9), None] {
+            assert!(correction_target(&ms, n).is_none());
+        }
+    }
+
+    #[test]
+    fn near_duplicates_are_rewordings_of_the_same_fact_only() {
+        let same = [
+            (
+                "ledger-sync uses pnpm as its package manager.",
+                "The ledger-sync project uses pnpm as its package manager.",
+            ),
+            (
+                "ledger-sync is deployed every Thursday.",
+                "The ledger-sync project is deployed every Thursday.",
+            ),
+        ];
+        for (a, b) in same {
+            assert!(near_duplicate(a, b), "{a} ~ {b}");
+        }
+        let different = [
+            (
+                "ledger-sync is deployed every Thursday.",
+                "ledger-sync is deployed every Friday.",
+            ),
+            (
+                "The ledger-sync project uses Postgres 16.",
+                "The ledger-sync project uses Postgres 17.",
+            ),
+            (
+                "The user likes cilantro a lot.",
+                "The user does not like cilantro a lot.",
+            ),
+            (
+                "The user wants green tea.",
+                "The user no longer wants green tea.",
+            ),
+            ("Uses pnpm.", "Uses npm."),
+        ];
+        for (a, b) in different {
+            assert!(!near_duplicate(a, b), "{a} !~ {b}");
+        }
+    }
+
+    #[test]
+    fn a_near_twin_is_the_first_live_rewording() {
+        let mut retired = known("The ledger-sync project uses pnpm as its package manager.");
+        retired.invalid_at = Some(5);
+        let live = known("ledger-sync uses pnpm as its package manager for builds.");
+        let twin_text = "ledger-sync uses pnpm as its package manager.";
+        let cands = [retired.clone(), known("Unrelated fact about the weather.")];
+        assert!(
+            near_twin(twin_text, cands.iter()).is_none(),
+            "retired never absorbs"
+        );
+        let cands = [retired, live.clone()];
+        assert_eq!(
+            near_twin(twin_text, cands.iter()).map(|m| &m.id),
+            Some(&live.id)
+        );
+    }
+
     fn remote(code: &str) -> Error {
         Error::Remote {
             code: code.into(),
@@ -1016,6 +1303,7 @@ mod tests {
             tags: vec!["Drinks".into()],
             confidence: Some("inferred".into()),
             kind: None,
+            replaces: None,
         };
         let m = new_memory(item, "s_1", Some("e_9"), 42);
         assert_eq!(m.text, "user prefers tea");

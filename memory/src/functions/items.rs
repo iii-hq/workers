@@ -410,7 +410,7 @@ fn clamp_reason(reason: Option<String>) -> Option<String> {
 /// observations — `(s+1) + (r+1)` total, so corroboration `s + r + 1`,
 /// stamped with the LATEST of the two `updated_at` (a merge is not a fresh
 /// restatement; Hindsight keeps the latest source `mentioned_at`).
-fn supersede_transition(
+pub(crate) fn supersede_transition(
     mut loser: Memory,
     mut winner: Memory,
     reinforce: bool,

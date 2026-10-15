@@ -52,9 +52,10 @@ rule; point-in-time information belongs in memories.
   is the durable cross-session sibling.
 - Deletes are tombstones and bank deletion moves to `.trash/` — nothing is
   destroyed; `include_superseded: true` on list/recall shows history.
-- Extraction never edits or removes existing memories (ADD-only, fingerprint
-  reinforced); dedup/merge/promote hygiene belongs to the `memory-consolidate`
-  sibling worker.
+- Extraction never edits a memory in place: a restatement reinforces the
+  known memory, and a correction supersedes it (a recoverable tombstone;
+  pinned memories are never touched). Wider dedup/merge/promote hygiene
+  belongs to the `memory-consolidate` sibling worker.
 - Injection is bounded (`max_rule_chars`, `recall_budget_tokens`) — an
   over-budget rule is truncated visibly, never silently dropped.
 - Recalled memories are dated (last update); trust a newer memory over an
