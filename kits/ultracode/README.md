@@ -39,7 +39,7 @@ args: max_rounds=2 concurrency=4 verifier=ultracode-qa budget_usd=5
 | `verify` | on | send every `done` result to an independent verifier |
 | `verifier` | `ultracode-qa` | verify tier for the In review wave (`ultracode-qa*` or `ultracode-verifier*`) |
 | `judges` | – | comma-separated model ids (at most 8): one `ultracode-verifier` per model, majority wins; with J judges a wave holds at most ⌊8/J⌋ tickets |
-| `deadline_min` | 20 | per-wave deadline; a still-running straggler is stopped. A work ticket goes back to To do while rounds remain (otherwise Backlog `failed`); a verify straggler is not re-run and is parked as `unverified` |
+| `deadline_min` | 20 | per-wave deadline: each sub-agent gets it from its own start, and the wave closes one minute later; a still-running straggler is stopped. A work ticket goes back to To do while rounds remain (otherwise Backlog `failed`); a verify straggler is not re-run and is parked as `unverified` |
 | `critic` | on | one completeness critic when the queue runs dry |
 | `max_items` | 5 × K | cap on tickets the run creates; K = tickets per wave = min(concurrency, 8), or min(concurrency, ⌊8/J⌋) with J judges |
 | `budget_usd` | – | soft cap: checked with `harness::metrics` before each work wave and at each round close; no new work wave starts once it is reached. When a model has no catalog pricing or usage is missing, the cost is a lower bound (marked incomplete when the harness total is null; one generation without usage is left out silently), so the cap can be overshot |

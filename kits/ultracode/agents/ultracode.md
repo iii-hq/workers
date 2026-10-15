@@ -101,8 +101,10 @@ Before arming, in one reply:
 
 Reply 1 arms the wave, then moves every wave ticket to `in_progress`, in that order (calls in one reply run in order; a refused call doesn't stop the next). A child's write is checked only against wakes that already exist, so the arm comes before any spawn:
 ```json
-engine::register_trigger {"trigger_type":"state","config":{"scope":"<run>-r1-w1"},"label":"uc KAN-7 r1 w1","conditions":[{"function_id":"state::barrier","config":{"id":"<run>-r1-w1","expect":["KAN-12","KAN-13"],"carry":"/event_type"}}],"lifecycle":{"expires_in_ms":<deadline_min × 60000>}}
+engine::register_trigger {"trigger_type":"state","config":{"scope":"<run>-r1-w1"},"label":"uc KAN-7 r1 w1","conditions":[{"function_id":"state::barrier","config":{"id":"<run>-r1-w1","expect":["KAN-12","KAN-13"],"carry":"/event_type"}}],"lifecycle":{"expires_in_ms":<(deadline_min + 1) × 60000>}}
 ```
+The wave closes one minute after the children's `Deadline:` (deadline_min from their task start), so the replies between the arm and the spawns never cut into a child's window. Every arm below uses this same deadline.
+
 Then `kanban::ticket::move {"id":"KAN-12","status":"in_progress","actor":"ultracode"}` for each wave ticket. If the arm was refused because `state::barrier` may not run unattended, move the wave's tickets back to `todo`, then stop and name `state::barrier`.
 
 Reply 2 spawns only the tickets whose move succeeded:
