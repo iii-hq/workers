@@ -500,7 +500,10 @@ pub(crate) fn build_rules_section(
     let mut budget = max_rule_chars;
     let mut truncated = false;
     for rule in rules {
-        let content = rule.content.trim();
+        // Also at render time: a hand-edited or reloaded rules/*.md never
+        // went through Bank::set_rule.
+        let redacted = crate::redact::redact(rule.content.trim()).text;
+        let content = redacted.as_str();
         if content.len() <= budget {
             budget -= content.len();
             out.push_str(&format!("\n## {}\n{content}\n", rule.name));
@@ -567,9 +570,11 @@ pub(crate) fn memories_message(
     let mut lines = Vec::new();
     let mut ids = Vec::new();
     for memory in memories {
+        // Also at render time: memories.jsonl lines written before
+        // redaction existed, or by hand, keep whatever they hold.
         let line = format!(
             "- {} ({})",
-            memory.text,
+            crate::redact::redact(&memory.text).text,
             local_date(memory.updated_at, "%Y-%m-%d")
         );
         if line.len() > budget {
@@ -756,6 +761,19 @@ Formal."
         );
         assert!(body.ends_with("</memory>"));
         assert_eq!(ids, vec!["fp1", "fp2"]);
+    }
+
+    #[test]
+    fn injection_redacts_a_legacy_secret_at_render_time() {
+        // Written before redaction existed (or by hand): still never injected.
+        let key = format!("ghp_{}", "a1B2c3D4e5".repeat(4).get(..36).unwrap());
+        let ms = vec![memory("fp1", &format!("CI token is {key}"))];
+        let (body, _) = memories_message("b", &ms, 1_200, NOW).unwrap();
+        assert!(!body.contains(&key), "{body}");
+        assert!(
+            body.contains("CI token is [REDACTED:github_token]"),
+            "{body}"
+        );
     }
 
     #[test]

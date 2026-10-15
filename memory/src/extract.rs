@@ -238,8 +238,13 @@ pub async fn try_run(deps: &Deps, session_id: &str) -> Result<(), String> {
     }
 
     let mut saved = 0usize;
-    for item in items.into_iter().take(cfg.max_memories_per_turn) {
-        let text = item.text.trim();
+    for mut item in items.into_iter().take(cfg.max_memories_per_turn) {
+        // Redact before the fingerprint and before normalization, like
+        // memory::save.
+        item.text = crate::redact::redact(item.text.trim()).text;
+        crate::redact::drop_secrets(&mut item.entities);
+        crate::redact::drop_secrets(&mut item.tags);
+        let text = item.text.as_str();
         if text.len() < 3 || text.len() > 500 {
             continue;
         }
@@ -504,7 +509,12 @@ fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
     if trimmed.is_empty() || trimmed.starts_with("<memory ") {
         return None;
     }
-    let excerpt = &trimmed[..clamp_char_boundary(trimmed, 2_000)];
+    // Redacted before it reaches the extraction model: a secret it never
+    // sees is one it cannot copy into a memory.
+    // Redact before the cut: a key crossing the 2000-char clamp would
+    // otherwise reach the model half-visible.
+    let redacted = crate::redact::redact(trimmed).text;
+    let excerpt = &redacted[..clamp_char_boundary(&redacted, 2_000)];
     Some(format!(
         "{role} [{}]: {excerpt}",
         local_date(ts, "%Y-%m-%d %A")
@@ -717,6 +727,24 @@ mod tests {
         assert_eq!(b, format!("assistant [{d2}]: ok"));
         // Injected memory blocks and empty turns never reach the excerpt.
         assert!(transcript_line("user", "<memory bank=\"m\">…</memory>", day1).is_none());
+        // A secret pasted in chat never reaches the extraction model.
+        let pasted = transcript_line(
+            "user",
+            "my key is sk-ant-api03-a1B2c3D4e5a1B2c3D4e5a1B2",
+            day1,
+        )
+        .unwrap();
+        assert!(
+            pasted.ends_with("my key is [REDACTED:anthropic_key]"),
+            "{pasted}"
+        );
+        // A key crossing the 2000-char cut is redacted, not half-sent.
+        let long = format!(
+            "{} sk-ant-api03-a1B2c3D4e5a1B2c3D4e5a1B2",
+            "x".repeat(1_990)
+        );
+        let cut = transcript_line("user", &long, day1).unwrap();
+        assert!(!cut.contains("sk-ant-api03"), "{cut}");
         assert!(transcript_line("user", "   ", day1).is_none());
     }
 

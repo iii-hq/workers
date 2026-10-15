@@ -502,7 +502,22 @@ impl Bank {
     /// THE single mutation choke point: append the full record (fsync),
     /// then update the map and the index together. Every save / update /
     /// pin / supersede / tombstone flows through here.
-    pub async fn commit(&self, memory: Memory) -> Result<CommitKind, MemoryError> {
+    pub async fn commit(&self, mut memory: Memory) -> Result<CommitKind, MemoryError> {
+        // The backstop for every write path: no known secret shape reaches
+        // memories.jsonl, whoever built the record (the entry points redact
+        // first, so dedup fingerprints the redacted text).
+        let mut redacted = crate::redact::redact(&memory.text);
+        redacted
+            .labels
+            .extend(crate::redact::drop_secrets(&mut memory.entities));
+        redacted
+            .labels
+            .extend(crate::redact::drop_secrets(&mut memory.tags));
+        if !redacted.labels.is_empty() {
+            tracing::warn!(bank = %self.name, id = %memory.id, labels = ?redacted.labels,
+                "redacted secrets from a memory at commit");
+            memory.text = redacted.text;
+        }
         let mut inner = self.inner.write().await;
         let line = serde_json::to_string(&memory)
             .map_err(|e| MemoryError::Storage(format!("serialize memory: {e}")))?;
@@ -791,6 +806,13 @@ impl Bank {
     /// Atomic write (tmp + rename); empty content removes the rule.
     pub fn set_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
         validate_name(name)?;
+        // Rules are injected into every turn: no known secret shape is kept.
+        let redacted = crate::redact::redact(content);
+        if !redacted.labels.is_empty() {
+            tracing::warn!(bank = %self.name, rule = name, labels = ?redacted.labels,
+                "redacted secrets from a rule");
+        }
+        let content = redacted.text.as_str();
         let dir = self.rules_dir();
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{name}.md"));
@@ -909,6 +931,35 @@ mod tests {
         assert_eq!(bank2.vector_count().await, 1);
         assert!(std::fs::symlink_metadata(&tmp).is_err(), "temp removed");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "untouched");
+    }
+
+    #[tokio::test]
+    async fn no_known_secret_reaches_memories_jsonl_or_a_rule_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let key = "ghp_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3";
+        // Built by a path that skipped the entry-point redaction.
+        let mut m = memory(&format!("User's deploy token is {key}"));
+        m.entities = vec!["AKIAIOSFODNN7EXAMPLE".into()];
+        m.tags = vec![format!("postgres://ops:S3cr3tPass@db/app")];
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_rule("deploy", &format!("Use the key {key} for CI."))
+            .unwrap();
+
+        let on_disk = std::fs::read_to_string(bank.dir().join(MEMORIES_FILE)).unwrap();
+        for secret in [key, "AKIAIOSFODNN7EXAMPLE", "S3cr3tPass"] {
+            assert!(!on_disk.contains(secret), "{secret} reached memories.jsonl");
+        }
+        let stored = bank.get(&m.id).await.unwrap();
+        assert_eq!(
+            stored.text,
+            "User's deploy token is [REDACTED:github_token]"
+        );
+        assert!(stored.entities.is_empty(), "a secret entity is dropped");
+        assert!(stored.tags.is_empty(), "a secret tag is dropped");
+        let rule = std::fs::read_to_string(bank.dir().join("rules/deploy.md")).unwrap();
+        assert_eq!(rule, "Use the key [REDACTED:github_token] for CI.");
     }
 
     #[tokio::test]

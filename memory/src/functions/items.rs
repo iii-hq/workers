@@ -139,6 +139,16 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
             "text must be 3..2000 characters".into(),
         ));
     }
+    // Redact before the fingerprint: dedup and the stored text agree, and
+    // the caller sees what was kept in the returned record.
+    let redaction = crate::redact::redact(&text);
+    let text = redaction.text;
+    // Short fields too, before normalization lowercases them (a lowercased
+    // key still leaks its material, and the key shapes are case-sensitive).
+    let (mut entities, mut tags) = (req.entities, req.tags);
+    let mut labels = redaction.labels;
+    labels.extend(crate::redact::drop_secrets(&mut entities));
+    labels.extend(crate::redact::drop_secrets(&mut tags));
     let cfg = deps.config().await;
     let bank_name = default_bank_name(&req.bank, &cfg.default_bank);
     let store = deps.store().await;
@@ -155,15 +165,18 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
         SaveInput {
             id,
             text,
-            entities: req.entities,
-            tags: req.tags,
+            entities,
+            tags,
             pinned: req.pinned,
             session_id: req.session_id,
             now,
         },
     );
     bank.commit(memory.clone()).await?;
-    deps.emitter.item(event, &bank_name, &memory).await;
+    let reason = crate::redact::reason(&labels);
+    deps.emitter
+        .item_with(event, &bank_name, &memory, reason.as_deref())
+        .await;
     crate::embed_client::spawn_backfill(deps, &bank_name);
     Ok(SaveResponse { memory, created })
 }
@@ -264,6 +277,7 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
         .await
         .ok_or_else(|| MemoryError::MemoryNotFound(req.id.clone()))?;
     let mut text_changed = false;
+    let mut labels: Vec<&'static str> = Vec::new();
     if let Some(text) = req.text {
         let text = text.trim().to_string();
         if text.len() < 3 || text.len() > 2_000 {
@@ -271,6 +285,9 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
                 "text must be 3..2000 characters".into(),
             ));
         }
+        let redaction = crate::redact::redact(&text);
+        labels.extend(redaction.labels);
+        let text = redaction.text;
         // A text edit restates the fact; pin/tag/entity edits do not.
         text_changed = memory.text != text;
         if text_changed {
@@ -278,10 +295,13 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
         }
         memory.text = text;
     }
-    if let Some(entities) = req.entities {
+    // Redacted before normalization lowercases them (see `save`).
+    if let Some(mut entities) = req.entities {
+        labels.extend(crate::redact::drop_secrets(&mut entities));
         memory.entities = normalize_entities(entities);
     }
-    if let Some(tags) = req.tags {
+    if let Some(mut tags) = req.tags {
+        labels.extend(crate::redact::drop_secrets(&mut tags));
         memory.tags = normalize_entities(tags);
     }
     if let Some(pinned) = req.pinned {
@@ -290,8 +310,9 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
     memory.updated_at = now_ms();
     memory.revision += 1;
     bank.commit(memory.clone()).await?;
+    let reason = crate::redact::reason(&labels);
     deps.emitter
-        .item(ItemEvent::Updated, &bank_name, &memory)
+        .item_with(ItemEvent::Updated, &bank_name, &memory, reason.as_deref())
         .await;
     // The commit dropped the vector of the old text; embed the new one.
     if text_changed {

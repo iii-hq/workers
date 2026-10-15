@@ -1,0 +1,7 @@
+sk-ant-api03-a1B2c3D4e5a1B2c3D4e5a1B2
+ghp_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3
+postgres://admin:S3cr3tPass@db.internal:5432
+postgres://admin:S3cr3tPass@db:5432
+postgres://ops:S3cr3tPass@db
+postgres://[REDACTED:url_credentials]@db:5432
+amqp://guest:Gu3stPw9@mq:5672
