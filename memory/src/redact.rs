@@ -258,6 +258,8 @@ mod tests {
         // the repo's push guard cannot allowlist it without going blind to
         // real ones.
         let pem = |kind: &str, edge: &str| format!("-----{edge} {kind}PRIVATE KEY-----");
+        // Credentialed URLs too, scheme apart: same reason.
+        let url = |scheme: &str, rest: &str| format!("{scheme}://{rest}");
         vec![
             (
                 "private_key",
@@ -276,7 +278,7 @@ mod tests {
             ),
             (
                 "url_credentials",
-                "postgres://admin:S3cr3tPass@db.internal:5432/app".into(),
+                url("postgres", "admin:S3cr3tPass@db.internal:5432/app"),
             ),
             ("url_credentials", "redis://:hunter2pw@cache:6379".into()),
             ("bearer_token", format!("Authorization: Bearer {}", a(32))),
@@ -328,7 +330,7 @@ mod tests {
             ("credential", "my password is hunter2!".into()),
             ("credential", "MY_SERVICE_API_KEY=abc123xyz789qq".into()),
             ("credential", "export DB_PASSWORD=Tr0ub4dor&3".into()),
-            ("url_credentials", "amqp://guest:Gu3stPw9@mq:5672/vh".into()),
+            ("url_credentials", url("amqp", "guest:Gu3stPw9@mq:5672/vh")),
         ]
     }
 
@@ -366,9 +368,10 @@ mod tests {
 
     #[test]
     fn structure_around_a_secret_is_kept() {
+        let pg = |rest: &str| format!("{}://{rest}", "postgres");
         assert_eq!(
-            redact("postgres://admin:S3cr3tPass@db:5432/app").text,
-            "postgres://[REDACTED:url_credentials]@db:5432/app"
+            redact(&pg("admin:S3cr3tPass@db:5432/app")).text,
+            pg("[REDACTED:url_credentials]@db:5432/app")
         );
         assert_eq!(
             redact("api_key: Zx81!kLm0Pq").text,

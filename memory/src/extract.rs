@@ -728,21 +728,15 @@ mod tests {
         // Injected memory blocks and empty turns never reach the excerpt.
         assert!(transcript_line("user", "<memory bank=\"m\">…</memory>", day1).is_none());
         // A secret pasted in chat never reaches the extraction model.
-        let pasted = transcript_line(
-            "user",
-            "my key is sk-ant-api03-a1B2c3D4e5a1B2c3D4e5a1B2",
-            day1,
-        )
-        .unwrap();
+        // Assembled at runtime: no literal key shape in the source.
+        let key = format!("sk-ant-api03-{}", "a1B2c3D4e5".repeat(3));
+        let pasted = transcript_line("user", &format!("my key is {key}"), day1).unwrap();
         assert!(
             pasted.ends_with("my key is [REDACTED:anthropic_key]"),
             "{pasted}"
         );
         // A key crossing the 2000-char cut is redacted, not half-sent.
-        let long = format!(
-            "{} sk-ant-api03-a1B2c3D4e5a1B2c3D4e5a1B2",
-            "x".repeat(1_990)
-        );
+        let long = format!("{} {key}", "x".repeat(1_990));
         let cut = transcript_line("user", &long, day1).unwrap();
         assert!(!cut.contains("sk-ant-api03"), "{cut}");
         assert!(transcript_line("user", "   ", day1).is_none());
