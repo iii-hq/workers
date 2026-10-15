@@ -81,6 +81,16 @@ struct VectorLine<'a> {
     v: &'a [f32],
 }
 
+/// Serializes every vector sidecar replay+compaction with every append.
+/// During `memory::reload` (or a `data_dir` swap) the OLD store's banks can
+/// still append while the NEW store's bank compacts the same file: an
+/// append landing on the inode the rename replaces would be lost.
+static SIDECAR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn sidecar_lock() -> std::sync::MutexGuard<'static, ()> {
+    SIDECAR.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Rewrite the sidecar to exactly the vectors `open` kept: temp file,
 /// fsync, rename over. A crash leaves the old file or the new one, never a
 /// torn one; a failed rewrite removes its temp (a partial copy would only
@@ -90,10 +100,8 @@ fn compact_vectors(
     vectors: &HashMap<String, (String, Vec<f32>)>,
     memories: &HashMap<String, Memory>,
 ) -> std::io::Result<()> {
-    // Concurrent opens of one data_dir (memory::reload racing a data_dir
-    // config change) must not interleave writes into the same temp file.
-    static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _gate = GATE.lock().unwrap_or_else(|e| e.into_inner());
+    // The caller holds `sidecar_lock()`, so no concurrent open writes the
+    // same temp file and no append slips in between replay and rename.
     let tmp = path.with_extension("jsonl.tmp");
     let rewrite = || -> std::io::Result<()> {
         let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
@@ -379,6 +387,7 @@ impl Bank {
         let mut vectors: HashMap<String, (String, Vec<f32>)> = HashMap::new();
         let vectors_path = dir.join(VECTORS_FILE);
         let mut lines = 0usize;
+        let sidecar = sidecar_lock();
         if vectors_path.exists() {
             let file = std::fs::File::open(&vectors_path)?;
             for line in std::io::BufReader::new(file).lines() {
@@ -409,6 +418,7 @@ impl Bank {
                 tracing::warn!(bank = name, error = %e, "vector sidecar compaction failed");
             }
         }
+        drop(sidecar);
 
         Ok(Self {
             name: name.to_string(),
@@ -450,12 +460,15 @@ impl Bank {
             v: &v,
         })
         .map_err(|e| MemoryError::Storage(format!("serialize vector: {e}")))?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(VECTORS_FILE))?;
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
+        {
+            let _sidecar = sidecar_lock();
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.dir.join(VECTORS_FILE))?;
+            file.write_all(line.as_bytes())?;
+            file.write_all(b"\n")?;
+        }
         inner.vectors.insert(id.to_string(), (model.to_string(), v));
         Ok(true)
     }
