@@ -20,7 +20,7 @@ values), and the default board is `backlog`, `todo`, `in_progress`,
 
 A ticket has at most one parent (a subtask), one project and one release,
 independent of each other. A parent's `progress` counts only children in the
-`done_status` column (the last column unless configured; `in_review` is not done), over
+`done_status` column (read it from `kanban::config::info`; `in_review` is not done), over
 the children not in the `canceled_status` column: move a ticket that will not be done there.
 
 Tickets are never removed by an agent: a finished ticket is moved to

@@ -215,6 +215,20 @@ assert.equal(
   'nothing before the first column',
 )
 assert.equal(columnBefore(columns, 'backlog'), null)
+// "Move back" never offers the canceled column, even when it sits right before done
+const canceledFirst = [
+  { id: 'backlog', label: 'Backlog' },
+  { id: 'in_review', label: 'In review' },
+  { id: 'canceled', label: 'Canceled' },
+  { id: 'done', label: 'Done' },
+]
+assert.equal(
+  doneWarning({ status: 'done', children: kids, deleted_at: null }, 'done', 'canceled', canceledFirst)?.back?.label,
+  'In review',
+  'back skips the canceled column',
+)
+assert.equal(columnBefore(canceledFirst, 'done', 'canceled')?.id, 'in_review')
+assert.equal(columnBefore(canceledFirst, 'gone', 'canceled'), null, 'an unknown column has nothing before it')
 // a canceled subtask is closed: it neither keeps the parent's warning nor counts as open
 const dropped = [brief('KAN-128', 'done'), brief('KAN-150', 'canceled'), brief('KAN-151', 'canceled')]
 assert.equal(

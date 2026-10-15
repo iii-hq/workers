@@ -127,7 +127,8 @@ function LaneMeta({
           </span>
         </>
       ) : (
-        <span className="kanban-swim__prog">No tickets</span>
+        // total leaves canceled tickets out: a lane with cards but no total holds only canceled ones.
+        <span className="kanban-swim__prog">{lane.count > 0 ? 'All canceled' : 'No tickets'}</span>
       )}
     </>
   )

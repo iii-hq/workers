@@ -330,10 +330,10 @@ export function KanbanConfigForm({ value, onChange, errors, focusField }: Config
     record.canceled_status === undefined
       ? 'canceled'
       : typeof record.canceled_status === 'string'
-        ? record.canceled_status
+        ? record.canceled_status.trim()
         : ''
   // Done: unset, or a column that is gone, falls to the last column that is not the canceled one.
-  const storedDone = typeof record.done_status === 'string' ? record.done_status : ''
+  const storedDone = typeof record.done_status === 'string' ? record.done_status.trim() : ''
   const doneFallback =
     [...columns].reverse().find((column) => column.id !== requestedCanceled) ?? columns[columns.length - 1]
   const doneStatus = columns.some((column) => column.id === storedDone) ? storedDone : (doneFallback?.id ?? '')
