@@ -5,7 +5,8 @@
 //! preserved); registered providers without the surface are skipped on a
 //! function-not-found, so a new embed-capable provider needs zero router
 //! changes to serve embeddings. An auto-pick also moves past a provider
-//! that is not configured (no api key), but never past a transient failure.
+//! that is not configured for good (no api key, a missing secret), but
+//! never past a transient failure.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -17,7 +18,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::config::state::{snapshot, ConfigCell};
+use crate::registry::resolve::unconfigured_for_good;
 use crate::registry::store::RegistryStore;
+use crate::secrets::SecretCache;
 use crate::types::errors::{is_function_not_found, is_provider_unconfigured};
 
 const EMBED_TIMEOUT_MS: u64 = 30_000;
@@ -102,10 +106,14 @@ async fn try_provider(
 pub fn make_embed(
     iii: IIIClient,
     registry: Arc<RegistryStore>,
+    config: ConfigCell,
+    secrets: Arc<SecretCache>,
 ) -> impl Fn(RouterEmbedRequest) -> BoxedEmbedFuture + Send + Sync + 'static {
     move |req: RouterEmbedRequest| {
         let iii = iii.clone();
         let registry = registry.clone();
+        let config = snapshot(&config);
+        let secrets = secrets.clone();
         Box::pin(async move {
             if req.input.is_empty() {
                 return Err(Error::Handler(
@@ -132,35 +140,50 @@ pub fn make_embed(
                     "router/no_embed_provider: no providers are registered".into(),
                 ));
             }
-            first_embedding(&candidates, auto, |provider| {
-                let (iii, model, input) = (iii.clone(), req.model.clone(), req.input.clone());
-                async move { try_provider(&iii, &provider, &model, &input).await }
-            })
+            first_embedding(
+                &candidates,
+                auto,
+                |provider| {
+                    let (iii, model, input) = (iii.clone(), req.model.clone(), req.input.clone());
+                    async move { try_provider(&iii, &provider, &model, &input).await }
+                },
+                |provider| {
+                    let (config, secrets) = (config.clone(), secrets.clone());
+                    async move { unconfigured_for_good(&config, &provider, &secrets).await }
+                },
+            )
             .await
         })
     }
 }
 
 /// Walk the candidates in order. `Ok(None)` (no embed surface) moves on;
-/// so does an unconfigured provider on an auto-pick (`auto`). Any other
-/// error is returned as is: falling back past a transient failure would
-/// embed the same caller's corpus into another model's vector space, and
-/// callers cannot tell the spaces apart (they retry later instead).
-async fn first_embedding<F, Fut>(
+/// so does, on an auto-pick (`auto`), a provider that reports itself not
+/// configured when the router's own state says that lasts (`for_good`).
+/// Any other error is returned as is: falling back past a transient
+/// failure (an upstream error, a secrets outage) would embed the same
+/// caller's corpus into another model's vector space, and callers cannot
+/// tell the spaces apart (they retry later instead).
+async fn first_embedding<F, Fut, G, GFut>(
     candidates: &[String],
     auto: bool,
     mut attempt: F,
+    mut for_good: G,
 ) -> Result<RouterEmbedResponse, Error>
 where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = Result<Option<RouterEmbedResponse>, Error>>,
+    G: FnMut(String) -> GFut,
+    GFut: Future<Output = bool>,
 {
     let mut unconfigured = Vec::new();
     for provider in candidates {
         match attempt(provider.clone()).await {
             Ok(Some(resp)) => return Ok(resp),
             Ok(None) => {}
-            Err(e) if auto && is_provider_unconfigured(&e) => unconfigured.push(provider.as_str()),
+            Err(e) if auto && is_provider_unconfigured(&e) && for_good(provider.clone()).await => {
+                unconfigured.push(provider.as_str())
+            }
             Err(e) => return Err(e),
         }
     }
@@ -203,36 +226,27 @@ mod tests {
         vec!["openai".into(), "llamacpp".into()]
     }
 
+    async fn openai_unconfigured(p: String) -> Result<Option<RouterEmbedResponse>, Error> {
+        match p.as_str() {
+            "openai" => Err(remote("provider/not_configured: no api_key")),
+            _ => Ok(Some(ok(&p))),
+        }
+    }
+
     #[tokio::test]
-    async fn an_auto_pick_moves_past_an_unconfigured_provider() {
-        let resp = first_embedding(&candidates(), true, |p| async move {
-            match p.as_str() {
-                "openai" => Err(remote("provider/not_configured: no api_key")),
-                _ => Ok(Some(ok(&p))),
-            }
-        })
-        .await
-        .unwrap();
+    async fn an_auto_pick_moves_past_a_provider_unconfigured_for_good() {
+        let resp = first_embedding(&candidates(), true, openai_unconfigured, |_| async { true })
+            .await
+            .unwrap();
         assert_eq!(resp.provider, "llamacpp");
     }
 
     #[tokio::test]
-    async fn a_transient_failure_is_returned_not_fallen_back_from() {
-        let err = first_embedding(&candidates(), true, |p| async move {
-            match p.as_str() {
-                "openai" => Err(remote("provider/upstream_status: 503")),
-                _ => Ok(Some(ok(&p))),
-            }
-        })
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("provider/upstream_status: 503"));
-    }
-
-    #[tokio::test]
-    async fn an_explicit_provider_is_never_substituted() {
-        let err = first_embedding(&["openai".to_string()], false, |_| async {
-            Err(remote("provider/not_configured: no api_key"))
+    async fn an_unresolved_secret_is_transient_and_returned() {
+        // The provider says "not configured" while its secret is still
+        // resolving (or the secrets worker is down): no fallback.
+        let err = first_embedding(&candidates(), true, openai_unconfigured, |_| async {
+            false
         })
         .await
         .unwrap_err();
@@ -240,15 +254,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_transient_failure_is_returned_not_fallen_back_from() {
+        let upstream = |p: String| async move {
+            match p.as_str() {
+                "openai" => Err(remote("provider/upstream_status: 503")),
+                _ => Ok(Some(ok(&p))),
+            }
+        };
+        let err = first_embedding(&candidates(), true, upstream, |_| async { true })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("provider/upstream_status: 503"));
+    }
+
+    #[tokio::test]
+    async fn an_explicit_provider_is_never_substituted() {
+        let only = ["openai".to_string()];
+        let err = first_embedding(&only, false, openai_unconfigured, |_| async { true })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("provider/not_configured"));
+    }
+
+    #[tokio::test]
     async fn none_left_names_the_unconfigured_ones() {
-        let err = first_embedding(&candidates(), true, |p| async move {
+        let no_surface = |p: String| async move {
             match p.as_str() {
                 "openai" => Err(remote("provider/not_configured: no api_key")),
                 _ => Ok(None),
             }
-        })
-        .await
-        .unwrap_err();
+        };
+        let err = first_embedding(&candidates(), true, no_surface, |_| async { true })
+            .await
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("router/no_embed_provider"), "{msg}");
         assert!(msg.contains("not configured: openai"), "{msg}");
