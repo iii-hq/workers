@@ -114,63 +114,60 @@ fn bank_lock(bank: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-/// Per `bank\0id`, how often that memory's text failed to embed. A text the
-/// provider rejects outright (one over a llama.cpp server's batch size, say)
-/// would otherwise head every window and fail every batch it is in, so no
-/// memory in the bank ever got a vector. Known failures go to the back of
-/// the window instead, and a failed batch is retried one text at a time.
-fn failures() -> &'static Mutex<HashMap<String, u32>> {
-    static FAILURES: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
-    FAILURES.get_or_init(Default::default)
+/// A text the provider rejects outright (one over a llama.cpp server's batch
+/// size, say) fails every batch it is in, so it would otherwise keep every
+/// memory of its bank from getting a vector. Such texts are found one at a
+/// time and sit out windows for [`REJECT_COOLDOWN`], keyed by memory AND
+/// text: an edit that fixes the text is embedded at once.
+const REJECT_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(600);
+/// Embedded alone after a failed batch to tell "the provider is down"
+/// (this fails too) from "the provider rejects a text in the batch".
+const CANARY: &str = "ok";
+
+fn rejected() -> &'static Mutex<HashMap<String, std::time::Instant>> {
+    static REJECTED: OnceLock<Mutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
+    REJECTED.get_or_init(Default::default)
 }
 
-fn failure_key(bank: &str, id: &str) -> String {
-    format!("{bank}\0{id}")
+fn reject_key(bank: &str, memory: &Memory) -> String {
+    format!("{bank}\0{}\0{}", memory.id, memory.text)
 }
 
-/// The next window of backfill work: unembedded memories, those that failed
-/// before last (only re-sorted when this bank has any).
+fn reject(bank: &Bank, memories: &[&Memory]) {
+    let mut map = rejected().lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    for memory in memories {
+        map.insert(reject_key(&bank.name, memory), now);
+    }
+}
+
+/// The next window of backfill work: unembedded memories, minus texts the
+/// provider rejected within the cooldown (only filtered when this bank has
+/// any, so the common case stays a bounded scan).
 async fn next_window(bank: &Bank, model: &str) -> Vec<Memory> {
-    let prefix = failure_key(&bank.name, "");
-    let failed: HashMap<String, u32> = failures()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .filter_map(|(k, n)| k.strip_prefix(&prefix).map(|id| (id.to_string(), *n)))
-        .collect();
-    if failed.is_empty() {
+    let fresh: std::collections::HashSet<String> = {
+        let mut map = rejected().lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, at| at.elapsed() < REJECT_COOLDOWN);
+        let prefix = format!("{}\0", bank.name);
+        map.keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect()
+    };
+    if fresh.is_empty() {
         return bank.unembedded(BACKFILL_BATCH, model).await;
     }
     let mut pending = bank.unembedded(usize::MAX, model).await;
-    pending.sort_by_key(|m| (failed.get(&m.id).copied().unwrap_or(0), m.id.clone()));
+    pending.retain(|m| !fresh.contains(&reject_key(&bank.name, m)));
     pending.truncate(BACKFILL_BATCH);
     pending
 }
 
-fn note_failure(bank: &Bank, memory: &Memory) {
-    *failures()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(failure_key(&bank.name, &memory.id))
-        .or_default() += 1;
-}
-
 /// Store one embedding; `Err` when the sidecar write failed (stop the pass).
 async fn store(bank: &Bank, model: &str, memory: &Memory, v: Vec<f32>) -> Result<bool, ()> {
-    match bank.set_vector(&memory.id, model, &memory.text, v).await {
-        Ok(stored) => {
-            let key = failure_key(&bank.name, &memory.id);
-            failures()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&key);
-            Ok(stored)
-        }
-        Err(e) => {
-            tracing::warn!(bank = %bank.name, error = %e, "vector write failed");
-            Err(())
-        }
-    }
+    bank.set_vector(&memory.id, model, &memory.text, v)
+        .await
+        .map_err(|e| tracing::warn!(bank = %bank.name, error = %e, "vector write failed"))
 }
 
 /// The backfill loop with the embedder injected (`router::embed` in
@@ -198,34 +195,47 @@ where
             }
             continue;
         }
-        // The batch failed: the provider is down, or it rejects one of the
-        // texts. One at a time tells them apart: two failures before any
-        // success reads as "down" (a later pass retries); otherwise only the
-        // rejected texts miss out, and go last in later windows.
-        if pending.len() == 1 {
-            note_failure(bank, &pending[0]);
+        // The batch failed. A failing canary means the provider is down: a
+        // later pass retries, and no text is blamed for it.
+        if embed(vec![CANARY.to_string()]).await.is_none() {
             break;
         }
-        let (mut ok, mut failed) = (0usize, 0usize);
+        if let [only] = pending.as_slice() {
+            reject(bank, &[only]);
+            continue;
+        }
+        // The provider answers, so it rejects some text here: embed one at a
+        // time. A failure is blamed on its text only once the provider is
+        // seen answering after it (a later success, or a canary at the end
+        // or after three failures in a row), so dying mid-loop blames none.
+        let mut suspects: Vec<&Memory> = Vec::new();
         for memory in &pending {
             match embed(vec![memory.text.clone()]).await {
                 Some(mut v) if v.len() == 1 => {
+                    reject(bank, &suspects);
+                    suspects.clear();
                     let Ok(stored) = store(bank, model, memory, v.remove(0)).await else {
                         return total;
                     };
                     total += usize::from(stored);
-                    ok += 1;
                 }
                 _ => {
-                    note_failure(bank, memory);
-                    failed += 1;
-                    // ponytail: "down" costs 3 calls per pass (batch + 2
-                    // singles); classify router errors if that ever matters.
-                    if ok == 0 && failed >= 2 {
-                        return total;
+                    suspects.push(memory);
+                    if suspects.len() == 3 {
+                        if embed(vec![CANARY.to_string()]).await.is_none() {
+                            return total;
+                        }
+                        reject(bank, &suspects);
+                        suspects.clear();
                     }
                 }
             }
+        }
+        if !suspects.is_empty() {
+            if embed(vec![CANARY.to_string()]).await.is_none() {
+                return total;
+            }
+            reject(bank, &suspects);
         }
     }
     total
@@ -408,48 +418,70 @@ mod tests {
         let calls = AtomicUsize::new(0);
         assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 2);
 
-        // A later save: the known failure goes last, the new text lands.
+        // A later save: the rejected text sits out, the batch succeeds.
         bank.commit(memory("user plays chess")).await.unwrap();
+        calls.store(0, Ordering::SeqCst);
         assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one clean batch");
         let left = bank.unembedded(10, "m").await;
         assert_eq!(left.len(), 1);
         assert!(left[0].text.starts_with("REJECTED"));
     }
 
     #[tokio::test]
-    async fn two_rejected_texts_up_front_cost_at_most_one_pass() {
+    async fn rejected_texts_up_front_cost_no_extra_pass() {
         let dir = tempfile::tempdir().unwrap();
         let bank = bank(&dir, "embed-rejected-two").await;
         for t in [
             "REJECTED one",
             "REJECTED two",
+            "REJECTED three",
             "user owns a bike",
-            "user likes tea",
         ] {
             bank.commit(memory(t)).await.unwrap();
         }
         let calls = AtomicUsize::new(0);
-        // Both rejected texts may come first and read as "provider down";
-        // the next pass tries them last and embeds the rest.
-        let first = backfill_pass(&bank, "m", picky(&calls)).await;
-        let second = backfill_pass(&bank, "m", picky(&calls)).await;
-        assert_eq!(first + second, 2);
-        assert_eq!(bank.unembedded(10, "m").await.len(), 2);
+        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        assert_eq!(bank.unembedded(10, "m").await.len(), 3);
     }
 
     #[tokio::test]
-    async fn a_down_provider_costs_one_batch_and_two_singles() {
+    async fn an_edit_that_fixes_a_rejected_text_is_embedded_at_once() {
         let dir = tempfile::tempdir().unwrap();
-        let bank = bank(&dir, "embed-down").await;
-        for t in ["user owns a bike", "user likes tea", "user plays chess"] {
-            bank.commit(memory(t)).await.unwrap();
-        }
+        let bank = bank(&dir, "embed-rejected-edit").await;
+        let mut bad = memory("REJECTED oversized text");
+        bank.commit(bad.clone()).await.unwrap();
+        bank.commit(memory("user owns a bike")).await.unwrap();
+        let calls = AtomicUsize::new(0);
+        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+
+        bad.text = "user keeps it short".into();
+        bad.revision += 1;
+        bank.commit(bad).await.unwrap();
+        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        assert!(bank.unembedded(10, "m").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_outage_blames_no_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-outage").await;
+        bank.commit(memory("user owns a bike")).await.unwrap();
         let calls = AtomicUsize::new(0);
         let down = |_: Vec<String>| {
             calls.fetch_add(1, Ordering::SeqCst);
             async { None }
         };
-        assert_eq!(backfill_pass(&bank, "m", down).await, 0);
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        for _ in 0..5 {
+            assert_eq!(backfill_pass(&bank, "m", down).await, 0);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 10, "batch + canary per pass");
+
+        // Back up, with two rejected saves arriving: the good text lands.
+        for t in ["REJECTED one", "REJECTED two"] {
+            bank.commit(memory(t)).await.unwrap();
+        }
+        let picky_calls = AtomicUsize::new(0);
+        assert_eq!(backfill_pass(&bank, "m", picky(&picky_calls)).await, 1);
     }
 }
