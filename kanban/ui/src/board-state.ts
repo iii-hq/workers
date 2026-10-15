@@ -305,23 +305,28 @@ export function buildSwimlanes(input: SwimlaneInput): Swimlane[] {
     lanes: [],
     ...over,
   })
+  // One pass per lane over its own members, which are already in column order (`all` is): linear in the board.
+  const columnOf = new Map<string, string>()
+  for (const column of columns) for (const ticket of column.tickets) columnOf.set(ticket.id, column.id)
   const fill = (target: Swimlane, tickets: readonly TicketSummary[]) => {
-    for (const column of columns) {
-      for (const ticket of column.tickets) {
-        if (!tickets.includes(ticket)) continue
-        target.total += 1
-        if (ticket.status === doneStatus) target.done += 1
-        if (!shownIds.has(ticket.id)) continue
-        target.count += 1
-        target.cells.set(column.id, [...(target.cells.get(column.id) ?? []), ticket])
-      }
+    for (const ticket of tickets) {
+      target.total += 1
+      if (ticket.status === doneStatus) target.done += 1
+      if (!shownIds.has(ticket.id)) continue
+      target.count += 1
+      const column = columnOf.get(ticket.id) as string
+      const cell = target.cells.get(column)
+      if (cell) cell.push(ticket)
+      else target.cells.set(column, [ticket])
     }
     return target
   }
 
   for (const ticket of all) {
     const key = laneKey(ticket, by, known)
-    members.set(key, [...(members.get(key) ?? []), ticket])
+    const list = members.get(key)
+    if (list) list.push(ticket)
+    else members.set(key, [ticket])
   }
   const of = (key: string) => members.get(key) ?? []
   const keep = (l: Swimlane) => showEmpty || l.count > 0

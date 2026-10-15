@@ -145,7 +145,9 @@ export function resolveDefaults(plan: Plan, defaults: NewTicketDefaults | undefi
     project:
       (project && plan.projects.find((p) => !p.archived_at && (p.id === project || sameText(p.name, project)))?.id) ||
       null,
-    release: (release && plan.releases.find((r) => r.id === release || sameText(r.name, release))?.id) || null,
+    release:
+      (release && plan.releases.find((r) => !r.released_at && (r.id === release || sameText(r.name, release)))?.id) ||
+      null,
     parent:
       (parent &&
         plan.tickets.find((t) => !t.deleted_at && !t.parent_id && (t.id === parent || sameText(t.key, parent)))?.key) ||

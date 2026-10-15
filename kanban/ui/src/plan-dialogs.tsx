@@ -87,6 +87,8 @@ export function usePlanBoard(host: Host) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const seq = useRef(0)
+  // A quiet reload can supersede the first load: until a board has loaded, its failure must still show.
+  const loaded = useRef(false)
 
   const reload = useCallback(
     async (quiet = false) => {
@@ -99,10 +101,11 @@ export function usePlanBoard(host: Host) {
         const board = await api.board(host.iii)
         if (token !== seq.current) return
         setData(board)
+        loaded.current = true
         setError(null)
       } catch (caught) {
         if (token !== seq.current) return
-        if (!quiet) setError(errorMessage(caught))
+        if (!quiet || !loaded.current) setError(errorMessage(caught))
       } finally {
         if (token === seq.current) setLoading(false)
       }

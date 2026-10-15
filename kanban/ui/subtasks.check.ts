@@ -282,8 +282,8 @@ assert.deepEqual(
 )
 assert.deepEqual(
   resolveDefaults(plan, { project: 'pa', release: 'r1', parent: 'KAN-149' }),
-  { project: null, release: 'r1', parent: null },
-  'archived project and a subtask are dropped; a released release is not',
+  { project: null, release: null, parent: null },
+  'archived project, released release and a subtask are dropped (the board refuses new tickets there too)',
 )
 assert.deepEqual(resolveDefaults(plan, { project: null, release: '', parent: 'KAN-96' }), {
   project: null,

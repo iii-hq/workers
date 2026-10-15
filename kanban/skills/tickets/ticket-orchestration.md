@@ -182,8 +182,10 @@ says which ticket was commented on.
   feature. `harness::triggers::list` audits what is actually armed;
   `harness::triggers::unregister` retires the wiring once it lands.
 - **Arm a done-watch with every wake** — `kanban:change` with
-  `config: { "parent_id": "<PARENT>", "events": ["ticket.moved"], "ticket": "summary" }`, labelled
-  `<PARENT>-teardown` (for a lone ticket, `ticket_id: "<KEY>"` and `<KEY>-teardown`).
+  `config: { "parent_id": "<PARENT>", "events": ["ticket.moved", "ticket.updated", "ticket.deleted"], "ticket": "summary" }`,
+  labelled `<PARENT>-teardown` (for a lone ticket, `ticket_id: "<KEY>"` and `<KEY>-teardown`).
+  `ticket.updated` and `ticket.deleted` matter as much as moves: detaching a cut child or deleting
+  one also changes `progress`, and it can be the change that completes the parent.
   On each fire read the parent with `kanban::ticket::get`; when `progress.done == progress.total`
   and the parent's own `status` is `done`, unregister every `<PARENT>-*` binding, the done-watch
   last so it stays alive while you reap. The fire also arrives for children's moves and for the
