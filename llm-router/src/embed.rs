@@ -4,7 +4,8 @@
 //! `provider::<id>::embed` (batch in, one vector per input, order
 //! preserved); registered providers without the surface are skipped on a
 //! function-not-found, so a new embed-capable provider needs zero router
-//! changes to serve embeddings.
+//! changes to serve embeddings. An auto-pick also moves past a provider
+//! that is not configured (no api key), but never past a transient failure.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::registry::store::RegistryStore;
-use crate::types::errors::is_function_not_found;
+use crate::types::errors::{is_function_not_found, is_provider_unconfigured};
 
 const EMBED_TIMEOUT_MS: u64 = 30_000;
 
@@ -111,7 +112,9 @@ pub fn make_embed(
                     "router/invalid_input: input must not be empty".into(),
                 ));
             }
-            let candidates: Vec<String> = match req.provider.filter(|p| !p.trim().is_empty()) {
+            let explicit = req.provider.filter(|p| !p.trim().is_empty());
+            let auto = explicit.is_none();
+            let candidates: Vec<String> = match explicit {
                 Some(p) => vec![p],
                 None => {
                     // Registered providers, `openai` preferred so the
@@ -129,19 +132,125 @@ pub fn make_embed(
                     "router/no_embed_provider: no providers are registered".into(),
                 ));
             }
-            for provider in &candidates {
-                if let Some(resp) = try_provider(&iii, provider, &req.model, &req.input).await? {
-                    return Ok(resp);
-                }
-            }
-            Err(Error::Handler(format!(
-                "router/no_embed_provider: none of the registered providers ({}) implement \
-                 provider::<id>::embed",
-                candidates.join(", ")
-            )))
+            first_embedding(&candidates, auto, |provider| {
+                let (iii, model, input) = (iii.clone(), req.model.clone(), req.input.clone());
+                async move { try_provider(&iii, &provider, &model, &input).await }
+            })
+            .await
         })
     }
 }
 
+/// Walk the candidates in order. `Ok(None)` (no embed surface) moves on;
+/// so does an unconfigured provider on an auto-pick (`auto`). Any other
+/// error is returned as is: falling back past a transient failure would
+/// embed the same caller's corpus into another model's vector space, and
+/// callers cannot tell the spaces apart (they retry later instead).
+async fn first_embedding<F, Fut>(
+    candidates: &[String],
+    auto: bool,
+    mut attempt: F,
+) -> Result<RouterEmbedResponse, Error>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<Option<RouterEmbedResponse>, Error>>,
+{
+    let mut unconfigured = Vec::new();
+    for provider in candidates {
+        match attempt(provider.clone()).await {
+            Ok(Some(resp)) => return Ok(resp),
+            Ok(None) => {}
+            Err(e) if auto && is_provider_unconfigured(&e) => unconfigured.push(provider.as_str()),
+            Err(e) => return Err(e),
+        }
+    }
+    let detail = if unconfigured.is_empty() {
+        String::new()
+    } else {
+        format!("; not configured: {}", unconfigured.join(", "))
+    };
+    Err(Error::Handler(format!(
+        "router/no_embed_provider: none of the registered providers ({}) can serve \
+         provider::<id>::embed{detail}",
+        candidates.join(", ")
+    )))
+}
+
 type BoxedEmbedFuture =
     std::pin::Pin<Box<dyn Future<Output = Result<RouterEmbedResponse, Error>> + Send>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok(provider: &str) -> RouterEmbedResponse {
+        RouterEmbedResponse {
+            provider: provider.into(),
+            model: format!("{provider}-model"),
+            embeddings: vec![vec![1.0]],
+        }
+    }
+
+    fn remote(message: &str) -> Error {
+        Error::Remote {
+            code: "invocation_failed".into(),
+            message: format!("handler error: {message}"),
+            stacktrace: None,
+        }
+    }
+
+    fn candidates() -> Vec<String> {
+        vec!["openai".into(), "llamacpp".into()]
+    }
+
+    #[tokio::test]
+    async fn an_auto_pick_moves_past_an_unconfigured_provider() {
+        let resp = first_embedding(&candidates(), true, |p| async move {
+            match p.as_str() {
+                "openai" => Err(remote("provider/not_configured: no api_key")),
+                _ => Ok(Some(ok(&p))),
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(resp.provider, "llamacpp");
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_is_returned_not_fallen_back_from() {
+        let err = first_embedding(&candidates(), true, |p| async move {
+            match p.as_str() {
+                "openai" => Err(remote("provider/upstream_status: 503")),
+                _ => Ok(Some(ok(&p))),
+            }
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("provider/upstream_status: 503"));
+    }
+
+    #[tokio::test]
+    async fn an_explicit_provider_is_never_substituted() {
+        let err = first_embedding(&["openai".to_string()], false, |_| async {
+            Err(remote("provider/not_configured: no api_key"))
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("provider/not_configured"));
+    }
+
+    #[tokio::test]
+    async fn none_left_names_the_unconfigured_ones() {
+        let err = first_embedding(&candidates(), true, |p| async move {
+            match p.as_str() {
+                "openai" => Err(remote("provider/not_configured: no api_key")),
+                _ => Ok(None),
+            }
+        })
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("router/no_embed_provider"), "{msg}");
+        assert!(msg.contains("not configured: openai"), "{msg}");
+    }
+}
