@@ -7,7 +7,7 @@ fn directory() -> PathBuf {
 }
 
 // Explicit flush tests own the lifecycle; no immediate background tick races them.
-fn manual_store(dir: &Path) -> KvStore {
+pub(super) fn manual_store(dir: &Path) -> KvStore {
     KvStore {
         store: Arc::new(RwLock::new(HashMap::new())),
         file_store_dir: Some(dir.to_path_buf()),

@@ -740,12 +740,9 @@ mod test {
     async fn flush_reports_failure_and_requeues_the_scope() {
         let dir = temp_store_dir();
         let index = "blocked";
-        let store = KvStore::new(Some(serde_json::json!({
-            "store_method": "file_based",
-            "file_path": dir.to_string_lossy(),
-            // Long cadence: this test owns the flush, not the save loop.
-            "save_interval_ms": 600_000,
-        })));
+        // Tokio intervals tick immediately, even with a long cadence. Keep
+        // the periodic writer out of this explicit flush/requeue assertion.
+        let store = super::memory_tests::manual_store(&dir);
 
         std::fs::create_dir_all(dir.join(index_file_name(index))).unwrap();
         store
@@ -760,6 +757,12 @@ mod test {
             store.dirty.read().await.contains_key(index),
             "the failed scope stays dirty so a later flush retries it"
         );
+
+        std::fs::remove_dir(dir.join(index_file_name(index))).unwrap();
+        store.flush().await.unwrap();
+        assert!(store.dirty.read().await.is_empty());
+        assert!(dir.join(index_file_name(index)).is_file());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
