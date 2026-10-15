@@ -41,16 +41,45 @@ fn any(_: &str) -> bool {
     true
 }
 
-/// An assigned value that looks like a credential rather than a word or a
-/// number: not all digits (`max_token=128000`), and a digit or a symbol in
-/// it or long enough to be a passphrase. `- . / & $` are not symbols here:
-/// "re-reading", paths and `${VAR}` are prose and placeholders.
+/// Values that NAME a secret instead of holding one: an env or config
+/// reference (`$VAR`, `<your-key>`, `OPENAI_API_KEY`, `config.api_key`,
+/// `process.env.X`), a code path or type (`Token::String`, `Option<String>`,
+/// `Token::new()`), or a location (a path; `secret://NAME`, `env://NAME`, a
+/// URL — a credentialed URL is url_credentials' job). Where a secret lives
+/// is a fact worth keeping.
+static REFERENCE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"^(?:",
+        r"\$[A-Za-z_][A-Za-z0-9_]*",       // $VAR
+        r"|<[^>]*>",                       // <your-key>
+        r"|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+", // OPENAI_API_KEY
+        r"|[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)+(?:\(\))?", // a.b, A::b()
+        r"|[A-Za-z_][A-Za-z0-9_:]*<[^>]*>", // Option<String>
+        r"|[A-Za-z_][A-Za-z0-9_:]*\(\)",   // new()
+        r"|~?\.{0,2}/[^+=]*",              // /path, ~/x, ./x
+        r"|[A-Za-z][A-Za-z0-9+.\-]*://.*", // scheme://...
+        r")$",
+    ))
+    .expect("reference pattern compiles")
+});
+
+/// An assigned value that looks like a credential rather than a word, a
+/// number, or a reference: not a [`REFERENCE`], not all digits
+/// (`max_token=128000`), and a digit or a symbol in it. `_ - . /` are not
+/// symbols (identifiers, kebab names, paths); a letters-only passphrase
+/// passes, the price of keeping type and resource names.
 fn credential_like(value: &str) -> bool {
-    !value.bytes().all(|b| b.is_ascii_digit())
-        && (value.len() >= 16
-            || value
-                .bytes()
-                .any(|b| b.is_ascii_digit() || b"!@#%^*+=_~".contains(&b)))
+    !REFERENCE.is_match(value)
+        && !value.bytes().all(|b| b.is_ascii_digit())
+        && value
+            .bytes()
+            .any(|b| b.is_ascii_digit() || b"!@#%^*+=~$&<>?".contains(&b))
+}
+
+/// A bearer token carries a digit; "Bearer authentication-middleware" does
+/// not.
+fn has_digit(value: &str) -> bool {
+    value.bytes().any(|b| b.is_ascii_digit())
 }
 
 fn rule(
@@ -87,10 +116,11 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             any,
         ),
         // A truncated block (the 2000-char cap, a partial paste) has no END:
-        // everything after BEGIN is the key body.
+        // the header and the base64 body that follows it (after optional
+        // `Proc-Type:`-style lines). A bare mention of the header is prose.
         rule(
             "private_key",
-            r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----.*",
+            r"-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----\s*(?:[A-Za-z-]+:[^\n]*\n\s*)*[A-Za-z0-9+/=]{40}[A-Za-z0-9+/=\s]*",
             0,
             false,
             any,
@@ -100,17 +130,17 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         // the rest visible.
         rule(
             "url_credentials",
-            r"(?i)\b[a-z][a-z0-9+.\-]*://([^:/@\s]*:[^\s/?#]+)@",
+            r"(?i)(?-u:\b)[a-z][a-z0-9+.\-]*://([^:/@\s]*:[^\s/?#]+)@",
             1,
             false,
             any,
         ),
         rule(
             "bearer_token",
-            r"(?i)\bbearer\s+([A-Za-z0-9\-._~+/]{20,}=*)",
+            r"(?i)(?-u:\b)bearer\s+([A-Za-z0-9\-._~+/]{20,}=*)",
             1,
             false,
-            any,
+            has_digit,
         ),
         key(
             "jwt",
@@ -158,18 +188,29 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         key("sendgrid_key", r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}"),
         key(
             "discord_token",
-            r"[MNO][A-Za-z0-9]{23}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}",
+            r"[MNO][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}",
         ),
         key("telegram_token", r"[0-9]{8,10}:[A-Za-z0-9_-]{35}"),
+        // In its API-URL form `/bot<id>:<token>` the `bot` prefix touches it.
+        rule(
+            "telegram_token",
+            r"/bot([0-9]{8,10}:[A-Za-z0-9_-]{35})",
+            1,
+            false,
+            any,
+        ),
         key("shopify_token", r"shpat_[a-fA-F0-9]{32}"),
         // `api_key: …`, `password=…`, `"token": "…"`: the key stays, the
         // value goes — when the value looks like a credential.
         rule(
             "credential",
-            // `(?:\b|_)`: `\b` never matches after `_`, so `DB_PASSWORD=`
-            // and `MY_SERVICE_API_KEY=` need it. `${VAR}` / `<your-key>`
-            // are placeholders, not values.
-            r#"(?i)(?:\b|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|password|passwd|token|secret)\b"?\s*[:=]\s*["']?([^\s,;"'&\[\]<>{}$]{6,})"#,
+            // `(?:\b|_)`: `\b` never matches after `_` (`DB_PASSWORD=`), and
+            // `password` needs no left edge at all (`PGPASSWORD=`). ASCII
+            // `\b`: Unicode sees no edge between CJK and ASCII. The value
+            // may hold `$ & < >` (common in passwords); `[ ] { } \`` end it,
+            // so `${VAR}` and a placeholder never match, and a trailing `.`
+            // stays with the sentence. References are `credential_like`'s.
+            r#"(?i)(?:(?:(?-u:\b)|_)(?:api[_-]?key|access[_-]?key|secret[_-]?key|client[_-]?secret|private[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|token|secret)|password|passwd)(?-u:\b)"?\s*[:=]\s*["']?([^\s,;"'\[\]{}`]{5,}[^\s,;"'\[\]{}`.])"#,
             1,
             false,
             credential_like,
@@ -177,7 +218,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         // Prose: "my password is hunter2!".
         rule(
             "credential",
-            r#"(?i)\b(?:password|passcode|passphrase)\s+(?:is|was)\s+["']?([^\s,;"']{6,})"#,
+            r#"(?i)(?-u:\b)(?:password|passcode|passphrase)\s+(?:is|was)\s+["']?([^\s,;"'\[\]{}`]{5,}[^\s,;"'\[\]{}`.])"#,
             1,
             false,
             credential_like,
@@ -205,7 +246,9 @@ pub fn redact(text: &str) -> Redaction {
             {
                 continue;
             }
-            if !(rule.accept)(target.as_str()) {
+            // Already a placeholder (a re-save, the commit backstop after an
+            // entry point): no new redaction, so no label either.
+            if target.as_str().starts_with("[REDACTED:") || !(rule.accept)(target.as_str()) {
                 continue;
             }
             spans.push((target.start(), target.end()));
@@ -275,7 +318,7 @@ mod tests {
             (
                 "private_key",
                 format!(
-                    "{}\nb3BlbnNzaC1rZXktdjEAAAAA truncated",
+                    "{}\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB truncated",
                     pem("OPENSSH ", "BEGIN")
                 ),
             ),
@@ -326,13 +369,26 @@ mod tests {
             ),
             ("sendgrid_key", format!("SG.{}.{}", a(22), a(43))),
             ("discord_token", format!("M{}.{}.{}", a(23), a(6), a(27))),
+            ("discord_token", format!("M{}.{}.{}", a(25), a(6), a(38))),
             ("telegram_token", format!("123456789:{}", a(35))),
+            (
+                "telegram_token",
+                format!("https://api.telegram.org/bot123456789:{}/getMe", a(35)),
+            ),
             ("shopify_token", format!("shpat_{}", hex(32))),
             ("credential", "api_key=Zx81!kLm0Pq".into()),
             ("credential", r#""password": "hunter2!x""#.into()),
             ("credential", "my password is hunter2!".into()),
             ("credential", "MY_SERVICE_API_KEY=abc123xyz789qq".into()),
-            ("credential", "export DB_PASSWORD=Tr0ub4dor&3".into()),
+            ("credential", "export DB_PASSWORD=Tr0ub4dor&3xyz".into()),
+            ("credential", "DB password=Pa$$w0rd2024".into()),
+            ("credential", r#""api_key": "AbC$1234567890xyzQ""#.into()),
+            ("credential", "PGPASSWORD=Sup3rS3cret!".into()),
+            ("credential", "密码password=hunter2!x".into()),
+            (
+                "url_credentials",
+                format!("数据库{}", url("postgres", "u:Pw9xYz77@db/app")),
+            ),
             ("url_credentials", url("amqp", "guest:Gu3stPw9@mq:5672/vh")),
         ]
     }
@@ -359,6 +415,8 @@ mod tests {
                 s if s.contains("S3cr3tPass") => "S3cr3tPass",
                 s if s.contains("hunter2pw") => "hunter2pw",
                 s if s.contains("Gu3stPw9") => "Gu3stPw9",
+                s if s.contains("Tr0ub4dor") => "&3xyz",
+                s if s.contains("Pw9xYz77") => "Pw9xYz77",
                 s => &s[s.len().saturating_sub(10)..],
             };
             assert!(
@@ -414,6 +472,22 @@ mod tests {
             "Bearer tokens are sent in the Authorization header.",
             "ULID 01ARZ3NDEKTSV4RRFFQ69G5FAV, base64 id dGhpcyBpcyBhbiBpZA==",
             "Released v0.24.5-rc.1.",
+            "TLS secret: /etc/ssl/private/ledgerly.key",
+            "GitHub CLI stores its token: ~/.config/gh/hosts.yml",
+            "token: /var/run/secrets/kubernetes.io/serviceaccount/token is mounted",
+            "Deploys use private_key: ~/.ssh/id_ed25519",
+            "Vault secret: https://vault.internal:8200/v1/kv/data/ledgerly",
+            "The judge provider uses api_key: secret://TYPESAFE_API_KEY.",
+            "Configure token = env://GITHUB_TOKEN for CI",
+            "apiKey: process.env.OPENAI_API_KEY",
+            "The webhook secret: WHATSAPP_META_APP_SECRET env var",
+            "let token = Token::new();",
+            "token: Option<String> in the struct",
+            "fields token: CancellationToken and secret: SecretString",
+            "GITHUB_TOKEN=your_access_token_here",
+            "Helm values set secret: postgres-credentials",
+            "Never commit files containing the PRIVATE KEY header; rotate on leak.",
+            "Bearer authentication-middleware guards the route.",
         ];
         for text in benign {
             let r = redact(text);
@@ -440,9 +514,17 @@ mod tests {
 
     #[test]
     fn redaction_is_idempotent() {
-        for (_, secret) in samples() {
+        for (label, secret) in samples() {
             let once = redact(&secret).text;
-            assert_eq!(redact(&once).text, once);
+            let twice = redact(&once);
+            assert_eq!(twice.text, once);
+            // No label on a re-run either: the commit backstop would warn
+            // and save would report a redaction that never happened.
+            assert!(
+                twice.labels.is_empty(),
+                "{label} re-matched: {:?}",
+                twice.labels
+            );
         }
     }
 
