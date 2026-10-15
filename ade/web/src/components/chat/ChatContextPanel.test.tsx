@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import type { Conversation, Message } from '@/types/chat'
 
 ;(
@@ -13,6 +14,9 @@ import type { Conversation, Message } from '@/types/chat'
 const mocks = vi.hoisted(() => ({
   trigger: vi.fn(),
   requestPanelOpen: vi.fn(),
+  askAgent: vi.fn(),
+  dismiss: vi.fn(),
+  unregister: vi.fn(),
 }))
 
 vi.mock('@/lib/iii-client', () => ({
@@ -36,21 +40,28 @@ function respond(fn: string, payload: Record<string, unknown> = {}) {
     const verb = args.find((arg) => arg in GIT) ?? ''
     return Promise.resolve({ exit_code: 0, stdout: GIT[verb] ?? '' })
   }
-  if (fn === 'github::pr::list') {
-    return Promise.resolve({
-      value: [
+  if (fn === 'github::exec') {
+    const args = payload.args as string[]
+    const out = (value: unknown) =>
+      Promise.resolve({
+        value: { exit_code: 0, stdout: JSON.stringify(value), stderr: '' },
+      })
+    if (args[1] === 'list') {
+      return out([
         {
           number: 9,
           title: 'Branch PR',
           url: 'https://github.com/o/r/pull/9',
           state: 'OPEN',
           headRefName: 'feat/x',
+          additions: 447,
+          deletions: 50,
+          autoMergeRequest: null,
         },
-      ],
-    })
-  }
-  if (fn === 'github::pr::checks') {
-    return Promise.resolve({ value: [{ bucket: 'fail' }] })
+      ])
+    }
+    if (args[1] === 'checks') return out([{ bucket: 'fail' }])
+    return Promise.resolve({ value: { exit_code: 0, stdout: '', stderr: '' } })
   }
   if (fn === 'kanban::config::info') {
     return Promise.resolve({
@@ -110,11 +121,13 @@ async function render(
     active = true,
     githubAvailable = true,
     kanbanAvailable = false,
+    triggers = [],
   }: {
     conversations?: Conversation[]
     active?: boolean
     githubAvailable?: boolean
     kanbanAvailable?: boolean
+    triggers?: SessionTriggerInfo[]
   } = {},
 ) {
   container = document.createElement('div')
@@ -127,13 +140,15 @@ async function render(
           conversation={main}
           conversations={conversations}
           connectionState="connected"
-          triggers={[]}
-          onUnregisterTrigger={() => {}}
+          triggers={triggers}
+          onUnregisterTrigger={mocks.unregister}
           onOpenConversation={() => {}}
           shellAvailable
           githubAvailable={githubAvailable}
           kanbanAvailable={kanbanAvailable}
           active={active}
+          onAskAgent={mocks.askAgent}
+          onDismissPullRequest={mocks.dismiss}
         />
       </TooltipProvider>,
     )
@@ -156,6 +171,9 @@ beforeEach(() => {
   mocks.trigger.mockReset()
   mocks.trigger.mockImplementation(respond)
   mocks.requestPanelOpen.mockReset()
+  mocks.askAgent.mockReset()
+  mocks.dismiss.mockReset()
+  mocks.unregister.mockReset()
 })
 
 afterEach(() => {
@@ -177,7 +195,7 @@ describe('ChatContextPanel', () => {
     expect(text).toContain('−1')
     expect(text).toContain('Branch PR')
     expect(text).toContain('#9 · open')
-    expect(text).toContain('checks failing')
+    expect(text).toContain('1 failing')
   })
 
   it('opens the IDE source control from the changes row', async () => {
@@ -315,6 +333,160 @@ describe('ChatContextPanel', () => {
     expect(img?.closest('button')?.getAttribute('aria-label')).toBe(
       'View shot.png',
     )
+  })
+
+  describe('pull request actions', () => {
+    const open = async () => {
+      const view = await render(chat('main', { workingDir: '/work/repo' }))
+      const trigger = view.querySelector(
+        'button[aria-label="Actions for #9"]',
+      ) as HTMLButtonElement
+      await act(async () => {
+        trigger.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+        )
+      })
+      return view
+    }
+    const item = (name: string) =>
+      [...document.querySelectorAll('[role^="menuitem"]')].find((el) =>
+        el.textContent?.startsWith(name),
+      ) as HTMLElement | undefined
+    const ghCalls = () =>
+      mocks.trigger.mock.calls
+        .filter(([fn]) => fn === 'github::exec')
+        .map(([, payload]) => (payload.args as string[]).join(' '))
+
+    it('shows counts and failing checks, and offers the actions', async () => {
+      const view = await open()
+      const row = view.querySelector('section[aria-label="Pull requests"]')
+      expect(row?.textContent).toContain('+447')
+      expect(row?.textContent).toContain('−50')
+      expect(row?.textContent).toContain('1 failing')
+      expect(
+        [...document.querySelectorAll('[role^="menuitem"]')].map(
+          (el) => el.textContent,
+        ),
+      ).toEqual([
+        'Open on GitHub',
+        'Copy link',
+        'View changes',
+        'Auto-fix',
+        'Merge when ready',
+        'Convert to draft',
+        'Dismiss',
+      ])
+    })
+
+    it('turns merge when ready on with gh and reads the PR again', async () => {
+      await open()
+      await act(async () => item('Merge when ready')?.click())
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(ghCalls()).toContain('pr merge 9 -R o/r --auto --squash')
+      expect(ghCalls().filter((c) => c.startsWith('pr list'))).toHaveLength(2)
+    })
+
+    it('dismisses a PR and asks the agent to turn auto-fix on', async () => {
+      await open()
+      await act(async () => item('Auto-fix')?.click())
+      expect(mocks.askAgent).toHaveBeenCalledWith(
+        expect.stringContaining('github::pr::watch'),
+        true,
+      )
+      await open()
+      await act(async () => item('Dismiss')?.click())
+      expect(mocks.dismiss).toHaveBeenCalledWith('o/r#9')
+    })
+
+    it('turns auto-fix off by dropping the subscription and the watch', async () => {
+      const view = await render(chat('main', { workingDir: '/work/repo' }), {
+        triggers: [
+          {
+            id: 'sub-1',
+            triggerType: 'github::pr::event',
+            delivery: 'notify',
+            config: { watch_id: 'ade-autofix-o-r-9' },
+          } as unknown as SessionTriggerInfo,
+        ],
+      })
+      const trigger = view.querySelector(
+        'button[aria-label="Actions for #9"]',
+      ) as HTMLButtonElement
+      await act(async () => {
+        trigger.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+        )
+      })
+      expect(item('Auto-fix')?.getAttribute('aria-checked')).toBe('true')
+      await act(async () => item('Auto-fix')?.click())
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(mocks.unregister).toHaveBeenCalledWith('sub-1')
+      expect(mocks.trigger).toHaveBeenCalledWith('github::pr::unwatch', {
+        watch_id: 'ade-autofix-o-r-9',
+      })
+    })
+
+    it('says why auto-fix is off without the github worker', async () => {
+      mocks.trigger.mockImplementation((fn: string, payload) =>
+        fn === 'shell::exec' && payload.command === 'gh'
+          ? Promise.resolve({
+              exit_code: 0,
+              stdout: JSON.stringify([
+                {
+                  number: 9,
+                  title: 'Via gh',
+                  url: 'https://github.com/o/r/pull/9',
+                  state: 'OPEN',
+                  headRefName: 'feat/x',
+                },
+              ]),
+            })
+          : respond(fn, payload),
+      )
+      const view = await render(chat('main', { workingDir: '/work/repo' }), {
+        githubAvailable: false,
+      })
+      const trigger = view.querySelector(
+        'button[aria-label="Actions for #9"]',
+      ) as HTMLButtonElement
+      await act(async () => {
+        trigger.dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+        )
+      })
+      expect(item('Auto-fix')?.textContent).toContain('needs the github worker')
+      expect(item('Auto-fix')?.getAttribute('data-disabled')).not.toBeNull()
+      expect(item('Merge when ready')?.getAttribute('data-disabled')).toBeNull()
+    })
+
+    it('offers to create a PR for a branch with work and none of its own', async () => {
+      mocks.trigger.mockImplementation((fn: string, payload) =>
+        fn === 'github::exec'
+          ? Promise.resolve({
+              value: { exit_code: 0, stdout: '[]', stderr: '' },
+            })
+          : respond(fn, payload),
+      )
+      const view = await render(chat('main', { workingDir: '/work/repo' }))
+      const create = [...view.querySelectorAll('button')].find((el) =>
+        el.textContent?.startsWith('Create pull request'),
+      )
+      expect(create).toBeDefined()
+      act(() => create?.click())
+      expect(mocks.askAgent).toHaveBeenCalledWith(
+        expect.stringContaining('open a pull request'),
+        false,
+      )
+    })
+
+    it('offers no PR creation while the branch has an open one', async () => {
+      const view = await render(chat('main', { workingDir: '/work/repo' }))
+      expect(view.textContent).not.toContain('Create pull request')
+    })
   })
 
   describe('tickets', () => {
