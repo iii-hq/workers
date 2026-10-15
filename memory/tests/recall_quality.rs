@@ -399,7 +399,7 @@ async fn build_bank(
         };
         bank.commit(m.clone()).await.unwrap();
         let e = &vectors.items[&g.key];
-        bank.set_vector(&m.id, &vectors.model, e.v.clone())
+        bank.set_vector(&m.id, &vectors.model, &m.text, e.v.clone())
             .await
             .unwrap();
         key_of_id.insert(m.id, g.key.clone());

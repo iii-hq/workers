@@ -123,7 +123,7 @@ pub struct Brief {
     pub release_id: Option<String>,
 }
 
-pub fn brief(ticket: &Ticket) -> Brief {
+pub fn relation_brief(ticket: &Ticket) -> Brief {
     Brief {
         id: ticket.id.clone(),
         key: ticket.key.clone(),
@@ -178,7 +178,7 @@ pub fn ticket_view(board: &Board, ticket: &Ticket, done_status: &str) -> TicketV
             .parent_id
             .as_deref()
             .and_then(|id| board.tickets.get(id))
-            .map(brief),
+            .map(relation_brief),
         progress: Progress {
             done: children
                 .iter()
@@ -186,7 +186,7 @@ pub fn ticket_view(board: &Board, ticket: &Ticket, done_status: &str) -> TicketV
                 .count() as u64,
             total: children.len() as u64,
         },
-        children: children.into_iter().map(brief).collect(),
+        children: children.into_iter().map(relation_brief).collect(),
         ticket: ticket.clone(),
     }
 }
@@ -256,16 +256,20 @@ pub enum TicketRow {
     Brief(TicketBrief),
 }
 
+pub fn brief(ticket: &Ticket) -> TicketBrief {
+    TicketBrief {
+        key: ticket.key.clone(),
+        title: ticket.title.clone(),
+        status: ticket.status.clone(),
+        priority: ticket.priority.clone(),
+        assignee: ticket.assignee.clone(),
+        comment_count: ticket.comments.len() as u64,
+    }
+}
+
 pub fn row(ticket: &Ticket, compact: bool) -> TicketRow {
     if compact {
-        TicketRow::Brief(TicketBrief {
-            key: ticket.key.clone(),
-            title: ticket.title.clone(),
-            status: ticket.status.clone(),
-            priority: ticket.priority.clone(),
-            assignee: ticket.assignee.clone(),
-            comment_count: ticket.comments.len() as u64,
-        })
+        TicketRow::Brief(brief(ticket))
     } else {
         TicketRow::Summary(summarize(ticket))
     }

@@ -194,7 +194,7 @@ mod tests {
         let fresh = memory("kiwi with extra filler words here", &[], 0);
         bank.commit(old_twin.clone()).await.unwrap();
         bank.commit(fresh.clone()).await.unwrap();
-        bank.set_vector(&fresh.id, "", vec![1.0, 0.0])
+        bank.set_vector(&fresh.id, "", &fresh.text, vec![1.0, 0.0])
             .await
             .unwrap();
         let cfg = WorkerConfig::default();

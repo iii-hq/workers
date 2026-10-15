@@ -15,7 +15,7 @@ use iii_kanban::events::{
 };
 use iii_kanban::functions::{
     self, BoardGetInput, BoardView, CommentCreateInput, ConfigInfo, TicketCreateInput,
-    TicketUpdateInput, board_view,
+    TicketMoveInput, TicketUpdateInput, board_view,
 };
 use iii_kanban::store::{Board, Comment, Ticket, read_board, write_board};
 use serde_json::{Value, json};
@@ -1473,4 +1473,100 @@ fn update_input_distinguishes_a_missing_assignee_from_null() {
     let set: TicketUpdateInput =
         serde_json::from_value(json!({ "id": "KAN-1", "assignee": "tech-lead" })).unwrap();
     assert_eq!(set.assignee, Some(Some("tech-lead".into())));
+}
+
+#[test]
+fn ticket_writes_answer_with_the_compact_row_only_when_asked() {
+    let mut board = Board::empty();
+    let ticket = create_ticket(&mut board, &titled("A"), &context(), &at(1)).unwrap();
+    let created = create_comment(
+        &mut board,
+        &CreateCommentInput {
+            ticket_id: "KAN-1".into(),
+            body: "hi".into(),
+            parent_id: None,
+            author: Some("tech-lead".into()),
+        },
+        &at(2),
+    )
+    .unwrap()
+    .unwrap();
+    // Writes answer with the ticket view (the ticket plus parent, children and progress).
+    let view = ticket_view(&board, &ticket, "done");
+    let commented = ticket_view(&board, &created.ticket, "done");
+
+    assert_eq!(
+        serde_json::to_value(functions::written(view.clone(), false)).unwrap(),
+        serde_json::to_value(&view).unwrap(),
+        "without compact the response is the full ticket view, unchanged"
+    );
+    let brief = serde_json::to_value(functions::written(commented.clone(), true)).unwrap();
+    let mut keys: Vec<&str> = brief
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "assignee",
+            "comment_count",
+            "key",
+            "priority",
+            "status",
+            "title"
+        ]
+    );
+    assert_eq!(brief["key"], "KAN-1");
+    assert_eq!(brief["comment_count"], 1);
+
+    let full = serde_json::to_value(functions::comment_created(
+        created.comment.clone(),
+        commented.clone(),
+        false,
+    ))
+    .unwrap();
+    assert_eq!(full["ticket"], serde_json::to_value(&commented).unwrap());
+    let compact = serde_json::to_value(functions::comment_created(
+        created.comment.clone(),
+        commented.clone(),
+        true,
+    ))
+    .unwrap();
+    assert_eq!(
+        compact["comment"],
+        serde_json::to_value(&created.comment).unwrap()
+    );
+    assert_eq!(
+        compact["ticket"], brief,
+        "a compact comment write carries the brief"
+    );
+
+    for compact in [false, true] {
+        let flag = json!(compact);
+        let create: TicketCreateInput =
+            serde_json::from_value(json!({ "title": "A", "compact": flag })).unwrap();
+        let update: TicketUpdateInput =
+            serde_json::from_value(json!({ "id": "KAN-1", "compact": flag })).unwrap();
+        let moved: TicketMoveInput =
+            serde_json::from_value(json!({ "id": "KAN-1", "status": "done", "compact": flag }))
+                .unwrap();
+        let comment: CommentCreateInput =
+            serde_json::from_value(json!({ "ticket_id": "KAN-1", "body": "x", "compact": flag }))
+                .unwrap();
+        assert_eq!(
+            [
+                create.compact,
+                update.compact,
+                moved.compact,
+                comment.compact
+            ],
+            [compact; 4]
+        );
+    }
+    let defaulted: TicketMoveInput =
+        serde_json::from_value(json!({ "id": "KAN-1", "status": "done" })).unwrap();
+    assert!(!defaulted.compact, "compact is off unless asked");
 }

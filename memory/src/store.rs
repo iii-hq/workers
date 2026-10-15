@@ -86,15 +86,36 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
-/// Query tokens, with first-person pronouns expanded to the `user` entity
-/// handle so identity questions reach memories phrased about the user.
+/// English function words dropped from QUERIES before lexical scoring (the
+/// index keeps every token), as Hindsight's lexical arm gets from Postgres's
+/// `english` tsvector. Without it a natural-language question matches every
+/// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
+/// semantic match. "us" is kept (US), as Snowball's English list does.
+#[rustfmt::skip]
+const STOPWORDS: &[&str] = &[
+    "a", "about", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
+    "been", "being", "but", "by", "can", "could", "d", "did", "do", "does", "doing", "for",
+    "from", "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how",
+    "i", "if", "in", "into", "is", "it", "its", "just", "ll", "m", "me", "mine", "more", "most",
+    "my", "myself", "no", "not", "now", "of", "off", "on", "only", "or", "other", "our", "out",
+    "over", "own", "re", "s", "same", "she", "should", "so", "some", "still", "such", "t",
+    "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those",
+    "to", "too", "under", "up", "ve", "very", "was", "we", "were", "what", "when", "where",
+    "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
+];
+
+/// Query tokens without stopwords (all kept when nothing else is left), with
+/// first-person pronouns expanded to the `user` entity handle so identity
+/// questions reach memories phrased about the user.
 fn query_tokens(query: &str) -> Vec<String> {
     let mut tokens = crate::index::tokenize(query);
-    if tokens
+    let first_person = tokens
         .iter()
-        .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"))
-        && !tokens.iter().any(|t| t == "user")
-    {
+        .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
+    if tokens.iter().any(|t| !STOPWORDS.contains(&t.as_str())) {
+        tokens.retain(|t| !STOPWORDS.contains(&t.as_str()));
+    }
+    if first_person && !tokens.iter().any(|t| t == "user") {
         tokens.push("user".to_string());
     }
     tokens
@@ -350,14 +371,23 @@ impl Bank {
         })
     }
 
-    /// Persist one memory's embedding (sidecar append + RAM). Best-effort
-    /// derived data: failures cost a re-embed, never memory integrity.
-    pub async fn set_vector(&self, id: &str, model: &str, v: Vec<f32>) -> Result<(), MemoryError> {
+    /// Persist one memory's embedding of `embedded_text` (sidecar append +
+    /// RAM); false when it was discarded. Best-effort derived data: failures
+    /// cost a re-embed, never memory integrity.
+    pub async fn set_vector(
+        &self,
+        id: &str,
+        model: &str,
+        embedded_text: &str,
+        v: Vec<f32>,
+    ) -> Result<bool, MemoryError> {
         let mut inner = self.inner.write().await;
         let revision = match inner.memories.get(id) {
-            Some(m) => m.revision,
-            // The record vanished between embed and store; nothing to attach.
-            None => return Ok(()),
+            Some(m) if m.text == embedded_text => m.revision,
+            // The record vanished, or its text was edited while the embed was
+            // in flight: this vector is of text the record no longer has, and
+            // the record stays listed by `unembedded` for the new text.
+            _ => return Ok(false),
         };
         let line = serde_json::to_string(&VectorRecord {
             id: id.to_string(),
@@ -373,7 +403,7 @@ impl Bank {
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         inner.vectors.insert(id.to_string(), (model.to_string(), v));
-        Ok(())
+        Ok(true)
     }
 
     /// Live memories that have no embedding yet (backfill work list).
@@ -737,6 +767,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn query_tokens_drop_stopwords_but_never_empty_the_query() {
+        assert_eq!(
+            query_tokens("what is my dog's name"),
+            ["dog", "name", "user"]
+        );
+        assert_eq!(query_tokens("which OS do I use"), ["os", "use", "user"]);
+        assert_eq!(
+            query_tokens("does the user live in the US"),
+            ["user", "live", "us"]
+        );
+        // An all-stopword query keeps its tokens rather than matching nothing.
+        assert_eq!(query_tokens("what is it"), ["what", "is", "it"]);
+    }
+
     #[tokio::test]
     async fn save_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -848,7 +893,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let mut m = memory("the port is 3000");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "test-model", vec![0.1, 0.2])
+        bank.set_vector(&m.id, "test-model", &m.text, vec![0.1, 0.2])
             .await
             .unwrap();
         assert_eq!(bank.vector_count().await, 1);
@@ -869,7 +914,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let mut m = memory("stable memory");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "test-model", vec![0.5])
+        bank.set_vector(&m.id, "test-model", &m.text, vec![0.5])
             .await
             .unwrap();
         // Bump the record AFTER the vector was written.
@@ -893,7 +938,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let m = memory("model tracked");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "old-model", vec![0.5])
+        bank.set_vector(&m.id, "old-model", &m.text, vec![0.5])
             .await
             .unwrap();
 
@@ -914,7 +959,9 @@ mod tests {
         bank.commit(fresh.clone()).await.unwrap();
         bank.commit(old.clone()).await.unwrap();
         for m in [&fresh, &old] {
-            bank.set_vector(&m.id, "m", vec![1.0, 0.0]).await.unwrap();
+            bank.set_vector(&m.id, "m", &m.text, vec![1.0, 0.0])
+                .await
+                .unwrap();
         }
         // No lexical overlap: the identical semantic match is the only
         // relevance, so recency alone must separate the two.
@@ -981,12 +1028,16 @@ mod tests {
         for m in [&near, &mid, &far, &other] {
             bank.commit(m.clone()).await.unwrap();
         }
-        bank.set_vector(&near.id, "m", vec![1.0, 0.0])
+        bank.set_vector(&near.id, "m", &near.text, vec![1.0, 0.0])
             .await
             .unwrap();
-        bank.set_vector(&mid.id, "m", vec![0.6, 0.8]).await.unwrap();
-        bank.set_vector(&far.id, "m", vec![0.0, 1.0]).await.unwrap();
-        bank.set_vector(&other.id, "x", vec![1.0, 0.0])
+        bank.set_vector(&mid.id, "m", &mid.text, vec![0.6, 0.8])
+            .await
+            .unwrap();
+        bank.set_vector(&far.id, "m", &far.text, vec![0.0, 1.0])
+            .await
+            .unwrap();
+        bank.set_vector(&other.id, "x", &other.text, vec![1.0, 0.0])
             .await
             .unwrap();
 
@@ -1041,7 +1092,7 @@ mod tests {
         let (bank, _) = store.ensure_bank("main", None).await.unwrap();
         let m = memory("alpha beta");
         bank.commit(m.clone()).await.unwrap();
-        bank.set_vector(&m.id, "model-a", vec![1.0, 0.0])
+        bank.set_vector(&m.id, "model-a", &m.text, vec![1.0, 0.0])
             .await
             .unwrap();
         let q = [1.0, 0.0];
