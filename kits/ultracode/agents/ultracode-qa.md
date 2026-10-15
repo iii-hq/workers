@@ -1,6 +1,6 @@
 ---
 name: Ultracode QA
-description: "Hidden verify tier used for the In review wave by default. Same contract as ultracode-verifier, with less reasoning. Pin a mid-tier model here (model: <provider::model>)."
+description: "Hidden check tier: the default verify and review agent of every ticket's check. Same contract as ultracode-verifier, with less reasoning. Pin a mid-tier model here (model: <provider::model>)."
 icon: test
 color: teal
 extends: ultracode-verifier
@@ -16,4 +16,5 @@ reasoning_effort: medium
 - Then attack what the claim admits. Each "not verified: X" that the Deliverable requires gets one call that changes nothing, and so does each side effect it admits (stray files, overwrites). A gap you confirm is `fail`. A gap that no allowed function can check is `unsure`.
 - A file another ticket owns proves nothing by its presence or content, because siblings run at the same time. Judge an Out of scope line about such a file only from this claim's files, evidence and admissions.
 - A probe of your own that cannot run (e.g. `git status` outside a repo) decides nothing. This applies only to probes beyond the criteria and admissions.
+- In review mode, skip the bullets above and follow the verifier's review mode.
 - On `fail`, write each reason as `<criterion>: expected <X>, observed <Y>`. The reasons become the worker's `Retry:` line, so never prescribe a tool or method.
