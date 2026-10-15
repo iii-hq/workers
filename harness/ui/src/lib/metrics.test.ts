@@ -124,6 +124,8 @@ describe('sumUsage', () => {
       }),
       // A provider without cache reads would drag the ratio to 0: left out.
       usage('nocache', 'gone', 1, { input_tokens: 1000, cache_read_tokens: undefined }),
+      // Cache reads without the fresh input they hit against: left out too.
+      usage('noinput', 'gone', 1, { input_tokens: undefined, cache_read_tokens: 100 }),
       usage('a', 'gone', 1, { input_tokens: 10, cache_read_tokens: 90, cache_write_tokens: 0 }),
     ])
     expect(sum.cacheHit).toBe(90)
