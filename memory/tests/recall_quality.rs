@@ -587,11 +587,15 @@ async fn embed_golden_set() {
         )
         .collect();
     let texts: Vec<String> = items.iter().map(|(_, t)| t.clone()).collect();
-    let embedded = memory::embed_client::embed_texts(&iii, EMBED_MODEL, &texts, 120_000)
-        .await
-        .expect("router::embed failed (engine up? embed provider configured? III_NAMESPACE set?)");
+    let (reported, embedded) =
+        memory::embed_client::embed_texts(&iii, EMBED_MODEL, &texts, 120_000)
+            .await
+            .expect(
+                "router::embed failed (engine up? embed provider configured? III_NAMESPACE set?)",
+            );
     let vectors = Vectors {
-        model: EMBED_MODEL.into(),
+        // The model the provider reported: what recall keys vectors by.
+        model: reported,
         dims: EMBED_DIMS,
         items: items
             .into_iter()

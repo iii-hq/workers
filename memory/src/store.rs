@@ -483,9 +483,10 @@ impl Bank {
                 f.is_live()
                     && match inner.vectors.get(&f.id) {
                         None => true,
-                        // A vector from a different model than the active
-                        // one is due a re-embed; empty active model means
-                        // "provider default" and accepts whatever exists.
+                        // A vector from another model than the one the
+                        // provider currently reports is in another space:
+                        // due a re-embed. Empty = that model is not known
+                        // yet, so whatever exists is accepted.
                         Some((model, _)) => !active_model.is_empty() && model != active_model,
                     }
             })
@@ -608,12 +609,11 @@ impl Bank {
     /// to the `user` entity handle so identity questions reach the memories
     /// phrased third-person about the user.
     ///
-    /// `embedding_model` is the model `query_vec` was embedded with: stored
-    /// vectors from another model live in an incomparable space and are
-    /// skipped (the same acceptance rule as [`Bank::unembedded`], so every
-    /// skipped vector is due a re-embed). The guard only bites when the
-    /// model is pinned — empty means "provider default", and vectors
-    /// stored under it carry no real model id.
+    /// `embedding_model` is the model the provider REPORTED for `query_vec`;
+    /// vectors are tagged the same way, so ones from any other model (an
+    /// earlier provider default, a previously pinned model) live in an
+    /// incomparable space and are skipped — and backfill re-embeds them.
+    /// Empty (no query vector, the ops probe) accepts any.
     pub async fn recall(
         &self,
         query: &str,

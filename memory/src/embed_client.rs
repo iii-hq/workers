@@ -25,12 +25,17 @@ const BACKFILL_BATCH: usize = 64;
 /// legacy bank fills over several passes instead of one giant burst.
 const BACKFILL_ROUNDS: usize = 10;
 
+/// One `router::embed` reply: the model the provider REPORTS (what the
+/// vectors' space actually is, whatever was requested) and one vector per
+/// input, in input order.
+pub type Embedded = (String, Vec<Vec<f32>>);
+
 pub async fn embed_texts(
     iii: &IIIClient,
     model: &str,
     texts: &[String],
     timeout_ms: u64,
-) -> Option<Vec<Vec<f32>>> {
+) -> Option<Embedded> {
     let mut payload = json!({ "input": texts });
     if !model.trim().is_empty() {
         payload["model"] = json!(model);
@@ -45,30 +50,76 @@ pub async fn embed_texts(
         .await
         .inspect_err(|e| tracing::debug!(error = %e, "router::embed failed"))
         .ok()?;
+    // The router always names the model; a reply without one cannot be
+    // placed in a space, so it is not used.
+    let reported = reply
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty())?
+        .to_string();
     let embeddings: Vec<Vec<f32>> =
         serde_json::from_value(reply.get("embeddings").cloned().unwrap_or(Value::Null)).ok()?;
-    if embeddings.len() == texts.len() {
-        Some(embeddings)
-    } else {
-        None
+    (embeddings.len() == texts.len()).then_some((reported, embeddings))
+}
+
+/// Per configured `embedding_model` ("" = provider default), the model the
+/// provider last reported for it: the space every stored vector must be in.
+/// Learned from every embed reply (queries, backfill, canaries), so a
+/// provider whose default changes is noticed on its next reply.
+fn current_models() -> &'static Mutex<HashMap<String, String>> {
+    static CURRENT: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CURRENT.get_or_init(Default::default)
+}
+
+fn learn_model(configured: &str, reported: &str) {
+    let mut map = current_models().lock().unwrap_or_else(|e| e.into_inner());
+    if map.get(configured).map(String::as_str) != Some(reported) {
+        map.insert(configured.to_string(), reported.to_string());
+    }
+}
+
+fn current_model(configured: &str) -> Option<String> {
+    current_models()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(configured)
+        .cloned()
+}
+
+/// A query embedding and the model the provider reported for it: recall
+/// compares it only with vectors stored under exactly that model.
+pub struct QueryVector {
+    pub model: String,
+    pub v: Vec<f32>,
+}
+
+impl QueryVector {
+    /// `(vector, model)` as `Bank::recall` takes them; `(None, "")` when the
+    /// query was not embedded.
+    pub fn split(query: Option<&QueryVector>) -> (Option<&[f32]>, &str) {
+        query.map_or((None, ""), |q| (Some(q.v.as_slice()), q.model.as_str()))
     }
 }
 
 /// Embed the query for one recall. `None` (disabled, router absent, no
 /// embed provider, timeout) means lexical-only recall this turn.
-pub async fn query_vector(deps: &Deps, query: &str) -> Option<Vec<f32>> {
+pub async fn query_vector(deps: &Deps, query: &str) -> Option<QueryVector> {
     let cfg = deps.config().await;
     if !cfg.embeddings_enabled {
         return None;
     }
-    embed_texts(
+    let (model, mut vectors) = embed_texts(
         &deps.iii,
         &cfg.embedding_model,
         &[query.to_string()],
         QUERY_EMBED_TIMEOUT_MS,
     )
-    .await
-    .and_then(|mut v| v.pop())
+    .await?;
+    learn_model(&cfg.embedding_model, &model);
+    Some(QueryVector {
+        model,
+        v: vectors.pop()?,
+    })
 }
 
 /// Embed a bank's new text off the caller's path — after extraction, an
@@ -89,10 +140,17 @@ pub async fn backfill_bank(deps: Arc<Deps>, bank_name: String) {
     let Ok(bank) = store.bank(&bank_name).await else {
         return;
     };
-    let model = cfg.embedding_model.clone();
-    let total = backfill_pass(&bank, &model, |texts| {
-        let (iii, model) = (deps.iii.clone(), model.clone());
-        async move { embed_texts(&iii, &model, &texts, BACKFILL_TIMEOUT_MS).await }
+    let configured = cfg.embedding_model.clone();
+    let known = current_model(&configured);
+    let total = backfill_pass(&bank, known, |texts| {
+        let (iii, configured) = (deps.iii.clone(), configured.clone());
+        async move {
+            let reply = embed_texts(&iii, &configured, &texts, BACKFILL_TIMEOUT_MS).await;
+            if let Some((reported, _)) = &reply {
+                learn_model(&configured, reported);
+            }
+            reply
+        }
     })
     .await;
     if total > 0 {
@@ -171,24 +229,38 @@ async fn store(bank: &Bank, model: &str, memory: &Memory, v: Vec<f32>) -> Result
 }
 
 /// The backfill loop with the embedder injected (`router::embed` in
-/// production). Returns how many vectors it stored.
-async fn backfill_pass<F, Fut>(bank: &Bank, model: &str, mut embed: F) -> usize
+/// production). `known` is the model the provider last reported (`None`
+/// before any reply): vectors stored under any other model are in another
+/// space and get re-embedded. Returns how many vectors it stored.
+async fn backfill_pass<F, Fut>(bank: &Bank, known: Option<String>, mut embed: F) -> usize
 where
     F: FnMut(Vec<String>) -> Fut,
-    Fut: Future<Output = Option<Vec<Vec<f32>>>>,
+    Fut: Future<Output = Option<Embedded>>,
 {
     let lock = bank_lock(&bank.name);
     let _pass = lock.lock().await;
+    // "" = space not known yet: only vectorless memories are work. With
+    // vectors stored, ask once which space they must be in.
+    let mut current = known.unwrap_or_default();
+    if current.is_empty() && bank.vector_count().await > 0 {
+        match embed(vec![CANARY.to_string()]).await {
+            Some((reported, _)) => current = reported,
+            None => return 0,
+        }
+    }
     let mut total = 0usize;
     for _ in 0..BACKFILL_ROUNDS {
-        let pending = next_window(bank, model).await;
+        let pending = next_window(bank, &current).await;
         if pending.is_empty() {
             break;
         }
         let texts: Vec<String> = pending.iter().map(|f| f.text.clone()).collect();
-        if let Some(vectors) = embed(texts).await {
+        if let Some((reported, vectors)) = embed(texts).await {
+            // A new space (the provider's default changed mid-pass): the
+            // next round re-lists everything stored under the old one.
+            current = reported;
             for (memory, v) in pending.iter().zip(vectors) {
-                let Ok(stored) = store(bank, model, memory, v).await else {
+                let Ok(stored) = store(bank, &current, memory, v).await else {
                     return total;
                 };
                 total += usize::from(stored);
@@ -197,8 +269,9 @@ where
         }
         // The batch failed. A failing canary means the provider is down: a
         // later pass retries, and no text is blamed for it.
-        if embed(vec![CANARY.to_string()]).await.is_none() {
-            break;
+        match embed(vec![CANARY.to_string()]).await {
+            Some((reported, _)) => current = reported,
+            None => break,
         }
         // The provider answers, so it rejects some text here: embed one at a
         // time. A failure is blamed on its text only once the provider is
@@ -207,10 +280,11 @@ where
         let mut suspects: Vec<&Memory> = Vec::new();
         for memory in &pending {
             match embed(vec![memory.text.clone()]).await {
-                Some(mut v) if v.len() == 1 => {
+                Some((reported, mut v)) if v.len() == 1 => {
                     reject(bank, &suspects);
                     suspects.clear();
-                    let Ok(stored) = store(bank, model, memory, v.remove(0)).await else {
+                    current = reported;
+                    let Ok(stored) = store(bank, &current, memory, v.remove(0)).await else {
                         return total;
                     };
                     total += usize::from(stored);
@@ -302,10 +376,10 @@ mod tests {
         let embed = |texts: Vec<String>| {
             let v = texts.iter().map(|_| vec![1.0, 0.0]).collect();
             seen.lock().unwrap().extend(texts);
-            async move { Some(v) }
+            async move { Some(("m".to_string(), v)) }
         };
 
-        assert_eq!(backfill_pass(&bank, "m", embed).await, 1);
+        assert_eq!(backfill_pass(&bank, Some("m".into()), embed).await, 1);
         let hits = bank.semantic(&[1.0, 0.0], "m", 5, false).await;
         assert_eq!(hits[0].0.id, saved.id);
 
@@ -314,7 +388,7 @@ mod tests {
         edited.text = "user lives in porto".into();
         edited.revision += 1;
         bank.commit(edited).await.unwrap();
-        assert_eq!(backfill_pass(&bank, "m", embed).await, 1);
+        assert_eq!(backfill_pass(&bank, Some("m".into()), embed).await, 1);
         assert_eq!(
             *seen.lock().unwrap(),
             ["user lives in lisbon", "user lives in porto"]
@@ -333,13 +407,16 @@ mod tests {
                 // Yield mid-embed so the other pass runs while this one
                 // waits on the "provider".
                 tokio::task::yield_now().await;
-                Some(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+                Some((
+                    "m".to_string(),
+                    texts.iter().map(|_| vec![1.0, 0.0]).collect(),
+                ))
             }
         };
 
         let (a, b) = tokio::join!(
-            backfill_pass(&bank, "m", embed),
-            backfill_pass(&bank, "m", embed)
+            backfill_pass(&bank, Some("m".into()), embed),
+            backfill_pass(&bank, Some("m".into()), embed)
         );
         assert_eq!(a + b, 1);
         assert_eq!(embedded.load(Ordering::SeqCst), 1);
@@ -369,12 +446,12 @@ mod tests {
                     true => vec![0.0, 1.0],
                     false => vec![1.0, 0.0],
                 };
-                Some(texts.iter().map(axis).collect())
+                Some(("m".to_string(), texts.iter().map(axis).collect()))
             }
         };
 
         // The stale "lisbon" vector is discarded; the next round embeds porto.
-        assert_eq!(backfill_pass(&bank, "m", embed).await, 1);
+        assert_eq!(backfill_pass(&bank, Some("m".into()), embed).await, 1);
         assert!(bank.semantic(&[1.0, 0.0], "m", 5, false).await.is_empty());
         assert_eq!(bank.semantic(&[0.0, 1.0], "m", 5, false).await.len(), 1);
     }
@@ -385,18 +462,26 @@ mod tests {
         let bank = bank(&dir, "embed-failed").await;
         bank.commit(memory("user owns a bike")).await.unwrap();
 
-        assert_eq!(backfill_pass(&bank, "m", |_| async { None }).await, 0);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), |_| async { None }).await,
+            0
+        );
         assert_eq!(bank.unembedded(10, "m").await.len(), 1);
     }
 
     /// A provider that rejects any batch holding a "REJECTED" text.
     fn picky(
         calls: &AtomicUsize,
-    ) -> impl FnMut(Vec<String>) -> std::future::Ready<Option<Vec<Vec<f32>>>> + '_ {
+    ) -> impl FnMut(Vec<String>) -> std::future::Ready<Option<Embedded>> + '_ {
         move |texts: Vec<String>| {
             calls.fetch_add(1, Ordering::SeqCst);
             let ok = !texts.iter().any(|t| t.contains("REJECTED"));
-            std::future::ready(ok.then(|| texts.iter().map(|_| vec![1.0, 0.0]).collect()))
+            std::future::ready(ok.then(|| {
+                (
+                    "m".to_string(),
+                    texts.iter().map(|_| vec![1.0, 0.0]).collect(),
+                )
+            }))
         }
     }
 
@@ -412,12 +497,18 @@ mod tests {
             bank.commit(memory(t)).await.unwrap();
         }
         let calls = AtomicUsize::new(0);
-        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 2);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&calls)).await,
+            2
+        );
 
         // A later save: the rejected text sits out, the batch succeeds.
         bank.commit(memory("user plays chess")).await.unwrap();
         calls.store(0, Ordering::SeqCst);
-        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&calls)).await,
+            1
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1, "one clean batch");
         let left = bank.unembedded(10, "m").await;
         assert_eq!(left.len(), 1);
@@ -437,7 +528,10 @@ mod tests {
             bank.commit(memory(t)).await.unwrap();
         }
         let calls = AtomicUsize::new(0);
-        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&calls)).await,
+            1
+        );
         assert_eq!(bank.unembedded(10, "m").await.len(), 3);
     }
 
@@ -449,12 +543,18 @@ mod tests {
         bank.commit(bad.clone()).await.unwrap();
         bank.commit(memory("user owns a bike")).await.unwrap();
         let calls = AtomicUsize::new(0);
-        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&calls)).await,
+            1
+        );
 
         bad.text = "user keeps it short".into();
         bad.revision += 1;
         bank.commit(bad).await.unwrap();
-        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 1);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&calls)).await,
+            1
+        );
         assert!(bank.unembedded(10, "m").await.is_empty());
     }
 
@@ -464,11 +564,17 @@ mod tests {
         let bank = bank(&dir, "embed-rejected-lone").await;
         bank.commit(memory("REJECTED alone")).await.unwrap();
         let calls = AtomicUsize::new(0);
-        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 0);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&calls)).await,
+            0
+        );
         // Batch, canary, the text alone (a second chance), canary.
         assert_eq!(calls.load(Ordering::SeqCst), 4);
         calls.store(0, Ordering::SeqCst);
-        assert_eq!(backfill_pass(&bank, "m", picky(&calls)).await, 0);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&calls)).await,
+            0
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 0, "sits out the cooldown");
     }
 
@@ -481,10 +587,15 @@ mod tests {
         // The batch call blips; everything after it answers.
         let blip = |texts: Vec<String>| {
             let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
-            let v = (!first).then(|| texts.iter().map(|_| vec![1.0, 0.0]).collect());
+            let v = (!first).then(|| {
+                (
+                    "m".to_string(),
+                    texts.iter().map(|_| vec![1.0, 0.0]).collect(),
+                )
+            });
             async move { v }
         };
-        assert_eq!(backfill_pass(&bank, "m", blip).await, 1);
+        assert_eq!(backfill_pass(&bank, Some("m".into()), blip).await, 1);
     }
 
     #[tokio::test]
@@ -506,14 +617,22 @@ mod tests {
         let dying = |texts: Vec<String>| {
             let n = calls.fetch_add(1, Ordering::SeqCst);
             let up = n == 1 || n >= 6;
-            let v = up.then(|| texts.iter().map(|_| vec![1.0, 0.0]).collect());
+            let v = up.then(|| {
+                (
+                    "m".to_string(),
+                    texts.iter().map(|_| vec![1.0, 0.0]).collect(),
+                )
+            });
             async move { v }
         };
-        assert_eq!(backfill_pass(&bank, "m", dying).await, 0);
+        assert_eq!(backfill_pass(&bank, Some("m".into()), dying).await, 0);
 
         // Back up: none of the four sits out, one batch embeds them all.
         let healthy = AtomicUsize::new(0);
-        assert_eq!(backfill_pass(&bank, "m", picky(&healthy)).await, 4);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&healthy)).await,
+            4
+        );
         assert_eq!(healthy.load(Ordering::SeqCst), 1);
     }
 
@@ -528,7 +647,7 @@ mod tests {
             async { None }
         };
         for _ in 0..5 {
-            assert_eq!(backfill_pass(&bank, "m", down).await, 0);
+            assert_eq!(backfill_pass(&bank, Some("m".into()), down).await, 0);
         }
         assert_eq!(calls.load(Ordering::SeqCst), 10, "batch + canary per pass");
 
@@ -537,6 +656,131 @@ mod tests {
             bank.commit(memory(t)).await.unwrap();
         }
         let picky_calls = AtomicUsize::new(0);
-        assert_eq!(backfill_pass(&bank, "m", picky(&picky_calls)).await, 1);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), picky(&picky_calls)).await,
+            1
+        );
+    }
+
+    /// A provider whose every reply reports `model`.
+    fn reporting<'a>(
+        model: &'static str,
+        calls: &'a AtomicUsize,
+    ) -> impl FnMut(Vec<String>) -> std::future::Ready<Option<Embedded>> + 'a {
+        move |texts: Vec<String>| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let v = texts.iter().map(|_| vec![0.0, 1.0]).collect();
+            std::future::ready(Some((model.to_string(), v)))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_default_model_change_re_embeds_into_the_new_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-default-change").await;
+        let m = memory("user owns a bike");
+        bank.commit(m.clone()).await.unwrap();
+        // Embedded while the provider's default was "old-default" (the
+        // configured embedding_model was "" both times).
+        bank.set_vector(&m.id, "old-default", &m.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+
+        // A fresh process: nothing known yet, so one canary learns the space.
+        let calls = AtomicUsize::new(0);
+        assert_eq!(
+            backfill_pass(&bank, None, reporting("new-default", &calls)).await,
+            1
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "canary + one batch");
+        assert!(bank
+            .semantic(&[1.0, 0.0], "new-default", 5, false)
+            .await
+            .is_empty());
+        assert_eq!(
+            bank.semantic(&[0.0, 1.0], "new-default", 5, false)
+                .await
+                .len(),
+            1
+        );
+        assert!(bank
+            .semantic(&[1.0, 0.0], "old-default", 5, false)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_switch_from_a_pinned_model_to_the_default_re_embeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-pinned-to-default").await;
+        let m = memory("user likes tea");
+        bank.commit(m.clone()).await.unwrap();
+        // Embedded under the pinned model (and tagged with what the provider
+        // reported for it).
+        bank.set_vector(&m.id, "text-embedding-3-large", &m.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        // embedding_model is now "": the provider default reports another model.
+        let calls = AtomicUsize::new(0);
+        let known = Some("text-embedding-3-small".to_string());
+        assert_eq!(
+            backfill_pass(&bank, known, reporting("text-embedding-3-small", &calls)).await,
+            1
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "space known: no canary");
+        let hits = bank
+            .semantic(&[0.0, 1.0], "text-embedding-3-small", 5, false)
+            .await;
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn vectors_in_the_current_space_cost_no_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-current").await;
+        let m = memory("user plays chess");
+        bank.commit(m.clone()).await.unwrap();
+        bank.set_vector(&m.id, "m", &m.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        let calls = AtomicUsize::new(0);
+        assert_eq!(
+            backfill_pass(&bank, Some("m".into()), reporting("m", &calls)).await,
+            0
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_space_change_mid_pass_re_lists_the_old_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let bank = bank(&dir, "embed-mid-pass").await;
+        let old = memory("user rows on weekends");
+        bank.commit(old.clone()).await.unwrap();
+        bank.set_vector(&old.id, "m1", &old.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        bank.commit(memory("user collects stamps")).await.unwrap(); // vectorless
+                                                                    // The pass believes the space is m1; the provider now answers m2.
+        let calls = AtomicUsize::new(0);
+        assert_eq!(
+            backfill_pass(&bank, Some("m1".into()), reporting("m2", &calls)).await,
+            2
+        );
+        assert_eq!(bank.semantic(&[0.0, 1.0], "m2", 5, false).await.len(), 2);
+    }
+
+    #[test]
+    fn the_current_space_is_learned_per_configured_model() {
+        learn_model("pinned-x", "pinned-x-reported");
+        learn_model("", "default-reported");
+        assert_eq!(
+            current_model("pinned-x").as_deref(),
+            Some("pinned-x-reported")
+        );
+        assert_eq!(current_model("").as_deref(), Some("default-reported"));
+        learn_model("", "default-changed");
+        assert_eq!(current_model("").as_deref(), Some("default-changed"));
+        assert_eq!(current_model("never-seen"), None);
     }
 }
