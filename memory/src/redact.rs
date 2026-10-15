@@ -69,7 +69,10 @@ static REFERENCE: LazyLock<Regex> = LazyLock::new(|| {
 /// symbols (identifiers, kebab names, paths); a letters-only passphrase
 /// passes, the price of keeping type and resource names.
 fn credential_like(value: &str) -> bool {
-    !REFERENCE.is_match(value)
+    // A leading `:` means the key was a `token::`/`secret::` code path, not
+    // an assignment.
+    !value.starts_with(':')
+        && !REFERENCE.is_match(value)
         && !value.bytes().all(|b| b.is_ascii_digit())
         && value
             .bytes()
@@ -488,6 +491,7 @@ mod tests {
             "Helm values set secret: postgres-credentials",
             "Never commit files containing the PRIVATE KEY header; rotate on leak.",
             "Bearer authentication-middleware guards the route.",
+            "Call token::utf8_decode and password::hash_password2 first.",
         ];
         for text in benign {
             let r = redact(text);
@@ -498,6 +502,11 @@ mod tests {
         // protection flags as a literal) is an identifier here.
         let id = format!("key-{} is an id", "0123456789abcdef".repeat(2));
         assert_eq!(redact(&id).text, id);
+        // A mention of a full PEM header (no key body) is prose: it must not
+        // erase the instruction around it.
+        let header = format!("-----BEGIN {}PRIVATE KEY-----", "RSA ");
+        let mention = format!("Never commit files containing {header}; use the secrets worker.");
+        assert_eq!(redact(&mention).text, mention);
     }
 
     #[test]
