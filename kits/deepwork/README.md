@@ -7,7 +7,7 @@ Give **Deepwork** a goal and a team of agents works it, with the kanban board as
 3. Leads run in parallel, in waves.
 4. Rounds repeat until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
 
-A goal that changes code in a git repository runs the **dev flow**. You approve the design and the plan. Each code ticket is written test-first in a git worktree, with one commit. Every commit is verified and reviewed, then the whole branch is reviewed, and you choose how it finishes. Other goals (research, reading, analysis) run the **plain flow**: work, then verify.
+A goal that changes code in a git repository runs the **dev flow**. You approve the design and the plan. Each code ticket is written test-first in its own git worktree, with one commit. Every commit is verified and reviewed, then landed on the run branch. The whole branch is reviewed, and you choose how it finishes. Other goals (research, reading, analysis) run the **plain flow**: work, then verify.
 
 Deepwork needs only the `harness`, `state`, `kanban` and `ide` workers.
 
@@ -64,9 +64,10 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 |---|---|---|
 | `flow` | `auto` | `dev` for code goals in a git repository, `plain` for the rest. Set it to force one |
 | `approve` | on | in the dev flow, waits for you on the design, the plan and the finish. `off` runs straight through and keeps the branch |
+| `isolation` | `ticket` | in the dev flow, each code ticket works in its own worktree, branched from the run branch and landed on it when verified. `shared` runs every ticket in the run worktree, so tickets that share a file or a test target wait for a later wave |
 | `max_rounds` | 3 | rounds over the queue |
 | `attempts` | 2 | tries per ticket per round. A rejected try is retried with the reasons |
-| `concurrency` | 8 | leads per wave, at most 8. A ticket waits for its `Depends on:` tickets. In the dev flow, tickets that share a file never share a wave |
+| `concurrency` | 8 | leads per wave, at most 8. A ticket waits for its `Depends on:` tickets. With `isolation=shared`, tickets that share a file never share a wave |
 | `verify` | on | checks each ticket |
 | `verifier` | `deepwork-adversary` | the checker profile: `deepwork-adversary*` or `deepwork-verifier*` |
 | `judges` | – | comma-separated model ids. One `deepwork-verifier` per model checks each ticket and the majority wins. At most 7 in the dev flow, 8 in the plain flow |
@@ -92,17 +93,18 @@ You must pass `model`, because the profile sets none. Every model the run uses n
 
 1. **Design.** Deepwork reads the repository and asks about anything the code can't answer. It asks one question at a time and offers two or three options, with its own pick first.
 2. **Plan.** The design goes on the run ticket. Each task becomes a subtask with `Files:`, `Test first:`, `Implement:`, `Verify:` and `Commit:` lines. You answer one card: Start, Stop, or type your changes. If you type changes, Deepwork rewrites the plan and asks again.
-3. **Worktree.** The work happens on a new branch, `deepwork/<slug>`, in `.worktrees/<slug>`. That folder is excluded locally, so your checkout is untouched. Run Deepwork from the repository's top folder. The test suite runs once to get a baseline.
-4. **Code tickets.** Each code ticket follows three steps:
+3. **Worktree.** The run gets a new branch, `deepwork/<slug>`, in `.worktrees/<slug>`. That folder is excluded locally, so your checkout is untouched. Run Deepwork from the repository's top folder. The test suite runs once to get a baseline. Each code ticket then works in its own worktree, `.worktrees/<slug>-<key>`, on a branch off the run branch. A fresh copy may need setup before it builds: Deepwork reads it from the repository (a shared `CARGO_TARGET_DIR` for a Cargo workspace, an offline install for a Node project) and passes it to every ticket. With exec confinement on, a shared build directory must sit under an `exec_writable` path.
+4. **Code tickets.** Each code ticket follows four steps:
    1. Write a failing test.
    2. Write the least code that makes it pass, and commit once.
    3. Verify and review the commit, side by side. Verify re-runs the `Verify:` lines. Review checks that the tests are unchanged and nothing outside `Files:` moved.
+   4. Land the commit on the run branch. A conflict with a sibling is a rejection, retried next round on the new base.
 
    A rejection goes back to the same code session with the reasons. Research tickets in the same run are worked and verified without a commit.
 5. **Branch review.** Once the queue is empty, one reviewer runs the full test suite and the linter and reviews the whole diff. Its findings become tickets for the next round.
 6. **Finish.** You pick one: merge into your branch, push and open a PR, keep the branch, or discard it.
 
-Sub-agents work only inside the worktree. They never push, merge, rebase, reset, switch, stash or clean. Deepwork pushes or merges only when you pick that at the finish. Loose ends the goal doesn't need become Backlog subtasks labelled `pending`.
+Sub-agents work only inside their worktree. They never push, merge, rebase, reset, switch, stash or clean. Deepwork pushes or merges only when you pick that at the finish. Loose ends the goal doesn't need become Backlog subtasks labelled `pending`.
 
 ## The board
 
@@ -161,4 +163,4 @@ Sub-agents work only inside the worktree. They never push, merge, rebase, reset,
 
 Results go through `state` rather than kanban events. State has compare-and-set, and a kanban outage won't lose results.
 
-Not in 0.2: a hard cost cap from the console, and one worktree per ticket. Tickets that share a file wait for a later wave instead.
+Not yet: a hard cost cap from the console.

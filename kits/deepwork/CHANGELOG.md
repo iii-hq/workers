@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- One worktree per code ticket (`isolation=ticket`, the default in the dev flow): each impl-tier ticket is dispatched into its own worktree `.worktrees/<slug>-<key>` on a branch off the run branch, rebased on it for a retry, and landed on it with a cherry-pick once verified and reviewed; a conflict is a rejection retried next round on the new base. Tickets that share a file or a test target no longer wait for a later wave, and commit hooks no longer force one ticket per wave. `isolation=shared` keeps the 0.2 behaviour.
+- Dev cards' `Verify:` lines carry no `cwd`: every agent runs them in its own worktree. A `Setup:` line in every dev-flow task carries what a fresh copy needs before it builds (a shared `CARGO_TARGET_DIR`, an install command).
+
 ## 0.2.1
 
 - Rewrote the README to be shorter and easier to read, and simplified the kit description. No behaviour change.
