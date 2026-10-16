@@ -825,6 +825,9 @@ async fn harness_metrics(
         "harness::metrics",
         SessionMetricsRequestV1 {
             root_session_id: session_id.into(),
+            omit_context: false,
+            subtree: false,
+            omit_traces: false,
         },
         job.request.limits.execution.invocation_timeout_seconds,
     )

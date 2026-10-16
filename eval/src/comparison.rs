@@ -193,6 +193,9 @@ pub async fn compare(
                     "harness::metrics",
                     SessionMetricsRequestV1 {
                         root_session_id: session_id.clone(),
+                        omit_context: false,
+                        subtree: false,
+                        omit_traces: false,
                     },
                 ),
             );
