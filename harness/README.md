@@ -219,25 +219,34 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 The harness announces its own usage on the durable `harness:usage` topic. The
 engine subscribes to that topic and sends one anonymous product event for each
-message. Two moments report:
+message. Three moments report:
 
-- `harness_session_progress`, at root turn 1, 2, 5, 10, 25 and 50. Each report
-  carries the cumulative totals that `harness::metrics` aggregates over the
-  session tree: turns, function calls, tokens and cost. A later report
-  supersedes the one before it.
+- `harness_user_turns`, when the user turns (root turns: one user message
+  through its final reply) counted across every session on the machine reach
+  1, 2, 5, 10, 25 and 50, then every 50 after that (100, 150, ...). It carries
+  `user_turns_total`, `user_turns_delta` (user turns since the previous
+  report, so the deltas sum to the total) and `sessions_total`.
+- `harness_model_calls`, on the same milestones of the model calls (assistant
+  messages, sub-agents included) counted across every session on the machine.
+  Model calls move several at a time, so a report goes out at the highest
+  milestone passed. It carries `model_calls_total`, `model_calls_delta`, tool
+  call and tool call error totals, token totals and `cost_usd`, all
+  machine-wide.
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
-  and `max_turns` outcomes. This keeps the reason a run stopped exact when it
-  stopped between two milestones.
+  and `max_turns` outcomes. This keeps the reason a run stopped exact.
 
-One session reports at most 9 messages, however many turns it runs, and
-sub-agent turns report nothing of their own. A message carries the model name,
-the provider name, the counters above and a fixed failure class. It carries no
-message text, no prompt, no file path and no function id.
+A message carries the model name, the provider name, the counters above and a
+fixed failure class. It carries no message text, no prompt, no file path and no
+function id. Sub-agent turns report nothing of their own; their model calls are
+counted through their root session.
 
-The `harness_usage/<session_id>` state row records the milestones and outcomes
-a session announced, so a restart does not announce one again. Each step is best
-effort: a failed read or publish is logged at debug level and the turn
-continues.
+The reporting keeps its own bookkeeping and only reads the harness's
+accounting (`harness::metrics`). The `harness_usage/_machine` state row holds
+the machine-wide counters, updated by compare-and-set; each
+`harness_usage/<session_id>` row records the outcomes a session announced and
+the model usage already folded into the machine row, so a restart neither
+announces nor counts anything twice. Each step is best effort: a failed read or
+publish is logged at debug level and the turn continues.
 
 To stop the reports, set `III_TELEMETRY_ENABLED=false` on the engine. The engine
 then takes the messages from the topic and discards them, so an opted-out
