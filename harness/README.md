@@ -224,7 +224,9 @@ message. Two moments report:
 - `harness_session_progress`, at root turn 1, 2, 5, 10, 25 and 50. Each report
   carries the cumulative totals that `harness::metrics` aggregates over the
   session tree: turns, function calls, tokens and cost. A later report
-  supersedes the one before it.
+  supersedes the one before it. `recent_outcomes` lists the outcomes of the
+  last 10 root turns (`completed`, `failed`, `cancelled` or `max_turns`),
+  oldest first. The last entry is the turn that reached the milestone.
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
   and `max_turns` outcomes. This keeps the reason a run stopped exact when it
   stopped between two milestones.
