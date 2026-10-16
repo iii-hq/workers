@@ -120,7 +120,7 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
   - reorder To do;
   - comment on a ticket to steer its retry;
   - move a Backlog card to To do to run it again.
-- **Resume a run.** If the orchestrator's session is lost (the console closed it, the engine restarted), start Deepwork again with `args: resume=<R>`. It adopts the run ticket: the goal, args, branch and worktree come from the card, In progress tickets whose lead is gone go back to To do, and the rounds continue from where they stopped. A finished run can be resumed the same way once you move cards to To do, as long as its worktree still exists.
+- **Resume a run.** If the orchestrator's session is lost (the console closed it, the engine restarted), start Deepwork again with `args: resume=<R>`. It adopts the run ticket: the goal, args, branch and worktree come from the card, In progress tickets whose lead is gone go back to To do, and the rounds continue from where they stopped; `max_rounds` then counts the rounds this resume runs. A finished run can be resumed the same way once you move cards to To do, as long as its worktree still exists.
 - **Skip a ticket.** Move it from To do to Backlog. Don't drag In progress cards, because Deepwork's next write overrides your move. Deleting a card removes it from the run.
 - **Outcomes.**
   - Done tickets carry `verified` or `accepted`.
