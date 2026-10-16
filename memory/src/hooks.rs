@@ -152,13 +152,25 @@ pub async fn pre_generate(
     let mut annotations = Map::new();
 
     // One resolver for the hook, the turn's extraction, and its agent's
-    // calls (`scope`). Recorded even with injection off: extraction and
-    // the agent's calls still use the bank, a turn-only override included.
-    let resolved = crate::scope::resolve(deps, &input.session_id, input.metadata.as_ref()).await;
-    if let (Ok(bank), Some(turn_id)) = (&resolved, input.turn_id.as_deref()) {
-        crate::scope::remember_turn(turn_id, bank.clone());
-    }
-    if !cfg.inject_rules && !cfg.inject_memories {
+    // calls (`scope`), once per turn: later steps keep the opening step's
+    // bank. Recorded even with injection off: extraction and the agent's
+    // calls still use it, a turn-only override included. With injection
+    // off and no turn to record it for, nothing needs the lookup.
+    let injecting = cfg.inject_rules || cfg.inject_memories;
+    let turn_id = input.turn_id.as_deref();
+    let resolved = match crate::scope::pinned_turn_bank(turn_id, input.step) {
+        Some(bank) => Ok(bank),
+        None if !injecting && turn_id.is_none() => Ok(None),
+        None => {
+            let resolved =
+                crate::scope::resolve(deps, &input.session_id, input.metadata.as_ref()).await;
+            if let (Ok(bank), Some(turn_id)) = (&resolved, turn_id) {
+                crate::scope::remember_turn(turn_id, bank.clone());
+            }
+            resolved
+        }
+    };
+    if !injecting {
         // Memory off is an empty section, told like any rules change: a
         // section this session already froze stays in its system prompt.
         apply_rules(&input, "", &mut mutations, &mut annotations);

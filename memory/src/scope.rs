@@ -191,6 +191,14 @@ pub(crate) fn turn_bank(turn_id: &str) -> Option<Option<String>> {
     turns.get(turn_id).map(|(bank, _)| bank.clone())
 }
 
+/// One bank per turn: a step after the opening one keeps the bank that
+/// step recorded — no lookup, and a session bank switched mid-turn takes
+/// effect on the next turn instead of splitting this one across banks.
+/// `None`: resolve (the opening step, or a turn this process never saw).
+pub(crate) fn pinned_turn_bank(turn_id: Option<&str>, step: u64) -> Option<Option<String>> {
+    turn_id.filter(|_| step > 0).and_then(turn_bank)
+}
+
 /// [`turn_bank`], forgetting the turn (it completed).
 pub(crate) fn take_turn_bank(turn_id: &str) -> Option<Option<String>> {
     let mut turns = TURN_BANKS.lock().unwrap_or_else(|e| e.into_inner());
@@ -273,6 +281,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turns_later_steps_keep_the_bank_its_opening_step_chose() {
+        remember_turn("t-pinned-1", Some("blog".into()));
+        remember_turn("t-pinned-2", None);
+        assert_eq!(
+            pinned_turn_bank(Some("t-pinned-1"), 3),
+            Some(Some("blog".into()))
+        );
+        assert_eq!(
+            pinned_turn_bank(Some("t-pinned-2"), 1),
+            Some(None),
+            "no memory stays no memory"
+        );
+        assert_eq!(
+            pinned_turn_bank(Some("t-pinned-1"), 0),
+            None,
+            "the opening step resolves"
+        );
+        assert_eq!(
+            pinned_turn_bank(Some("t-unseen"), 2),
+            None,
+            "not recorded here: resolve"
+        );
+        assert_eq!(pinned_turn_bank(None, 2), None);
+    }
 
     #[test]
     fn a_turn_bank_is_kept_until_taken_and_evicted_oldest_first() {
