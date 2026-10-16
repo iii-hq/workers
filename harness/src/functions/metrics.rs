@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::clients::session::{LoadedEntry, SessionClient};
+use crate::clients::session::{LoadedEntry, Projection, SessionClient};
 use crate::context_snapshot::ContextSnapshotV1;
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -416,11 +416,13 @@ fn read_session(
         // No turn record: the transcript is durable independently of it. Keep
         // aggregating it; the answer is partial (`settled` stays false) and the
         // lifecycle/context data unavailable.
+        // The counters read only usage, function calls and `is_error`; the
+        // `Usage` projection leaves the rest (most of the bytes) behind.
         let cache = usage_cache();
         let (usage, last_entry_id) = match cache.settled(session_id, read.settled) {
             // Settled when last read: only what came after can be new.
             Some(hit) => match session
-                .messages_from(session_id, Some(&hit.last_entry_id))
+                .messages_from(session_id, Some(&hit.last_entry_id), Projection::Usage)
                 .await
             {
                 Ok(entries) => fold_entries(hit.usage, Some(hit.last_entry_id), entries),
@@ -429,13 +431,17 @@ fn read_session(
                 Err(_) => fold_entries(
                     UsageAccumulator::default(),
                     None,
-                    session.messages_strict(session_id).await?,
+                    session
+                        .messages_from(session_id, None, Projection::Usage)
+                        .await?,
                 ),
             },
             None => fold_entries(
                 UsageAccumulator::default(),
                 None,
-                session.messages_strict(session_id).await?,
+                session
+                    .messages_from(session_id, None, Projection::Usage)
+                    .await?,
             ),
         };
         cache.remember(session_id, read.settled, last_entry_id, &usage);
@@ -1112,6 +1118,59 @@ mod tests {
             message,
             custom: None,
         }
+    }
+
+    #[test]
+    fn a_usage_projected_transcript_counts_what_the_full_one_does() {
+        // The same three entries as session-manager returns them by default
+        // and with `content: "usage"`. Both must parse, and count alike.
+        let full = json!([
+            {"entry_id": "e1", "origin": {"turn_id": "t1"}, "message": {
+                "role": "user", "content": [{"type": "text", "text": "q"}], "timestamp": 1}},
+            {"entry_id": "e2", "message": {
+                "role": "assistant", "stop_reason": "function_call", "model": "m",
+                "provider": "p", "timestamp": 2, "usage": {"input": 10, "output": 2},
+                "content": [
+                    {"type": "thinking", "text": "hm"},
+                    {"type": "text", "text": "looking"},
+                    {"type": "function_call", "id": "c1", "function_id": "shell::run",
+                     "arguments": {"cmd": "ls"}}
+                ]}},
+            {"entry_id": "e3", "message": {
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "shell::run", "is_error": true, "timestamp": 3,
+                "details": {"code": 1}, "content": [{"type": "text", "text": "boom"}]}}
+        ]);
+        let usage = json!([
+            {"entry_id": "e1", "message": {"role": "user", "content": [], "timestamp": 1}},
+            {"entry_id": "e2", "message": {
+                "role": "assistant", "stop_reason": "function_call", "model": "m",
+                "provider": "p", "timestamp": 2, "usage": {"input": 10, "output": 2},
+                "content": [{"type": "function_call", "id": "c1",
+                             "function_id": "shell::run", "arguments": null}]}},
+            {"entry_id": "e3", "message": {
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "shell::run", "is_error": true, "timestamp": 3,
+                "details": null, "content": []}}
+        ]);
+        let count = |entries: serde_json::Value| {
+            let entries: Vec<LoadedEntry> = serde_json::from_value(entries).unwrap();
+            assert!(entries.iter().all(|entry| entry.message.is_some()));
+            let (usage, last) = fold_entries(UsageAccumulator::default(), None, entries);
+            (usage.finish_totals(1), last)
+        };
+        let (projected, last) = count(usage);
+        assert_eq!(projected, count(full).0);
+        assert_eq!(last.as_deref(), Some("e3"));
+        assert_eq!(
+            (
+                projected.turns,
+                projected.function_calls,
+                projected.function_call_errors
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(projected.input_tokens, Some(10));
     }
 
     #[test]
