@@ -150,7 +150,8 @@ capture, input or accessibility call.
   `app_pid` scoping can miss it (unverified).
 - **computer::run's reach.** Semantic verbs only: no keyboard, scrolling or
   menus (the menu bar is never offered), combo boxes are never typed into,
-  and a field with no accessible name always returns `needs_text`. On Linux
+  and a field with no accessible name returns `needs_text` unless its
+  description alone names an `inputs` key as a whole word. On Linux
   a filled password field never reads `(set)` (its text is never read), so a
   run may type it again until the repeat rule stops it. A modal
   printed past the 32 KiB cap does not narrow the targets.
