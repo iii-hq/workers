@@ -221,16 +221,16 @@ The harness announces its own usage on the durable `harness:usage` topic. The
 engine subscribes to that topic and sends one anonymous product event for each
 message. Two moments report:
 
-- `harness_session_progress`, at root turn 1, 2, 5, 10, 25 and 50. Each report
-  carries the cumulative totals that `harness::metrics` aggregates over the
-  session tree: turns, function calls, tokens and cost. A later report
-  supersedes the one before it.
+- `harness_session_progress`, at root turn 1, 2, 5, 10, 25 and 50, then every
+  50 root turns after that (100, 150, ...). Each report carries the cumulative
+  totals that `harness::metrics` aggregates over the session tree: turns,
+  function calls, tokens and cost. A later report supersedes the one before it.
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
   and `max_turns` outcomes. This keeps the reason a run stopped exact when it
   stopped between two milestones.
 
-One session reports at most 9 messages, however many turns it runs, and
-sub-agent turns report nothing of their own. A message carries the model name,
+A 50-turn session reports at most 9 messages, and one more for every 50 root
+turns after that. Sub-agent turns report nothing of their own. A message carries the model name,
 the provider name, the counters above and a fixed failure class. It carries no
 message text, no prompt, no file path and no function id.
 

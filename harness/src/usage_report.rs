@@ -6,12 +6,12 @@
 //! never talks to an analytics vendor itself: it announces, and an engine that
 //! the operator opted out of telemetry simply never listens.
 //!
-//! Two reported moments, both bounded per session so a long run never costs
-//! more events than a short one:
+//! Two reported moments, both sparse so a long run costs few events:
 //!
-//! * `harness_session_progress` at root turn 1, 2, 5, 10, 25 and 50. Every
-//!   report is cumulative, so the last one supersedes the ones before it and
-//!   the histogram of milestones reached IS the drop-off curve.
+//! * `harness_session_progress` at root turn 1, 2, 5, 10, 25 and 50, then
+//!   every 50 root turns after that (100, 150, ...). Every report is
+//!   cumulative, so the last one supersedes the ones before it and the
+//!   histogram of milestones reached IS the drop-off curve.
 //! * `harness_turn_failed` once per session per outcome (`failed`,
 //!   `cancelled`, `max_turns`), which keeps the reason a run stopped exact
 //!   even when it stopped between two milestones.
@@ -48,8 +48,13 @@ pub const FAILED_EVENT: &str = "harness_turn_failed";
 
 /// Root turn counts that report. Chosen to be dense where sessions die and
 /// sparse afterwards: the gap between 1 and 2 is the one that says whether the
-/// harness was tried once or actually used.
+/// harness was tried once or actually used. Past the last one, a session
+/// keeps reporting every [`REPEAT_EVERY`] root turns.
 pub const MILESTONES: [u64; 6] = [1, 2, 5, 10, 25, 50];
+
+/// After the last listed milestone, every multiple of this reports, so a long
+/// session's totals keep reaching analytics at a bounded rate.
+pub const REPEAT_EVERY: u64 = 50;
 
 /// Per-session reporting bookkeeping (`harness_usage/<session_id>`).
 ///
@@ -73,9 +78,12 @@ pub struct UsageRow {
     pub first_at: i64,
 }
 
-/// The milestone this turn count reports at, if any.
+/// The milestone this turn count reports at, if any: a listed one, or any
+/// multiple of [`REPEAT_EVERY`] beyond the last listed one.
 pub fn milestone(turns: u64) -> Option<u64> {
-    MILESTONES.contains(&turns).then_some(turns)
+    let last = MILESTONES[MILESTONES.len() - 1];
+    let repeat = turns > last && turns % REPEAT_EVERY == 0;
+    (MILESTONES.contains(&turns) || repeat).then_some(turns)
 }
 
 /// Whether this turn belongs to a root session. A sub-agent turn reports
@@ -271,9 +279,20 @@ mod tests {
         for turns in MILESTONES {
             assert_eq!(milestone(turns), Some(turns));
         }
-        for turns in [0, 3, 4, 9, 26, 51, 1_000] {
+        for turns in [0, 3, 4, 9, 26, 51, 75, 99, 101, 149, 1_001] {
             assert_eq!(milestone(turns), None, "turn {turns} must not report");
         }
+    }
+
+    /// Prevents: a long session going silent after root turn 50, so its later
+    /// totals never reach analytics.
+    #[test]
+    fn every_fifty_turns_past_fifty_reports() {
+        for turns in [100, 150, 200, 1_000] {
+            assert_eq!(milestone(turns), Some(turns));
+        }
+        let reported = (1..=200).filter(|t| milestone(*t).is_some()).count();
+        assert_eq!(reported, MILESTONES.len() + 3);
     }
 
     #[test]
