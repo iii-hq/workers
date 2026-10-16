@@ -220,6 +220,18 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         ],
       },
       {
+        title: 'Context',
+        fields: [
+          select(
+            'default_context_strategy',
+            'Default context manager',
+            [choice('default', 'Context manager (built-in)'), choice('clm', 'CLM (context-clm worker)')],
+            'Assembles the context of sessions whose metadata sets no context_strategy, from their next turn. CLM needs the context-clm worker; a session without an absolute filesystem root or shell::exec stays on the context manager. Sub-agents always use the context manager. Unset uses the context manager.',
+            { optional: true },
+          ),
+        ],
+      },
+      {
         title: 'Git commits',
         fields: [
           toggle(
@@ -276,6 +288,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
       'stream_coalesce_ms',
       'sweep_expression',
       'call_reconciliation',
+      'default_context_strategy',
       'co_author',
       'default_functions.allow[]',
       'default_functions.deny[]',
