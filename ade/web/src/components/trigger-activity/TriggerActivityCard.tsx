@@ -2,6 +2,7 @@ import {
   Bell,
   Check,
   CircleAlert,
+  CircleDashed,
   FunctionSquare,
   Info,
   RadioTower,
@@ -27,6 +28,7 @@ import type { SystemMessage, UserMessage } from '@/types/chat'
 import type { TriggerActivityMessage } from '@/types/injectable-ui'
 import {
   activityFromTriggerRecord,
+  isConditionWait,
   parseNotification,
   type TriggerRegistration,
 } from './model'
@@ -56,15 +58,23 @@ interface TriggerActivityCardProps {
   defaultOpen?: boolean
 }
 
-function TriggerActivityOutcomeIcon({ failed }: { failed: boolean }) {
-  const status = failed ? 'error' : 'done'
-
+function TriggerActivityOutcomeIcon({
+  status,
+}: {
+  status: 'done' | 'error' | 'pending'
+}) {
   return (
     <span
       aria-hidden="true"
       className="activity-status-icon"
       data-status={status}
     >
+      <span data-activity-status-layer="pending">
+        <CircleDashed
+          strokeWidth={2}
+          className="size-4 stroke-muted-foreground"
+        />
+      </span>
       <span data-activity-status-layer="error">
         <X strokeWidth={2.5} className="size-4 stroke-alert" />
       </span>
@@ -155,8 +165,12 @@ export function TriggerActivityCard({
     (renderer) => renderer.tryRenderDetails?.(activity) ?? null,
   )
   const eventText = activityEventText(activity)
-  const fireFailed =
-    activity.outcome === 'skipped' || activity.outcome === 'delivery_failed'
+  // A condition that answered "not yet" is the binding waiting, not a failure.
+  const fireStatus = isConditionWait(activity)
+    ? 'pending'
+    : activity.outcome === 'skipped' || activity.outcome === 'delivery_failed'
+      ? 'error'
+      : 'done'
 
   const expandedSummary = (
     <div className="flex min-w-0 items-start gap-3">
@@ -235,7 +249,7 @@ export function TriggerActivityCard({
         >
           {activity.kind === 'fired' ? (
             <div className="flex w-full min-w-0 items-center gap-2">
-              <TriggerActivityOutcomeIcon failed={fireFailed} />
+              <TriggerActivityOutcomeIcon status={fireStatus} />
               <TimelineActivityTrail kind="trigger" />
               <div className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground sm:text-[0.8125rem]">
                 {display?.node ?? eventText}
@@ -343,7 +357,8 @@ function TriggerActivityTerminal({
   const lifecycle = lifecycleLabel(activity)
   const eventType = eventTypeOf(activity.payload)
   const showDeliveryBadge =
-    activity.outcome === 'delivery_failed' || activity.outcome === 'skipped'
+    activity.outcome === 'delivery_failed' ||
+    (activity.outcome === 'skipped' && !isConditionWait(activity))
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <TriggerTrace
@@ -447,6 +462,8 @@ function ActivityStats({ activity }: { activity: TriggerActivityMessage }) {
           {conditionsMet ? <Badge>Conditions met</Badge> : null}
           {activity.outcome === 'delivery_failed' ? (
             <Badge>Delivery failed</Badge>
+          ) : isConditionWait(activity) ? (
+            <Badge>Waiting</Badge>
           ) : activity.outcome === 'skipped' ? (
             <Badge>Delivery skipped</Badge>
           ) : null}
@@ -516,7 +533,9 @@ export function activityEventText(activity: TriggerActivityMessage): string {
 }
 
 function activityTitle(activity: TriggerActivityMessage): string {
-  if (activity.kind !== 'retirement') return 'Trigger fired'
+  if (activity.kind !== 'retirement') {
+    return isConditionWait(activity) ? 'Waiting on condition' : 'Trigger fired'
+  }
   switch (activity.retirementReason ?? activity.outcome) {
     case 'expired':
       return 'Binding expired'
@@ -548,6 +567,9 @@ function activityDescription(activity: TriggerActivityMessage): string {
   }
   if (activity.outcome === 'delivery_failed') {
     return 'This trigger fired, but its delivery failed.'
+  }
+  if (isConditionWait(activity)) {
+    return 'An event arrived, but a condition is still holding the delivery. The binding keeps listening.'
   }
   if (activity.outcome === 'skipped') {
     return 'This trigger fired, but delivery was skipped.'
