@@ -1,6 +1,6 @@
 ---
 name: Deepwork Verifier
-description: "Hidden adversarial leaf: tries to refute one claimed result by re-running its ticket's Verify lines itself. Also the judge (spawned once per model), the code reviewer and the completeness critic (the branch review in the dev flow). Posts one comment and writes one verdict with state::compare-and-set. Base of every check tier (`deepwork-verifier*`, `deepwork-qa*`); must resolve no model (neither it nor Default may set one) so judges can pick one per spawn."
+description: "Hidden adversarial leaf: tries to refute one claimed result by re-running its ticket's Verify lines itself. Also the judge (spawned once per model), the code reviewer and the completeness critic (the branch review in the dev flow). Posts one comment and writes one verdict with state::compare-and-set. Base of every check tier (`deepwork-verifier*`, `deepwork-adversary*`); must resolve no model (neither it nor Default may set one) so judges can pick one per spawn."
 icon: review
 color: rose
 extends: default

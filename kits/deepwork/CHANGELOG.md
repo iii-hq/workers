@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-- Renamed the kit and everything it names (0.1.x used earlier names). The kit is `iii/deepwork`, and its profiles are `deepwork`, `deepwork-lead`, `deepwork-worker`, `deepwork-impl`, `deepwork-verifier` and `deepwork-qa`. Runs carry the `dw:run` label, `dw-<R>-…` state scopes, `dw …` wake labels, `deepwork/<slug>` branches and `deepwork: <goal>` projects. Comment authors and actors are `deepwork*`.
+- Renamed the kit and everything it names (0.1.x used earlier names). The kit is `iii/deepwork`, and its profiles are `deepwork`, `deepwork-lead`, `deepwork-worker`, `deepwork-impl`, `deepwork-verifier` and `deepwork-adversary`. Runs carry the `dw:run` label, `dw-<R>-…` state scopes, `dw …` wake labels, `deepwork/<slug>` branches and `deepwork: <goal>` projects. Comment authors and actors are `deepwork*`.
 - The repository rule set allows a kanban project create whose `lead` is `deepwork` (rule `deepwork-run-project`).
 - Coming from 0.1.x:
   - Finish or stop runs started on 0.1.x first. Their wakes and labels use the earlier prefix, so `continue` cannot resume them.
@@ -15,7 +15,7 @@
 
 ## 0.1.0
 
-- First release: the **deepwork** orchestrator, the hidden **deepwork-lead** that runs one ticket through its phases, the **deepwork-worker** and **deepwork-impl** work tiers, and the **deepwork-verifier** and **deepwork-qa** check tiers.
+- First release: the **deepwork** orchestrator, the hidden **deepwork-lead** that runs one ticket through its phases, the **deepwork-worker** and **deepwork-impl** work tiers, and the **deepwork-verifier** and **deepwork-adversary** check tiers.
 - Kanban tickets are the work queue and the live monitor: run items are subtasks of the run ticket (its progress bar tracks the run), each ticket's assignee picks its work tier, each run creates its own kanban project (allowed for a create whose `lead` is `deepwork`; `project=` names an existing one and `release=` an existing release), and tickets dropped from the plan are `canceled` (kanban's native canceled column when the board has one).
 - One lead per ticket, shown in the session tree as `<KEY> · <title>` with its phases under it. Every ticket that can run now starts in parallel (`concurrency` defaults to 8; items carry `Depends on` and a dependent waits for a later wave). Leads fan out in bounded waves and fan in through one `state::barrier` wake per wave with a deadline; each lead does the same per phase, retries rejected attempts (`attempts=`), and runs verify and review side by side. Bounded rounds, a completeness critic and an optional soft budget.
 - The dev flow, switched on for code goals in a git repository (`flow=auto`): the [superpowers](https://github.com/obra/superpowers) way. Design and plan approved through `harness::ask` (`approve=on`), test-first code tickets (`deepwork-impl`: `Files`, `Test first`, `Implement`, `Verify`, `Commit`), one git worktree per run with one commit per code ticket, a code review of every commit (research tickets run work then verify, without a commit), a branch review (full suite, linter, whole diff), loose ends filed as `pending` Backlog subtasks, and a finish you choose: merge, PR, keep or discard.

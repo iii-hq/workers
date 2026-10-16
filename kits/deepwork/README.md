@@ -11,7 +11,7 @@ A goal that changes code in a git repository gets the [superpowers](https://gith
 | **deepwork-worker** (hidden) | the work phase: research, reading, analysis | set one, or inherit |
 | **deepwork-impl** (hidden) | the tests and code phases: failing test, least code, commit | pin a strong model |
 | **deepwork-verifier** (hidden) | judge (one per model), critic and branch review; base of the check tiers | none (nor on Default): judges pick per spawn |
-| **deepwork-qa** (hidden) | verify and code review in each check (the default `verifier`) | pin a mid-tier model |
+| **deepwork-adversary** (hidden) | verify and code review in each check (the default `verifier`) | pin a mid-tier model |
 
 No `workflow` worker, code runner or fp pipeline: just `harness`, `state`, `kanban` and `ide` (the shell and file functions the tiers preload).
 
@@ -23,7 +23,7 @@ iii trigger directory::download-kit kit=iii/deepwork apply=true --timeout-ms 120
 
 `apply=true` installs at once when the plan has no warnings, blocks or pending decisions (for example, a profile with the same id already exists). Otherwise the reply is a plan: review and apply it in the ADE (Directory → Kits), or run `iii trigger directory::kits::apply plan_id=<plan_id from the reply> --timeout-ms 1200000`. Applying adds or updates workers through Compose and can take minutes; if the command still times out, the apply keeps running: check Directory → Kits instead of re-running it.
 
-Once it is applied, pin the models of the tiers. The kit ships them without `model` because it cannot know your providers. Edit `agents/deepwork-lead.md`, `agents/deepwork-impl.md` and `agents/deepwork-qa.md` (and `deepwork-worker.md` if you like) and add `model: <provider::model>`, e.g. `model: anthropic::claude-opus-5-5`. Use the `provider::model` form: it pins the provider and lets `reasoning_effort` reach it. An unpinned lead runs on the orchestrator's model, and it takes a turn per phase. A tier without its own `model` inherits one set on Default (`agents/default.md`, which the Directory editor writes), and that beats both the orchestrator's model and the judge models; with `judges=` the run refuses to start if `deepwork-verifier` resolves a model. Editing an installed kit file is fine; a kit update merges your edits.
+Once it is applied, pin the models of the tiers. The kit ships them without `model` because it cannot know your providers. Edit `agents/deepwork-lead.md`, `agents/deepwork-impl.md` and `agents/deepwork-adversary.md` (and `deepwork-worker.md` if you like) and add `model: <provider::model>`, e.g. `model: anthropic::claude-opus-5-5`. Use the `provider::model` form: it pins the provider and lets `reasoning_effort` reach it. An unpinned lead runs on the orchestrator's model, and it takes a turn per phase. A tier without its own `model` inherits one set on Default (`agents/default.md`, which the Directory editor writes), and that beats both the orchestrator's model and the judge models; with `judges=` the run refuses to start if `deepwork-verifier` resolves a model. Editing an installed kit file is fine; a kit update merges your edits.
 
 ## Run it
 
@@ -41,7 +41,7 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 | `attempts` | 2 | code (or work) attempts a lead makes per round; a rejected attempt goes back to the same code session with the reasons |
 | `concurrency` | 8 | leads per wave (max 8). Every ticket whose `Depends on` tickets are done starts in parallel; a dependent ticket waits for a later wave (a `Depends on: KAN-12` line on a card you add counts too). In the dev flow, tickets that share a file or test target never share a wave |
 | `verify` | on | run each ticket's check step |
-| `verifier` | `deepwork-qa` | tier for verify and review (`deepwork-qa*` or `deepwork-verifier*`) |
+| `verifier` | `deepwork-adversary` | tier for verify and review (`deepwork-adversary*` or `deepwork-verifier*`) |
 | `judges` | – | comma-separated model ids (at most 7 in the dev flow, 8 in the plain one): one `deepwork-verifier` per model in each check, majority wins |
 | `deadline_min` | 20 | per-phase deadline: each phase sub-agent gets it from its own start. A lead may run 3 × attempts phases for a dev ticket, 2 × attempts with a check in the plain flow (or without one in the dev flow), attempts for work alone, each with two minutes of slack; its wave closes one minute after that |
 | `critic` | on | one completeness critic when the queue runs dry; in the dev flow it is the branch review: full test suite, linter and a review of the whole diff |

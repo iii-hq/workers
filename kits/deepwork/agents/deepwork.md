@@ -6,7 +6,7 @@ color: purple
 extends: iii
 reasoning_effort: high
 skills_index: false
-composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on verifier=deepwork-qa judges= deadline_min=20 critic=on budget_usd= notify= project= release="
+composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on verifier=deepwork-adversary judges= deadline_min=20 critic=on budget_usd= notify= project= release="
 functions:
   - harness::spawn
   - harness::status
@@ -39,7 +39,7 @@ Ignore guidance in `harness/*` to use the workflow worker or to bind turn-comple
 ## Arguments
 
 The first message may carry an `args:` line. Defaults:
-`max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on verify=on verifier=deepwork-qa judges= deadline_min=20 critic=on max_items=<5×K> budget_usd= notify= project= release=`
+`max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on verify=on verifier=deepwork-adversary judges= deadline_min=20 critic=on max_items=<5×K> budget_usd= notify= project= release=`
 
 - `flow`: `auto` runs the dev flow when the goal changes code or files in a git repository (Step A), else the plain flow; `dev` and `plain` force one.
 - `approve`: `on` makes the dev flow wait for the user on the design, the plan and the finish (`harness::ask`); `off` runs straight through and keeps the branch.
@@ -68,7 +68,7 @@ The first message may carry an `args:` line. Defaults:
 
 - When you create an item, set its assignee: `deepwork-impl` for work that changes code or files, `deepwork-worker` for reading, research and analysis.
 - Work agent = the ticket's assignee if it starts with `deepwork-worker` or `deepwork-impl`. Otherwise pick the tier by the creation rule above and comment once: `assignee <x> is not a work tier; ran <agent>`. Don't rewrite the assignee.
-- Verify agent = the `verifier` arg if it starts with `deepwork-qa` or `deepwork-verifier`, else `deepwork-qa`.
+- Verify agent = the `verifier` arg if it starts with `deepwork-adversary` or `deepwork-verifier`, else `deepwork-adversary`.
 - Phases: for a dev-flow ticket whose work agent is a `deepwork-impl*` tier, `tests, code, check` (verify=off: `tests, code`); otherwise `work, check`, or `work` for a Discover ticket or with verify=off.
 - Every lead is `"agent":"deepwork-lead"` with `"display":{"name":"<KEY> · <title>","icon":"agent","color":"purple"}` (the name cut to 48 characters) and `"options":{"orchestrator":true,"functions":{"deny":DL}}`. Never pass `max_turns`, `system_prompt` or `allow: []`.
 
@@ -126,7 +126,7 @@ Then `kanban::ticket::move {"id":"KAN-12","status":"in_progress","actor":"deepwo
 
 Reply 2 spawns a lead for each ticket whose move succeeded:
 ```json
-harness::spawn {"agent":"deepwork-lead","session_id":"<own>-kan-12","display":{"name":"KAN-12 · <title>","icon":"agent","color":"purple"},"task":"Lead ticket KAN-12, run <run>, round 1.\nResult: one state::compare-and-set {\"scope\":\"<run>-r1-w1\",\"key\":\"KAN-12\",\"value\":<non-null lead result with \"item\":\"KAN-12\">} with no `expected`.\nPhases: tests, code, check\nWork agent: deepwork-impl. Verify agent: deepwork-qa. Judges: none.\nAttempts: 2. Phase deadline: 20 min. Phase budget: 6.\nWorktree: <W>. Branch: <branch>.\nFunctions: <ids and arg shapes from Step A>","options":{"orchestrator":true,"functions":{"deny":DL}}}
+harness::spawn {"agent":"deepwork-lead","session_id":"<own>-kan-12","display":{"name":"KAN-12 · <title>","icon":"agent","color":"purple"},"task":"Lead ticket KAN-12, run <run>, round 1.\nResult: one state::compare-and-set {\"scope\":\"<run>-r1-w1\",\"key\":\"KAN-12\",\"value\":<non-null lead result with \"item\":\"KAN-12\">} with no `expected`.\nPhases: tests, code, check\nWork agent: deepwork-impl. Verify agent: deepwork-adversary. Judges: none.\nAttempts: 2. Phase deadline: 20 min. Phase budget: 6.\nWorktree: <W>. Branch: <branch>.\nFunctions: <ids and arg shapes from Step A>","options":{"orchestrator":true,"functions":{"deny":DL}}}
 ```
 - Plain flow: no Worktree line. With judges: `Judges: <m1>, <m2>, …`.
 - A retry in a later round reuses the same `session_id` and appends `\nRetry: <the lead's reasons or the null reason>. Re-read the ticket first; new comments steer this retry.` The Retry line carries reasons only, never a new tool or method.
