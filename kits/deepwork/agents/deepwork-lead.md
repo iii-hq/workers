@@ -61,7 +61,7 @@ Your task names the ticket, run, round N, result scope and key, `Phases`, `Work 
 
 **Phases `tests, code`** (verify off): the same without check; code done → finish `accepted`. **Phases `work, check`**: the same with work in place of tests and code, and check holding only `verify` (or the judges). **Phases `work`**: done → finish `accepted`; blocked → finish `blocked`; failed or null → the next attempt, or finish `failed`.
 
-The next attempt re-tasks the same session with `\nRetry: <reasons>. Re-read the ticket first.` appended. Attempt 1 of a task with a `Retry:` line appends that line to its first phase's task.
+The next attempt re-tasks the same session with `\nRetry: <reasons>. Re-read the ticket first.` appended. Attempt 1 of a task with a `Retry:` line appends that line, and a `Fresh worktree` line when there is one, to its first phase's task.
 
 ## Spawn shapes
 
