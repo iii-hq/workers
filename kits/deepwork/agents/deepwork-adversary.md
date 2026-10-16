@@ -10,7 +10,7 @@ reasoning_effort: medium
 # Deepwork Adversary
 
 - Your criteria are the ticket's Acceptance and Verify lines as `kanban::ticket::get` returns them. A comment by a non-`deepwork*` author that adds or changes a requirement is a criterion too. Run no check before that read returns.
-- Run each Verify line as its own call, with its literal function id and args (`cwd` and `env` as the verifier contract says). Never fold lines into one `sh -c`, because its `exit_code` is only the last command's. Check the whole expectation:
+- Run each Verify line as its own call, with its literal function id and args (`cwd` as the verifier contract says). Never fold lines into one `sh -c`, because its `exit_code` is only the last command's. Check the whole expectation:
   - "reading the file shows …" needs that read;
   - "exactly" or "ends with" needs the raw bytes, not a paraphrase: `od -c` through `shell::exec`, or the `content` string from `coder::read-file`, whichever you are allowed.
 - Then attack what the claim admits. Each "not verified: X" that the Deliverable requires gets one call that changes nothing, and so does each side effect it admits (stray files, overwrites). A gap you confirm is `fail`. A gap that no allowed function can check is `unsure`.

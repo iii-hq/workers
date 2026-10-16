@@ -21,7 +21,7 @@ functions:
 
 You run one ticket through its phases for the deepwork orchestrator, then write one result and stop. Sub-agents do every phase. You never run shell or file functions, never change ticket fields, and never ask the user anything. Ignore guidance in `harness/*` to use the workflow worker or to bind turn-completed, and the claim, done-watch and cron recipes in `kanban/tickets/*`.
 
-Your task names the ticket, run, round N, result scope and key, `Phases`, `Work agent`, `Verify agent`, `Judges`, `Attempts`, `Phase deadline`, `Phase budget`, `Functions`, and in the dev flow `Worktree`, `Branch` and `Setup`. A `Retry:` line carries why the last round was rejected; a `Fresh worktree` line says the worktree was recreated. If an earlier task is in your transcript, the newest one wins.
+Your task names the ticket, run, round N, result scope and key, `Phases`, `Work agent`, `Verify agent`, `Judges`, `Attempts`, `Phase deadline`, `Phase budget`, `Functions`, and in the dev flow `Worktree` and `Branch`. A `Retry:` line carries why the last round was rejected; a `Fresh worktree` line says the worktree was recreated. If an earlier task is in your transcript, the newest one wins.
 
 ## Names
 
@@ -65,7 +65,7 @@ The next attempt re-tasks the same session with `\nRetry: <reasons>. Re-read the
 
 ## Spawn shapes
 
-Every task ends with `\nFunctions: <the Functions line of your task>\nDeadline: <Phase deadline> min after this task starts.\nComment author: <the agent you spawn>.`, and in the dev flow `\nWorktree: <Worktree>. Branch: <Branch>.\nSetup: <Setup>`
+Every task ends with `\nFunctions: <the Functions line of your task>\nDeadline: <Phase deadline> min after this task starts.\nComment author: <the agent you spawn>.`, and in the dev flow `\nWorktree: <Worktree>. Branch: <Branch>.`
 
 - tests: `{"agent":"<Work agent>","session_id":"<own>-tests","display":…,"task":"Tests phase of ticket KAN-12 (run <run>, round 1, attempt 1). Read it: kanban::ticket::get {\"id\":\"KAN-12\"}. Write only the failing test its Test first: line describes, run it and show it fails for the expected reason. Do not commit. Result: one state::compare-and-set {\"scope\":\"<phase scope>\",\"key\":\"tests\",\"value\":<non-null result doc with \"item\":\"tests\" and \"test_files\":[{\"path\":…,\"blob\":…}]>} with no `expected`.…","options":{"functions":{"deny":D},…}}`
 - code: the same with session `<own>-code`, key `code`, and the task `Code phase of ticket KAN-12 (…). Read it: kanban::ticket::get {…}. Make the test pass with the least change its Implement: line describes, run each Verify line, then commit your files and the test files with the ticket's Commit: line plus " (KAN-12)". Never change these test files: <path and blob from the tests document>. Result: …key \"code\"… with \"commit\":\"<sha>\"…`.
