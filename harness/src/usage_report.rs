@@ -82,7 +82,7 @@ pub struct UsageRow {
 /// multiple of [`REPEAT_EVERY`] beyond the last listed one.
 pub fn milestone(turns: u64) -> Option<u64> {
     let last = MILESTONES[MILESTONES.len() - 1];
-    let repeat = turns > last && turns % REPEAT_EVERY == 0;
+    let repeat = turns > last && turns.is_multiple_of(REPEAT_EVERY);
     (MILESTONES.contains(&turns) || repeat).then_some(turns)
 }
 
