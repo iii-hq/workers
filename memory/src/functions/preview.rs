@@ -64,7 +64,17 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
     let injected = if deleted {
         hooks::Injection::none()
     } else {
-        hooks::injection(deps, &cfg, &bank_name, bank.as_deref(), Some(&req.query)).await
+        // A hypothetical message has no window: nothing was injected yet.
+        let seen = std::collections::HashSet::new();
+        hooks::injection(
+            deps,
+            &cfg,
+            &bank_name,
+            bank.as_deref(),
+            Some(&req.query),
+            &seen,
+        )
+        .await
     };
     Ok(PreviewResponse {
         bank: bank_name,

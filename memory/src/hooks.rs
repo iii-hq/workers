@@ -15,7 +15,7 @@
 //! `on_error: fail_open` — a memory failure must never block or fail a
 //! turn. Handlers are idempotent: redelivered steps re-run them safely.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use schemars::JsonSchema;
@@ -205,7 +205,8 @@ pub async fn pre_generate(
     // persisted and replayed on later steps, so re-recalling would stack copies.
     let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
     let query = (input.step == 0).then_some(query.as_str());
-    let injected = injection(deps, &cfg, &bank_name, bank.as_deref(), query).await;
+    let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
+    let injected = injection(deps, &cfg, &bank_name, bank.as_deref(), query, &seen).await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -307,13 +308,15 @@ pub(crate) fn rules_section(
 }
 
 /// Build what a turn on `bank_name` is given; `query` is the user message
-/// to recall for (`None`: no recall, as on a turn's later steps).
+/// to recall for (`None`: no recall, as on a turn's later steps), `seen`
+/// the memory texts the window already carries ([`injected_in_window`]).
 pub(crate) async fn injection(
     deps: &Deps,
     cfg: &WorkerConfig,
     bank_name: &str,
     bank: Option<&Bank>,
     query: Option<&str>,
+    seen: &HashSet<String>,
 ) -> Injection {
     let rules = bank
         .filter(|_| cfg.inject_rules)
@@ -360,7 +363,9 @@ pub(crate) async fn injection(
     // the same count and token budget.
     let hits: Vec<Memory> = hits.into_iter().map(|(m, _)| m).collect();
     let top = bank.top_memories(cfg.recall_limit).await;
-    let memories = apply_ambient_floor(hits, top, cfg.recall_limit);
+    // After the floor, so the floor never walks the bank turn by turn; a
+    // slot this frees stays free.
+    let memories = unseen(apply_ambient_floor(hits, top, cfg.recall_limit), seen);
     if let Some((body, ids)) =
         memories_message(bank_name, &memories, cfg.recall_budget_tokens, now_ms())
     {
@@ -809,11 +814,9 @@ pub(crate) fn memories_message(
     let mut lines = Vec::new();
     let mut ids = Vec::new();
     for memory in memories {
-        // Also at render time: memories.jsonl lines written before
-        // redaction existed, or by hand, keep whatever they hold.
         let line = format!(
             "- {} ({})",
-            crate::redact::redact(&memory.text).text,
+            memory_line_text(memory),
             local_date(memory.updated_at, "%Y-%m-%d")
         );
         if line.len() > budget {
@@ -832,6 +835,59 @@ pub(crate) fn memories_message(
         lines.join("\n")
     );
     Some((body, ids))
+}
+
+/// A memory's text as its `<memory>` line renders it. Redacted at render
+/// time too: memories.jsonl lines written before redaction existed, or by
+/// hand, keep whatever they hold.
+pub(crate) fn memory_line_text(memory: &Memory) -> String {
+    crate::redact::redact(&memory.text).text
+}
+
+/// The memory texts the window already carries in recall blocks (`- text
+/// (YYYY-MM-DD)` lines of earlier turns' `<memory bank=…>` messages). Read
+/// from the window the step sends, not from what this process injected,
+/// like the rules updates: a block compaction dropped no longer counts, and
+/// a restart forgets nothing.
+pub(crate) fn injected_in_window(messages: Option<&Value>) -> HashSet<String> {
+    let Some(items) = messages.and_then(Value::as_array) else {
+        return HashSet::new();
+    };
+    items
+        .iter()
+        .filter(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+        .map(|m| crate::extract::content_text(m.get("content")))
+        .filter(|text| text.trim_start().starts_with("<memory bank="))
+        .flat_map(|text| {
+            text.lines()
+                .filter_map(|line| line.strip_prefix("- "))
+                .map(strip_line_date)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// `text (YYYY-MM-DD)` → `text`; a line without that suffix is kept whole.
+fn strip_line_date(line: &str) -> String {
+    let dated = line
+        .strip_suffix(')')
+        .and_then(|l| l.rsplit_once(" ("))
+        .filter(|(_, date)| {
+            date.len() == 10 && date.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        });
+    match dated {
+        Some((text, _)) => text.to_string(),
+        None => line.to_string(),
+    }
+}
+
+/// Recalled memories minus those the window already holds: a session is
+/// told each memory once while it can still see it.
+pub(crate) fn unseen(memories: Vec<Memory>, seen: &HashSet<String>) -> Vec<Memory> {
+    memories
+        .into_iter()
+        .filter(|m| !seen.contains(&memory_line_text(m)))
+        .collect()
 }
 
 /// The newest user message's text — the recall query.
@@ -1088,6 +1144,60 @@ Formal."
             body.contains("CI token is [REDACTED:github_token]"),
             "{body}"
         );
+    }
+
+    #[test]
+    fn memories_already_in_the_window_are_read_back() {
+        let window = json!([
+            { "role": "user", "content": [{ "type": "text", "text": "hi" }] },
+            { "role": "user", "content": [{ "type": "text", "text":
+                "<memory bank=\"b\">\nRelevant remembered memories (recalled …):\n\
+                 - The user's name is Rafael. (2026-10-15)\n\
+                 - The user runs Postgres (v16). (2026-10-14)\n</memory>" }] },
+            { "role": "user", "content": [{ "type": "text", "text":
+                "<memory update=\"rules\">\nThe memory rules changed.\n- Never use emoji.\n</memory>" }] },
+            { "role": "assistant", "content": [{ "type": "text", "text":
+                "<memory bank=\"b\">\n- An assistant echo. (2026-10-15)\n</memory>" }] },
+        ]);
+        let seen = injected_in_window(Some(&window));
+        let expected: HashSet<String> = [
+            "The user's name is Rafael.",
+            "The user runs Postgres (v16).",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            seen, expected,
+            "rules updates and assistant text are not recall blocks"
+        );
+        assert!(injected_in_window(None).is_empty());
+    }
+
+    #[test]
+    fn a_rendered_block_reads_back_as_its_memories() {
+        let ms = vec![
+            memory("fp1", "The user's name is Rafael."),
+            memory("fp2", "ledger-sync uses pnpm (v9)."),
+        ];
+        let (body, _) = memories_message("b", &ms, 1_200, NOW).unwrap();
+        let window = Value::Array(vec![user_text_message(body)]);
+        let seen = injected_in_window(Some(&window));
+        for m in &ms {
+            assert!(
+                seen.contains(&memory_line_text(m)),
+                "{} not read back",
+                m.text
+            );
+        }
+    }
+
+    #[test]
+    fn memories_the_window_holds_are_not_sent_again() {
+        let ms = vec![memory("fp1", "old news"), memory("fp2", "fresh fact")];
+        let seen: HashSet<String> = ["old news".to_string()].into_iter().collect();
+        let left: Vec<String> = unseen(ms, &seen).into_iter().map(|m| m.id).collect();
+        assert_eq!(left, vec!["fp2"]);
     }
 
     #[test]
