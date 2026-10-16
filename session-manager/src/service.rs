@@ -41,7 +41,9 @@ use crate::functions::get_attachment::{GetAttachmentRequest, GetAttachmentRespon
 use crate::functions::get_message::{GetMessageRequest, GetMessageResponse};
 use crate::functions::list::{ListOrder, ListRequest, ListResponse};
 use crate::functions::list_attachments::{ListAttachmentsRequest, ListAttachmentsResponse};
-use crate::functions::messages::{MessageItem, MessagesRequest, MessagesResponse};
+use crate::functions::messages::{
+    ContentProjection, MessageItem, MessagesRequest, MessagesResponse,
+};
 use crate::functions::messages_range::{MessagesRangeRequest, MessagesRangeResponse};
 use crate::functions::messages_tail::{MessagesTailRequest, MessagesTailResponse, TailItem};
 use crate::functions::put_attachment::{PutAttachmentRequest, PutAttachmentResponse};
@@ -926,6 +928,7 @@ impl SessionService {
         // skip them, and only images that have somewhere else to be loaded
         // from (an `attachment_id`) are blanked.
         let elide_images = !req.include_image_data.unwrap_or(true);
+        let usage_only = req.content == Some(ContentProjection::Usage);
         let items = page
             .iter()
             .map(|entry| match entry {
@@ -936,14 +939,16 @@ impl SessionService {
                     ..
                 } => {
                     let mut message = (**message).clone();
-                    if elide_images {
+                    if usage_only {
+                        message.project_usage();
+                    } else if elide_images {
                         ContentBlock::elide_image_data(message.content_mut());
                     }
                     MessageItem {
                         entry_id: id.clone(),
                         message: Some(message),
                         custom: None,
-                        origin: origin.clone(),
+                        origin: if usage_only { None } else { origin.clone() },
                     }
                 }
                 SessionEntry::Custom {

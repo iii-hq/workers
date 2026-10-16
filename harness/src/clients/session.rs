@@ -23,6 +23,17 @@ pub struct LoadedEntry {
     pub custom: Option<LoadedCustom>,
 }
 
+/// How much of each message [`SessionClient::messages_from`] asks for.
+/// `Usage` keeps the message shapes but not their bulk: assistant content
+/// is only its `function_call` blocks (no arguments), other roles' content
+/// is empty — enough for usage counters. A session-manager that predates
+/// the option ignores it and returns full content, which reads the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Projection {
+    Full,
+    Usage,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoadedCustom {
     pub custom_type: String,
@@ -516,7 +527,7 @@ impl SessionClient {
         &self,
         session_id: &str,
     ) -> Result<Vec<LoadedEntry>, HarnessError> {
-        self.messages_from(session_id, None).await
+        self.messages_from(session_id, None, Projection::Full).await
     }
 
     /// The active path's messages, every page, all of them or only those
@@ -527,6 +538,7 @@ impl SessionClient {
         &self,
         session_id: &str,
         after_entry_id: Option<&str>,
+        projection: Projection,
     ) -> Result<Vec<LoadedEntry>, HarnessError> {
         const PAGE_LIMIT: u64 = 500;
         let mut out = Vec::new();
@@ -543,6 +555,9 @@ impl SessionClient {
             // already carries the position.
             if let Some(after) = after_entry_id {
                 payload["after_entry_id"] = json!(after);
+            }
+            if projection == Projection::Usage {
+                payload["content"] = json!("usage");
             }
             if let Some(value) = &cursor {
                 payload["cursor"] = json!(value);

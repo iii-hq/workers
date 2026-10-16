@@ -36,7 +36,7 @@ export interface ExamplePrompt {
   models: PromptModel[]
 }
 
-const PROMPTS_FUNCTION = 'console::onboarding::prompts'
+export const PROMPTS_FUNCTION = 'console::onboarding::prompts'
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined

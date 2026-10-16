@@ -6,7 +6,14 @@ import {
   m,
   useReducedMotion,
 } from 'motion/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import {
   Dialog,
   DialogClose,
@@ -27,6 +34,13 @@ import {
 } from '@/lib/onboarding/api'
 import { type JudgeOption, TOUR_PAGE } from '@/lib/onboarding/catalog'
 import { chromiumMissing } from '@/lib/onboarding/chromium'
+import {
+  type KitInstall,
+  onboardingKitsSnapshot,
+  retryOnboardingKit,
+  startOnboardingKits,
+  subscribeOnboardingKits,
+} from '@/lib/onboarding/kits'
 import {
   browserIsAutomated,
   onOnboardingWizardRequest,
@@ -141,6 +155,16 @@ export function OnboardingWizardHost() {
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
   const [tour, setTour] = useState<TourState>({ kind: 'idle' })
+  // The template's kits install in the background from the moment the
+  // wizard first opens; the run outlives the dialog (this host stays
+  // mounted), so skipping or closing setup does not stop it.
+  const kits = useSyncExternalStore(
+    subscribeOnboardingKits,
+    onboardingKitsSnapshot,
+  )
+  useEffect(() => {
+    if (open && live) void startOnboardingKits()
+  }, [open, live])
   const status = useRef<OnboardingStatus | null>(null)
   const refreshModels = ctx?.refreshModels
   const onboarding = useOnboarding(open, () => {
@@ -338,6 +362,7 @@ export function OnboardingWizardHost() {
         judge: judgeChoices[0]?.id ?? null,
         judges: judgeChoices.map((option) => option.id),
         workers_added: workers,
+        kits: kits.map(({ kit, state }) => ({ kit, state })),
         chromium_installed: chromiumInstalled
           ? (onboarding.snapshot.browser?.version ?? true)
           : false,
@@ -345,6 +370,7 @@ export function OnboardingWizardHost() {
     },
     [
       go,
+      kits,
       onboarding.activity,
       onboarding.snapshot.browser,
       onboarding.snapshot.providers,
@@ -432,6 +458,19 @@ export function OnboardingWizardHost() {
     },
     [agents],
   )
+
+  // A kit whose plan needs review opens that plan in Directory → Kits (the
+  // kit's own page exists only once it is installed).
+  const reviewKit = useCallback((install: KitInstall) => {
+    setOpen(false)
+    requestPanelOpen({
+      pageId: 'directory',
+      context: {
+        collection: 'kits',
+        ...(install.planId ? { plan_id: install.planId } : {}),
+      },
+    })
+  }, [])
 
   const startTour = useCallback(async () => {
     setTour({ kind: 'preparing' })
@@ -570,6 +609,9 @@ export function OnboardingWizardHost() {
                     tour={tour}
                     onStartTour={() => void startTour()}
                     onStart={start}
+                    kits={kits}
+                    onRetryKit={(kit) => void retryOnboardingKit(kit)}
+                    onReviewKit={reviewKit}
                   />
                 )}
               </m.div>

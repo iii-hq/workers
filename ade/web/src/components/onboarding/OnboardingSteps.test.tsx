@@ -293,6 +293,50 @@ function ready(
 }
 
 describe('ReadyStep', () => {
+  it('shows each template kit with its install status and way forward', () => {
+    const html = renderToStaticMarkup(
+      <ReadyStep
+        onboarding={controller({ providers: CONNECTED })}
+        judges={[]}
+        prompts={[]}
+        agentNames={new Map()}
+        onPrompt={noop}
+        tour={{ kind: 'idle' }}
+        onStartTour={noop}
+        onStart={noop}
+        kits={[
+          { kit: 'iii/deepwork', state: 'installing' },
+          { kit: 'iii/done', state: 'installed' },
+          {
+            kit: 'iii/review',
+            state: 'review',
+            message: 'Not applied automatically: the plan needs review.',
+          },
+          {
+            kit: 'iii/broken',
+            state: 'failed',
+            message: 'could not reach the registry',
+          },
+        ]}
+        onRetryKit={noop}
+        onReviewKit={noop}
+      />,
+    )
+    expect(html).toContain('Installing iii/deepwork')
+    expect(html).toContain('in the background; you can keep going')
+    expect(html).toContain('iii/done installed')
+    expect(html).toContain('iii/review needs a review')
+    expect(html).toContain('Not applied automatically: the plan needs review.')
+    expect(html).toContain('>Review<')
+    expect(html).toContain('iii/broken did not install')
+    expect(html).toContain('could not reach the registry')
+    expect(html).toContain('Try again')
+  })
+
+  it('shows no kit rows when the template names none', () => {
+    expect(ready({ providers: CONNECTED })).not.toContain('Installing')
+  })
+
   it('sums up what is connected and every worker setup added', () => {
     const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [
       {

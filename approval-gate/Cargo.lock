@@ -89,7 +89,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "approval-gate"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "anyhow",
  "approval-gate",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.8.54"
+version = "1.8.55"
 dependencies = [
  "anyhow",
  "async-trait",

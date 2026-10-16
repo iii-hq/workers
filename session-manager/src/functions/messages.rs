@@ -36,6 +36,23 @@ pub struct MessagesRequest {
     /// long, picture-heavy transcript without pulling every image first;
     /// model-bound readers keep the default.
     pub include_image_data: Option<bool>,
+    /// Default `"full"`. `"usage"` returns each message without the
+    /// content a usage reader never looks at: assistant content keeps only
+    /// its `function_call` blocks (with `arguments: null`); user, function
+    /// result and custom-role content is empty and their `details` null;
+    /// `origin` is left out. Role, usage, model/provider, stop reason,
+    /// timestamps, `is_error` and `function_id` stay, so every message
+    /// still parses as an `AgentMessage`. `kind: "custom"` entries
+    /// (`include_custom`) come back as stored.
+    pub content: Option<ContentProjection>,
+}
+
+/// How much of each message `session::messages` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentProjection {
+    Full,
+    Usage,
 }
 
 /// One item of the active path: exactly one of `message` / `custom`.
