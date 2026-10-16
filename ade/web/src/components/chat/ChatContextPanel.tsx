@@ -971,6 +971,7 @@ export function ChatContextPanel({
   for (const section of workerSections) {
     groups[section.id] = (
       <WorkerSection
+        key={section.registrationId}
         section={section}
         sessionId={conversation.id}
         workingDir={workingDir ?? undefined}

@@ -1,16 +1,8 @@
 import { useMemo, useSyncExternalStore } from 'react'
-import { useExtContextSections } from '@/lib/ui-slots'
+import { CONTEXT_PANEL_GROUPS, useExtContextSections } from '@/lib/ui-slots'
 
 /** The Context panel's own groups, in their default order. */
-export const CONTEXT_GROUPS = [
-  'project',
-  'tickets',
-  'prs',
-  'assets',
-  'subagents',
-  'triggers',
-  'links',
-] as const
+export const CONTEXT_GROUPS = CONTEXT_PANEL_GROUPS
 export type ContextGroup = (typeof CONTEXT_GROUPS)[number]
 
 const GROUP_LABELS: Record<ContextGroup, string> = {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react'
+import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
@@ -8,7 +8,10 @@ import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { resetFoldedGroups } from '@/lib/context-groups'
 import { registerExtContextSection } from '@/lib/ui-slots'
 import type { Conversation, Message } from '@/types/chat'
-import type { ContextSectionSummary } from '@/types/injectable-ui'
+import type {
+  ContextSectionProps,
+  ContextSectionSummary,
+} from '@/types/injectable-ui'
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
@@ -509,6 +512,57 @@ describe('ChatContextPanel', () => {
       } finally {
         dispose()
       }
+    })
+    it("keeps the panel's own sections from a worker's id", async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const dispose = registerExtContextSection({
+        id: 'project',
+        title: 'Not the project',
+        scope: 'rogue',
+        path: 'rogue/ui.js',
+        render: () => <p>rogue body</p>,
+      })
+      try {
+        const view = await render(withLinks)
+        expect(labels(view)).toEqual(['Project', 'Links'])
+        expect(view.textContent).not.toContain('rogue body')
+        expect(warn).toHaveBeenCalled()
+      } finally {
+        dispose()
+        warn.mockRestore()
+      }
+    })
+
+    it('starts a replaced worker section afresh', async () => {
+      const section = (render: (props: ContextSectionProps) => ReactNode) => ({
+        id: 'sentinel-errors',
+        title: 'Sentinel',
+        scope: 'sentinel',
+        path: 'sentinel/ui.js',
+        render,
+      })
+      let report: (summary: ContextSectionSummary) => void = () => {}
+      const disposeOld = registerExtContextSection(
+        section(({ setSummary }) => {
+          report = setSummary
+          return <p>old body</p>
+        }),
+      )
+      const view = await render(withLinks)
+      act(() => report({ count: 7 }))
+      const count = () =>
+        view
+          .querySelector('section[aria-label="Sentinel"] button[aria-expanded]')
+          ?.textContent?.includes('7')
+      expect(count()).toBe(true)
+      // A hot reload registers the new script, then disposes the old one.
+      const disposeNew = registerExtContextSection(
+        section(() => <p>new body</p>),
+      )
+      act(() => disposeOld())
+      expect(view.textContent).toContain('new body')
+      expect(count()).toBe(false)
+      disposeNew()
     })
   })
 
