@@ -147,6 +147,10 @@ rules:
   # count_tokens/prune are always safe and stay at the needs_approval default.
   - '!context::assemble'
   - '!context::compact'
+  # context-clm: a model manages its context through the mirror file in its
+  # own root, never through these functions (assemble, status, session
+  # cleanup, configuration reload).
+  - '!context-clm::*'
   # Internal lifecycle hooks — agents must never force a config reload directly.
   # The handlers already re-fetch from configuration::get (ignoring the event
   # payload), so a direct call cannot inject config. These denies are

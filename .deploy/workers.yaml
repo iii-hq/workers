@@ -362,6 +362,18 @@ workers:
         outputs:
         - dist
     publish: true
+  context-clm:
+    source:
+      path: context-clm
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: context-clm
+      targets: *id001
+    publish: true
   context-manager:
     source:
       path: context-manager

@@ -1,0 +1,8 @@
+# Agent permissions for the context-clm worker.
+version: 1
+
+rules:
+  # The strategy, its status, session cleanup and the configuration reload
+  # are harness and operator plumbing. A model manages its context through
+  # the mirror file in its own root, never through these functions.
+  - '!context-clm::*'

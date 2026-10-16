@@ -1,0 +1,12 @@
+{
+  "name": "context-arms",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.ts",
+    "test": "node --test src/core.test.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.24.4"
+  }
+}
