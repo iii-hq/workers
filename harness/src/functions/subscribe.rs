@@ -68,9 +68,13 @@ pub struct SubscribeRequest {
     /// Trigger type to listen on: `cron`, `state`, `stream`, `timer`, or
     /// another worker's custom type (e.g. `database::row-changed`).
     pub trigger_type: String,
-    /// Trigger config passed verbatim to the engine: cron `{ "expression" }`,
-    /// state scope/key, timer `{ "in_ms" }` or `{ "at" }` (epoch ms).
+    /// Trigger config passed verbatim to the engine, a JSON object: cron
+    /// `{ "expression" }`, state scope/key, timer `{ "in_ms" }` or `{ "at" }`
+    /// (epoch ms).
+    // Published as an object so call reconciliation parses a stringified one
+    // like it does `conditions` and `lifecycle`.
     #[serde(default)]
+    #[schemars(with = "Option<serde_json::Map<String, Value>>")]
     pub config: Value,
     /// A short human label echoed back in the notification text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -671,6 +675,7 @@ async fn handle(
     caller: Option<CallerModel<'_>>,
     policy: &CompiledPolicy,
 ) -> Result<SubscribeResponse, HarnessError> {
+    validate_config(&req.config)?;
     // The one harness-internal type an agent MAY bind: a post-turn validator
     // for ITS OWN session. The session scope is force-stamped, so an agent
     // can gate its own completions but never anyone else's.
@@ -825,6 +830,20 @@ async fn handle(
         once,
         note: compose_note(notes),
     })
+}
+
+/// A non-object `config` (above all a stringified `"{\"scope\":…}"` that
+/// reconciliation was off for) reaches the provider, which rejects it only
+/// after this call answered success: the binding parks and never fires.
+fn validate_config(config: &Value) -> Result<(), HarnessError> {
+    if config.is_object() || config.is_null() {
+        return Ok(());
+    }
+    Err(HarnessError::InvalidRequest(
+        "`config` must be a JSON object such as {\"scope\": \"run\"}, not a JSON-encoded string \
+         or any other type"
+            .into(),
+    ))
 }
 
 fn validate_lifecycle(lifecycle: Option<&LifecycleRequest>) -> Result<(), HarnessError> {
@@ -2879,5 +2898,30 @@ pub(crate) mod tests {
         }))
         .unwrap();
         assert!(req.config.get("condition_function_id").is_some());
+    }
+
+    #[test]
+    fn a_stringified_config_is_parsed_back_into_an_object() {
+        // deepwork leads sent `config` as a JSON string; the old `Value` schema
+        // accepted it, the state worker refused it, and the wake never fired.
+        let (_, schema) = control_contract(REGISTER_TRIGGER_ID).unwrap();
+        let reconciled = crate::reconcile::coerce(
+            &schema,
+            &json!({ "trigger_type": "state", "config": "{\"scope\":\"run-r1\"}" }),
+        )
+        .expect("a stringified config is repairable");
+        assert_eq!(reconciled.arguments["config"], json!({ "scope": "run-r1" }));
+    }
+
+    #[test]
+    fn only_an_object_or_absent_config_is_accepted() {
+        assert!(validate_config(&json!({ "scope": "run" })).is_ok());
+        assert!(validate_config(&Value::Null).is_ok());
+        for bad in [json!("{\"scope\":\"run\"}"), json!(["run"]), json!(7)] {
+            let Err(HarnessError::InvalidRequest(msg)) = validate_config(&bad) else {
+                panic!("{bad} must be refused");
+            };
+            assert!(msg.contains("must be a JSON object"), "{msg}");
+        }
     }
 }
