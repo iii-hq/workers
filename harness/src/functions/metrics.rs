@@ -2,7 +2,7 @@
 //! plus trace/span observability over a root-and-descendant session tree.
 //! `complete=false` means the returned aggregates are a live partial snapshot.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
 use futures_util::future::BoxFuture;
@@ -17,7 +17,7 @@ use crate::context_snapshot::ContextSnapshotV1;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::types::content::ContentBlock;
-use crate::types::message::AgentMessage;
+use crate::types::message::{AgentMessage, AssistantMessage};
 
 use super::session_tree::{self, SessionTreeNodeV1};
 
@@ -182,6 +182,11 @@ pub struct SessionUsageTotalsV1 {
     /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
+    /// The same counters per model that generated a step, ordered by provider
+    /// then model. Absent when nothing generated, and from a harness that
+    /// predates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_model: Vec<ModelUsageV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -236,11 +241,72 @@ pub struct SessionUsageV1 {
     /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
+    /// The same counters per model that generated a step, ordered by provider
+    /// then model. Absent when nothing generated, and from a harness that
+    /// predates it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_model: Vec<ModelUsageV1>,
     /// The session's latest per-generation context snapshot (categories,
     /// budget, usage) — absent for sessions that have not generated since
     /// snapshots landed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextSnapshotV1>,
+}
+
+/// What the steps one model generated used. A conversation can switch models
+/// mid-way, and providers differ in what they report (one may send tokens and
+/// no cost, another nothing), so the session's counters alone cannot say
+/// which model a gap belongs to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelUsageV1 {
+    pub provider: String,
+    pub model: String,
+    /// Model steps (assistant messages) this model generated.
+    pub turns: u64,
+    pub function_calls: u64,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub input_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub output_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub cache_read_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub cache_write_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
+    pub reasoning_tokens: Option<u64>,
+    /// Summed over every generation that reported it. A single generation
+    /// without the counter (a stream the provider cut before usage came back)
+    /// is left out of the sum. `null` means no generation reported it or more
+    /// than one did not — never a measured zero, so the key is always present
+    /// and a reader can tell the two apart.
+    #[schemars(required, schema_with = "Option::<f64>::json_schema")]
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -783,11 +849,12 @@ fn summarize_trace_groups(
     }
 }
 
+/// What model steps add up to: the steps, the calls they made and the usage
+/// they reported.
 #[derive(Debug, Clone, Default)]
-struct UsageAccumulator {
+struct StepSums {
     turns: u64,
     function_calls: u64,
-    function_call_errors: u64,
     input: OptionalU64Sum,
     output: OptionalU64Sum,
     cache_read: OptionalU64Sum,
@@ -796,13 +863,10 @@ struct UsageAccumulator {
     cost_usd: OptionalF64Sum,
 }
 
-impl UsageAccumulator {
-    /// Fold another accumulator in: the same as having observed its messages
-    /// here (every field is a sum, so the order does not matter).
-    fn merge(&mut self, other: &UsageAccumulator) {
+impl StepSums {
+    fn merge(&mut self, other: &Self) {
         self.turns += other.turns;
         self.function_calls += other.function_calls;
-        self.function_call_errors += other.function_call_errors;
         self.input.merge(&other.input);
         self.output.merge(&other.output);
         self.cache_read.merge(&other.cache_read);
@@ -811,26 +875,55 @@ impl UsageAccumulator {
         self.cost_usd.merge(&other.cost_usd);
     }
 
+    fn observe(&mut self, assistant: &AssistantMessage) {
+        self.turns += 1;
+        self.function_calls += assistant
+            .content
+            .iter()
+            .filter(|block| matches!(block, ContentBlock::FunctionCall { .. }))
+            .count() as u64;
+        let usage = assistant.usage.as_ref();
+        self.input.observe(usage.and_then(|value| value.input));
+        self.output.observe(usage.and_then(|value| value.output));
+        self.cache_read
+            .observe(usage.and_then(|value| value.cache_read));
+        self.cache_write
+            .observe(usage.and_then(|value| value.cache_write));
+        self.reasoning
+            .observe(usage.and_then(|value| value.reasoning));
+        self.cost_usd
+            .observe(usage.and_then(|value| value.cost_usd));
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct UsageAccumulator {
+    steps: StepSums,
+    function_call_errors: u64,
+    /// The same sums per (provider, model). Kept here rather than derived
+    /// later, so the settled-session cache and `merge` carry them too.
+    by_model: BTreeMap<(String, String), StepSums>,
+}
+
+impl UsageAccumulator {
+    /// Fold another accumulator in: the same as having observed its messages
+    /// here (every field is a sum, so the order does not matter).
+    fn merge(&mut self, other: &UsageAccumulator) {
+        self.steps.merge(&other.steps);
+        self.function_call_errors += other.function_call_errors;
+        for (key, steps) in &other.by_model {
+            self.by_model.entry(key.clone()).or_default().merge(steps);
+        }
+    }
+
     fn observe(&mut self, message: &AgentMessage) {
         match message {
             AgentMessage::Assistant(assistant) => {
-                self.turns += 1;
-                self.function_calls += assistant
-                    .content
-                    .iter()
-                    .filter(|block| matches!(block, ContentBlock::FunctionCall { .. }))
-                    .count() as u64;
-                let usage = assistant.usage.as_ref();
-                self.input.observe(usage.and_then(|value| value.input));
-                self.output.observe(usage.and_then(|value| value.output));
-                self.cache_read
-                    .observe(usage.and_then(|value| value.cache_read));
-                self.cache_write
-                    .observe(usage.and_then(|value| value.cache_write));
-                self.reasoning
-                    .observe(usage.and_then(|value| value.reasoning));
-                self.cost_usd
-                    .observe(usage.and_then(|value| value.cost_usd));
+                self.steps.observe(assistant);
+                self.by_model
+                    .entry((assistant.provider.clone(), assistant.model.clone()))
+                    .or_default()
+                    .observe(assistant);
             }
             AgentMessage::FunctionResult(result) if result.is_error => {
                 self.function_call_errors += 1;
@@ -839,40 +932,62 @@ impl UsageAccumulator {
         }
     }
 
+    fn finish_by_model(by_model: BTreeMap<(String, String), StepSums>) -> Vec<ModelUsageV1> {
+        by_model
+            .into_iter()
+            .map(|((provider, model), steps)| ModelUsageV1 {
+                provider,
+                model,
+                turns: steps.turns,
+                function_calls: steps.function_calls,
+                input_tokens: steps.input.finish(),
+                output_tokens: steps.output.finish(),
+                cache_read_tokens: steps.cache_read.finish(),
+                cache_write_tokens: steps.cache_write.finish(),
+                reasoning_tokens: steps.reasoning.finish(),
+                cost_usd: steps.cost_usd.finish(),
+            })
+            .collect()
+    }
+
     fn finish_session(
         self,
         node: &SessionTreeNodeV1,
         context: Option<ContextSnapshotV1>,
     ) -> SessionUsageV1 {
+        let steps = self.steps;
         SessionUsageV1 {
             session_id: node.session_id.clone(),
             parent_session_id: node.parent_session_id.clone(),
             depth: node.depth,
-            turns: self.turns,
-            function_calls: self.function_calls,
+            turns: steps.turns,
+            function_calls: steps.function_calls,
             function_call_errors: self.function_call_errors,
-            input_tokens: self.input.finish(),
-            output_tokens: self.output.finish(),
-            cache_read_tokens: self.cache_read.finish(),
-            cache_write_tokens: self.cache_write.finish(),
-            reasoning_tokens: self.reasoning.finish(),
-            cost_usd: self.cost_usd.finish(),
+            input_tokens: steps.input.finish(),
+            output_tokens: steps.output.finish(),
+            cache_read_tokens: steps.cache_read.finish(),
+            cache_write_tokens: steps.cache_write.finish(),
+            reasoning_tokens: steps.reasoning.finish(),
+            cost_usd: steps.cost_usd.finish(),
+            by_model: Self::finish_by_model(self.by_model),
             context,
         }
     }
 
     fn finish_totals(self, sessions: u64) -> SessionUsageTotalsV1 {
+        let steps = self.steps;
         SessionUsageTotalsV1 {
             sessions,
-            turns: self.turns,
-            function_calls: self.function_calls,
+            turns: steps.turns,
+            function_calls: steps.function_calls,
             function_call_errors: self.function_call_errors,
-            input_tokens: self.input.finish(),
-            output_tokens: self.output.finish(),
-            cache_read_tokens: self.cache_read.finish(),
-            cache_write_tokens: self.cache_write.finish(),
-            reasoning_tokens: self.reasoning.finish(),
-            cost_usd: self.cost_usd.finish(),
+            input_tokens: steps.input.finish(),
+            output_tokens: steps.output.finish(),
+            cache_read_tokens: steps.cache_read.finish(),
+            cache_write_tokens: steps.cache_write.finish(),
+            reasoning_tokens: steps.reasoning.finish(),
+            cost_usd: steps.cost_usd.finish(),
+            by_model: Self::finish_by_model(self.by_model),
         }
     }
 }
@@ -1135,6 +1250,124 @@ mod tests {
             "two gaps across sessions are not"
         );
         assert_eq!(merged.cost_usd, None);
+    }
+
+    fn generation_by(provider: &str, model: &str, usage: serde_json::Value) -> AgentMessage {
+        message(json!({
+            "role": "assistant",
+            "content": [{
+                "type": "function_call",
+                "id": "call",
+                "function_id": "state::get",
+                "arguments": {}
+            }],
+            "stop_reason": "function_call",
+            "usage": usage,
+            "model": model,
+            "provider": provider,
+            "timestamp": 1
+        }))
+    }
+
+    #[test]
+    fn usage_is_also_summed_per_model() {
+        // The shape of s_4c0733…: steps on a model that reported nothing, then
+        // a switch to one that reports tokens and no cost. The session's own
+        // counters are gaps; per model, what was reported is still there.
+        let mut usage = UsageAccumulator::default();
+        for _ in 0..2 {
+            usage.observe(&generation_by(
+                "openai",
+                "gpt-6-astra",
+                serde_json::Value::Null,
+            ));
+        }
+        for output in [10, 20, 30] {
+            usage.observe(&generation_by(
+                "claude-code",
+                "claude-code/claude-opus-5",
+                json!({"input": 1, "output": output, "cache_read": 100}),
+            ));
+        }
+        let session = usage.finish_session(&session("s", None, 0), None);
+        assert_eq!((session.turns, session.output_tokens), (5, None));
+        let by_model: Vec<_> = session
+            .by_model
+            .iter()
+            .map(|model| {
+                (
+                    model.provider.as_str(),
+                    model.turns,
+                    model.function_calls,
+                    model.output_tokens,
+                    model.cache_read_tokens,
+                    model.cost_usd,
+                )
+            })
+            .collect();
+        assert_eq!(
+            by_model,
+            [
+                ("claude-code", 3, 3, Some(60), Some(300), None),
+                ("openai", 2, 2, None, None, None),
+            ],
+            "ordered by provider, each with the session's null rule"
+        );
+    }
+
+    #[test]
+    fn per_model_sums_survive_merge_and_the_settled_cache() {
+        let a = [
+            generation_by("p", "m1", json!({"output": 1, "cost_usd": 0.5})),
+            generation_by("p", "m2", json!({"output": 2})),
+        ];
+        let b = [generation_by(
+            "p",
+            "m1",
+            json!({"output": 4, "cost_usd": 0.25}),
+        )];
+        let mut walked = UsageAccumulator::default();
+        let mut merged = UsageAccumulator::default();
+        for messages in [&a[..], &b[..]] {
+            let mut one = UsageAccumulator::default();
+            for message in messages {
+                walked.observe(message);
+                one.observe(message);
+            }
+            merged.merge(&one);
+        }
+        let merged = merged.finish_totals(2);
+        assert_eq!(merged, walked.finish_totals(2));
+        let m1 = &merged.by_model[0];
+        assert_eq!(
+            (m1.model.as_str(), m1.turns, m1.output_tokens, m1.cost_usd),
+            ("m1", 2, Some(5), Some(0.75))
+        );
+
+        // A settled session resumed from its watermark keeps counting per
+        // model on top of what the cache held.
+        let cache = UsageCache::default();
+        let (usage, last) = fold_entries(
+            UsageAccumulator::default(),
+            None,
+            vec![entry("e1", Some(a[0].clone()))],
+        );
+        cache.remember("s", true, last, &usage);
+        let hit = cache.settled("s", true).unwrap();
+        let (usage, _) = fold_entries(
+            hit.usage,
+            Some(hit.last_entry_id),
+            vec![entry("e2", Some(b[0].clone()))],
+        );
+        let totals = usage.finish_totals(1);
+        assert_eq!(
+            (
+                totals.by_model.len(),
+                totals.by_model[0].turns,
+                totals.by_model[0].output_tokens
+            ),
+            (1, 2, Some(5))
+        );
     }
 
     fn entry(id: &str, message: Option<AgentMessage>) -> LoadedEntry {

@@ -55,6 +55,22 @@ export interface ContextSnapshot {
   timestamp: number
 }
 
+/** One model's part of a session or of the tree (`by_model`): the steps it
+    generated and what they reported, with the same `null` rule as the
+    session's own counters. Absent from a harness that predates it. */
+export interface ModelUsage {
+  provider: string
+  model: string
+  turns: number
+  function_calls: number
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  reasoning_tokens?: number
+  cost_usd?: number
+}
+
 export interface SessionUsage {
   session_id: string
   parent_session_id?: string
@@ -68,6 +84,7 @@ export interface SessionUsage {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  by_model?: ModelUsage[]
   context?: ContextSnapshot
 }
 
@@ -82,6 +99,7 @@ export interface MetricsTotals {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  by_model?: ModelUsage[]
 }
 
 export interface MetricsResponse {
@@ -228,16 +246,19 @@ export function sumUsage(rows: SessionUsage[]): UsageTotals {
     total.turns += row.turns ?? 0
     total.function_calls += row.function_calls ?? 0
     total.function_call_errors += row.function_call_errors ?? 0
+    // What the session's models reported counts even where the session's
+    // own counter is a gap; it still makes the sum a lower bound.
+    const own = ownUsage(row)
     const gaps: SummedKey[] = []
     for (const key of SUMMED) {
-      const value = row[key]
+      const value = own[key]
       if (value != null) total[key] = (total[key] ?? 0) + value
-      else if (row.turns > 0) gaps.push(key)
+      if ((value == null || own.partial.includes(key)) && row.turns > 0) gaps.push(key)
     }
     if (gaps.length) missing.push([row.session_id, gaps])
-    if (row.input_tokens != null && row.cache_read_tokens != null) {
-      hitRead += row.cache_read_tokens
-      hitPrompt += row.input_tokens + row.cache_read_tokens + (row.cache_write_tokens ?? 0)
+    if (own.input_tokens != null && own.cache_read_tokens != null) {
+      hitRead += own.cache_read_tokens
+      hitPrompt += own.input_tokens + own.cache_read_tokens + (own.cache_write_tokens ?? 0)
     }
   }
   total.cacheHit = hitPrompt > 0 ? Math.round((hitRead / hitPrompt) * 100) : null
@@ -253,21 +274,118 @@ export function sumUsage(rows: SessionUsage[]): UsageTotals {
   return total
 }
 
+/** `by_model` of one row, without entries a different harness shaped
+    otherwise. */
+export function modelsOf(row: { by_model?: unknown }): ModelUsage[] {
+  if (!Array.isArray(row.by_model)) return []
+  return row.by_model.filter(
+    (m: Partial<ModelUsage> | null): m is ModelUsage =>
+      !!m && typeof m.provider === 'string' && typeof m.model === 'string' && typeof m.turns === 'number',
+  )
+}
+
+/** The model as a row names it: a router-qualified id
+    (`claude-code/claude-opus-5`) drops the provider it repeats. */
+export function modelLabel(m: { provider: string; model: string }): string {
+  const prefix = `${m.provider}/`
+  return m.model.startsWith(prefix) ? m.model.slice(prefix.length) : m.model
+}
+
+/** One model's counters as a row `sumUsage` can take. */
+function modelRow(sessionId: string, m: ModelUsage): SessionUsage {
+  return {
+    session_id: sessionId,
+    depth: 0,
+    turns: m.turns,
+    function_calls: m.function_calls ?? 0,
+    function_call_errors: 0,
+    input_tokens: m.input_tokens,
+    output_tokens: m.output_tokens,
+    cache_read_tokens: m.cache_read_tokens,
+    cache_write_tokens: m.cache_write_tokens,
+    cost_usd: m.cost_usd,
+  }
+}
+
+/**
+ * One session's own counters. The server leaves a counter `null` once more
+ * than one step did not report it, so a conversation that ran 37 steps on a
+ * model reporting nothing loses the tokens of the 53 steps that did. Its
+ * `by_model` still has them: such a counter is filled with what the models
+ * reported and marked partial (`≥`), and `unreported` names the models that
+ * left it out.
+ */
+export function ownUsage(row: SessionUsage): UsageTotals {
+  const own: UsageTotals = { ...row, partial: [], unreported: [], cacheHit: cacheHitPct(row) }
+  const models = modelsOf(row)
+  if (!models.length || SUMMED.every((key) => row[key] != null)) return own
+  const sum = sumUsage(models.map((m) => modelRow(modelLabel(m), m)))
+  for (const key of SUMMED) {
+    if (row[key] == null && sum[key] != null) {
+      own[key] = sum[key]
+      own.partial.push(key)
+    }
+  }
+  if (!own.partial.length) return own
+  own.cacheHit ??= sum.cacheHit
+  own.unreported = models
+    .filter((m) => m.turns > 0 && own.partial.some((key) => m[key] == null))
+    .map(modelLabel)
+  return own
+}
+
+/** One model summed over several sessions. */
+export interface ModelTotals {
+  key: string
+  provider: string
+  model: string
+  /** `partial` / `unreported` are about the sessions that ran it. */
+  totals: UsageTotals
+  /** Sessions that generated with it. */
+  sessions: number
+}
+
+/** `by_model` summed over `rows` with `sumUsage`'s rules, the model with
+    the most steps first. */
+export function modelTotals(rows: SessionUsage[]): ModelTotals[] {
+  const groups = new Map<string, { provider: string; model: string; rows: SessionUsage[] }>()
+  for (const row of rows) {
+    for (const m of modelsOf(row)) {
+      const key = `${m.provider}\n${m.model}`
+      const group = groups.get(key) ?? { provider: m.provider, model: m.model, rows: [] }
+      group.rows.push(modelRow(row.session_id, m))
+      groups.set(key, group)
+    }
+  }
+  return [...groups]
+    .map(([key, group]) => ({
+      key,
+      provider: group.provider,
+      model: group.model,
+      totals: sumUsage(group.rows),
+      sessions: group.rows.length,
+    }))
+    .sort((a, b) => b.totals.turns - a.totals.turns || costOf(b.totals) - costOf(a.totals))
+}
+
 /**
  * The conversation's own counters with its cost taken from the live snapshot
  * when there is one (it moves every generate step; `harness::metrics` is read
  * once per turn), and the same sum over its whole subtree — `null` without
- * sub-agents.
+ * sub-agents. A session the server could not price keeps its unknown cost:
+ * the snapshot's running sum then only adds up the steps that reported one
+ * (`0` for a provider that never does).
  */
 export function treeTotals(
   tree: ConversationTree,
   liveCost?: number | null,
-): { self: SessionUsage; total: UsageTotals | null } {
-  const self = liveCost == null ? tree.self : { ...tree.self, cost_usd: liveCost }
+): { self: UsageTotals; total: UsageTotals | null } {
+  const self =
+    liveCost == null || tree.self.cost_usd == null ? tree.self : { ...tree.self, cost_usd: liveCost }
   const total = tree.subAgents.length
     ? sumUsage([self, ...tree.subAgents.map((row) => row.usage)])
     : null
-  return { self, total }
+  return { self: ownUsage(self), total }
 }
 
 /** One direct child of the conversation with everything it spawned. */

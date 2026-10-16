@@ -310,6 +310,58 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+/* Models: one row per model in Usage's columns; each cell stacks its cost
+   over its steps. */
+[data-iii-ui="harness"] .harness-ui-models tbody th,
+[data-iii-ui="harness"] .harness-ui-models tbody td {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  vertical-align: top;
+}
+/* The name takes what the value columns leave, and truncates there. */
+[data-iii-ui="harness"] .harness-ui-models tbody th {
+  max-width: 0;
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] .harness-ui-model,
+[data-iii-ui="harness"] .harness-ui-model-cell {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="harness"] .harness-ui-model-cell {
+  align-items: flex-end;
+}
+/* Usage's column widths hold: a long count line wraps between its counts. */
+[data-iii-ui="harness"] .harness-ui-models td.harness-ui-num {
+  white-space: normal;
+}
+[data-iii-ui="harness"] .harness-ui-model-steps > span {
+  white-space: nowrap;
+}
+[data-iii-ui="harness"] .harness-ui-model-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="harness"] .harness-ui-model-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+[data-iii-ui="harness"] .harness-ui-model-name > :not(.harness-ui-model-id) {
+  flex: none;
+}
+[data-iii-ui="harness"] .harness-ui-model-provider,
+[data-iii-ui="harness"] .harness-ui-model-steps {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="harness"] .harness-ui-model-cell [data-unpriced] {
+  color: var(--color-ink-faint);
+}
 /* Sub-agent rows (cost ranking and the sub-agents page). */
 [data-iii-ui="harness"] .harness-ui-sub-id {
   display: block;

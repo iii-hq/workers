@@ -24,6 +24,7 @@ import {
   BottomSheetContent,
   BottomSheetTrigger,
   Button,
+  Chip,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -74,6 +75,9 @@ import {
   type GroupSort,
   isSnapshot,
   type MetricsResponse,
+  type ModelTotals,
+  modelLabel,
+  modelTotals,
   parseMetrics,
   type SessionUsage,
   type SubAgentGroup,
@@ -312,7 +316,7 @@ function WindowSection({ snapshot }: { snapshot: ContextSnapshot }) {
                 </span>
               </>
             ) : null}
-            {usage?.cost_usd != null ? <> · {formatCost(usage.cost_usd)}</> : null}
+            {usage?.cost_usd != null ? <> · {formatCost(usage.cost_usd)}</> : ' · no cost'}
           </span>
         </div>
       ) : null}
@@ -494,7 +498,7 @@ function UsageSection({
                 <TableHead scope="row">{row.label}</TableHead>
                 <TableCell className="harness-ui-num">
                   {self ? (
-                    usageCell(row, self)
+                    usageCell(row, self, self.partial)
                   ) : row.key === 'cost' && liveCost != null ? (
                     formatCost(liveCost)
                   ) : (
@@ -517,15 +521,28 @@ function UsageSection({
             did not report: {idList(total.unreported, tree.self.session_id)}.
           </span>
         </p>
+      ) : self && self.partial.length > 0 && tree ? (
+        <p className="harness-ui-note harness-ui-footnote">
+          <Info size={16} aria-hidden />
+          <span>≥ leaves out what {idList(self.unreported, tree.self.session_id)} did not report.</span>
+        </p>
       ) : null}
       {failure}
     </section>
   )
 }
 
-/** The steps / calls / failures / context / age line of one session. */
-function sessionMeta(usage: SessionUsage, lead?: string) {
+/** The models a session or a group ran on, most steps first. */
+function modelsLine(rows: SessionUsage[]) {
+  const names = modelTotals(rows).map(modelLabel)
+  return names.length > 2 ? `${names.slice(0, 2).join(', ')} +${names.length - 2} more` : names.join(', ')
+}
+
+/** The steps / calls / failures / context / age line of one session, led by
+    its models when the tree mixes them. */
+function sessionMeta(usage: SessionUsage, lead?: string, models = false) {
   const parts = lead ? [lead] : []
+  if (models) parts.push(modelsLine([usage]))
   parts.push(plural(usage.turns, 'step'))
   if (usage.function_call_errors > 0) parts.push(`${num(usage.function_call_errors)} failed`)
   const context = usage.context
@@ -536,13 +553,14 @@ function sessionMeta(usage: SessionUsage, lead?: string) {
 
 /** The same line for a group: its size (and how many a filter left), steps,
     failures, unpriced rows, age. Steps and failures are the whole group's. */
-function groupMeta(group: SubAgentGroup) {
+function groupMeta(group: SubAgentGroup, models = false) {
   const shown = group.rows.length - 1
   const t = group.totals
-  const parts = [
+  const parts = models ? [modelsLine(group.rows)] : []
+  parts.push(
     shown < group.size ? `${num(shown)} of ${plural(group.size, 'sub-agent')}` : plural(group.size, 'sub-agent'),
     plural(t.turns, 'step'),
-  ]
+  )
   if (t.function_call_errors > 0) parts.push(`${num(t.function_call_errors)} failed`)
   const unpriced = t.unreported.length
   if (t.partial.includes('cost_usd') && unpriced) parts.push(`${num(unpriced)} without cost`)
@@ -628,6 +646,112 @@ function CostRow({
   )
 }
 
+/** More than one model anywhere in the conversation's subtree: only then
+    do the sub-agent rows say which model each ran on. */
+function mixesModels(tree: ConversationTree) {
+  return modelTotals([tree.self, ...tree.subAgents.map((row) => row.usage)]).length > 1
+}
+
+/** One model in one column: its cost, then its steps (and, over the
+    subtree, the sessions that ran it). Tokens without a cost read "no
+    cost"; nothing reported reads "—". */
+function ModelCell({ entry, sessions = false }: { entry?: ModelTotals; sessions?: boolean }) {
+  if (!entry) return <>—</>
+  const t = entry.totals
+  const tokens = t.input_tokens != null || t.output_tokens != null || t.cache_read_tokens != null
+  return (
+    <span className="harness-ui-model-cell">
+      <span data-unpriced={t.cost_usd == null ? '' : undefined}>
+        {t.cost_usd != null ? (
+          <Bound partial={t.partial.includes('cost_usd')}>{formatCost(t.cost_usd)}</Bound>
+        ) : tokens ? (
+          'no cost'
+        ) : (
+          '—'
+        )}
+      </span>
+      <span className="harness-ui-model-steps">
+        <span>{plural(t.turns, 'step')}</span>
+        {sessions ? (
+          <>
+            {' · '}
+            <span>{plural(entry.sessions, 'session')}</span>
+          </>
+        ) : null}
+      </span>
+    </span>
+  )
+}
+
+/**
+ * Which models did the work, in Usage's columns: this conversation's own
+ * steps and, when it spawned sub-agents, its whole subtree's. `in use` marks
+ * the live snapshot's model once there is more than one to tell apart.
+ */
+function ModelsSection({
+  tree,
+  current,
+}: {
+  tree: ConversationTree
+  current?: { model: string; provider?: string }
+}) {
+  const headingId = useId()
+  const own = modelTotals([tree.self])
+  const subtree = tree.subAgents.length
+    ? modelTotals([tree.self, ...tree.subAgents.map((row) => row.usage)])
+    : null
+  const rows = subtree ?? own
+  if (rows.length === 0) return null
+  const ownByKey = new Map(own.map((entry) => [entry.key, entry]))
+  const subCount = tree.subAgents.length
+  const inUse = (entry: ModelTotals) =>
+    rows.length > 1 &&
+    current != null &&
+    entry.model === current.model &&
+    (!current.provider || entry.provider === current.provider)
+  return (
+    <section className="harness-ui-section" aria-labelledby={headingId}>
+      <SectionHead id={headingId} title="Models" meta={plural(rows.length, 'model')} />
+      <TableViewport>
+        <Table className="harness-ui-usage harness-ui-models">
+          {subtree ? (
+            <TableHeader>
+              <TableRow>
+                <TableHead>Model</TableHead>
+                <TableHead className="harness-ui-num">This conversation</TableHead>
+                <TableHead className="harness-ui-num">With {plural(subCount, 'sub-agent')}</TableHead>
+              </TableRow>
+            </TableHeader>
+          ) : null}
+          <TableBody>
+            {rows.map((entry) => (
+              <TableRow key={entry.key}>
+                <TableHead scope="row">
+                  <span className="harness-ui-model">
+                    <span className="harness-ui-model-name">
+                      <span className="harness-ui-model-id">{modelLabel(entry)}</span>
+                      {inUse(entry) ? <Chip>in use</Chip> : null}
+                    </span>
+                    <span className="harness-ui-model-provider">{entry.provider}</span>
+                  </span>
+                </TableHead>
+                <TableCell className="harness-ui-num">
+                  <ModelCell entry={ownByKey.get(entry.key)} />
+                </TableCell>
+                {subtree ? (
+                  <TableCell className="harness-ui-num">
+                    <ModelCell entry={entry} sessions />
+                  </TableCell>
+                ) : null}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableViewport>
+    </section>
+  )
+}
+
 /** How many of the biggest direct sub-agents the overview ranks. */
 const RANKED = 5
 
@@ -666,6 +790,7 @@ function CostSection({
   const nested = groups.some((group) => group.rows.length > 1)
   const restTotals = rest.length ? sumUsage(rest.flatMap((group) => group.rows)) : null
   const count = tree.subAgents.length
+  const mixed = mixesModels(tree)
   return (
     <section className="harness-ui-section" aria-labelledby={headingId}>
       <SectionHead
@@ -678,6 +803,7 @@ function CostSection({
           label="This conversation"
           mono={false}
           meta={[
+            mixed ? modelsLine([tree.self]) : null,
             plural(self.turns, 'step'),
             plural(self.function_calls, 'call'),
             self.function_call_errors ? `${num(self.function_call_errors)} failed` : null,
@@ -685,13 +811,14 @@ function CostSection({
             .filter(Boolean)
             .join(' · ')}
           cost={self.cost_usd}
+          partial={self.partial.includes('cost_usd')}
           total={totalCost}
         />
         {ranked.map((group) => (
           <CostRow
             key={group.head.session_id}
             label={group.head.session_id}
-            meta={group.rows.length > 1 ? groupMeta(group) : sessionMeta(group.head)}
+            meta={group.rows.length > 1 ? groupMeta(group, mixed) : sessionMeta(group.head, undefined, mixed)}
             cost={group.totals.cost_usd}
             partial={group.totals.partial.includes('cost_usd')}
             total={totalCost}
@@ -785,6 +912,7 @@ function SubAgentsPage({
     back.current?.focus()
   }, [])
   const all = subAgentGroups(tree)
+  const mixed = mixesModels(tree)
   const subTotals = sumUsage(tree.subAgents.map((row) => row.usage))
   const totalCost = treeTotals(tree, liveCost).total?.cost_usd
   const groups = filterGroups(sortGroups(all, sort), query)
@@ -855,7 +983,7 @@ function SubAgentsPage({
             <div key={id} className="harness-ui-group">
               <CostRow
                 label={id}
-                meta={nested ? groupMeta(group) : sessionMeta(group.head)}
+                meta={nested ? groupMeta(group, mixed) : sessionMeta(group.head, undefined, mixed)}
                 cost={group.totals.cost_usd}
                 partial={group.totals.partial.includes('cost_usd')}
                 total={totalCost}
@@ -882,7 +1010,7 @@ function SubAgentsPage({
                       onClick={onOpenSession ? () => onOpenSession(row.session_id) : undefined}
                       leading={<CornerDownRight size={16} aria-hidden />}
                       label={<span className="harness-ui-sub-id">{row.session_id}</span>}
-                      description={sessionMeta(row, index === 0 ? 'spawned the rest' : undefined)}
+                      description={sessionMeta(row, index === 0 ? 'spawned the rest' : undefined, mixed)}
                       trailing={
                         <span className="harness-ui-sub-trailing">
                           <span className="harness-ui-sub-cost" data-unpriced={row.cost_usd == null && row.turns > 0 ? '' : undefined}>
@@ -1121,6 +1249,7 @@ function ContextPopover({
         </section>
       )}
       <UsageSection state={metrics} tree={tree} liveCost={liveCost} onRetry={onRetry} />
+      {tree ? <ModelsSection tree={tree} current={live ?? undefined} /> : null}
       {tree ? (
         <CostSection
           tree={tree}

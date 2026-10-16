@@ -4,6 +4,9 @@ import {
   conversationTree,
   filterGroups,
   type MetricsResponse,
+  modelLabel,
+  modelTotals,
+  ownUsage,
   type SessionUsage,
   sortGroups,
   subAgentGroups,
@@ -164,12 +167,86 @@ describe('sumUsage', () => {
   })
 })
 
+/** s_4c0733…: 37 steps on a model that reported nothing, then 53 on one
+    that reports tokens and no cost. More than one step left every counter
+    out, so the server sends them all `null`. */
+const SWITCHED = usage('s_switched', undefined, 0, {
+  turns: 90,
+  function_calls: 50,
+  input_tokens: undefined,
+  output_tokens: undefined,
+  cache_read_tokens: undefined,
+  cache_write_tokens: undefined,
+  cost_usd: undefined,
+  by_model: [
+    { provider: 'claude-code', model: 'claude-code/claude-opus-5', turns: 53, function_calls: 50, input_tokens: 159, output_tokens: 28_075, cache_read_tokens: 3_900_000, cache_write_tokens: 223_600 },
+    { provider: 'openai', model: 'gpt-6-astra', turns: 37, function_calls: 0 },
+  ],
+})
+
+describe('ownUsage', () => {
+  it('fills a session counter the server left out with what its models reported', () => {
+    const own = ownUsage(SWITCHED)
+    expect(own.output_tokens).toBe(28_075)
+    expect(own.partial).toEqual(['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'])
+    // No model reported a cost: nothing to fill, not a partial zero.
+    expect(own.cost_usd).toBeUndefined()
+    expect(own.unreported).toEqual(['gpt-6-astra'])
+    expect(own.cacheHit).toBe(95)
+  })
+
+  it('keeps a counter the server summed', () => {
+    const own = ownUsage(usage('s', undefined, 0, { by_model: [{ provider: 'p', model: 'm', turns: 1, function_calls: 2, output_tokens: 1 }] }))
+    expect(own.output_tokens).toBe(20)
+    expect(own.partial).toEqual([])
+  })
+
+  it('reads a harness without by_model as before', () => {
+    expect(ownUsage(usage('s', undefined, 0, { output_tokens: undefined })).output_tokens).toBeUndefined()
+  })
+})
+
+describe('sumUsage over models', () => {
+  it('counts what a session\'s models reported, as a lower bound', () => {
+    const total = sumUsage([usage('root', undefined, 0), SWITCHED])
+    expect(total.output_tokens).toBe(20 + 28_075)
+    expect(total.partial).toContain('output_tokens')
+    expect(total.unreported).toEqual(['s_switched'])
+  })
+})
+
+describe('modelTotals', () => {
+  it('sums each model over the sessions that ran it, most steps first', () => {
+    const child = usage('child', 's_switched', 1, {
+      by_model: [{ provider: 'openai', model: 'gpt-6-astra', turns: 40, function_calls: 1, output_tokens: 7, cost_usd: 0.5 }],
+    })
+    const models = modelTotals([SWITCHED, child])
+    expect(models.map((m) => [modelLabel(m), m.totals.turns, m.sessions])).toEqual([
+      ['gpt-6-astra', 77, 2],
+      ['claude-opus-5', 53, 1],
+    ])
+    const astra = models[0].totals
+    expect([astra.cost_usd, astra.partial, astra.unreported]).toEqual([0.5, ['output_tokens', 'cost_usd'], ['s_switched']])
+  })
+
+  it('drops entries a different harness shaped otherwise', () => {
+    const odd = usage('s', undefined, 0, { by_model: [null, { model: 'x' }, 'y'] as never })
+    expect(modelTotals([odd])).toEqual([])
+  })
+})
+
 describe('treeTotals', () => {
   it('takes this conversation\'s cost from the live snapshot', () => {
     const tree = conversationTree(TREE, 'kan176-deepwork')
     const { self, total } = tree ? treeTotals(tree, 2) : { self: null, total: null }
     expect(self?.cost_usd).toBe(2)
     expect(total?.cost_usd).toBeCloseTo(2 + 1.19 + 1)
+  })
+
+  it('keeps the cost of a session the server could not price unknown', () => {
+    const tree = conversationTree({ ...TREE, by_session: [SWITCHED] }, 's_switched')
+    // The snapshot's running cost is 0 when no step reported one.
+    expect(tree && treeTotals(tree, 0).self.cost_usd).toBeUndefined()
   })
 })
 
