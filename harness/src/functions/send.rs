@@ -435,7 +435,8 @@ async fn start_with_delivery_lock(
         .as_ref()
         .and_then(|init| init.metadata.as_ref())
         .and_then(Value::as_object));
-    let context_strategy = context_strategy_from_metadata(session_metadata)?;
+    let context_strategy =
+        context_strategy_from_metadata(session_metadata, cfg.default_context_strategy.as_deref())?;
     let idempotent = match &req.idempotency_key {
         Some(key) => crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?,
         None => None,
@@ -1664,19 +1665,29 @@ fn apply_default_filesystem_root(
     }
 }
 
-/// The session's context strategy from its metadata: `context_strategy` (a
-/// name matching `^[a-z0-9-]{1,64}$`; absent or `"default"` = context-manager)
-/// and `context_budget_tokens` (a positive integer, read only with a
+/// The session's context strategy: its metadata's `context_strategy` (a name
+/// matching `^[a-z0-9-]{1,64}$`; `"default"` = context-manager), else the
+/// worker's `default_context_strategy` (unset = context-manager), with the
+/// metadata's `context_budget_tokens` (a positive integer, read only with a
 /// strategy). A bad value fails the send before anything is written, never a
 /// silent fallback to the default.
 fn context_strategy_from_metadata(
     metadata: Option<&serde_json::Map<String, Value>>,
+    config_default: Option<&str>,
 ) -> Result<Option<ContextStrategy>, HarnessError> {
-    let Some(metadata) = metadata else {
-        return Ok(None);
-    };
-    let name = match metadata.get("context_strategy") {
-        None | Some(Value::Null) => return Ok(None),
+    let field = |key: &str| metadata.and_then(|metadata| metadata.get(key));
+    let name = match field("context_strategy") {
+        None | Some(Value::Null) => match config_default {
+            None | Some("default") => return Ok(None),
+            Some(name) if is_context_strategy_name(name) => name.to_owned(),
+            // The configuration schema refuses this before it is stored.
+            Some(name) => {
+                return Err(HarnessError::Internal(format!(
+                    "harness config `default_context_strategy` must be \"default\" or a name \
+                     matching ^[a-z0-9-]{{1,64}}$, got {name:?}"
+                )))
+            }
+        },
         Some(Value::String(name)) if name == "default" => return Ok(None),
         Some(Value::String(name)) if is_context_strategy_name(name) => name.clone(),
         Some(other) => {
@@ -1686,7 +1697,7 @@ fn context_strategy_from_metadata(
             )))
         }
     };
-    let budget_tokens = match metadata.get("context_budget_tokens") {
+    let budget_tokens = match field("context_budget_tokens") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_u64().filter(|tokens| *tokens > 0).ok_or_else(|| {
             HarnessError::InvalidRequest(format!(
@@ -3751,7 +3762,7 @@ mod tests {
 
     #[test]
     fn context_strategy_metadata_absent_or_default_means_context_manager() {
-        assert_eq!(context_strategy_from_metadata(None).unwrap(), None);
+        assert_eq!(context_strategy_from_metadata(None, None).unwrap(), None);
         for value in [
             serde_json::json!({}),
             serde_json::json!({ "context_strategy": null }),
@@ -3760,7 +3771,7 @@ mod tests {
             serde_json::json!({ "context_budget_tokens": "lots" }),
         ] {
             assert_eq!(
-                context_strategy_from_metadata(Some(&metadata(value.clone()))).unwrap(),
+                context_strategy_from_metadata(Some(&metadata(value.clone())), None).unwrap(),
                 None,
                 "{value}"
             );
@@ -3769,10 +3780,13 @@ mod tests {
 
     #[test]
     fn context_strategy_metadata_freezes_a_validated_name_and_budget() {
-        let strategy = context_strategy_from_metadata(Some(&metadata(serde_json::json!({
-            "context_strategy": "clm",
-            "context_budget_tokens": 65536
-        }))))
+        let strategy = context_strategy_from_metadata(
+            Some(&metadata(serde_json::json!({
+                "context_strategy": "clm",
+                "context_budget_tokens": 65536
+            }))),
+            None,
+        )
         .unwrap();
         assert_eq!(
             strategy,
@@ -3783,16 +3797,20 @@ mod tests {
                 skipped_reason: None,
             })
         );
-        let unbudgeted = context_strategy_from_metadata(Some(&metadata(
-            serde_json::json!({ "context_strategy": "a-1" }),
-        )))
+        let unbudgeted = context_strategy_from_metadata(
+            Some(&metadata(serde_json::json!({ "context_strategy": "a-1" }))),
+            None,
+        )
         .unwrap()
         .unwrap();
         assert_eq!(unbudgeted.budget_tokens, None);
         let longest = "a".repeat(64);
-        assert!(context_strategy_from_metadata(Some(&metadata(
-            serde_json::json!({ "context_strategy": longest }),
-        )))
+        assert!(context_strategy_from_metadata(
+            Some(&metadata(
+                serde_json::json!({ "context_strategy": longest }),
+            )),
+            None
+        )
         .unwrap()
         .is_some());
     }
@@ -3811,9 +3829,77 @@ mod tests {
             serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": 1.5 }),
             serde_json::json!({ "context_strategy": "clm", "context_budget_tokens": "65536" }),
         ] {
-            let error = context_strategy_from_metadata(Some(&metadata(value.clone()))).unwrap_err();
+            let error =
+                context_strategy_from_metadata(Some(&metadata(value.clone())), None).unwrap_err();
             assert_eq!(error.code(), "harness/invalid_request", "{value}: {error}");
         }
+    }
+
+    #[test]
+    fn the_config_default_applies_only_where_the_metadata_names_no_strategy() {
+        let pick = |value: serde_json::Value, default: Option<&str>| {
+            context_strategy_from_metadata(Some(&metadata(value)), default)
+                .unwrap()
+                .map(|strategy| (strategy.name, strategy.budget_tokens))
+        };
+        // No key (or null) → the config default, with the metadata's budget.
+        assert_eq!(
+            pick(serde_json::json!({}), Some("clm")),
+            Some(("clm".into(), None))
+        );
+        assert_eq!(
+            context_strategy_from_metadata(None, Some("clm"))
+                .unwrap()
+                .map(|s| s.name),
+            Some("clm".into())
+        );
+        assert_eq!(
+            pick(
+                serde_json::json!({ "context_strategy": null, "context_budget_tokens": 4096 }),
+                Some("clm")
+            ),
+            Some(("clm".into(), Some(4096)))
+        );
+        // The metadata wins, and "default" there opts out of the config default.
+        assert_eq!(
+            pick(
+                serde_json::json!({ "context_strategy": "other" }),
+                Some("clm")
+            ),
+            Some(("other".into(), None))
+        );
+        assert_eq!(
+            pick(
+                serde_json::json!({ "context_strategy": "default" }),
+                Some("clm")
+            ),
+            None
+        );
+        // "default" or unset in the config is context-manager.
+        assert_eq!(pick(serde_json::json!({}), Some("default")), None);
+        assert_eq!(
+            pick(serde_json::json!({ "context_budget_tokens": 4096 }), None),
+            None
+        );
+        // A bad budget is read, and refused, once the config default applies.
+        let error = context_strategy_from_metadata(
+            Some(&metadata(
+                serde_json::json!({ "context_budget_tokens": "lots" }),
+            )),
+            Some("clm"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
+        // A bad stored default never silently falls back to context-manager.
+        let error = context_strategy_from_metadata(None, Some("CLM")).unwrap_err();
+        assert_eq!(error.code(), "harness/internal");
+    }
+
+    #[test]
+    fn the_config_schema_restricts_the_default_context_strategy_name() {
+        let schema = serde_json::to_value(schemars::schema_for!(WorkerConfig)).unwrap();
+        let field = &schema["properties"]["default_context_strategy"];
+        assert_eq!(field["pattern"], "^[a-z0-9-]{1,64}$", "{field}");
     }
 
     #[tokio::test]
