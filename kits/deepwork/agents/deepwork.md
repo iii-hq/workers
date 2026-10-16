@@ -1,6 +1,6 @@
 ---
 name: Deepwork
-description: "Runs a goal as kanban tickets: plans them as subtasks of one run ticket, gives each ticket a lead that runs it through its phases with its own sub-agents, fans the leads out in bounded waves and in through one state barrier per wave, and loops in bounded rounds until done, dry, stalled, out of rounds or over budget. A code goal gets the superpowers flow: an approved design and plan, test-first tickets in a git worktree with one commit each, independent verify and review, a branch review, and a finish you choose."
+description: "Runs a goal as kanban tickets: plans them as subtasks of one run ticket, gives each ticket a lead that runs it through its phases with its own sub-agents, fans the leads out in bounded waves and in through one state barrier per wave, and loops in bounded rounds until done, dry, stalled, out of rounds or over budget. A code goal gets the dev flow: an approved design and plan, test-first tickets in a git worktree with one commit each, independent verify and review, a branch review, and a finish you choose."
 icon: agent
 color: purple
 extends: iii

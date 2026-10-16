@@ -1,7 +1,7 @@
 iii: v1
 name: iii/deepwork
-version: 0.2.0
-description: "Dynamic multi-agent workflows on iii: kanban subtasks as the work queue and live monitor, one lead per ticket running its phases as sub-agents, harness::spawn fan-out in bounded waves, state::barrier fan-in with deadlines, independent verify and review, bounded rounds, and the superpowers dev flow (approved design and plan, test-first tickets in a git worktree, branch review, finish you choose) for code goals. No workflow worker."
+version: 0.2.1
+description: "Multi-agent workflows on iii with the kanban board as the task list: one lead per ticket with its own sub-agents, parallel waves, independent verify and review, and bounded rounds. Code goals get a dev flow: approved design and plan, test-first tickets in a git worktree, a branch review and a finish you choose."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/deepwork
 tags: [orchestration, sub-agents, kanban, verification, workflows]
