@@ -6,19 +6,28 @@
 //! never talks to an analytics vendor itself: it announces, and an engine that
 //! the operator opted out of telemetry simply never listens.
 //!
-//! Two reported moments, both sparse so a long run costs few events:
+//! Three reported moments:
 //!
-//! * `harness_session_progress` at root turn 1, 2, 5, 10, 25 and 50, then
-//!   every 50 root turns after that (100, 150, ...). Every report is
-//!   cumulative, so the last one supersedes the ones before it and the
-//!   histogram of milestones reached IS the drop-off curve.
+//! * `harness_user_turns`: user turns (root turns, one user message through
+//!   its final reply) counted across EVERY session on this machine, reported
+//!   when the count reaches 1, 2, 5, 10, 25 and 50, then every 50.
+//! * `harness_model_calls`: model calls (assistant messages, sub-agents
+//!   included) counted across every session on this machine, with the tool
+//!   call, token and cost totals that go with them, reported on the same
+//!   milestones of the model-call count.
 //! * `harness_turn_failed` once per session per outcome (`failed`,
-//!   `cancelled`, `max_turns`), which keeps the reason a run stopped exact
-//!   even when it stopped between two milestones.
+//!   `cancelled`, `max_turns`), which keeps the reason a run stopped exact.
 //!
-//! Only root turns report. A sub-agent's usage is already inside its root's
-//! cumulative totals, which `harness::metrics` aggregates over the whole
-//! session tree.
+//! Both counts are cumulative, so a machine's latest report supersedes the
+//! ones before it, and each carries a `*_delta` since the previous successful
+//! report of its kind, so the deltas of one machine sum to its total.
+//!
+//! This module only READS the harness's own accounting: model usage comes
+//! from `harness::metrics` over the session tree, and what this module keeps
+//! is its own reporting bookkeeping under `harness_usage`: one row per session
+//! (outcomes announced, model usage already folded in) and one machine-wide
+//! row (`_machine`) holding the counters, updated by compare-and-set so
+//! sessions finishing turns at once never lose or double an increment.
 //!
 //! Nothing a user wrote is reported: no message text, no prompts, no file
 //! paths, no function ids, no error strings. Model, provider, counters, and
@@ -42,48 +51,179 @@ use crate::types::turn::TurnRecord;
 /// Topic the engine's telemetry worker subscribes to.
 pub const USAGE_TOPIC: &str = "harness:usage";
 const PUBLISH_ID: &str = "iii::durable::publish";
+const STATE_CAS_ID: &str = "state::compare-and-set";
 
-pub const PROGRESS_EVENT: &str = "harness_session_progress";
+pub const USER_TURNS_EVENT: &str = "harness_user_turns";
+pub const MODEL_CALLS_EVENT: &str = "harness_model_calls";
 pub const FAILED_EVENT: &str = "harness_turn_failed";
 
-/// Root turn counts that report. Chosen to be dense where sessions die and
-/// sparse afterwards: the gap between 1 and 2 is the one that says whether the
-/// harness was tried once or actually used. Past the last one, a session
-/// keeps reporting every [`REPEAT_EVERY`] root turns.
+/// Key of the machine-wide row in [`USAGE_SCOPE`]. Session ids never start
+/// with an underscore, so it cannot collide with a session's row.
+const MACHINE_KEY: &str = "_machine";
+
+/// Compare-and-set attempts on the machine row before a fold gives up.
+const CAS_ATTEMPTS: usize = 8;
+
+/// Counts that report. Chosen to be dense where usage dies and sparse
+/// afterwards: the gap between 1 and 2 is the one that says whether the
+/// harness was tried once or actually used. Past the last one, every
+/// [`REPEAT_EVERY`] reports.
 pub const MILESTONES: [u64; 6] = [1, 2, 5, 10, 25, 50];
 
-/// After the last listed milestone, every multiple of this reports, so a long
-/// session's totals keep reaching analytics at a bounded rate.
+/// After the last listed milestone, every multiple of this reports.
 pub const REPEAT_EVERY: u64 = 50;
+
+/// The milestone a count moving from `prev` to `next` reaches, if any: the
+/// highest one in `(prev, next]`. User turns move by one, so they hit every
+/// milestone; model calls move by several at once and report the highest one
+/// they passed, with their real totals.
+pub fn crossed(prev: u64, next: u64) -> Option<u64> {
+    if next <= prev {
+        return None;
+    }
+    let last = MILESTONES[MILESTONES.len() - 1];
+    let repeat = next - next % REPEAT_EVERY;
+    if repeat > last && repeat > prev {
+        return Some(repeat);
+    }
+    MILESTONES
+        .iter()
+        .rev()
+        .copied()
+        .find(|m| *m > prev && *m <= next)
+}
+
+/// Model usage counters, as `harness::metrics` reports them for a session
+/// tree.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelUsage {
+    #[serde(default)]
+    pub model_calls: u64,
+    #[serde(default)]
+    pub tool_calls: u64,
+    #[serde(default)]
+    pub tool_call_errors: u64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
+    pub cost_usd: f64,
+}
+
+impl ModelUsage {
+    /// A session tree's totals. A counter the provider left unreported keeps
+    /// the value `prev` already folded in, so a gap is neither counted as zero
+    /// now nor counted twice when it reports again.
+    fn observed(totals: &SessionUsageTotalsV1, prev: &ModelUsage) -> Self {
+        Self {
+            model_calls: totals.turns,
+            tool_calls: totals.function_calls,
+            tool_call_errors: totals.function_call_errors,
+            input_tokens: totals.input_tokens.unwrap_or(prev.input_tokens),
+            output_tokens: totals.output_tokens.unwrap_or(prev.output_tokens),
+            cache_read_tokens: totals.cache_read_tokens.unwrap_or(prev.cache_read_tokens),
+            cache_write_tokens: totals.cache_write_tokens.unwrap_or(prev.cache_write_tokens),
+            cost_usd: totals.cost_usd.unwrap_or(prev.cost_usd),
+        }
+    }
+
+    /// What this has beyond `earlier`; never negative.
+    fn since(&self, earlier: &ModelUsage) -> Self {
+        Self {
+            model_calls: self.model_calls.saturating_sub(earlier.model_calls),
+            tool_calls: self.tool_calls.saturating_sub(earlier.tool_calls),
+            tool_call_errors: self
+                .tool_call_errors
+                .saturating_sub(earlier.tool_call_errors),
+            input_tokens: self.input_tokens.saturating_sub(earlier.input_tokens),
+            output_tokens: self.output_tokens.saturating_sub(earlier.output_tokens),
+            cache_read_tokens: self
+                .cache_read_tokens
+                .saturating_sub(earlier.cache_read_tokens),
+            cache_write_tokens: self
+                .cache_write_tokens
+                .saturating_sub(earlier.cache_write_tokens),
+            cost_usd: (self.cost_usd - earlier.cost_usd).max(0.0),
+        }
+    }
+
+    fn plus(&self, other: &ModelUsage) -> Self {
+        Self {
+            model_calls: self.model_calls + other.model_calls,
+            tool_calls: self.tool_calls + other.tool_calls,
+            tool_call_errors: self.tool_call_errors + other.tool_call_errors,
+            input_tokens: self.input_tokens + other.input_tokens,
+            output_tokens: self.output_tokens + other.output_tokens,
+            cache_read_tokens: self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens + other.cache_write_tokens,
+            cost_usd: self.cost_usd + other.cost_usd,
+        }
+    }
+}
 
 /// Per-session reporting bookkeeping (`harness_usage/<session_id>`).
 ///
 /// Durable rather than in memory because it is what makes a report happen
-/// once: a restarted harness, a redelivered turn step, or a second worker
-/// must not re-announce a milestone this session already announced.
+/// once: a restarted harness or a redelivered turn step must not re-announce
+/// an outcome, or fold the same model usage into the machine twice.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageRow {
     /// Root turns this session has completed, terminal or not.
     #[serde(default)]
     pub turns: u64,
-    /// Milestones already announced.
-    #[serde(default)]
-    pub reported: Vec<u64>,
     /// Outcomes already announced, one announcement each.
     #[serde(default)]
     pub outcomes: Vec<String>,
-    /// When the first reported turn of this session ended, so a later report
-    /// can carry the session's age without a transcript read.
+    /// When this session's first reported turn ended; zero until then.
     #[serde(default)]
     pub first_at: i64,
+    /// This session tree's model usage already folded into the machine row.
+    #[serde(default)]
+    pub folded: ModelUsage,
 }
 
-/// The milestone this turn count reports at, if any: a listed one, or any
-/// multiple of [`REPEAT_EVERY`] beyond the last listed one.
-pub fn milestone(turns: u64) -> Option<u64> {
-    let last = MILESTONES[MILESTONES.len() - 1];
-    let repeat = turns > last && turns.is_multiple_of(REPEAT_EVERY);
-    (MILESTONES.contains(&turns) || repeat).then_some(turns)
+/// The machine-wide counters (`harness_usage/_machine`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MachineRow {
+    /// User (root) turns across every session.
+    #[serde(default)]
+    pub user_turns: u64,
+    /// Sessions that completed at least one root turn.
+    #[serde(default)]
+    pub sessions: u64,
+    /// Model usage across every session.
+    #[serde(default)]
+    pub usage: ModelUsage,
+    /// `user_turns` as of the last `harness_user_turns` that was published.
+    #[serde(default)]
+    pub user_turns_announced: u64,
+    /// `usage.model_calls` as of the last `harness_model_calls` published.
+    #[serde(default)]
+    pub model_calls_announced: u64,
+}
+
+/// What one finished root turn adds to the machine row.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Fold {
+    pub user_turns: u64,
+    pub sessions: u64,
+    pub usage: ModelUsage,
+}
+
+impl MachineRow {
+    fn fold(&self, add: &Fold) -> Self {
+        Self {
+            user_turns: self.user_turns + add.user_turns,
+            sessions: self.sessions + add.sessions,
+            usage: self.usage.plus(&add.usage),
+            ..self.clone()
+        }
+    }
 }
 
 /// Whether this turn belongs to a root session. A sub-agent turn reports
@@ -94,8 +234,9 @@ fn is_root(record: &TurnRecord) -> bool {
     record.depth == 0 && record.parent.is_none() && record.display_parent_session_id.is_none()
 }
 
-/// Report one finished root turn: the milestone if it reached one, and the
-/// outcome if it was not an ordinary completion.
+/// Report one finished root turn: its outcome if it was not an ordinary
+/// completion, then the machine-wide user-turn and model-call milestones it
+/// reached, if any.
 ///
 /// `outcome` is the turn's own status (`completed`, `failed`, `cancelled`) or
 /// `max_turns` when the step cap ended it. `error_kind` is
@@ -116,146 +257,248 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
             return;
         }
     };
-    let now = AgentMessage::now_ms();
+    let first_turn = row.first_at == 0;
     row.turns += 1;
-    if row.first_at == 0 {
-        row.first_at = now;
+    if first_turn {
+        row.first_at = AgentMessage::now_ms();
     }
-
-    let mut announced = false;
 
     if outcome != "completed" && !row.outcomes.iter().any(|o| o == outcome) {
-        let mut payload = json!({
-            "event": FAILED_EVENT,
-            "dedupe_key": format!("{session_id}:{outcome}"),
-            "outcome": outcome,
-            "turn_index": row.turns,
-            "model": record.options.model,
-        });
-        if let Some(kind) = error_kind {
-            payload["error_kind"] = Value::String(kind.to_string());
-        }
-        if let Some(provider) = &record.options.provider {
-            payload["provider"] = Value::String(provider.clone());
-        }
+        let payload = failed_payload(record, outcome, error_kind, row.turns);
         if publish(deps, payload, timeout_ms).await {
             row.outcomes.push(outcome.to_string());
-            announced = true;
         }
     }
 
-    if let Some(reached) = milestone(row.turns) {
-        if !row.reported.contains(&reached) {
-            // ponytail: `harness::metrics` re-walks the session tree's
-            // transcript, so this read grows with the session. It runs at most
-            // six times per session, which is why it is not incremental
-            // counters; make it incremental if a milestone read ever shows up
-            // in a turn's latency.
-            match metrics::handle(
-                deps,
-                SessionMetricsRequestV1 {
-                    root_session_id: session_id.clone(),
-                    // Only the totals are reported; skip the context reads
-                    // and the trace scan.
-                    omit_context: true,
-                    omit_traces: true,
-                    subtree: false,
-                },
-            )
-            .await
-            {
-                Ok(m) => {
-                    let payload = progress_payload(
-                        record,
-                        reached,
-                        outcome,
-                        &m.totals,
-                        row.turns,
-                        turns_since_last_report(&row, reached),
-                        (now - row.first_at).max(0),
-                    );
-                    if publish(deps, payload, timeout_ms).await {
-                        row.reported.push(reached);
-                        announced = true;
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        session_id = %session_id,
-                        error = %e,
-                        "usage metrics unavailable"
-                    );
-                }
+    // ponytail: `harness::metrics` re-reads the session tree's usage on every
+    // root turn so the machine row can take its delta. It reads the usage
+    // projection only (no context, no traces); if it ever shows up in a
+    // turn's latency, fold per-step usage instead.
+    let observed = match metrics::handle(
+        deps,
+        SessionMetricsRequestV1 {
+            root_session_id: session_id.clone(),
+            omit_context: true,
+            omit_traces: true,
+            subtree: false,
+        },
+    )
+    .await
+    {
+        Ok(m) => Some(ModelUsage::observed(&m.totals, &row.folded)),
+        Err(e) => {
+            tracing::debug!(session_id = %session_id, error = %e, "usage metrics unavailable");
+            None
+        }
+    };
+    let add = Fold {
+        user_turns: 1,
+        sessions: u64::from(first_turn),
+        usage: observed
+            .as_ref()
+            .map(|now| now.since(&row.folded))
+            .unwrap_or_default(),
+    };
+
+    match update_machine(deps, timeout_ms, |m| m.fold(&add)).await {
+        Ok((before, after)) => {
+            if let Some(now) = observed {
+                row.folded = now;
+            }
+            announce(deps, record, &before, &after, timeout_ms).await;
+        }
+        Err(e) => {
+            // The session row keeps its old `folded`, so the next turn folds
+            // this turn's model usage in; this user turn is not counted.
+            tracing::debug!(error = %e, "machine usage row not updated");
+        }
+    }
+
+    if let Err(e) = save(deps, session_id, &row, timeout_ms).await {
+        tracing::debug!(session_id = %session_id, error = %e, "usage row unwritable");
+    }
+}
+
+/// Publish the milestones a fold reached, and record each one published so
+/// the next report's delta starts from it. The fold that reached a milestone
+/// is the only one that sees it in `(before, after]`, so concurrent turns
+/// never announce the same milestone twice.
+async fn announce(
+    deps: &Deps,
+    record: &TurnRecord,
+    before: &MachineRow,
+    after: &MachineRow,
+    timeout_ms: u64,
+) {
+    if let Some(reached) = crossed(before.user_turns, after.user_turns) {
+        if publish(deps, user_turns_payload(record, reached, after), timeout_ms).await {
+            let total = after.user_turns;
+            let marked = update_machine(deps, timeout_ms, |m| MachineRow {
+                user_turns_announced: m.user_turns_announced.max(total),
+                ..m.clone()
+            })
+            .await;
+            if let Err(e) = marked {
+                tracing::debug!(error = %e, "user-turn report not recorded");
             }
         }
     }
-
-    // The turn counter is worth keeping even when nothing was announced: it is
-    // what decides the next milestone.
-    if let Err(e) = save(deps, session_id, &row, timeout_ms).await {
-        tracing::debug!(session_id = %session_id, error = %e, "usage row unwritable");
-    } else if announced {
-        tracing::debug!(
-            session_id = %session_id,
-            turns = row.turns,
-            outcome,
-            "usage reported"
-        );
+    if let Some(reached) = crossed(before.usage.model_calls, after.usage.model_calls) {
+        if publish(
+            deps,
+            model_calls_payload(record, reached, after),
+            timeout_ms,
+        )
+        .await
+        {
+            let total = after.usage.model_calls;
+            let marked = update_machine(deps, timeout_ms, |m| MachineRow {
+                model_calls_announced: m.model_calls_announced.max(total),
+                ..m.clone()
+            })
+            .await;
+            if let Err(e) = marked {
+                tracing::debug!(error = %e, "model-call report not recorded");
+            }
+        }
     }
 }
 
-/// Root turns since the last progress report this session announced, so the
-/// deltas of one session sum to its `user_turns_total`. A milestone whose
-/// publish failed is never retried, so the next report's delta covers the
-/// gap rather than losing those turns.
-fn turns_since_last_report(row: &UsageRow, reached: u64) -> u64 {
-    let last = row.reported.iter().copied().max().unwrap_or(0);
-    reached.saturating_sub(last)
-}
-
-/// The `harness_session_progress` message for one reached milestone.
-///
-/// Two turn counts, because the word means two things here:
-/// `user_turns_total` is root turns (one user message through its final
-/// reply), the count the milestones are reached on, so at a milestone it
-/// equals `turn_index`; `model_calls_total` is every model call (assistant
-/// message) across the whole session tree, sub-agents included, which is what
-/// `harness::metrics` reports as `turns`. `user_turns_delta` is the root
-/// turns since this session's previous progress report, so summing it over a
-/// session's events gives its `user_turns_total`.
-fn progress_payload(
-    record: &TurnRecord,
-    reached: u64,
-    outcome: &str,
-    totals: &SessionUsageTotalsV1,
-    user_turns: u64,
-    user_turns_delta: u64,
-    session_age_ms: i64,
-) -> Value {
-    let session_id = &record.session_id;
-    let mut payload = json!({
-        "event": PROGRESS_EVENT,
-        "dedupe_key": format!("{session_id}:progress:{reached}"),
-        "turn_index": reached,
-        "outcome": outcome,
-        "model": record.options.model,
-        "sessions_total": totals.sessions,
-        "user_turns_total": user_turns,
-        "user_turns_delta": user_turns_delta,
-        "model_calls_total": totals.turns,
-        "tool_calls_total": totals.function_calls,
-        "tool_call_errors_total": totals.function_call_errors,
-        "input_tokens": totals.input_tokens,
-        "output_tokens": totals.output_tokens,
-        "cache_read_tokens": totals.cache_read_tokens,
-        "cache_write_tokens": totals.cache_write_tokens,
-        "cost_usd": totals.cost_usd,
-        "session_age_ms": session_age_ms,
-    });
+fn with_provider(mut payload: Value, record: &TurnRecord) -> Value {
     if let Some(provider) = &record.options.provider {
         payload["provider"] = Value::String(provider.clone());
     }
     payload
+}
+
+fn failed_payload(
+    record: &TurnRecord,
+    outcome: &str,
+    error_kind: Option<&str>,
+    turn_index: u64,
+) -> Value {
+    let mut payload = json!({
+        "event": FAILED_EVENT,
+        "dedupe_key": format!("{}:{outcome}", record.session_id),
+        "outcome": outcome,
+        "turn_index": turn_index,
+        "model": record.options.model,
+    });
+    if let Some(kind) = error_kind {
+        payload["error_kind"] = Value::String(kind.to_string());
+    }
+    with_provider(payload, record)
+}
+
+/// `harness_user_turns`: the machine's user turns. `user_turns_delta` is the
+/// user turns since the last one of these that was published, so summing it
+/// over a machine's events gives its `user_turns_total`.
+fn user_turns_payload(record: &TurnRecord, reached: u64, m: &MachineRow) -> Value {
+    with_provider(
+        json!({
+            "event": USER_TURNS_EVENT,
+            "dedupe_key": format!("user_turns:{reached}"),
+            "milestone": reached,
+            "user_turns_total": m.user_turns,
+            "user_turns_delta": m.user_turns.saturating_sub(m.user_turns_announced),
+            "sessions_total": m.sessions,
+            "model": record.options.model,
+        }),
+        record,
+    )
+}
+
+/// `harness_model_calls`: the machine's model calls and everything that goes
+/// with them. `model_calls_delta` sums to `model_calls_total` the same way.
+fn model_calls_payload(record: &TurnRecord, reached: u64, m: &MachineRow) -> Value {
+    let u = &m.usage;
+    with_provider(
+        json!({
+            "event": MODEL_CALLS_EVENT,
+            "dedupe_key": format!("model_calls:{reached}"),
+            "milestone": reached,
+            "model_calls_total": u.model_calls,
+            "model_calls_delta": u.model_calls.saturating_sub(m.model_calls_announced),
+            "tool_calls_total": u.tool_calls,
+            "tool_call_errors_total": u.tool_call_errors,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_read_tokens": u.cache_read_tokens,
+            "cache_write_tokens": u.cache_write_tokens,
+            "cost_usd": u.cost_usd,
+            "user_turns_total": m.user_turns,
+            "sessions_total": m.sessions,
+            "model": record.options.model,
+        }),
+        record,
+    )
+}
+
+/// Apply `next` to the machine row by compare-and-set, retrying when another
+/// turn moved it first. Returns the row before and after this update.
+async fn update_machine(
+    deps: &Deps,
+    timeout_ms: u64,
+    next: impl Fn(&MachineRow) -> MachineRow,
+) -> Result<(MachineRow, MachineRow), crate::error::HarnessError> {
+    let mut current = state::state_get(&deps.iii, USAGE_SCOPE, MACHINE_KEY, timeout_ms).await?;
+    for _ in 0..CAS_ATTEMPTS {
+        let before = machine_row(&current);
+        let after = next(&before);
+        let value = serde_json::to_value(&after).map_err(|e| {
+            crate::error::HarnessError::State(format!("machine usage row serialize: {e}"))
+        })?;
+        let expected = (!current.is_null()).then(|| current.clone());
+        match cas_machine(deps, expected, value, timeout_ms).await? {
+            None => return Ok((before, after)),
+            Some(moved) => current = moved,
+        }
+    }
+    Err(crate::error::HarnessError::State(
+        "machine usage row contended".to_string(),
+    ))
+}
+
+/// One compare-and-set on the machine row through the public
+/// `state::compare-and-set` (`harness_usage` is a public scope, unlike the
+/// binding scopes the harness's private accessor serves). `Ok(None)` means it
+/// swapped; `Ok(Some(current))` is what another turn stored first.
+async fn cas_machine(
+    deps: &Deps,
+    expected: Option<Value>,
+    value: Value,
+    timeout_ms: u64,
+) -> Result<Option<Value>, crate::error::HarnessError> {
+    let mut payload = json!({ "scope": USAGE_SCOPE, "key": MACHINE_KEY, "value": value });
+    if let Some(expected) = expected {
+        payload["expected"] = expected;
+    }
+    let resp = deps
+        .iii
+        .trigger(TriggerRequest {
+            function_id: STATE_CAS_ID.into(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await
+        .map_err(|e| {
+            crate::error::HarnessError::State(format!(
+                "{STATE_CAS_ID} {USAGE_SCOPE}/{MACHINE_KEY}: {e}"
+            ))
+        })?;
+    if resp.get("swapped").and_then(Value::as_bool) == Some(true) {
+        Ok(None)
+    } else {
+        Ok(Some(resp.get("current").cloned().unwrap_or(Value::Null)))
+    }
+}
+
+fn machine_row(value: &Value) -> MachineRow {
+    if value.is_null() {
+        return MachineRow::default();
+    }
+    serde_json::from_value(value.clone()).unwrap_or_default()
 }
 
 /// Published through the `queue` worker, not fire-and-forget pub/sub: a turn
@@ -303,7 +546,7 @@ async fn save(
     state::state_set(&deps.iii, USAGE_SCOPE, session_id, value, timeout_ms).await
 }
 
-/// Drop a deleted session's row.
+/// Drop a deleted session's row. The machine row keeps what it counted.
 pub async fn delete(
     iii: &iii_sdk::IIIClient,
     session_id: &str,
@@ -316,25 +559,170 @@ pub async fn delete(
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_listed_turn_counts_report() {
-        for turns in MILESTONES {
-            assert_eq!(milestone(turns), Some(turns));
-        }
-        for turns in [0, 3, 4, 9, 26, 51, 75, 99, 101, 149, 1_001] {
-            assert_eq!(milestone(turns), None, "turn {turns} must not report");
+    fn usage(model_calls: u64, input: u64, cost: f64) -> ModelUsage {
+        ModelUsage {
+            model_calls,
+            input_tokens: input,
+            cost_usd: cost,
+            ..Default::default()
         }
     }
 
-    /// Prevents: a long session going silent after root turn 50, so its later
-    /// totals never reach analytics.
+    /// Prevents: a user-turn count that steps by one skipping or repeating a
+    /// milestone, or going silent after 50.
     #[test]
-    fn every_fifty_turns_past_fifty_reports() {
-        for turns in [100, 150, 200, 1_000] {
-            assert_eq!(milestone(turns), Some(turns));
+    fn counting_one_at_a_time_hits_every_milestone_then_every_fifty() {
+        let hit: Vec<u64> = (1..=200u64).filter_map(|n| crossed(n - 1, n)).collect();
+        assert_eq!(hit, vec![1, 2, 5, 10, 25, 50, 100, 150, 200]);
+    }
+
+    /// Prevents: a model-call count that jumps past a milestone never
+    /// reporting it.
+    #[test]
+    fn a_jump_reports_the_highest_milestone_it_passed() {
+        assert_eq!(crossed(0, 12), Some(10));
+        assert_eq!(crossed(10, 12), None);
+        assert_eq!(crossed(48, 103), Some(100));
+        assert_eq!(crossed(50, 99), None);
+        assert_eq!(crossed(99, 100), Some(100));
+        assert_eq!(crossed(5, 5), None);
+        assert_eq!(crossed(7, 3), None);
+    }
+
+    /// Prevents: a counter the provider left unreported folding in as zero,
+    /// then the whole value again when it reports.
+    #[test]
+    fn an_unreported_counter_keeps_what_was_folded() {
+        let prev = usage(3, 100, 0.5);
+        let totals = SessionUsageTotalsV1 {
+            turns: 5,
+            input_tokens: None,
+            cost_usd: Some(0.75),
+            ..Default::default()
+        };
+        let now = ModelUsage::observed(&totals, &prev);
+        assert_eq!(now.input_tokens, 100);
+        let delta = now.since(&prev);
+        assert_eq!(delta.model_calls, 2);
+        assert_eq!(delta.input_tokens, 0);
+        assert!((delta.cost_usd - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_shrunk_session_never_takes_from_the_machine() {
+        let delta = usage(2, 10, 0.1).since(&usage(5, 50, 0.4));
+        assert_eq!(delta, ModelUsage::default());
+    }
+
+    /// Prevents: sessions overwriting each other's counts instead of adding.
+    #[test]
+    fn turns_from_different_sessions_add_up_on_the_machine() {
+        let mut m = MachineRow::default();
+        for (session_usage, first) in [
+            (usage(3, 30, 0.3), true),
+            (usage(4, 40, 0.4), true),
+            (usage(2, 20, 0.2), false),
+        ] {
+            m = m.fold(&Fold {
+                user_turns: 1,
+                sessions: u64::from(first),
+                usage: session_usage,
+            });
         }
-        let reported = (1..=200).filter(|t| milestone(*t).is_some()).count();
-        assert_eq!(reported, MILESTONES.len() + 3);
+        assert_eq!(m.user_turns, 3);
+        assert_eq!(m.sessions, 2);
+        assert_eq!(m.usage.model_calls, 9);
+        assert_eq!(m.usage.input_tokens, 90);
+        assert_eq!(m.user_turns_announced, 0);
+    }
+
+    /// Prevents: per-machine deltas that do not sum to the total, including
+    /// after a report whose publish failed.
+    #[test]
+    fn user_turn_deltas_sum_to_the_total() {
+        let record = crate::types::turn::tests::record();
+        let mut m = MachineRow::default();
+        let mut sum = 0;
+        for _ in 1..=200u64 {
+            let before = m.clone();
+            m = m.fold(&Fold {
+                user_turns: 1,
+                ..Default::default()
+            });
+            if let Some(reached) = crossed(before.user_turns, m.user_turns) {
+                // Milestone 10's publish fails: never recorded.
+                if reached == 10 {
+                    continue;
+                }
+                let payload = user_turns_payload(&record, reached, &m);
+                sum += payload["user_turns_delta"].as_u64().unwrap();
+                assert_eq!(sum, m.user_turns);
+                m.user_turns_announced = m.user_turns;
+            }
+        }
+        assert_eq!(sum, 200);
+    }
+
+    #[test]
+    fn the_user_turns_event_carries_machine_counts() {
+        let record = crate::types::turn::tests::record();
+        let m = MachineRow {
+            user_turns: 100,
+            sessions: 7,
+            user_turns_announced: 50,
+            ..Default::default()
+        };
+        let p = user_turns_payload(&record, 100, &m);
+        assert_eq!(p["event"], USER_TURNS_EVENT);
+        assert_eq!(p["dedupe_key"], "user_turns:100");
+        assert_eq!(p["milestone"], 100);
+        assert_eq!(p["user_turns_total"], 100);
+        assert_eq!(p["user_turns_delta"], 50);
+        assert_eq!(p["sessions_total"], 7);
+        assert!(p.get("model_calls_total").is_none());
+    }
+
+    #[test]
+    fn the_model_calls_event_carries_everything_for_model_calls() {
+        let record = crate::types::turn::tests::record();
+        let m = MachineRow {
+            user_turns: 12,
+            sessions: 3,
+            usage: ModelUsage {
+                model_calls: 103,
+                tool_calls: 80,
+                tool_call_errors: 4,
+                input_tokens: 9_000,
+                output_tokens: 700,
+                cache_read_tokens: 50,
+                cache_write_tokens: 5,
+                cost_usd: 1.5,
+            },
+            model_calls_announced: 52,
+            ..Default::default()
+        };
+        let p = model_calls_payload(&record, 100, &m);
+        assert_eq!(p["event"], MODEL_CALLS_EVENT);
+        assert_eq!(p["dedupe_key"], "model_calls:100");
+        assert_eq!(p["milestone"], 100);
+        assert_eq!(p["model_calls_total"], 103);
+        assert_eq!(p["model_calls_delta"], 51);
+        assert_eq!(p["tool_calls_total"], 80);
+        assert_eq!(p["tool_call_errors_total"], 4);
+        assert_eq!(p["input_tokens"], 9_000);
+        assert_eq!(p["cost_usd"], 1.5);
+        assert_eq!(p["user_turns_total"], 12);
+        assert!(p.get("turns_total").is_none());
+    }
+
+    #[test]
+    fn a_failure_still_reports_once_per_session_outcome() {
+        let record = crate::types::turn::tests::record();
+        let p = failed_payload(&record, "failed", Some("llm.rate_limited"), 4);
+        assert_eq!(p["event"], FAILED_EVENT);
+        assert_eq!(p["dedupe_key"], format!("{}:failed", record.session_id));
+        assert_eq!(p["turn_index"], 4);
+        assert_eq!(p["error_kind"], "llm.rate_limited");
     }
 
     #[test]
@@ -351,69 +739,18 @@ mod tests {
         assert!(!is_root(&deep));
     }
 
+    /// Prevents: rows written by the per-session milestone version failing to
+    /// load (they carry `reported`, and no `folded`).
     #[test]
-    fn a_fifty_turn_session_reports_six_times() {
-        let reported = (1..=50).filter(|t| milestone(*t).is_some()).count();
-        assert_eq!(reported, MILESTONES.len());
-    }
-
-    /// Prevents: the progress event's turn counts drifting back to one
-    /// ambiguous `turns_total`, or `user_turns_total` counting model calls.
-    #[test]
-    fn progress_reports_user_turns_and_model_calls_apart() {
-        let record = crate::types::turn::tests::record();
-        let totals = SessionUsageTotalsV1 {
-            sessions: 2,
-            turns: 640,
-            ..Default::default()
-        };
-        let payload = progress_payload(&record, 100, "completed", &totals, 100, 50, 9);
-        assert_eq!(payload["event"], PROGRESS_EVENT);
-        assert_eq!(payload["turn_index"], 100);
-        assert_eq!(payload["user_turns_total"], 100);
-        assert_eq!(payload["user_turns_delta"], 50);
-        assert_eq!(payload["model_calls_total"], 640);
-        assert_eq!(payload["sessions_total"], 2);
-        assert_eq!(payload["session_age_ms"], 9);
-        assert!(payload.get("turns_total").is_none());
-        assert_eq!(
-            payload["dedupe_key"],
-            format!("{}:progress:100", record.session_id)
-        );
-    }
-
-    /// Prevents: per-session deltas that do not sum to the user turn count,
-    /// including after a milestone whose publish failed.
-    #[test]
-    fn user_turn_deltas_sum_to_the_total() {
-        let mut row = UsageRow::default();
-        let mut sum = 0;
-        for reached in (1..=200).filter_map(milestone) {
-            sum += turns_since_last_report(&row, reached);
-            row.reported.push(reached);
-            assert_eq!(sum, reached);
-        }
-
-        // Milestone 10 never announced: the report at 25 covers 6..=25.
-        let row = UsageRow {
-            reported: vec![1, 2, 5],
-            ..Default::default()
-        };
-        assert_eq!(turns_since_last_report(&row, 25), 20);
-    }
-
-    #[test]
-    fn a_missing_row_starts_empty_and_a_malformed_one_does_too() {
-        assert_eq!(
-            serde_json::from_value::<UsageRow>(json!({})).unwrap(),
-            UsageRow::default()
-        );
+    fn rows_from_the_previous_layout_and_malformed_rows_load() {
         let row: UsageRow = serde_json::from_value(json!({
             "turns": 5, "reported": [1, 2, 5], "outcomes": ["failed"], "first_at": 7
         }))
         .unwrap();
         assert_eq!(row.turns, 5);
-        assert_eq!(row.reported, vec![1, 2, 5]);
         assert_eq!(row.outcomes, vec!["failed".to_string()]);
+        assert_eq!(row.folded, ModelUsage::default());
+        assert_eq!(machine_row(&Value::Null), MachineRow::default());
+        assert_eq!(machine_row(&json!("garbage")), MachineRow::default());
     }
 }
