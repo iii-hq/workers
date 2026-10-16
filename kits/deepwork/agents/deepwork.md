@@ -6,7 +6,7 @@ color: purple
 extends: iii
 reasoning_effort: high
 skills_index: false
-composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on plan_only=off isolation=ticket judges= deadline_min=20 critic=on budget_usd= notify= project= release= resume="
+composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on plan_only=off isolation=ticket synthesize=on judges= deadline_min=20 critic=on budget_usd= project= resume="
 functions:
   - harness::spawn
   - harness::status
@@ -44,7 +44,7 @@ The first message may carry an `args:` line. Defaults:
 - `flow`: `auto` runs the dev flow when the goal changes code or files in a git repository (Step A), else the plain flow; `dev` and `plain` force one.
 - `approve`: `on` makes the run wait for the user on open design questions and on the plan (`harness::ask`, both flows), and the dev flow on the finish too; `off` runs straight through and keeps the branch.
 - `plan_only`: `on` plans without dispatching: Step A runs as approve=off up to A.9, the run ticket is created in `todo` with its items in To do, and the turn ends with `plan on <R>: <n> tickets; start with args: resume=<R>`. Edit the cards on the board, then resume (Step A-R).
-- `isolation` (dev flow): `ticket` gives every impl-tier ticket its own worktree, branched from the run branch at dispatch, rebased on it for a retry and landed on it when verified (Steps C and D); `shared` runs every ticket in the run worktree W, so tickets that share a file or a test target wait for a later wave.
+- `isolation` (dev flow): `ticket` gives every impl-tier ticket its own worktree, branched from the run branch at dispatch, rebased on it for a retry and landed on it when verified or accepted (Steps C and D); `shared` runs every ticket in the run worktree W, so tickets that share a file or a test target wait for a later wave.
 - `synthesize` (plain flow): `on` ends the run with one `Synthesize:` ticket that merges the done tickets' results into a single verified report (Step G); `off` reports per ticket.
 - `attempts`: the code (or work) attempts a lead makes per round before it reports `failed`.
 - `judges`: comma-separated model ids, at most 7 in the dev flow and 8 in the plain one (refuse more at Step A). A lead's check then runs one `deepwork-verifier` per model; the majority wins.
@@ -140,7 +140,7 @@ engine::register_trigger {"trigger_type":"state","config":{"scope":"<run>-r1-w1"
 ```
 Then `kanban::ticket::move {"id":"KAN-12","status":"in_progress","actor":"deepwork","compact":true}` for each wave ticket. If the arm was refused because `state::barrier` may not run unattended, move the wave's tickets back to `todo`, then stop and name `state::barrier`.
 
-Reply 2 (dev flow, isolation=ticket) prepares a worktree for each impl-tier wave ticket whose move succeeded, cwd = root unless noted. First `shell::exec {"command":"git","args":["worktree","list","--porcelain"]}` once. For a ticket whose W_K is listed (a retry): `shell::exec {"command":"git","args":["rebase","--autostash","<branch>"],"cwd":"<W_K>"}`; if that fails, `git rebase --abort` (cwd W_K), keep its commits reachable with `git branch -m <ticket branch> <ticket branch>-r<N>` (cwd root), then `git worktree remove --force <W_K>` and treat W_K as unlisted. For an unlisted one: `shell::exec {"command":"git","args":["worktree","add","-B","<ticket branch>","<W_K>","<branch>"]}`, then the Setup command, if any, with cwd W_K; if Setup fails, `git worktree remove --force <W_K>`, so the next round starts it over. With isolation=shared, or in the plain flow, skip this reply.
+Reply 2 (dev flow, isolation=ticket) prepares a worktree for each impl-tier wave ticket whose move succeeded, cwd = root unless noted. First, once: `shell::exec {"command":"git","args":["worktree","list","--porcelain"]}` and `shell::exec {"command":"git","args":["branch","--list","deepwork/<slug>-*"]}`. For a ticket whose W_K is listed (a retry): `shell::exec {"command":"git","args":["rebase","--autostash","<branch>"],"cwd":"<W_K>"}`; if that fails, `git rebase --abort` (cwd W_K), keep its commits reachable with `git branch -m <ticket branch> <ticket branch>-r<N>` (cwd root), then `git worktree remove --force <W_K>` and treat W_K as unlisted with no ticket branch. For an unlisted W_K whose ticket branch exists (kept by an earlier Finish with its commits): `git worktree add <W_K> <ticket branch>`, never `-B` (it would reset the branch and drop those commits), then the rebase above with its failure path. For an unlisted W_K with no ticket branch: `shell::exec {"command":"git","args":["worktree","add","-B","<ticket branch>","<W_K>","<branch>"]}`. Then the Setup command, if any, with cwd W_K; if Setup fails, `git worktree remove --force <W_K>`, so the next round starts it over. With isolation=shared, or in the plain flow, skip this reply.
 
 Reply 3 spawns a lead for each ticket whose move succeeded and, when Reply 2 ran, whose git and Setup calls succeeded:
 ```json

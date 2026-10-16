@@ -7,7 +7,7 @@ Give **Deepwork** a goal and a team of agents works it, with the kanban board as
 3. Leads run in parallel, in waves.
 4. Rounds repeat until the goal is done, nothing is left, progress stalls, rounds run out or the budget is spent.
 
-A goal that changes code in a git repository runs the **dev flow**. You approve the design and the plan. Each code ticket is written test-first in its own git worktree, with one commit. Every commit is verified and reviewed, then landed on the run branch. The whole branch is reviewed, and you choose how it finishes. Other goals (research, reading, analysis) run the **plain flow**: you approve the plan, each ticket is worked and verified, and one last ticket merges the results into a single verified report that cites the ticket behind every claim.
+A goal that changes code in a git repository runs the **dev flow**. You approve the design and the plan. Each code ticket is written test-first in its own git worktree, with one commit. Every commit is verified and reviewed (with `verify=off`, accepted as written), then landed on the run branch. The whole branch is reviewed, and you choose how it finishes. Other goals (research, reading, analysis) run the **plain flow**: you approve the plan and each ticket is worked and verified. When at least two tickets finish with a result, and the run was not stopped, blocked or over budget, one last ticket merges the results into a single verified report that cites the ticket behind every claim (`synthesize=off` turns it off).
 
 Deepwork needs only the `harness`, `state`, `kanban` and `ide` workers.
 
