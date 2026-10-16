@@ -833,7 +833,7 @@ fn caller_holds_child_session_lock(
 }
 
 /// Display defaults from the agent profile: no explicit display → the
-/// profile's name (truncated to the 48-char cap), icon, and color; an explicit
+/// profile's name (cut to the 48-char cap by `normalize_display`), icon, and color; an explicit
 /// display keeps its fields and borrows profile appearance where fields are
 /// absent. Without a profile the request passes through untouched.
 fn merged_display(
@@ -850,7 +850,7 @@ fn merged_display(
             ..d.clone()
         }),
         None => Some(SubagentDisplay {
-            name: agent.name.chars().take(48).collect(),
+            name: agent.name.clone(),
             icon: agent.icon,
             color: agent.color,
         }),
@@ -869,13 +869,12 @@ fn normalize_display(
             "spawn display.name must not be empty".into(),
         ));
     }
-    if name.chars().count() > 48 {
-        return Err(HarnessError::InvalidRequest(
-            "spawn display.name must be at most 48 characters".into(),
-        ));
-    }
+    // Display-only, like the colour: a long name is cut, not refused. A
+    // refused spawn cost live orchestrators a step per lead whose
+    // `<KEY> · <title>` ran past the cap.
+    let name: String = name.chars().take(48).collect();
     Ok(Some(SubagentDisplay {
-        name: name.to_string(),
+        name: name.trim_end().to_string(),
         icon: display.icon,
         color: display.color,
     }))
@@ -1319,10 +1318,20 @@ mod tests {
         assert_eq!(normalized.color, Some(SubagentColor::Blue));
 
         assert!(normalize_display(Some(&display(" \n\t "))).is_err());
-        assert!(normalize_display(Some(&display(&"é".repeat(48)))).is_ok());
-        let error = normalize_display(Some(&display(&"é".repeat(49)))).unwrap_err();
-        assert_eq!(error.code(), "harness/invalid_request");
-        assert!(error.to_string().contains("at most 48 characters"));
+        let exact = normalize_display(Some(&display(&"é".repeat(48))))
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.name, "é".repeat(48));
+        // Display-only: a long name is cut to 48 characters, never refused.
+        let long = normalize_display(Some(&display(&"é".repeat(49))))
+            .unwrap()
+            .unwrap();
+        assert_eq!(long.name, "é".repeat(48));
+        assert_eq!(long.icon, Some(SubagentIcon::Code));
+        // A cut that ends on a space leaves no trailing whitespace.
+        let spaced = format!("{} tail", "a".repeat(47));
+        let cut = normalize_display(Some(&display(&spaced))).unwrap().unwrap();
+        assert_eq!(cut.name, "a".repeat(47));
     }
 
     #[test]
@@ -2073,9 +2082,10 @@ mod tests {
         assert_eq!(merged_display(Some(&explicit), None), Some(explicit));
         // Long profile names are truncated to the display cap, not rejected.
         let long = resolved_agent(&"x".repeat(60), None);
-        let display = merged_display(None, Some(&long)).unwrap();
+        let display = normalize_display(merged_display(None, Some(&long)).as_ref())
+            .unwrap()
+            .unwrap();
         assert_eq!(display.name.chars().count(), 48);
-        assert!(normalize_display(Some(&display)).is_ok());
     }
 
     #[tokio::test]

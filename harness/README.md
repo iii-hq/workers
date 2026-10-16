@@ -264,8 +264,8 @@ capability-walled out of the orchestration surface (`harness::spawn`,
 identity escape hatch.
 
 A spawn may also give its child a display-only identity with
-`display: { name, icon?, color? }`. `name` is trimmed, limited to 48 characters,
-and becomes the title of a newly created child session; `icon` and `color` are
+`display: { name, icon?, color? }`. `name` is trimmed, cut to its first 48
+characters when longer (never refused for its length), and becomes the title of a newly created child session; `icon` and `color` are
 closed semantic tokens recorded with the child linkage in
 `metadata.subagent_display`. These fields never affect routing or execution,
 and reusing an existing `session_id` retains that session's original title and
