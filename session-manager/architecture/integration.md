@@ -197,7 +197,12 @@ session-manager` / `get function info`); the shapes below are the contract.
 // with include_custom). include_custom interleaves kind:"custom" entries at
 // their path position. include_image_data: false (default true) blanks the
 // data of image blocks that carry an attachment_id (see Attachments).
-{ session_id, limit?, cursor?, roles?, from_entry_id?, include_custom?, include_image_data? }
+// content: "usage" (default "full") keeps each message's shape but not its
+// bulk: assistant content is only its function_call blocks (arguments: null),
+// other roles' content is [] and details null, origin is left out — what
+// harness::metrics reads. kind:"custom" entries come back as stored.
+{ session_id, limit?, cursor?, after_entry_id?, roles?, from_entry_id?, include_custom?,
+  include_image_data?, content?: "full" | "usage" }
   -> { messages: [{ entry_id, message?: AgentMessage,
                     custom?: { custom_type, data } }], next_cursor? }
 
