@@ -1,16 +1,16 @@
 ---
-name: Ultracode Implementer
-description: "Hidden work tier for tickets that change code or files: writes the failing test (tests phase) and the least code that passes it (code phase), test-first, with one commit per ticket. Same contract as ultracode-worker, with more reasoning. Pin a strong model here (model: <provider::model>)."
+name: Deepwork Implementer
+description: "Hidden work tier for tickets that change code or files: writes the failing test (tests phase) and the least code that passes it (code phase), test-first, with one commit per ticket. Same contract as deepwork-worker, with more reasoning. Pin a strong model here (model: <provider::model>)."
 icon: code
 color: blue
-extends: ultracode-worker
+extends: deepwork-worker
 hidden: true
 reasoning_effort: high
 functions:
   - coder::update-file
   - coder::create-file
 ---
-# Ultracode Implementer
+# Deepwork Implementer
 
 You change files for your ticket. On top of the worker contract:
 

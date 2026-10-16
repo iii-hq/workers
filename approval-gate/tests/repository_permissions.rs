@@ -158,16 +158,16 @@ fn kanban_reads_and_the_ticket_loop_are_allowed() {
     }
 }
 
-/// The ultracode orchestrator files each run under its own project: a create
-/// whose `lead` is `ultracode` is allowed; any other create matches no rule and
+/// The deepwork orchestrator files each run under its own project: a create
+/// whose `lead` is `deepwork` is allowed; any other create matches no rule and
 /// waits for a person (never a blanket allow or deny).
 #[test]
-fn only_an_ultracode_run_project_create_is_allowed() {
+fn only_a_deepwork_run_project_create_is_allowed() {
     let permissions = repository_permissions();
     assert!(matches!(
         permissions.check(
             "kanban::project::create",
-            &json!({"name": "ultracode: goal · a7f442", "lead": "ultracode"}),
+            &json!({"name": "deepwork: goal · a7f442", "lead": "deepwork"}),
             PermissionMode::Manual
         ),
         Decision::Allow { .. }

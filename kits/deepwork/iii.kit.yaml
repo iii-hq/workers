@@ -1,9 +1,9 @@
 iii: v1
-name: iii/ultracode
-version: 0.1.1
+name: iii/deepwork
+version: 0.2.0
 description: "Dynamic multi-agent workflows on iii: kanban subtasks as the work queue and live monitor, one lead per ticket running its phases as sub-agents, harness::spawn fan-out in bounded waves, state::barrier fan-in with deadlines, independent verify and review, bounded rounds, and the superpowers dev flow (approved design and plan, test-first tickets in a git worktree, branch review, finish you choose) for code goals. No workflow worker."
 license: Apache-2.0
-repo: https://github.com/iii-hq/workers/tree/main/kits/ultracode
+repo: https://github.com/iii-hq/workers/tree/main/kits/deepwork
 tags: [orchestration, sub-agents, kanban, verification, workflows]
 workers:
   # 1.8.54: metrics omit_context (#1401) and profile skills_index (#1406).

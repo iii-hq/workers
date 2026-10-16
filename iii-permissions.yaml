@@ -196,9 +196,9 @@ rules:
   # engine plumbing. Deleting/restoring a ticket is the human's call from the
   # ticket screen; the ticket working loop is allowlisted below. Planning is
   # the human's call too: agents file tickets under a project or release but
-  # never create, rename, ship or convert them. One exception: the ultracode
+  # never create, rename, ship or convert them. One exception: the deepwork
   # orchestrator files each run under its own project, so a create whose
-  # `lead` is `ultracode` is allowed. Rules cannot see the caller, so this is
+  # `lead` is `deepwork` is allowed. Rules cannot see the caller, so this is
   # scoped by argument (an agent could spoof it; the worst case is a stray
   # project). Any other create matches no rule and waits for a person.
   - '!kanban::ui-content'
@@ -207,9 +207,9 @@ rules:
   - '!kanban::ticket::restore'
   - function: kanban::project::create
     action: allow
-    rule_id: ultracode-run-project
+    rule_id: deepwork-run-project
     args:
-      lead: { equals: ultracode }
+      lead: { equals: deepwork }
   - '!kanban::project::update'
   - '!kanban::project::archive'
   - '!kanban::project::restore'

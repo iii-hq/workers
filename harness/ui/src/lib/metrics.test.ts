@@ -33,26 +33,26 @@ function usage(
   }
 }
 
-/** The shape of a live ultracode run: the console chat is the root, each
-    ultracode orchestrator a child, its workers grandchildren. */
+/** The shape of a live deepwork run: the console chat is the root, each
+    deepwork orchestrator a child, its workers grandchildren. */
 const TREE: MetricsResponse = {
   root_session_id: 'console-root',
   complete: false,
   totals: { sessions: 6, turns: 6, function_calls: 12, function_call_errors: 0 },
   by_session: [
     usage('console-root', undefined, 0),
-    usage('kan129-ultracode', 'console-root', 1),
-    usage('kan176-ultracode', 'console-root', 1),
-    usage('kan129-thinker', 'kan129-ultracode', 2),
-    usage('kan176-implementer', 'kan176-ultracode', 2, { turns: 14, cost_usd: 1.19 }),
-    usage('kan178-author', 'kan176-ultracode', 2, { function_call_errors: 1 }),
+    usage('kan129-deepwork', 'console-root', 1),
+    usage('kan176-deepwork', 'console-root', 1),
+    usage('kan129-thinker', 'kan129-deepwork', 2),
+    usage('kan176-implementer', 'kan176-deepwork', 2, { turns: 14, cost_usd: 1.19 }),
+    usage('kan178-author', 'kan176-deepwork', 2, { function_call_errors: 1 }),
   ],
 }
 
 describe('conversationTree', () => {
   it('cuts the subtree of a conversation that is itself a child', () => {
-    const tree = conversationTree(TREE, 'kan176-ultracode')
-    expect(tree?.self.session_id).toBe('kan176-ultracode')
+    const tree = conversationTree(TREE, 'kan176-deepwork')
+    expect(tree?.self.session_id).toBe('kan176-deepwork')
     expect(tree?.subAgents.map((row) => row.usage.session_id)).toEqual([
       'kan176-implementer',
       'kan178-author',
@@ -70,9 +70,9 @@ describe('conversationTree', () => {
     expect(
       tree?.subAgents.map((row) => [row.usage.session_id, row.depth]),
     ).toEqual([
-      ['kan129-ultracode', 1],
+      ['kan129-deepwork', 1],
       ['kan129-thinker', 2],
-      ['kan176-ultracode', 1],
+      ['kan176-deepwork', 1],
       ['kan176-implementer', 2],
       ['kan178-author', 2],
     ])
@@ -83,7 +83,7 @@ describe('conversationTree', () => {
     const tree = conversationTree(TREE, 'kan176-implementer')
     expect(tree?.subAgents).toEqual([])
     expect(tree && treeTotals(tree).total).toBeNull()
-    expect(tree?.self.parent_session_id).toBe('kan176-ultracode')
+    expect(tree?.self.parent_session_id).toBe('kan176-deepwork')
   })
 
   it('is null when the response does not carry the session', () => {
@@ -166,7 +166,7 @@ describe('sumUsage', () => {
 
 describe('treeTotals', () => {
   it('takes this conversation\'s cost from the live snapshot', () => {
-    const tree = conversationTree(TREE, 'kan176-ultracode')
+    const tree = conversationTree(TREE, 'kan176-deepwork')
     const { self, total } = tree ? treeTotals(tree, 2) : { self: null, total: null }
     expect(self?.cost_usd).toBe(2)
     expect(total?.cost_usd).toBeCloseTo(2 + 1.19 + 1)
@@ -179,31 +179,31 @@ describe('sub-agent groups', () => {
 
   it('groups each direct child with what it spawned', () => {
     expect(groups.map((g) => [g.head.session_id, g.rows.length])).toEqual([
-      ['kan129-ultracode', 2],
-      ['kan176-ultracode', 3],
+      ['kan129-deepwork', 2],
+      ['kan176-deepwork', 3],
     ])
     expect(groups[1].totals.cost_usd).toBeCloseTo(3.19)
   })
 
   it('sorts by subtree cost, by failures, and by the newest snapshot', () => {
-    expect(sortGroups(groups, 'cost')[0].head.session_id).toBe('kan176-ultracode')
+    expect(sortGroups(groups, 'cost')[0].head.session_id).toBe('kan176-deepwork')
     expect(sortGroups(groups, 'failed')[0].totals.function_call_errors).toBe(1)
     const stamped = groups.map((g, i) => ({ ...g, lastActive: i === 0 ? 2 : 1 }))
-    expect(sortGroups(stamped, 'recent')[0].head.session_id).toBe('kan129-ultracode')
+    expect(sortGroups(stamped, 'recent')[0].head.session_id).toBe('kan129-deepwork')
     // A copy: the input order is untouched.
-    expect(groups[0].head.session_id).toBe('kan129-ultracode')
+    expect(groups[0].head.session_id).toBe('kan129-deepwork')
   })
 
   it('filters by id, keeping the head of a group matched by a child', () => {
     expect(filterGroups(groups, '  ')).toBe(groups)
     const filtered = filterGroups(groups, 'IMPLEMENTER')
     expect(filtered.map((g) => g.rows.map((r) => r.session_id))).toEqual([
-      ['kan176-ultracode', 'kan176-implementer'],
+      ['kan176-deepwork', 'kan176-implementer'],
     ])
     // The group still knows its full size and totals.
     expect(filtered[0].size).toBe(2)
     expect(filtered[0].totals.cost_usd).toBeCloseTo(3.19)
-    expect(filterGroups(groups, 'kan129-ultra')[0].rows).toHaveLength(2)
+    expect(filterGroups(groups, 'kan129-deep')[0].rows).toHaveLength(2)
     expect(filterGroups(groups, 'nothing')).toEqual([])
   })
 })

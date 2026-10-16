@@ -95,14 +95,14 @@ function renderGlyphRow(
 }
 
 const IMPL_PROFILE = {
-  id: 'ultracode-impl',
-  name: 'Ultracode Implementer',
+  id: 'deepwork-impl',
+  name: 'Deepwork Implementer',
   icon: 'code',
 } as const
 
 describe('ConversationRow glyph', () => {
   it("shows a sub-agent's spawn icon over its profile's", () => {
-    /* Two phases on one profile (tests and code on ultracode-impl) differ
+    /* Two phases on one profile (tests and code on deepwork-impl) differ
        only by the icon their spawn picked. */
     const html = renderGlyphRow(
       {
@@ -118,7 +118,7 @@ describe('ConversationRow glyph', () => {
     )
     expect(html).toContain('lucide-flask-conical')
     expect(html).not.toContain('lucide-code')
-    expect(html).toContain('title="Ultracode Implementer"')
+    expect(html).toContain('title="Deepwork Implementer"')
   })
 
   it("keeps the profile's icon when the spawn picked none", () => {

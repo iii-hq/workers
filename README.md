@@ -56,7 +56,7 @@ npx skills add iii-hq/iii --all
 
 [`kits/`](kits/) holds kits: agent profiles, skills and the workers they need,
 installed together through `iii-directory` (see [Kits](iii-directory/README.md#kits)).
-Current kit: [`ultracode`](kits/ultracode/), dynamic multi-agent workflows on the
+Current kit: [`deepwork`](kits/deepwork/), dynamic multi-agent workflows on the
 kanban board.
 
 ## Modules
