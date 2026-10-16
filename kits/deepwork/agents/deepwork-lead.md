@@ -45,11 +45,11 @@ Your task names the ticket, run, round N, result scope and key, `Phases`, `Work 
    engine::register_trigger {"trigger_type":"state","config":{"scope":"<phase scope>"},"label":"dw KAN-12 r1 code1","conditions":[{"function_id":"state::barrier","config":{"id":"<phase scope>","expect":["code"],"carry":"/event_type"}}],"lifecycle":{"expires_in_ms":<(Phase deadline + 1) × 60000>}}
    ```
    If the arm is refused, spawn nothing and finish `blocked` with the refusal as the question. A refused spawn closes its own key: `state::compare-and-set` to the phase scope and key with `{"item":"<key>","status":"failed","summary":"spawn refused: <error>"}` (verdict keys: `{"item":"<key>","verdict":"unsure","reasons":["spawn refused: <error>"]}`).
-4. **Wait.** End the turn with one status line. Act only on the wake labelled with your current phase: `[notification] dw <KEY> r<N> <phase><a>: {"results":…}` (every key written) or `wake expired unfired` for that label (deadline). Any other notification: reply one line and end the turn; the armed wake stays. On your wake, `state::list {"scope":"<phase scope>"}` and match documents by `item`, never by position.
+4. **Wait.** End the turn with one status line. Act only on the wake labelled with your current phase: `[notification] dw <KEY> r<N> <phase><a>: {"results":…}` (every key written) or `wake expired unfired` for that label (deadline). A `[notification] wake removed: …` for your current phase's wake means the orchestrator took this ticket back: write nothing, spawn nothing, and end with `<KEY> released`. Any other notification: reply one line and end the turn; the armed wake stays. On your wake, `state::list {"scope":"<phase scope>"}` and match documents by `item`, never by position.
 5. **Null** (no valid document for a key): `harness::status {"session_id":"<child>","verbose":true}`.
    - `awaiting_functions` with pending calls: `harness::stop` it and finish `blocked` with the question `approve <function ids> for <agent>`. Start no other attempt.
    - Otherwise `running` or `awaiting_functions`: `harness::stop` it; a stop error makes your outcome `stuck`.
-   - A `stop_reason` showing a stop you did not make means the orchestrator stopped this ticket: finish `failed` with reason `stopped` and spawn nothing more.
+   - A `cancelled` status, or a `stop_reason` showing a stop you did not make, means the orchestrator stopped this ticket: finish `failed` with reason `stopped` and spawn nothing more.
    - Otherwise the key failed with reason `no result: <status / stop_reason>`.
 
 ## Pipeline
