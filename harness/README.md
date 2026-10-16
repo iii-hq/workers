@@ -226,6 +226,8 @@ message. Two moments report:
   totals that `harness::metrics` aggregates over the session tree: model calls
   (`model_calls_total`), function calls, tokens and cost, plus the root turns
   so far (`user_turns_total`). A later report supersedes the one before it.
+  `user_turns_delta` is the root turns since the session's previous report, so
+  summing it across reports gives `user_turns_total`.
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
   and `max_turns` outcomes. This keeps the reason a run stopped exact when it
   stopped between two milestones.

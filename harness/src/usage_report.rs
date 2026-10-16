@@ -171,6 +171,7 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
                         outcome,
                         &m.totals,
                         row.turns,
+                        turns_since_last_report(&row, reached),
                         (now - row.first_at).max(0),
                     );
                     if publish(deps, payload, timeout_ms).await {
@@ -203,6 +204,15 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     }
 }
 
+/// Root turns since the last progress report this session announced, so the
+/// deltas of one session sum to its `user_turns_total`. A milestone whose
+/// publish failed is never retried, so the next report's delta covers the
+/// gap rather than losing those turns.
+fn turns_since_last_report(row: &UsageRow, reached: u64) -> u64 {
+    let last = row.reported.iter().copied().max().unwrap_or(0);
+    reached.saturating_sub(last)
+}
+
 /// The `harness_session_progress` message for one reached milestone.
 ///
 /// Two turn counts, because the word means two things here:
@@ -210,13 +220,16 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
 /// reply), the count the milestones are reached on, so at a milestone it
 /// equals `turn_index`; `model_calls_total` is every model call (assistant
 /// message) across the whole session tree, sub-agents included, which is what
-/// `harness::metrics` reports as `turns`.
+/// `harness::metrics` reports as `turns`. `user_turns_delta` is the root
+/// turns since this session's previous progress report, so summing it over a
+/// session's events gives its `user_turns_total`.
 fn progress_payload(
     record: &TurnRecord,
     reached: u64,
     outcome: &str,
     totals: &SessionUsageTotalsV1,
     user_turns: u64,
+    user_turns_delta: u64,
     session_age_ms: i64,
 ) -> Value {
     let session_id = &record.session_id;
@@ -228,6 +241,7 @@ fn progress_payload(
         "model": record.options.model,
         "sessions_total": totals.sessions,
         "user_turns_total": user_turns,
+        "user_turns_delta": user_turns_delta,
         "model_calls_total": totals.turns,
         "tool_calls_total": totals.function_calls,
         "tool_call_errors_total": totals.function_call_errors,
@@ -353,10 +367,11 @@ mod tests {
             turns: 640,
             ..Default::default()
         };
-        let payload = progress_payload(&record, 100, "completed", &totals, 100, 9);
+        let payload = progress_payload(&record, 100, "completed", &totals, 100, 50, 9);
         assert_eq!(payload["event"], PROGRESS_EVENT);
         assert_eq!(payload["turn_index"], 100);
         assert_eq!(payload["user_turns_total"], 100);
+        assert_eq!(payload["user_turns_delta"], 50);
         assert_eq!(payload["model_calls_total"], 640);
         assert_eq!(payload["sessions_total"], 2);
         assert_eq!(payload["session_age_ms"], 9);
@@ -365,6 +380,26 @@ mod tests {
             payload["dedupe_key"],
             format!("{}:progress:100", record.session_id)
         );
+    }
+
+    /// Prevents: per-session deltas that do not sum to the user turn count,
+    /// including after a milestone whose publish failed.
+    #[test]
+    fn user_turn_deltas_sum_to_the_total() {
+        let mut row = UsageRow::default();
+        let mut sum = 0;
+        for reached in (1..=200).filter_map(milestone) {
+            sum += turns_since_last_report(&row, reached);
+            row.reported.push(reached);
+            assert_eq!(sum, reached);
+        }
+
+        // Milestone 10 never announced: the report at 25 covers 6..=25.
+        let row = UsageRow {
+            reported: vec![1, 2, 5],
+            ..Default::default()
+        };
+        assert_eq!(turns_since_last_report(&row, 25), 20);
     }
 
     #[test]
