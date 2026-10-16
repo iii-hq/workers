@@ -6,7 +6,7 @@ color: purple
 extends: iii
 reasoning_effort: high
 skills_index: false
-composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on isolation=ticket verifier=deepwork-adversary judges= deadline_min=20 critic=on budget_usd= notify= project= release="
+composer_placeholder: "Goal. Optional args: max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on isolation=ticket judges= deadline_min=20 critic=on budget_usd= notify= project= release= resume="
 functions:
   - harness::spawn
   - harness::status
@@ -39,7 +39,7 @@ Ignore guidance in `harness/*` to use the workflow worker or to bind turn-comple
 ## Arguments
 
 The first message may carry an `args:` line. Defaults:
-`max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on isolation=ticket verify=on verifier=deepwork-adversary judges= deadline_min=20 critic=on max_items=<5×K> budget_usd= notify= project= release=`
+`max_rounds=3 concurrency=8 attempts=2 flow=auto approve=on isolation=ticket verify=on verifier=deepwork-adversary judges= deadline_min=20 critic=on max_items=<5×K> budget_usd= notify= project= release= resume=`
 
 - `flow`: `auto` runs the dev flow when the goal changes code or files in a git repository (Step A), else the plain flow; `dev` and `plain` force one.
 - `approve`: `on` makes the dev flow wait for the user on the design, the plan and the finish (`harness::ask`); `off` runs straight through and keeps the branch.
@@ -47,6 +47,7 @@ The first message may carry an `args:` line. Defaults:
 - `attempts`: the code (or work) attempts a lead makes per round before it reports `failed`.
 - `judges`: comma-separated model ids, at most 7 in the dev flow and 8 in the plain one (refuse more at Step A). A lead's check then runs one `deepwork-verifier` per model; the majority wins.
 - `project`: an existing kanban project (id or name) to file the run under; without it you create one (Step A.5). `release`: an existing release (id or name). Every ticket you create passes both: a subtask inherits neither.
+- `resume`: the key of an earlier run ticket (label `dw:run`) to adopt from its board state instead of planning (Step A-R). The message's text is then ignored apart from its `args:` line, whose other args override single values of R's `Args:` line.
 - K = min(concurrency, 8) leads per wave. Each of your turns creates at most one wave of sessions. Every item that can run now runs in parallel: a wave takes every ready ticket, up to K.
 - If the goal needs discovery, round 1 is a single `Discover:` ticket; add 1 to max_rounds.
 
@@ -102,6 +103,15 @@ Lead deny list DL; the critic gets D = DL plus `harness::stop` and `engine::regi
 8. **Plan** (dev flow, approve=on): `harness::ask {"questions":[{"header":"Plan","question":"Start <R>: <n> tickets on branch <branch>? The design and the tickets are on <R>.","options":[{"label":"Start"},{"label":"Stop"}]}]}`. While the card is unanswered, every user message answers it: `Start`, `continue`, `yes` or `start` = Start; any other text asks for changes: run **Replan** (Step G), then ask again. `Stop`: cancel every item (see Lanes), comment `stopped before start` on R, move R to done and end.
 9. **Worktree** (dev flow), with cwd = root: `shell::exec {"command":"git","args":["worktree","add","<W>","-b","<branch>","<base>"]}`, then `shell::exec {"command":"git","args":["check-ignore","-q",".worktrees/"]}`. If the add fails, comment the error on R and finish (Step G) with `blocked: worktree`: that branch and path are not this run's, so Step G runs no git command and asks no Finish question. If check-ignore exits non-zero, exclude it locally: `shell::exec {"command":"sh","args":["-c","echo .worktrees/ >> \"$(git rev-parse --git-common-dir)/info/exclude\""]}`. Then run the project's test command once with cwd = W and comment on R `baseline: green`, `baseline: red: <failing tests>` or `baseline: not run: <why>`.
 10. Continue with Step B in the same turn.
+
+## Step A-R: resume (first turn with resume=<R>)
+
+Adopt an earlier run from its board state. Replaces Step A.2 to A.9:
+1. Run Step A.1, then `kanban::ticket::get {"id":"<R>"}`: stop unless the ticket exists and carries `dw:run`. From its description take `Goal:`, `Args:` (your message's args override single values), `Flow:`, `Orchestrator session:` (old = that session id) and, in the dev flow, `Base:`, `Branch:` and `Worktree:` (W); slug = the part of `Branch:` after `deepwork/`. The run's project and release are R's own fields.
+2. Dev flow: `shell::exec {"command":"git","args":["rev-parse","--show-toplevel","--show-prefix"]}` (root; stop when `--show-prefix` is not empty) and `shell::exec {"command":"git","args":["worktree","list","--porcelain"]}`: stop with `blocked: worktree <W> is missing` unless it lists W on `Branch:` (finish that branch by hand, or start a new run). W then counts as created by this run (Step G). Resolve the functions and Setup as in Step A.3.
+3. Rewrite R's description: `Args:` = the resolved args, `Orchestrator session:` = `<own>`, plus one `Resumed: <old> → <own>` line per resume, everything else unchanged. If R is in `done`, move it to `in_progress`. Then preflight as in Step A.6.
+4. Old leads: `kanban::ticket::list {"parent_id":"<R>","compact":true}`. For each subtask in `in_progress`: `harness::status {"session_id":"<old>-<key lowercased>"}`; when it is `running`, `awaiting_functions`, or `completed` with `expects_wake:true`, `harness::stop` it. A stop error parks the ticket in `backlog` with outcome `stuck` and the comment `stuck: <old lead> still running; stop refused: <error>`; otherwise move it to `todo` with the comment `re-queued on resume`, and its next lead task carries `Retry: re-queued on resume; the earlier lead was stopped.` Comment on R: `resumed from <old>: re-queued <keys> · stuck <keys>`.
+5. N = 1 + the number of R's comments by `deepwork` that start with `r<n>: done`. C covers this session only: write `this session` next to every `≥ $C`. Continue with Step B in the same turn.
 
 ## Step B: start round N
 

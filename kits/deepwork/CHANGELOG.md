@@ -3,6 +3,7 @@
 ## 0.3.0
 
 - One worktree per code ticket (`isolation=ticket`, the default in the dev flow): each impl-tier ticket is dispatched into its own worktree `.worktrees/<slug>-<key>` on a branch off the run branch, rebased on it for a retry (a conflicting rebase starts the ticket over in a fresh worktree, with the old commits kept on a reference branch until Finish), and landed on it with a cherry-pick once verified, or accepted with verify off; a conflict is a rejection retried next round on the new base. Tickets that share a file or a test target no longer wait for a later wave, and commit hooks no longer force one ticket per wave. `isolation=shared` keeps the 0.2 behaviour.
+- `resume=<R>` adopts an earlier run from its board state: goal, args, flow, branch and worktree come from the run ticket, In progress tickets whose lead is gone are re-queued (a lead that is still running is stopped first), and the rounds continue. A finished run resumes the same way once cards are back in To do.
 - Dev cards' `Verify:` lines carry no `cwd`: every agent runs them in its own worktree. A fresh ticket worktree gets the install step the repository needs before it builds (a Node project's offline install); build output is never shared between worktrees.
 
 ## 0.2.1
