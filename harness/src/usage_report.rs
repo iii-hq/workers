@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 use iii_sdk::protocol::TriggerRequest;
 
 use crate::deps::Deps;
-use crate::functions::metrics::{self, SessionMetricsRequestV1};
+use crate::functions::metrics::{self, SessionMetricsRequestV1, SessionUsageTotalsV1};
 use crate::state::{self, USAGE_SCOPE};
 use crate::types::message::AgentMessage;
 use crate::types::turn::TurnRecord;
@@ -165,27 +165,14 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
             .await
             {
                 Ok(m) => {
-                    let totals = m.totals;
-                    let mut payload = json!({
-                        "event": PROGRESS_EVENT,
-                        "dedupe_key": format!("{session_id}:progress:{reached}"),
-                        "turn_index": reached,
-                        "outcome": outcome,
-                        "model": record.options.model,
-                        "sessions_total": totals.sessions,
-                        "turns_total": totals.turns,
-                        "tool_calls_total": totals.function_calls,
-                        "tool_call_errors_total": totals.function_call_errors,
-                        "input_tokens": totals.input_tokens,
-                        "output_tokens": totals.output_tokens,
-                        "cache_read_tokens": totals.cache_read_tokens,
-                        "cache_write_tokens": totals.cache_write_tokens,
-                        "cost_usd": totals.cost_usd,
-                        "session_age_ms": (now - row.first_at).max(0),
-                    });
-                    if let Some(provider) = &record.options.provider {
-                        payload["provider"] = Value::String(provider.clone());
-                    }
+                    let payload = progress_payload(
+                        record,
+                        reached,
+                        outcome,
+                        &m.totals,
+                        row.turns,
+                        (now - row.first_at).max(0),
+                    );
                     if publish(deps, payload, timeout_ms).await {
                         row.reported.push(reached);
                         announced = true;
@@ -214,6 +201,47 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
             "usage reported"
         );
     }
+}
+
+/// The `harness_session_progress` message for one reached milestone.
+///
+/// Two turn counts, because the word means two things here:
+/// `user_turns_total` is root turns (one user message through its final
+/// reply), the count the milestones are reached on, so at a milestone it
+/// equals `turn_index`; `model_calls_total` is every model call (assistant
+/// message) across the whole session tree, sub-agents included, which is what
+/// `harness::metrics` reports as `turns`.
+fn progress_payload(
+    record: &TurnRecord,
+    reached: u64,
+    outcome: &str,
+    totals: &SessionUsageTotalsV1,
+    user_turns: u64,
+    session_age_ms: i64,
+) -> Value {
+    let session_id = &record.session_id;
+    let mut payload = json!({
+        "event": PROGRESS_EVENT,
+        "dedupe_key": format!("{session_id}:progress:{reached}"),
+        "turn_index": reached,
+        "outcome": outcome,
+        "model": record.options.model,
+        "sessions_total": totals.sessions,
+        "user_turns_total": user_turns,
+        "model_calls_total": totals.turns,
+        "tool_calls_total": totals.function_calls,
+        "tool_call_errors_total": totals.function_call_errors,
+        "input_tokens": totals.input_tokens,
+        "output_tokens": totals.output_tokens,
+        "cache_read_tokens": totals.cache_read_tokens,
+        "cache_write_tokens": totals.cache_write_tokens,
+        "cost_usd": totals.cost_usd,
+        "session_age_ms": session_age_ms,
+    });
+    if let Some(provider) = &record.options.provider {
+        payload["provider"] = Value::String(provider.clone());
+    }
+    payload
 }
 
 /// Published through the `queue` worker, not fire-and-forget pub/sub: a turn
@@ -313,6 +341,30 @@ mod tests {
     fn a_fifty_turn_session_reports_six_times() {
         let reported = (1..=50).filter(|t| milestone(*t).is_some()).count();
         assert_eq!(reported, MILESTONES.len());
+    }
+
+    /// Prevents: the progress event's turn counts drifting back to one
+    /// ambiguous `turns_total`, or `user_turns_total` counting model calls.
+    #[test]
+    fn progress_reports_user_turns_and_model_calls_apart() {
+        let record = crate::types::turn::tests::record();
+        let totals = SessionUsageTotalsV1 {
+            sessions: 2,
+            turns: 640,
+            ..Default::default()
+        };
+        let payload = progress_payload(&record, 100, "completed", &totals, 100, 9);
+        assert_eq!(payload["event"], PROGRESS_EVENT);
+        assert_eq!(payload["turn_index"], 100);
+        assert_eq!(payload["user_turns_total"], 100);
+        assert_eq!(payload["model_calls_total"], 640);
+        assert_eq!(payload["sessions_total"], 2);
+        assert_eq!(payload["session_age_ms"], 9);
+        assert!(payload.get("turns_total").is_none());
+        assert_eq!(
+            payload["dedupe_key"],
+            format!("{}:progress:100", record.session_id)
+        );
     }
 
     #[test]
