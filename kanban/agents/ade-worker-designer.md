@@ -5,6 +5,7 @@ logo: "🖥️"
 icon: design
 color: teal
 extends: iii-minimal
+hidden: true
 skills: [kanban/ade-worker-design/index, kanban/ade-worker-design/console-injectable-ui, kanban/ade-worker-design/patterns, kanban/ade-worker-design/console-design, kanban/iii-node/configuration, kanban/tickets/ticket-worker]
 functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "web::fetch", "browser::sessions::start", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "console::ui-manifest", "console::status", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
 ---

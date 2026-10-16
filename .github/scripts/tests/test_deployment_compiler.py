@@ -189,6 +189,12 @@ def test_registry_projection_carries_the_skills_payload():
     assert "SKILL.md" in kanban
     assert "skills/tickets/index.md" in kanban
     assert "agents/tech-lead.md" in kanban
+    # Worker-shipped profiles land in every project that installs the worker
+    # (also as a kit dependency), so they stay out of the chat gallery (MOT-5437).
+    for key, body in kanban.items():
+        if key.startswith("agents/"):
+            frontmatter = body.split("\n---", 1)[0] + "\n"
+            assert "\nhidden: true\n" in frontmatter, key
     assert all(key.endswith(".md") and body.strip() for key, body in kanban.items())
 
     assert projection("acp")["skills"] == {}

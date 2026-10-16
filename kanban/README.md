@@ -384,7 +384,12 @@ soft-deleted ticket marked as such), which declares the provider.
 
 `agents/` ships five profiles. Each is a system prompt with preloaded
 `skills` and `functions`; the harness freezes both into every session that
-runs as that profile, and the board is the only channel between them.
+runs as that profile, and the board is the only channel between them. All
+five are `hidden: true`: the chat's new-conversation gallery does not list
+them, but they stay selectable by id, assignable on the board, and shown by
+`directory::agents::list` (with `hidden: true`). To put one in the gallery,
+drop `hidden: true` from its frontmatter (the file in `agents/`, the ADE's
+profile editor, or `directory::agents::update { id, content }`).
 
 | Profile id | Role | Preloaded skills |
 |---|---|---|

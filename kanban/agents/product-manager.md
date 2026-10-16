@@ -5,6 +5,7 @@ logo: "📋"
 icon: review
 color: amber
 extends: iii-minimal
+hidden: true
 skills: [kanban/tickets/feature-planning, kanban/tickets/acceptance-review, kanban/tickets/kanban-tickets]
 functions:
   - kanban::board::get
