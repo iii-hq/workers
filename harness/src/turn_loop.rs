@@ -25,7 +25,8 @@ use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
 use crate::types::model::AgentFunction;
 use crate::types::turn::{
-    CallCheckpoint, CallState, ExposeMode, FunctionPolicy, ResponseLanguage, TurnRecord, TurnStatus,
+    CallCheckpoint, CallState, ContextStrategy, ExposeMode, FunctionPolicy, ResponseLanguage,
+    TurnRecord, TurnStatus,
 };
 
 #[derive(Clone, Copy)]
@@ -72,6 +73,26 @@ const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
 const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.budget_unavailable",
     phase: "budget_preflight",
+    retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+};
+
+const CONTEXT_STRATEGY_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.context_strategy_unavailable",
+    phase: "context_assembly",
+    retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+};
+
+const CONTEXT_BUDGET_STOP_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.context_budget_stop",
+    phase: "context_assembly",
     retryable: false,
     kind: None,
     detail: None,
@@ -495,58 +516,15 @@ async fn generate_step(
         }
     }
 
-    // max_turns guard: cap runaway loops with a synthetic notice.
-    if record.turn_count >= record.options.max_turns {
-        let notice = format!(
-            "max_turns ({}) reached; ending the turn.",
-            record.options.max_turns
-        );
-        let _ = session
-            .append_custom(
-                &record.session_id,
-                "notice",
-                json!({ "reason": "max_turns", "message": notice }),
-                &format!("e_{}_max_turns", record.turn_id),
-                Some(&origin(&record.turn_id)),
-            )
-            .await;
-        let text = json!(notice);
-        // Readable from the lean `harness::status`: `completed` with no error
-        // and an unmet goal looked exactly like success to a live
-        // orchestrator polling its children (MOT-4718).
-        record.stop_reason = Some("max_turns".to_string());
-        // The cap ends the turn but must not BYPASS the post-turn gate: with
-        // no steps left to correct anything, a validator that rejects this
-        // residue FAILS the turn — a runaway must never complete as if
-        // validated (live-caught by the validation_chain e2e: a turn that
-        // burned its steps mid-loop finalized "completed" with the goal
-        // unmet).
-        return (match deps.hooks.run_post_turn(&record, record.step, &text).await {
-            Ok(()) => finalize_completed(deps, &session, &mut record, Some(text)).await,
-            Err(deny) => {
-                record.result = Some(text);
-                finalize_failed(
-                    deps,
-                    &session,
-                    &mut record,
-                    &format!(
-                        "max_turns reached with the post-turn gate unsatisfied: {}",
-                        deny.reason
-                    ),
-                    FailureInfo {
-                        code: "harness.output_contract_invalid",
-                        phase: "output_validation",
-                        retryable: false,
-                        kind: None,
-                        detail: None,
-                        provider: None,
-                        model: None,
-                    },
-                )
-                .await
-            }
-        })
-        .map(PreparedStep::Finished);
+    // max_turns guard: cap runaway loops with a synthetic notice. When this
+    // step's assembly may still give the last step back as context
+    // maintenance, the guard runs again right after it instead.
+    if record.counted_turns() >= record.options.max_turns
+        && !maintenance_grant_possible(&record, payload.step)
+    {
+        return end_at_max_turns(deps, &session, &mut record)
+            .await
+            .map(PreparedStep::Finished);
     }
 
     let functions = deps.functions().await;
@@ -671,7 +649,6 @@ async fn generate_step(
     .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
     .collect();
     let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
-    record.functions_acknowledged = Some(current_surface);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
@@ -737,6 +714,7 @@ async fn generate_step(
         generation_input_tokens,
         generation_max_output_tokens,
         assembly_pruned,
+        snapshot,
     ) = loop {
         let assembled = match assemble_context(
             deps,
@@ -755,6 +733,20 @@ async fn generate_step(
         .await
         {
             Ok(assembled) => assembled,
+            // A step the guard deferred generates only on a grant its
+            // assembly gives. One that cannot assemble still ends at
+            // max_turns, as it did before assembling.
+            Err(error) if record.counted_turns() >= record.options.max_turns => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    turn_id = %record.turn_id,
+                    %error,
+                    "context assembly failed on a step past max_turns; ending the turn there"
+                );
+                return end_at_max_turns(deps, &session, &mut record)
+                    .await
+                    .map(PreparedStep::Finished);
+            }
             Err(HarnessError::ContextOverflow(reason)) => {
                 return finalize_failed(
                     deps,
@@ -766,8 +758,30 @@ async fn generate_step(
                 .await
                 .map(PreparedStep::Finished);
             }
+            Err(HarnessError::ContextBudgetStop(reason)) => {
+                return finalize_failed(
+                    deps,
+                    &session,
+                    &mut record,
+                    &reason,
+                    CONTEXT_BUDGET_STOP_FAILURE,
+                )
+                .await
+                .map(PreparedStep::Finished);
+            }
             Err(error) => return Err(error),
         };
+        // Granted once per step, before the hooks: a step the guard deferred
+        // that gets nothing back ends here and never runs them. Persisted
+        // with the pre-generate write below (or the finalize the guard runs):
+        // a step redelivered before that write assembles and grants again,
+        // once.
+        grant_maintenance_step(&mut record, payload.step, assembled.maintenance_step);
+        if record.counted_turns() >= record.options.max_turns {
+            return end_at_max_turns(deps, &session, &mut record)
+                .await
+                .map(PreparedStep::Finished);
+        }
 
         // pre_generate hooks: extend the system prompt / append bounded messages,
         // or veto. Annotations ride the assistant entry's origin (audit trail).
@@ -913,7 +927,6 @@ async fn generate_step(
                 final_request_tokens,
                 request_overhead_tokens,
             );
-            record.context_snapshot = Some(snapshot);
             break (
                 gen_system_prompt,
                 gen_annotations,
@@ -922,6 +935,7 @@ async fn generate_step(
                 final_request_tokens,
                 max_output_tokens,
                 assembled.pruned,
+                snapshot,
             );
         }
         if reassembled {
@@ -957,6 +971,12 @@ async fn generate_step(
             "post-assembly additions exceeded the usable budget; re-assembling with reserved headroom"
         );
     };
+
+    // Recorded only past the guard and the assembly failures above: a turn
+    // that ends there keeps the last generated snapshot, and leaves its unsent
+    // registry-change notice for the session's next step.
+    record.context_snapshot = Some(snapshot);
+    record.functions_acknowledged = Some(current_surface);
 
     // Persist what this step adds to the model-facing messages before the
     // request goes out, so every later step replays it in place.
@@ -1415,13 +1435,7 @@ async fn finish_step(
         // Recovery continues a partial response. Retrying a failed startup is
         // the router's responsibility; there is no response to resume here.
         if assistant_partial_result(&outcome.message).is_some()
-            && transient_resume_allowed(
-                failure.retryable.then_some(ErrorKind::Transient),
-                record.transient_resumes,
-                record.options.max_transient_resumes,
-                record.turn_count,
-                record.options.max_turns,
-            )
+            && transient_resume_allowed(failure.retryable.then_some(ErrorKind::Transient), &record)
         {
             let attempt = record.transient_resumes + 1;
             record_recovery_telemetry(&record, &detail, attempt);
@@ -2425,6 +2439,86 @@ async fn retry_or_giveup_with(
     }
 }
 
+/// End a turn that used up `max_turns`: a synthetic notice, then the
+/// post-turn gate decides between completed and failed.
+async fn end_at_max_turns(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+) -> Result<TurnStepResult, HarnessError> {
+    let notice = format!(
+        "max_turns ({}) reached; ending the turn.",
+        record.options.max_turns
+    );
+    let _ = session
+        .append_custom(
+            &record.session_id,
+            "notice",
+            json!({ "reason": "max_turns", "message": notice }),
+            &format!("e_{}_max_turns", record.turn_id),
+            Some(&origin(&record.turn_id)),
+        )
+        .await;
+    let text = json!(notice);
+    // Readable from the lean `harness::status`: `completed` with no error
+    // and an unmet goal looked exactly like success to a live
+    // orchestrator polling its children (MOT-4718).
+    record.stop_reason = Some("max_turns".to_string());
+    // The cap ends the turn but must not BYPASS the post-turn gate: with
+    // no steps left to correct anything, a validator that rejects this
+    // residue FAILS the turn — a runaway must never complete as if
+    // validated (live-caught by the validation_chain e2e: a turn that
+    // burned its steps mid-loop finalized "completed" with the goal
+    // unmet).
+    match deps.hooks.run_post_turn(record, record.step, &text).await {
+        Ok(()) => finalize_completed(deps, session, record, Some(text)).await,
+        Err(deny) => {
+            record.result = Some(text);
+            finalize_failed(
+                deps,
+                session,
+                record,
+                &format!(
+                    "max_turns reached with the post-turn gate unsatisfied: {}",
+                    deny.reason
+                ),
+                FailureInfo {
+                    code: "harness.output_contract_invalid",
+                    phase: "output_validation",
+                    retryable: false,
+                    kind: None,
+                    detail: None,
+                    provider: None,
+                    model: None,
+                },
+            )
+            .await
+        }
+    }
+}
+
+/// Whether `step`'s assembly may still grant a maintenance step: only with an
+/// effective strategy, once per step, only for a step this turn counted (a
+/// turn's first assembly can ingest only an earlier turn's reply), and at
+/// most `max_turns / 2` per turn, so a strategy can never make a turn run
+/// forever.
+fn maintenance_grant_possible(record: &TurnRecord, step: u64) -> bool {
+    record.options.effective_context_strategy().is_some()
+        && record.maintenance_step_at != Some(step)
+        && record.counted_turns() > 0
+        && record.maintenance_steps < record.options.max_turns / 2
+}
+
+/// Take back the step a strategy's `applied.maintenance_step` marked as its
+/// own upkeep: it stays in `turn_count` (ids derive from it) but no longer
+/// counts toward `max_turns`.
+fn grant_maintenance_step(record: &mut TurnRecord, step: u64, maintenance_step: bool) {
+    if maintenance_step && maintenance_grant_possible(record, step) {
+        record.maintenance_steps += 1;
+        record.maintenance_step_at = Some(step);
+    }
+}
+
 /// Persist the advanced step and re-enqueue the next `harness::turn`.
 async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult, HarnessError> {
     let cfg = deps.cfg().await;
@@ -2669,6 +2763,20 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
         "router/provider_rate_limited" => (
             "The provider is busy right now.",
             &["Wait a moment, then retry the turn."],
+        ),
+        "harness.context_budget_stop" => (
+            public_message,
+            &[
+                "Start a new conversation, or raise `context_budget_tokens` in the session metadata.",
+                "Or remove `context_strategy` from the session metadata to use the default.",
+            ],
+        ),
+        "harness.context_strategy_unavailable" => (
+            public_message,
+            &[
+                "Start the worker that provides this context strategy, then retry the turn.",
+                "Or remove `context_strategy` from the session metadata to use the default.",
+            ],
         ),
         "harness.context_overflow" => (
             "The conversation could not be compacted to fit the selected model.",
@@ -2943,14 +3051,11 @@ fn preserve_assistant_partial(current: &mut Option<Value>, message: &AssistantMe
 
 fn transient_resume_allowed(
     error_kind: Option<crate::types::event::ErrorKind>,
-    resumes: u32,
-    max_resumes: u32,
-    turn_count: u32,
-    max_turns: u32,
+    record: &TurnRecord,
 ) -> bool {
     error_kind.is_some_and(|kind| kind.is_retryable())
-        && resumes < max_resumes
-        && turn_count < max_turns
+        && record.transient_resumes < record.options.max_transient_resumes
+        && record.counted_turns() < record.options.max_turns
 }
 
 pub(crate) async fn finalize_cancelled(
@@ -3050,7 +3155,7 @@ pub async fn fail_turn(
     deps: &Deps,
     session_id: &str,
     turn_id: &str,
-    reason: &str,
+    error: &HarnessError,
 ) -> Result<TurnStepResult, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
@@ -3065,9 +3170,21 @@ pub async fn fail_turn(
         crate::state::get_turn_unhydrated(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     match record {
         Some(mut rec) if rec.turn_id == turn_id && !rec.status.is_terminal() => {
-            finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE).await
+            let (reason, failure) = step_failure(error);
+            finalize_failed(deps, &session, &mut rec, &reason, failure).await
         }
         _ => Ok(skipped(session_id)),
+    }
+}
+
+/// The public reason and failure class of a step error that ended the turn.
+fn step_failure(error: &HarnessError) -> (String, FailureInfo<'static>) {
+    match error {
+        HarnessError::ContextStrategyUnavailable(message) => {
+            (message.clone(), CONTEXT_STRATEGY_UNAVAILABLE_FAILURE)
+        }
+        HarnessError::ContextBudgetStop(message) => (message.clone(), CONTEXT_BUDGET_STOP_FAILURE),
+        other => (other.to_string(), INTERNAL_FAILURE),
     }
 }
 
@@ -3349,6 +3466,7 @@ async fn assemble_context(
         .collect();
 
     let context = deps.context().await;
+    let strategy = record.options.effective_context_strategy();
     let params = crate::clients::AssembleParams {
         messages: candidate_values,
         model_id: record.options.model.clone(),
@@ -3370,30 +3488,47 @@ async fn assemble_context(
         // model that binds thinking to the prefix that drops the reasoning
         // of every later step. Compaction still bounds the window.
         allow_prune: crate::window::binds_thinking(&record.options.model).then_some(false),
+        function_id: strategy.map_or_else(
+            || crate::clients::context::CONTEXT_MANAGER_ASSEMBLE.to_string(),
+            ContextStrategy::function_id,
+        ),
+        session_id: record.session_id.clone(),
+        turn_id: record.turn_id.clone(),
+        step,
+        filesystem_root: record.options.filesystem_root().map(str::to_string),
+        budget_tokens: strategy.and_then(|s| s.budget_tokens),
     };
 
-    let mut out = match context.assemble(params).await {
-        Ok(out) => out,
-        Err(error) if is_context_overflow_error(&error) => {
-            return Err(HarnessError::ContextOverflow(error));
-        }
-        Err(error) => return Err(HarnessError::Dependency(error)),
-    };
+    let function_id = params.function_id.clone();
+    let mut out = context
+        .assemble(params)
+        .await
+        .map_err(|error| assemble_error(error, strategy))?;
 
+    if let Some(reason) = strategy_stop(&out, strategy) {
+        return Err(HarnessError::ContextBudgetStop(reason.to_string()));
+    }
     if out.messages.is_empty() {
-        return Err(HarnessError::ContextOverflow(
-            "context::assemble returned an empty model-facing context".to_string(),
-        ));
+        return Err(HarnessError::ContextOverflow(format!(
+            "{function_id} returned an empty model-facing context"
+        )));
     }
     // `context::assemble.token_count` already includes tools and the supplied
     // request overhead; reject any response that violates its hard contract.
     if out.token_count > out.usable {
         return Err(HarnessError::ContextOverflow(format!(
-            "context::assemble returned an over-budget context: {} tokens > {} usable",
+            "{function_id} returned an over-budget context: {} tokens > {} usable",
             out.token_count, out.usable
         )));
     }
 
+    if ignore_strategy_compaction(&mut out, strategy) {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            "context strategy reported a compaction; ignored, no compaction entry is written"
+        );
+    }
     if strip_compacted_thinking(&mut out, &record.options.model) {
         // The assembled count still holds the stripped blocks; an unchanged
         // request reuses it for the budget reservation and the snapshot, so
@@ -3480,6 +3615,7 @@ async fn assemble_context(
         summarized_head_tokens,
         breakdown: out.breakdown,
         pruned: out.applied.pruned,
+        maintenance_step: out.applied.maintenance_step,
     })
 }
 
@@ -3580,6 +3716,59 @@ fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnc
 
 fn is_context_overflow_error(error: &str) -> bool {
     error.contains("context/overflow:")
+}
+
+/// Classify a failed assembly call. A strategy function that is not
+/// registered keeps the transient step retry, then fails the turn naming the
+/// strategy and the way back to the default: never a silent fallback.
+fn assemble_error(error: String, strategy: Option<&ContextStrategy>) -> HarnessError {
+    if is_context_overflow_error(&error) {
+        return HarnessError::ContextOverflow(error);
+    }
+    match strategy {
+        // Only the strategy function's own not-found. One nested in its error
+        // (context-manager down behind the strategy) is a plain dependency.
+        Some(strategy)
+            if error.starts_with(&format!(
+                "{}: remote error (function_not_found)",
+                strategy.function_id()
+            )) =>
+        {
+            HarnessError::ContextStrategyUnavailable(format!(
+                "context strategy `{}` is not available ({} is not registered). Remove \
+                 `context_strategy` from the session metadata to use the default.",
+                strategy.name,
+                strategy.function_id()
+            ))
+        }
+        _ => HarnessError::Dependency(error),
+    }
+}
+
+/// A strategy's deliberate end of the run: an over-budget response that
+/// carries `applied.strategy_stop`. Without the field, or without an
+/// effective strategy, an over-budget response keeps today's overflow path.
+fn strategy_stop<'a>(
+    out: &'a crate::clients::context::AssembleOutput,
+    strategy: Option<&ContextStrategy>,
+) -> Option<&'a str> {
+    out.applied
+        .strategy_stop
+        .as_deref()
+        .filter(|_| strategy.is_some() && out.token_count > out.usable)
+}
+
+/// A strategy owns its context, so a `compacted` flag from one never writes
+/// a compaction entry. True when it dropped one, for the caller's warning.
+fn ignore_strategy_compaction(
+    out: &mut crate::clients::context::AssembleOutput,
+    strategy: Option<&ContextStrategy>,
+) -> bool {
+    let ignored = strategy.is_some() && out.applied.compacted;
+    if ignored {
+        out.applied.compacted = false;
+    }
+    ignored
 }
 
 /// Fold the assembly the loop already performed into the session's context
@@ -3801,6 +3990,8 @@ struct Assembled {
     /// context-manager pruned or reduced function results to fit the budget
     /// this step, rewriting rows an earlier request may have sent.
     pruned: bool,
+    /// The strategy's `applied.maintenance_step` (see [`grant_maintenance_step`]).
+    maintenance_step: bool,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -4331,7 +4522,7 @@ mod tests {
     use super::{
         call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
         dispatch_unless_stopped, retryable_function_result_append_error, transient_resume_allowed,
-        turn_step_matches,
+        turn_step_matches, ContextStrategy, TurnRecord,
     };
 
     #[test]
@@ -5504,41 +5695,44 @@ mod tests {
 
     #[test]
     fn transient_resume_is_bounded_and_only_for_retryable_midstream_failures() {
+        // One step done of 16, no resume yet of the one allowed.
+        let record = crate::types::turn::tests::record();
         assert!(transient_resume_allowed(
             Some(ErrorKind::Transient),
-            0,
-            1,
-            1,
-            16
+            &record
         ));
         assert!(transient_resume_allowed(
             Some(ErrorKind::RateLimited),
-            0,
-            1,
-            1,
-            16
+            &record
         ));
         assert!(!transient_resume_allowed(
             Some(ErrorKind::Permanent),
-            0,
-            1,
-            1,
-            16
+            &record
         ));
+        let resumed = TurnRecord {
+            transient_resumes: 1,
+            ..record.clone()
+        };
         assert!(!transient_resume_allowed(
             Some(ErrorKind::Transient),
-            1,
-            1,
-            1,
-            16
+            &resumed
         ));
+        let spent = TurnRecord {
+            turn_count: 16,
+            ..record.clone()
+        };
         assert!(!transient_resume_allowed(
             Some(ErrorKind::Transient),
-            0,
-            1,
-            16,
-            16
+            &spent
         ));
+        let maintained = TurnRecord {
+            maintenance_steps: 1,
+            ..spent
+        };
+        assert!(
+            transient_resume_allowed(Some(ErrorKind::Transient), &maintained),
+            "the step budget is the counted steps, not turn_count"
+        );
     }
 
     #[test]
@@ -5964,5 +6158,256 @@ mod tests {
         })
         .await;
         assert!(out.is_some(), "a dropped sender is not a stop");
+    }
+
+    fn strategy(name: &str) -> crate::types::turn::ContextStrategy {
+        crate::types::turn::ContextStrategy {
+            name: name.into(),
+            budget_tokens: None,
+            effective: true,
+            skipped_reason: None,
+        }
+    }
+
+    #[test]
+    fn a_missing_context_strategy_names_the_strategy_and_the_way_back() {
+        let missing =
+            "context-clm::assemble: remote error (function_not_found): Function not found";
+        let error = super::assemble_error(missing.into(), Some(&strategy("clm")));
+        let expected = "context strategy `clm` is not available (context-clm::assemble is not \
+                        registered). Remove `context_strategy` from the session metadata to use \
+                        the default.";
+        assert_eq!(
+            error,
+            HarnessError::ContextStrategyUnavailable(expected.into())
+        );
+        let (reason, failure) = super::step_failure(&error);
+        assert_eq!(reason, expected);
+        assert_eq!(failure.code, "harness.context_strategy_unavailable");
+        assert!(!failure.retryable);
+        let presentation = super::failure_presentation(&reason, failure);
+        assert_eq!(presentation.summary, expected);
+        assert!(presentation.next_actions[1].contains("context_strategy"));
+    }
+
+    #[test]
+    fn assembly_errors_outside_a_missing_strategy_keep_their_classes() {
+        let missing = "context::assemble: remote error (function_not_found): Function not found";
+        assert_eq!(
+            super::assemble_error(missing.into(), None),
+            HarnessError::Dependency(missing.into())
+        );
+        let overflow = "context-clm::assemble: handler failed: context/overflow: 101 > 100";
+        assert_eq!(
+            super::assemble_error(overflow.into(), Some(&strategy("clm"))),
+            HarnessError::ContextOverflow(overflow.into())
+        );
+        let nested = "context-clm::assemble: remote error (handler_error): context::assemble: \
+                      remote error (function_not_found): Function not found";
+        assert_eq!(
+            super::assemble_error(nested.into(), Some(&strategy("clm"))),
+            HarnessError::Dependency(nested.into()),
+            "context-manager missing behind the strategy is not the strategy missing"
+        );
+        let other = "context-clm::assemble: handler failed: boom";
+        assert_eq!(
+            super::assemble_error(other.into(), Some(&strategy("clm"))),
+            HarnessError::Dependency(other.into())
+        );
+        let (reason, failure) = super::step_failure(&HarnessError::Dependency("x".into()));
+        assert_eq!(reason, "harness/dependency: x");
+        assert_eq!(failure.code, "harness.turn_internal");
+    }
+
+    fn assembled(value: serde_json::Value) -> crate::clients::context::AssembleOutput {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_strategy_stop_ends_the_run_only_over_budget() {
+        let clm = strategy("clm");
+        let stop = assembled(serde_json::json!({
+            "messages": [], "token_count": 101, "usable": 100,
+            "effective_max_output_tokens": 10,
+            "applied": { "strategy_stop": "budget spent after the final turn" }
+        }));
+        assert_eq!(
+            super::strategy_stop(&stop, Some(&clm)),
+            Some("budget spent after the final turn")
+        );
+        assert_eq!(
+            super::strategy_stop(&stop, None),
+            None,
+            "context-manager cannot end the run through the strategy field"
+        );
+        let fits = assembled(serde_json::json!({
+            "token_count": 100, "usable": 100, "effective_max_output_tokens": 10,
+            "applied": { "strategy_stop": "ignored while it fits" }
+        }));
+        assert_eq!(super::strategy_stop(&fits, Some(&clm)), None);
+        let overflow = assembled(serde_json::json!({
+            "token_count": 101, "usable": 100, "effective_max_output_tokens": 10
+        }));
+        assert_eq!(
+            super::strategy_stop(&overflow, Some(&clm)),
+            None,
+            "plain overflow keeps today's path"
+        );
+
+        let (reason, failure) = super::step_failure(&HarnessError::ContextBudgetStop(
+            "budget spent after the final turn".into(),
+        ));
+        assert_eq!(reason, "budget spent after the final turn");
+        assert_eq!(failure.code, "harness.context_budget_stop");
+        let failure = super::CONTEXT_BUDGET_STOP_FAILURE;
+        assert_eq!(failure.code, "harness.context_budget_stop");
+        assert!(!failure.retryable);
+        let presentation =
+            super::failure_presentation("budget spent after the final turn", failure);
+        assert_eq!(presentation.summary, "budget spent after the final turn");
+        assert!(presentation.next_actions[0].contains("context_budget_tokens"));
+    }
+
+    #[test]
+    fn a_compaction_reported_by_a_strategy_is_ignored() {
+        let compacted = serde_json::json!({
+            "messages": [], "token_count": 1, "usable": 100,
+            "effective_max_output_tokens": 10,
+            "applied": { "compacted": true, "summary": "s" }
+        });
+        let mut out = assembled(compacted.clone());
+        assert!(super::ignore_strategy_compaction(
+            &mut out,
+            Some(&strategy("clm"))
+        ));
+        assert!(!out.applied.compacted);
+        let mut out = assembled(compacted);
+        assert!(!super::ignore_strategy_compaction(&mut out, None));
+        assert!(out.applied.compacted, "context-manager compactions stand");
+    }
+
+    /// A turn at `turn_count` of `max_turns`, under the strategy given.
+    fn turn_at(turn_count: u32, max_turns: u32, strategy: Option<ContextStrategy>) -> TurnRecord {
+        let mut record = crate::types::turn::tests::record();
+        record.turn_count = turn_count;
+        record.options.max_turns = max_turns;
+        record.options.context_strategy = strategy.map(Box::new);
+        record
+    }
+
+    #[test]
+    fn the_maintenance_flag_is_read_from_applied_and_defaults_off() {
+        let flagged = assembled(serde_json::json!({
+            "token_count": 1, "usable": 100, "effective_max_output_tokens": 10,
+            "applied": { "maintenance_step": true }
+        }));
+        assert!(flagged.applied.maintenance_step);
+        let plain = assembled(serde_json::json!({
+            "token_count": 1, "usable": 100, "effective_max_output_tokens": 10
+        }));
+        assert!(!plain.applied.maintenance_step);
+    }
+
+    #[test]
+    fn a_maintenance_step_is_granted_once_per_step_with_a_strategy_up_to_half_the_cap() {
+        let mut record = turn_at(2, 4, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut record, 2, false);
+        assert_eq!(record.maintenance_steps, 0, "an unflagged step counts");
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!(
+            (record.maintenance_steps, record.maintenance_step_at),
+            (1, Some(2))
+        );
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!(
+            record.maintenance_steps, 1,
+            "a step assembled twice or redelivered grants once"
+        );
+        super::grant_maintenance_step(&mut record, 3, true);
+        super::grant_maintenance_step(&mut record, 4, true);
+        assert_eq!(
+            (record.maintenance_steps, record.maintenance_step_at),
+            (2, Some(3)),
+            "never past max_turns / 2"
+        );
+
+        let mut default = turn_at(2, 4, None);
+        super::grant_maintenance_step(&mut default, 2, true);
+        assert_eq!(
+            default.maintenance_steps, 0,
+            "context::assemble cannot grant"
+        );
+        let mut skipped = turn_at(2, 4, Some(strategy("clm")));
+        skipped.options.context_strategy.as_mut().unwrap().effective = false;
+        super::grant_maintenance_step(&mut skipped, 2, true);
+        assert_eq!(
+            skipped.maintenance_steps, 0,
+            "a skipped strategy cannot grant"
+        );
+        let mut single = turn_at(0, 1, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut single, 1, true);
+        assert_eq!(single.maintenance_steps, 0, "max_turns 1 leaves no grant");
+    }
+
+    #[test]
+    fn a_turn_gets_back_only_a_step_it_counted() {
+        // A turn's first assembly can ingest only the reply an earlier turn
+        // ended on before assembling it (a stop, or max_turns at the cap).
+        let mut fresh = turn_at(0, 4, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut fresh, 0, true);
+        assert_eq!(
+            (fresh.maintenance_steps, fresh.maintenance_step_at),
+            (0, None)
+        );
+        // Every grant gives back one counted step: never more than turn_count.
+        let mut record = turn_at(1, 8, Some(strategy("clm")));
+        super::grant_maintenance_step(&mut record, 1, true);
+        assert_eq!(record.maintenance_steps, 1);
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!(
+            record.maintenance_steps, 1,
+            "no counted step left to give back"
+        );
+        record.turn_count = 2;
+        super::grant_maintenance_step(&mut record, 2, true);
+        assert_eq!((record.maintenance_steps, record.counted_turns()), (2, 0));
+    }
+
+    #[test]
+    fn the_max_turns_guard_reads_the_counted_steps_and_waits_for_a_boundary_grant() {
+        // The two checks generate_step runs: before assembly, then after the grant.
+        let before = |r: &TurnRecord, step| {
+            r.counted_turns() >= r.options.max_turns && !super::maintenance_grant_possible(r, step)
+        };
+        let after = |r: &TurnRecord| r.counted_turns() >= r.options.max_turns;
+
+        // Step 4 of a 4-step turn ingests a maintenance step 3: it gets the
+        // step back and generates.
+        let mut record = turn_at(4, 4, Some(strategy("clm")));
+        assert!(!before(&record, 4), "the guard waits for the assembly");
+        super::grant_maintenance_step(&mut record, 4, true);
+        assert!(!after(&record));
+        // Step 5 ingests ordinary work: the turn ends there.
+        record.turn_count = 5;
+        assert!(!before(&record, 5));
+        super::grant_maintenance_step(&mut record, 5, false);
+        assert!(after(&record));
+
+        // At the cap the guard ends the turn before assembling.
+        let mut capped = turn_at(6, 4, Some(strategy("clm")));
+        capped.maintenance_steps = 2;
+        assert!(before(&capped, 6));
+        // A step redelivered after its grant landed generates on that grant.
+        let mut redelivered = turn_at(4, 4, Some(strategy("clm")));
+        redelivered.maintenance_steps = 1;
+        redelivered.maintenance_step_at = Some(4);
+        assert!(!before(&redelivered, 4));
+        super::grant_maintenance_step(&mut redelivered, 4, true);
+        assert_eq!(redelivered.maintenance_steps, 1);
+        assert!(!after(&redelivered));
+
+        // Without a strategy the guard is turn_count against max_turns.
+        assert!(!before(&turn_at(3, 4, None), 3));
+        assert!(before(&turn_at(4, 4, None), 4));
     }
 }

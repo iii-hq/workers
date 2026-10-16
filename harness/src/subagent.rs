@@ -520,7 +520,7 @@ async fn seed_child(
         .unwrap_or(cfg.default_max_turns);
     let max_turns = match parent_record {
         Some(p) => {
-            let remaining = p.options.max_turns.saturating_sub(p.turn_count).max(1);
+            let remaining = p.options.max_turns.saturating_sub(p.counted_turns()).max(1);
             requested_turns.min(remaining).max(1)
         }
         None => requested_turns,
@@ -633,6 +633,9 @@ async fn seed_child(
         // language the root session pinned. A parentless spawn has none to
         // copy; a reused child session keeps its own (`send::seed_new`).
         response_language: parent_record.and_then(|p| p.options.response_language.clone()),
+        // Sub-agents never inherit a context strategy: a child assembles
+        // with context-manager whatever its parent session runs.
+        context_strategy: None,
         max_validation_retries: req
             .options
             .as_ref()
@@ -1124,6 +1127,7 @@ mod tests {
                 seeded_contracts: None,
                 system_prompt_ref: None,
                 response_language: None,
+                context_strategy: None,
             },
             calls: Default::default(),
             parent: None,
@@ -1140,6 +1144,8 @@ mod tests {
             dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
+            maintenance_steps: 0,
+            maintenance_step_at: None,
             ask_step: None,
             ask_seen_step: None,
             created_at: 1,
