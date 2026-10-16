@@ -19,6 +19,10 @@
         "description": "Leave each session's context snapshot out of `by_session` (and skip reading it). For callers that only need the counters and cost. Default false.",
         "type": "boolean"
       },
+      "omit_traces": {
+        "description": "Skip the trace/span aggregation (`traces` stays absent). It scans the engine's trace store and is the slowest part of a complete answer. Default false.",
+        "type": "boolean"
+      },
       "root_session_id": {
         "description": "Any session in the tree. `session_id` is accepted as an alias, and a child id is walked up to its root, so the id that addresses `harness::status` addresses the tree here too.",
         "type": "string"
@@ -26,6 +30,10 @@
       "session_id": {
         "description": "Any session in the tree. `session_id` is accepted as an alias, and a child id is walked up to its root, so the id that addresses `harness::status` addresses the tree here too.",
         "type": "string"
+      },
+      "subtree": {
+        "description": "Report the given session and its descendants only, instead of walking up to the root first: the response's root is the given session (depth 0), which keeps its own `parent_session_id`. Default false.",
+        "type": "boolean"
       }
     },
     "title": "SessionMetricsRequestV1",

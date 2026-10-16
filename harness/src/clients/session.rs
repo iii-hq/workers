@@ -516,6 +516,18 @@ impl SessionClient {
         &self,
         session_id: &str,
     ) -> Result<Vec<LoadedEntry>, HarnessError> {
+        self.messages_from(session_id, None).await
+    }
+
+    /// The active path's messages, every page, all of them or only those
+    /// strictly after `after_entry_id` (an incremental read from a known
+    /// watermark). A watermark no longer on the path — a fork moved the
+    /// leaf — is an error (`session/invalid_cursor`): read it all instead.
+    pub async fn messages_from(
+        &self,
+        session_id: &str,
+        after_entry_id: Option<&str>,
+    ) -> Result<Vec<LoadedEntry>, HarnessError> {
         const PAGE_LIMIT: u64 = 500;
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
@@ -527,6 +539,11 @@ impl SessionClient {
                 "include_custom": false,
                 "limit": PAGE_LIMIT,
             });
+            // Ignored by session-manager once a cursor is set: the cursor
+            // already carries the position.
+            if let Some(after) = after_entry_id {
+                payload["after_entry_id"] = json!(after);
+            }
             if let Some(value) = &cursor {
                 payload["cursor"] = json!(value);
             }

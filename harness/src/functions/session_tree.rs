@@ -3,6 +3,8 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
+use futures_util::future::BoxFuture;
+use futures_util::stream::{self, StreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -55,12 +57,39 @@ pub(crate) async fn collect(
     }
 
     let mut builder = TreeBuilder::new(root_session_id);
-    while let Some((parent_session_id, depth)) = builder.next_parent() {
-        let children = session.children(&parent_session_id).await?;
-        builder.add_children(&parent_session_id, depth + 1, children);
+    // One level at a time, its parents listed concurrently. Listed one parent
+    // after another, a 176-session tree paid 191 sequential `session::list`
+    // round trips (~3.6 s) before any usage was read.
+    loop {
+        let level = builder.next_level();
+        if level.is_empty() {
+            break;
+        }
+        // Owned, boxed futures: unboxed ones from a stream defeat rustc's
+        // `Send` check at the spawn sites that await this walk.
+        let lists: Vec<BoxFuture<'static, Result<Vec<SessionLink>, HarnessError>>> = level
+            .iter()
+            .map(|(parent_session_id, _)| {
+                let session = session.clone();
+                let parent_session_id = parent_session_id.clone();
+                let list: BoxFuture<'static, _> =
+                    Box::pin(async move { session.children(&parent_session_id).await });
+                list
+            })
+            .collect();
+        let listed = stream::iter(lists)
+            .buffered(CHILDREN_READ_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        for ((parent_session_id, depth), children) in level.iter().zip(listed) {
+            builder.add_children(parent_session_id, depth + 1, children?);
+        }
     }
     Ok(builder.finish())
 }
+
+/// Parents whose children are listed at once.
+const CHILDREN_READ_CONCURRENCY: usize = 16;
 
 struct TreeBuilder {
     root_session_id: String,
@@ -87,8 +116,14 @@ impl TreeBuilder {
         }
     }
 
+    #[cfg(test)]
     fn next_parent(&mut self) -> Option<(String, u32)> {
         self.pending.pop_front()
+    }
+
+    /// Every parent queued so far: the next BFS level, in queue order.
+    fn next_level(&mut self) -> Vec<(String, u32)> {
+        self.pending.drain(..).collect()
     }
 
     fn add_children(&mut self, parent_session_id: &str, depth: u32, children: Vec<SessionLink>) {

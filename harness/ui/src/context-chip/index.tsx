@@ -174,7 +174,15 @@ function useConversationMetrics(
         : { status: 'loading', data: prev.data, key: prev.key },
     )
     host.iii
-      .trigger(METRICS_FN, { session_id: sessionId }, { timeoutMs: METRICS_TIMEOUT_MS })
+      // Only this conversation's subtree (the modal never shows its parent
+      // or siblings) and no trace scan: on a 179-session root both cost
+      // more than everything else. A harness without these options ignores
+      // them, returns the whole tree, and `conversationTree` cuts it.
+      .trigger(
+        METRICS_FN,
+        { session_id: sessionId, subtree: true, omit_traces: true },
+        { timeoutMs: METRICS_TIMEOUT_MS },
+      )
       .then((value) => {
         if (cancelled) return
         const data = parseMetrics(value)

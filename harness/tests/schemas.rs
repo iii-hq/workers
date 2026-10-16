@@ -141,6 +141,12 @@ fn metrics_request_schema_accepts_exactly_one_session_id_spelling() {
             false,
         ),
         (json!({"omit_context": true}), false),
+        (
+            json!({"session_id": "s_child", "subtree": true, "omit_traces": true}),
+            true,
+        ),
+        (json!({"session_id": "s_child", "subtree": "yes"}), false),
+        (json!({"session_id": "s_child", "omit_traces": 1}), false),
     ] {
         assert_eq!(
             validator.is_valid(&payload),
