@@ -194,6 +194,11 @@ export function ConversationSidebar({
   )
   /* The flat list has one section and no header to collapse it by. */
   const headers = view.grouping !== 'none'
+  /* Once any row carries a sub-agent caret at its end, every row keeps that
+     column so timestamps and actions line up down the list. */
+  const caretColumn = sections.some((section) =>
+    section.rows.some((row) => row.hasChildren),
+  )
 
   /* The 8px gutter plus the tree row's own 10px inset puts every glyph,
      the heading and the empty copy on one 18px column. */
@@ -269,6 +274,7 @@ export function ConversationSidebar({
                     active={c.id === activeId}
                     depth={depth}
                     hasChildren={hasChildren}
+                    caretColumn={caretColumn}
                     kind={
                       tagKinds ? effectiveConversationKind(c, byId) : undefined
                     }

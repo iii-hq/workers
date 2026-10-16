@@ -47,6 +47,8 @@ interface ConversationRowProps {
   hasChildren?: boolean
   /** True when this row's subtree is currently collapsed. */
   treeCollapsed?: boolean
+  /** Some row in the list has a caret: a row without one keeps its column empty. */
+  caretColumn?: boolean
   /** Toggle this row's subtree (only wired when `hasChildren`). */
   onToggleTree?: () => void
   /**
@@ -122,6 +124,7 @@ export function ConversationRow({
   depth = 0,
   hasChildren = false,
   treeCollapsed = false,
+  caretColumn = false,
   onToggleTree,
   kind,
 }: ConversationRowProps) {
@@ -242,22 +245,6 @@ export function ConversationRow({
       ) : (
         <span className={uiClasses.treeItemLabel}>{conversation.title}</span>
       )}
-      {hasChildren && !editing ? (
-        <button
-          type="button"
-          className={uiClasses.treeItemCaret}
-          aria-expanded={!treeCollapsed}
-          aria-label={
-            treeCollapsed ? 'expand sub-agents' : 'collapse sub-agents'
-          }
-          onClick={(e) => {
-            e.stopPropagation()
-            onToggleTree?.()
-          }}
-        >
-          <ChevronRight aria-hidden />
-        </button>
-      ) : null}
       {!editing ? (
         <span className={uiClasses.treeItemTrailing}>
           {conversation.status === 'working' ? (
@@ -310,6 +297,26 @@ export function ConversationRow({
             </button>
           </span>
         </span>
+      ) : null}
+      {/* Last in the row: the hover actions widen the trailing cluster, and a
+          caret before it would slide left under the pointer as they appear. */}
+      {hasChildren && !editing ? (
+        <button
+          type="button"
+          className={uiClasses.treeItemCaret}
+          aria-expanded={!treeCollapsed}
+          aria-label={
+            treeCollapsed ? 'expand sub-agents' : 'collapse sub-agents'
+          }
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleTree?.()
+          }}
+        >
+          <ChevronRight aria-hidden />
+        </button>
+      ) : caretColumn && !editing ? (
+        <span aria-hidden className={uiClasses.treeItemCaret} data-slot="" />
       ) : null}
     </div>
   )

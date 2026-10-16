@@ -292,9 +292,18 @@ a.iii-ui-tree-item {
   outline-offset: 1px;
 }
 
-/* The caret hugs the label it discloses and turns rather than swapping. */
+/* The caret closes the row, after the trailing cluster: the hover actions are
+   wider than the metadata they replace, and a caret ahead of them would slide
+   left under the pointer as they appear. It turns rather than swapping. */
 .iii-ui-tree-item__caret {
-  margin-left: 0.125rem;
+  margin-left: 0.25rem;
+}
+
+/* A row without children keeps the caret's column empty when its list has
+   carets, so timestamps and actions line up down the list. */
+.iii-ui-tree-item__caret[data-slot] {
+  cursor: inherit;
+  pointer-events: none;
 }
 
 .iii-ui-tree-item__caret > svg {

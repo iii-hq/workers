@@ -62,6 +62,40 @@ describe('ConversationRow row actions', () => {
     expect(cluster).toBeLessThan(rename)
   })
 
+  it('puts the sub-agent caret last, so hover actions never slide into its place', () => {
+    const row = (props: { hasChildren?: boolean; caretColumn?: boolean }) =>
+      renderToStaticMarkup(
+        <ConversationRow
+          conversation={{
+            id: 'p',
+            title: 'Parent',
+            model: null,
+            messages: [],
+            createdAt: 1,
+            updatedAt: 1,
+          }}
+          active={false}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onRemove={vi.fn()}
+          {...props}
+        />,
+      )
+
+    const parent = row({ hasChildren: true, caretColumn: true })
+    const caret = parent.indexOf('aria-label="collapse sub-agents"')
+    expect(caret).toBeGreaterThan(parent.indexOf('aria-label="delete Parent"'))
+    expect(caret).toBeGreaterThan(
+      parent.indexOf('class="iii-ui-tree-item__meta"'),
+    )
+
+    // A leaf keeps the caret's column empty only when the list has carets.
+    expect(row({ caretColumn: true })).toContain(
+      '<span aria-hidden="true" class="iii-ui-tree-item__caret" data-slot=""></span>',
+    )
+    expect(row({})).not.toContain('iii-ui-tree-item__caret')
+  })
+
   it('escapes conversation titles in action labels', () => {
     expect(renderRow('Chat "one"')).toContain(
       'aria-label="rename Chat &quot;one&quot;"',
