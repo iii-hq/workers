@@ -22,6 +22,8 @@ export interface KitInstall {
   state: KitInstallState
   /** Why it needs review or failed, as the Directory said it. */
   message?: string
+  /** The plan waiting for review in Directory → Kits. */
+  planId?: string
 }
 
 const DOWNLOAD_KIT = 'directory::download-kit'
@@ -74,7 +76,11 @@ export async function installKit(kit: string): Promise<KitInstall | null> {
     if (isMissingFunction(error)) return null
     return { kit, state: 'failed', message: readableError(error) }
   }
-  const answer = (result ?? {}) as { status?: unknown; message?: unknown }
+  const answer = (result ?? {}) as {
+    status?: unknown
+    message?: unknown
+    plan?: { plan_id?: unknown }
+  }
   const message =
     typeof answer.message === 'string' && answer.message.trim()
       ? answer.message.trim()
@@ -84,8 +90,15 @@ export async function installKit(kit: string): Promise<KitInstall | null> {
     case 'up_to_date':
       return { kit, state: 'installed' }
     case 'planned':
-    case 'replanned':
-      return { kit, state: 'review', ...(message ? { message } : {}) }
+    case 'replanned': {
+      const planId = answer.plan?.plan_id
+      return {
+        kit,
+        state: 'review',
+        ...(message ? { message } : {}),
+        ...(typeof planId === 'string' && planId ? { planId } : {}),
+      }
+    }
     default:
       return {
         kit,

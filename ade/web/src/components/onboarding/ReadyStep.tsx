@@ -70,8 +70,8 @@ export function ReadyStep({
   kits?: readonly KitInstall[]
   /** Install a kit that failed again. */
   onRetryKit?: (kit: string) => void
-  /** Close the wizard and open Directory → Kits on a kit that needs review. */
-  onReviewKit?: (kit: string) => void
+  /** Close the wizard and open Directory → Kits on the plan to review. */
+  onReviewKit?: (install: KitInstall) => void
 }) {
   const { snapshot, activity } = onboarding
   const ids = useId()
@@ -381,7 +381,7 @@ function KitRow({
 }: {
   install: KitInstall
   onRetry?: (kit: string) => void
-  onReview?: (kit: string) => void
+  onReview?: (install: KitInstall) => void
 }) {
   const text = KIT_TEXT[install.state]
   return (
@@ -407,7 +407,7 @@ function KitRow({
         </span>
       </span>
       {install.state === 'review' && onReview ? (
-        <Button variant="ghost" onClick={() => onReview(install.kit)}>
+        <Button variant="ghost" onClick={() => onReview(install)}>
           Review
         </Button>
       ) : install.state === 'failed' && onRetry ? (

@@ -74,6 +74,7 @@ describe('installKit', () => {
     harness.answers.set('a/review', {
       status: 'planned',
       message: 'Not applied automatically: the plan needs review.',
+      plan: { plan_id: 'kp_1' },
     })
     harness.answers.set('a/odd', { status: 'mystery' })
     harness.answers.set('a/down', new Error('registry unreachable'))
@@ -89,6 +90,7 @@ describe('installKit', () => {
       kit: 'a/review',
       state: 'review',
       message: 'Not applied automatically: the plan needs review.',
+      planId: 'kp_1',
     })
     expect((await installKit('a/odd'))?.state).toBe('failed')
     expect(await installKit('a/down')).toEqual({

@@ -35,6 +35,7 @@ import {
 import { type JudgeOption, TOUR_PAGE } from '@/lib/onboarding/catalog'
 import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
+  type KitInstall,
   onboardingKitsSnapshot,
   retryOnboardingKit,
   startOnboardingKits,
@@ -458,12 +459,16 @@ export function OnboardingWizardHost() {
     [agents],
   )
 
-  // A kit whose plan needs review opens Directory → Kits on that kit.
-  const reviewKit = useCallback((kit: string) => {
+  // A kit whose plan needs review opens that plan in Directory → Kits (the
+  // kit's own page exists only once it is installed).
+  const reviewKit = useCallback((install: KitInstall) => {
     setOpen(false)
     requestPanelOpen({
       pageId: 'directory',
-      context: { collection: 'kits', kit },
+      context: {
+        collection: 'kits',
+        ...(install.planId ? { plan_id: install.planId } : {}),
+      },
     })
   }, [])
 
