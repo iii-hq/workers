@@ -6,6 +6,8 @@
 - `approve=on` now also gates open design questions and the plan in the plain flow, not only in the dev flow. `plan_only=on` plans without dispatching: the run ticket and its cards go on the board, and `resume=<R>` starts the run later.
 - `resume=<R>` adopts an earlier run from its board state: goal, args, flow, branch and worktree come from the run ticket, In progress tickets whose lead is gone are re-queued (a lead that is still running is stopped first), and the rounds continue. A finished run resumes the same way once cards are back in To do.
 - Dev cards' `Verify:` lines carry no `cwd`: every agent runs them in its own worktree. A fresh ticket worktree gets the install step the repository needs before it builds (a Node project's offline install); build output is never shared between worktrees.
+- The verifier treats a test command that ran no test (`0 passed`) as satisfying nothing.
+- Lead spawns spell out the 48-character limit of the session name (the key and ` · ` count), which runs with long ticket titles hit.
 
 ## 0.2.1
 

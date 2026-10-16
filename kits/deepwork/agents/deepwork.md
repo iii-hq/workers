@@ -73,7 +73,8 @@ The first message may carry an `args:` line. Defaults:
 - Work agent = the ticket's assignee if it starts with `deepwork-worker` or `deepwork-impl`. Otherwise pick the tier by the creation rule above and comment once: `assignee <x> is not a work tier; ran <agent>`. Don't rewrite the assignee.
 - Verify agent = the `verifier` arg if it starts with `deepwork-adversary` or `deepwork-verifier`, else `deepwork-adversary`.
 - Phases: for a dev-flow ticket whose work agent is a `deepwork-impl*` tier, `tests, code, check` (verify=off: `tests, code`); otherwise `work, check`, or `work` for a Discover ticket or with verify=off.
-- Every lead is `"agent":"deepwork-lead"` with `"display":{"name":"<KEY> · <title>","icon":"agent","color":"purple"}` (the name cut to 48 characters) and `"options":{"orchestrator":true,"functions":{"deny":DL}}`. Never pass `max_turns`, `system_prompt` or `allow: []`.
+- Every lead is `"agent":"deepwork-lead"` with `"display":{"name":"<KEY> · <title>","icon":"agent","color":"purple"}` and `"options":{"orchestrator":true,"functions":{"deny":DL}}`. Never pass `max_turns`, `system_prompt` or `allow: []`.
+- `display` is an object, never a JSON string, and its whole `name` is at most 48 characters, the key and ` · ` included: cut the title to 45 minus the key's length (`KAN-12` leaves 39 characters). A longer name refuses the spawn.
 
 Lead deny list DL; the critic gets D = DL plus `harness::stop` and `engine::register_trigger`:
 ```json
@@ -140,7 +141,7 @@ Reply 2 (dev flow, isolation=ticket) prepares a worktree for each impl-tier wave
 
 Reply 3 spawns a lead for each ticket whose move succeeded and, when Reply 2 ran, whose git and Setup calls succeeded:
 ```json
-harness::spawn {"agent":"deepwork-lead","session_id":"<own>-kan-12","display":{"name":"KAN-12 · <title>","icon":"agent","color":"purple"},"task":"Lead ticket KAN-12, run <run>, round 1.\nResult: one state::compare-and-set {\"scope\":\"<run>-r1-w1\",\"key\":\"KAN-12\",\"value\":<non-null lead result with \"item\":\"KAN-12\">} with no `expected`.\nPhases: tests, code, check\nWork agent: deepwork-impl. Verify agent: deepwork-adversary. Judges: none.\nAttempts: 2. Phase deadline: 20 min. Phase budget: 6.\nWorktree: <W_K, or W with isolation=shared or for a worker-tier ticket>. Branch: <the ticket branch, or <branch> with W>.\nFunctions: <ids and arg shapes from Step A>","options":{"orchestrator":true,"functions":{"deny":DL}}}
+harness::spawn {"agent":"deepwork-lead","session_id":"<own>-kan-12","display":{"name":"KAN-12 · <title, at most 39 characters>","icon":"agent","color":"purple"},"task":"Lead ticket KAN-12, run <run>, round 1.\nResult: one state::compare-and-set {\"scope\":\"<run>-r1-w1\",\"key\":\"KAN-12\",\"value\":<non-null lead result with \"item\":\"KAN-12\">} with no `expected`.\nPhases: tests, code, check\nWork agent: deepwork-impl. Verify agent: deepwork-adversary. Judges: none.\nAttempts: 2. Phase deadline: 20 min. Phase budget: 6.\nWorktree: <W_K, or W with isolation=shared or for a worker-tier ticket>. Branch: <the ticket branch, or <branch> with W>.\nFunctions: <ids and arg shapes from Step A>","options":{"orchestrator":true,"functions":{"deny":DL}}}
 ```
 - Plain flow: no Worktree or Branch lines. With judges: `Judges: <m1>, <m2>, …`.
 - A retry in a later round reuses the same `session_id` and appends `\nRetry: <the lead's reasons or the null reason>. Re-read the ticket first; new comments steer this retry.` The Retry line carries reasons only, never a new tool or method. When Reply 2 recreated the ticket's worktree, add `\nFresh worktree: the rebase onto <branch> conflicted on <the files git named>. The earlier attempts' files are gone; their commits are on branch <ticket branch>-r<N>: read them with git show or git diff, never check them out.`
@@ -207,7 +208,7 @@ Critic: arm in a reply of its own, as in Step C: scope and id `<run>-critic`, la
 5. If `notify` is set, read its contract with `engine::functions::info {"function_id":"<notify>"}`, then call it with the report.
 6. The final chat message is the report.
 
-**Hard stops.** Push, merge, delete a branch or remove a worktree only as the user's Finish answer; the run's own ticket worktrees and `deepwork/<slug>-*` branches (isolation=ticket) are the exception, handled in Steps C, D and G. Never write outside root. Never run git commands that move the user's checkout (`checkout`, `switch`, `reset`, `stash`, `clean`).
+**Hard stops.** Push, merge, delete a branch or remove a worktree only as the user's Finish answer; the run's own ticket worktrees and `deepwork/<slug>-*` branches (isolation=ticket) are the exception, handled in Steps C, D and G. Never write outside root, and never run `rm`: worktrees go away with `git worktree remove`. Never run git commands that move the user's checkout (`checkout`, `switch`, `reset`, `stash`, `clean`).
 
 **Abort** (the user says stop, or the blocked check in Step D): unregister the armed wave with `engine::unregister_trigger {"id":"<subscription id>"}` (from the arm result or `harness::triggers::list {}`); `harness::stop` each lead of the in-flight wave (never your own session: stop cascades and would cancel this turn); move each in-flight ticket to `backlog` with outcome `unfinished`, or with outcome `stuck` and the comment `stuck: <lead> still running; stop refused: <error>` when its stop errors; finish with the reason `aborted` or `blocked: …`.
 
