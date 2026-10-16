@@ -404,6 +404,8 @@ fn read_session(
             read_back: false,
             settled: false,
         };
+        // The turn that was latest, and settled, when the turn record was read.
+        let mut settled_turn: Option<String> = None;
         if let Some(turn) =
             crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms).await?
         {
@@ -412,6 +414,9 @@ fn read_session(
             read.context = snapshot;
             read.read_back = read_back;
             read.settled = terminal_snapshot(Some(turn.status), expects_wake);
+            if read.settled {
+                settled_turn = Some(turn.turn_id);
+            }
         }
         // No turn record: the transcript is durable independently of it. Keep
         // aggregating it; the answer is partial (`settled` stays false) and the
@@ -444,7 +449,22 @@ fn read_session(
                     .await?,
             ),
         };
-        cache.remember(session_id, read.settled, last_entry_id, &usage);
+        // The turn record was read before the transcript, seconds earlier on a
+        // big tree. A turn that started in between left its newest entry in
+        // what was just read with usage not yet stamped; caching that
+        // watermark would skip the stamp for good. Keep the usage only if the
+        // same turn is still the latest and still settled.
+        let still_settled = match settled_turn {
+            Some(turn_id) => crate::state::get_turn_unhydrated(&deps.iii, session_id, timeout_ms)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|turn| {
+                    same_settled_turn(&turn_id, &turn.turn_id, turn.status, expects_wake)
+                }),
+            None => false,
+        };
+        cache.remember(session_id, still_settled, last_entry_id, &usage);
         read.usage = usage;
         Ok(Some(read))
     })
@@ -652,6 +672,17 @@ fn terminal_status(status: Option<crate::types::turn::TurnStatus>) -> bool {
 
 fn terminal_snapshot(status: Option<crate::types::turn::TurnStatus>, expects_wake: bool) -> bool {
     terminal_status(status) && !expects_wake
+}
+
+/// Whether the turn read after a transcript is the settled turn read before
+/// it: same turn, still terminal, nothing armed to wake it.
+fn same_settled_turn(
+    before: &str,
+    after: &str,
+    status: crate::types::turn::TurnStatus,
+    expects_wake: bool,
+) -> bool {
+    before == after && terminal_snapshot(Some(status), expects_wake)
 }
 
 async fn collect_trace_metrics(
@@ -1216,6 +1247,23 @@ mod tests {
         assert!(cache.settled("s", false).is_none());
         cache.remember("s", false, last, &usage);
         assert!(cache.settled("s", true).is_none(), "forgotten once it ran");
+    }
+
+    #[test]
+    fn usage_is_cached_only_while_the_same_turn_stays_settled() {
+        use crate::types::turn::TurnStatus;
+        assert!(same_settled_turn("t1", "t1", TurnStatus::Completed, false));
+        // A turn started while the transcript was being read.
+        assert!(!same_settled_turn("t1", "t2", TurnStatus::Running, false));
+        assert!(!same_settled_turn("t1", "t2", TurnStatus::Completed, false));
+        // Same turn, resumed by a function result or parked on a wake.
+        assert!(!same_settled_turn(
+            "t1",
+            "t1",
+            TurnStatus::AwaitingFunctions,
+            false
+        ));
+        assert!(!same_settled_turn("t1", "t1", TurnStatus::Completed, true));
     }
 
     #[test]
