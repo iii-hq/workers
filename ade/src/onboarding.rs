@@ -175,6 +175,10 @@ pub const PROMPTS_FILE: &str = "onboarding.yaml";
 /// A file larger than this is not read: it is not a list of a few prompts.
 const MAX_PROMPTS_FILE_BYTES: u64 = 256 * 1024;
 const MAX_PROMPTS: usize = 12;
+/// Kits the wizard installs: a template names a few, never a catalog.
+const MAX_KITS: usize = 8;
+/// A kit's optional `@version` (a version, a range or a tag) is short.
+const MAX_KIT_VERSION_CHARS: usize = 64;
 const MAX_PROMPT_MODELS: usize = 16;
 const MAX_TITLE_CHARS: usize = 80;
 const MAX_DESCRIPTION_CHARS: usize = 280;
@@ -214,9 +218,12 @@ pub struct ExamplePrompt {
     pub models: Vec<PromptModel>,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Default, PartialEq, Serialize, JsonSchema)]
 pub struct PromptsOutput {
     pub prompts: Vec<ExamplePrompt>,
+    /// Registry kits the wizard installs in the background when it opens
+    /// (`<handle>/<name>`, optionally `@<version>`), in file order.
+    pub kits: Vec<String>,
 }
 
 pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
@@ -238,14 +245,13 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
         "console::onboarding::prompts",
         RegisterFunction::new_async(|_: PromptsInput| async move {
             let path = iii_worker_paths::project_path(PROMPTS_FILE);
-            Ok::<_, Error>(PromptsOutput {
-                prompts: load_prompts(&path).await,
-            })
+            Ok::<_, Error>(load_onboarding(&path).await)
         })
         .description(
-            "List the example prompts the project's onboarding.yaml declares for the last step \
-             of the ADE setup wizard: each one's text, agent profile and model priority list. \
-             Empty when the file is missing or invalid.",
+            "Read the project's onboarding.yaml for the ADE setup wizard: the example prompts \
+             its last step offers (each one's text, agent profile and model priority list) and \
+             the registry kits it installs in the background when it opens. Both lists are \
+             empty when the file is missing or invalid.",
         )
         .metadata(json!({ "internal": true })),
     );
@@ -362,9 +368,9 @@ async fn save_state(dir: &Path, state: &OnboardingState) -> Result<(), String> {
     Ok(())
 }
 
-/// The example prompts in `path`; none when it is missing, too large or not
-/// a prompts file.
-async fn load_prompts(path: &Path) -> Vec<ExamplePrompt> {
+/// The example prompts and kits in `path`; none when it is missing, too
+/// large or not an onboarding file.
+async fn load_onboarding(path: &Path) -> PromptsOutput {
     match tokio::fs::metadata(path).await {
         Ok(metadata) if metadata.len() > MAX_PROMPTS_FILE_BYTES => {
             tracing::warn!(
@@ -372,20 +378,22 @@ async fn load_prompts(path: &Path) -> Vec<ExamplePrompt> {
                 bytes = metadata.len(),
                 "the example prompts file is too large; the setup wizard shows none"
             );
-            return Vec::new();
+            return PromptsOutput::default();
         }
         Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return PromptsOutput::default();
+        }
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "cannot read the example prompts file");
-            return Vec::new();
+            return PromptsOutput::default();
         }
     }
     match tokio::fs::read_to_string(path).await {
-        Ok(text) => parse_prompts(&text),
+        Ok(text) => parse_onboarding(&text),
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "cannot read the example prompts file");
-            Vec::new()
+            PromptsOutput::default()
         }
     }
 }
@@ -394,6 +402,8 @@ async fn load_prompts(path: &Path) -> Vec<ExamplePrompt> {
 struct RawPromptsFile {
     #[serde(default)]
     prompts: Option<Vec<serde_yaml::Value>>,
+    #[serde(default)]
+    kits: Option<Vec<serde_yaml::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,21 +423,28 @@ struct RawPromptModel {
     effort: Option<String>,
 }
 
-/// Every valid prompt in an `onboarding.yaml` body, in file order, at most
-/// [`MAX_PROMPTS`]. An invalid entry is skipped with a warning; a body that
-/// is not a prompts file lists none.
-fn parse_prompts(text: &str) -> Vec<ExamplePrompt> {
+/// Every valid prompt (at most [`MAX_PROMPTS`]) and kit (at most
+/// [`MAX_KITS`]) in an `onboarding.yaml` body, in file order. An invalid
+/// entry is skipped with a warning; a body that is not an onboarding file
+/// lists none.
+fn parse_onboarding(text: &str) -> PromptsOutput {
     if text.trim().is_empty() {
-        return Vec::new();
+        return PromptsOutput::default();
     }
     let file: RawPromptsFile = match serde_yaml::from_str(text) {
         Ok(file) => file,
         Err(error) => {
-            tracing::warn!(%error, "{PROMPTS_FILE} is not a valid prompts file; the setup wizard shows no example prompts");
-            return Vec::new();
+            tracing::warn!(%error, "{PROMPTS_FILE} is not a valid onboarding file; the setup wizard shows no example prompts and installs no kits");
+            return PromptsOutput::default();
         }
     };
-    let entries = file.prompts.unwrap_or_default();
+    PromptsOutput {
+        prompts: parse_prompts(file.prompts.unwrap_or_default()),
+        kits: parse_kits(file.kits.unwrap_or_default()),
+    }
+}
+
+fn parse_prompts(entries: Vec<serde_yaml::Value>) -> Vec<ExamplePrompt> {
     let total = entries.len();
     let mut prompts = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
@@ -446,6 +463,52 @@ fn parse_prompts(text: &str) -> Vec<ExamplePrompt> {
         }
     }
     prompts
+}
+
+/// The kits to install: each a `<handle>/<name>` registry id, optionally
+/// `@<version>`, de-duplicated, at most [`MAX_KITS`].
+fn parse_kits(entries: Vec<serde_yaml::Value>) -> Vec<String> {
+    let mut kits: Vec<String> = Vec::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        let Some(kit) = entry.as_str().map(str::trim).filter(|kit| is_kit_ref(kit)) else {
+            tracing::warn!(
+                index,
+                "skipping a kit in {PROMPTS_FILE}: not <handle>/<name>[@<version>]"
+            );
+            continue;
+        };
+        if kits.iter().any(|known| known == kit) {
+            continue;
+        }
+        if kits.len() == MAX_KITS {
+            tracing::warn!("{PROMPTS_FILE} lists more than {MAX_KITS} kits; the rest are skipped");
+            break;
+        }
+        kits.push(kit.to_string());
+    }
+    kits
+}
+
+/// `<handle>/<name>` with an optional `@<version>`, as the registry names kits.
+fn is_kit_ref(value: &str) -> bool {
+    let (id, version) = match value.split_once('@') {
+        Some((id, version)) => (id, Some(version)),
+        None => (value, None),
+    };
+    let part = |part: &str| {
+        !part.is_empty()
+            && part.chars().count() <= MAX_ID_CHARS
+            && part.chars().all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.')
+            })
+    };
+    let id_ok = matches!(id.split_once('/'), Some((handle, name)) if part(handle) && part(name));
+    let version_ok = version.is_none_or(|version| {
+        !version.is_empty()
+            && version.chars().count() <= MAX_KIT_VERSION_CHARS
+            && !version.chars().any(|c| c.is_whitespace() || c.is_control())
+    });
+    id_ok && version_ok
 }
 
 fn prompt_entry(value: serde_yaml::Value) -> Result<ExamplePrompt, String> {
@@ -1010,7 +1073,7 @@ prompts:
 
     #[test]
     fn parses_prompts_with_their_profile_and_model_priority() {
-        let prompts = parse_prompts(PROMPTS);
+        let prompts = parse_onboarding(PROMPTS).prompts;
         assert_eq!(prompts.len(), 2);
         assert_eq!(
             prompts[0],
@@ -1077,7 +1140,7 @@ prompts:
       - 42
 "#
         );
-        let prompts = parse_prompts(&text);
+        let prompts = parse_onboarding(&text).prompts;
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].title, "Kept");
         // Only the model entry that validates is kept; `default` means none.
@@ -1102,7 +1165,7 @@ prompts:
                 "  - title: Prompt {index}\n    prompt: Do {index}\n    models:\n{models}"
             ));
         }
-        let prompts = parse_prompts(&text);
+        let prompts = parse_onboarding(&text).prompts;
         assert_eq!(prompts.len(), MAX_PROMPTS);
         assert_eq!(prompts[0].models.len(), MAX_PROMPT_MODELS);
         assert_eq!(
@@ -1122,7 +1185,11 @@ prompts:
             "other: 1",
             "prompts:",
         ] {
-            assert!(parse_prompts(text).is_empty(), "{text:?} should list none");
+            assert_eq!(
+                parse_onboarding(text),
+                PromptsOutput::default(),
+                "{text:?} should list none"
+            );
         }
     }
 
@@ -1130,16 +1197,42 @@ prompts:
     async fn loads_prompts_from_the_file_and_none_without_it() {
         let dir = scratch_dir("prompts");
         let path = dir.join(PROMPTS_FILE);
-        assert!(load_prompts(&path).await.is_empty());
-        std::fs::write(&path, PROMPTS).unwrap();
-        assert_eq!(load_prompts(&path).await.len(), 2);
+        assert_eq!(load_onboarding(&path).await, PromptsOutput::default());
+        std::fs::write(&path, format!("{PROMPTS}kits:\n  - iii/deepwork\n")).unwrap();
+        let file = load_onboarding(&path).await;
+        assert_eq!(file.prompts.len(), 2);
+        assert_eq!(file.kits, ["iii/deepwork"]);
         let too_large = "#".repeat(MAX_PROMPTS_FILE_BYTES as usize + 1);
         std::fs::write(&path, too_large).unwrap();
-        assert!(load_prompts(&path).await.is_empty());
+        assert_eq!(load_onboarding(&path).await, PromptsOutput::default());
         // A directory where the file should be is no file at all.
         let as_dir = dir.join("as-dir");
         std::fs::create_dir_all(as_dir.join(PROMPTS_FILE)).unwrap();
-        assert!(load_prompts(&as_dir.join(PROMPTS_FILE)).await.is_empty());
+        assert_eq!(
+            load_onboarding(&as_dir.join(PROMPTS_FILE)).await,
+            PromptsOutput::default()
+        );
+    }
+
+    #[test]
+    fn lists_the_kits_to_install_and_skips_bad_entries() {
+        let file = parse_onboarding(
+            "kits:\n  - iii/deepwork\n  - ' iii/other@^0.2 '\n  - iii/deepwork\n  - deepwork\n  - iii/Bad\n  - 'iii/x@ 1'\n  - {kit: iii/y}\n  - 7\n",
+        );
+        assert_eq!(file.kits, ["iii/deepwork", "iii/other@^0.2"]);
+        assert!(file.prompts.is_empty(), "a kits-only file lists no prompts");
+        let many = (0..MAX_KITS + 3)
+            .map(|index| format!("  - iii/kit-{index}\n"))
+            .collect::<String>();
+        assert_eq!(
+            parse_onboarding(&format!("kits:\n{many}")).kits.len(),
+            MAX_KITS
+        );
+        assert!(
+            parse_onboarding(PROMPTS).kits.is_empty(),
+            "no kits key, no kits"
+        );
+        assert!(parse_onboarding("kits: iii/deepwork").kits.is_empty());
     }
 
     #[tokio::test]

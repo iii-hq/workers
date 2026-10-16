@@ -4,12 +4,14 @@ import {
   Compass,
   LoaderCircle,
   MessageSquareText,
+  TriangleAlert,
 } from 'lucide-react'
 import { useId } from 'react'
 import { DEFAULT_AGENT_ID } from '@/components/chat/agent-defaults'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
+import type { KitInstall } from '@/lib/onboarding/kits'
 import { servesUsableModels } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { Button } from './controls'
@@ -46,6 +48,9 @@ export function ReadyStep({
   tour,
   onStartTour,
   onStart,
+  kits = [],
+  onRetryKit,
+  onReviewKit,
 }: {
   onboarding: OnboardingController
   /** The strategies Judge answers with, default first. */
@@ -61,6 +66,12 @@ export function ReadyStep({
   onStartTour: () => void
   /** Close the wizard and hand the composer the focus. */
   onStart: () => void
+  /** The template's kits and how their background install is going. */
+  kits?: readonly KitInstall[]
+  /** Install a kit that failed again. */
+  onRetryKit?: (kit: string) => void
+  /** Close the wizard and open Directory → Kits on a kit that needs review. */
+  onReviewKit?: (kit: string) => void
 }) {
   const { snapshot, activity } = onboarding
   const ids = useId()
@@ -215,6 +226,19 @@ export function ReadyStep({
         </Rows>
       ) : null}
 
+      {kits.length > 0 ? (
+        <Rows as="ul">
+          {kits.map((install) => (
+            <KitRow
+              key={install.kit}
+              install={install}
+              onRetry={onRetryKit}
+              onReview={onReviewKit}
+            />
+          ))}
+        </Rows>
+      ) : null}
+
       {offerPrompts ? (
         <Section title="Try an example" hint="starts a new chat and sends it">
           {prompts === null ? (
@@ -324,5 +348,73 @@ export function ReadyStep({
         </section>
       ) : null}
     </StepLayout>
+  )
+}
+
+const KIT_TEXT: Record<
+  KitInstall['state'],
+  { title: (kit: string) => string; detail: string }
+> = {
+  installing: {
+    title: (kit) => `Installing ${kit}`,
+    detail: 'in the background; you can keep going',
+  },
+  installed: {
+    title: (kit) => `${kit} installed`,
+    detail: 'its agents are in the agent picker',
+  },
+  review: {
+    title: (kit) => `${kit} needs a review`,
+    detail: 'its install plan waits in Directory → Kits',
+  },
+  failed: {
+    title: (kit) => `${kit} did not install`,
+    detail: 'try again, or install it from Directory → Kits',
+  },
+}
+
+/** One template kit: its background install, with the way forward. */
+function KitRow({
+  install,
+  onRetry,
+  onReview,
+}: {
+  install: KitInstall
+  onRetry?: (kit: string) => void
+  onReview?: (kit: string) => void
+}) {
+  const text = KIT_TEXT[install.state]
+  return (
+    <li className="flex items-start gap-3 px-3.5 py-2.5">
+      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+        {install.state === 'installing' ? (
+          <LoaderCircle
+            className="size-4 animate-spin text-neutral-500 motion-reduce:animate-none"
+            aria-hidden
+          />
+        ) : install.state === 'installed' ? (
+          <Check className="size-4 text-ok" strokeWidth={2.25} aria-hidden />
+        ) : (
+          <TriangleAlert className="size-4 text-warn" aria-hidden />
+        )}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-px">
+        <span className="font-sans text-[13px] font-medium leading-5 text-ink">
+          {text.title(install.kit)}
+        </span>
+        <span className="break-words font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
+          {install.message ?? text.detail}
+        </span>
+      </span>
+      {install.state === 'review' && onReview ? (
+        <Button variant="ghost" onClick={() => onReview(install.kit)}>
+          Review
+        </Button>
+      ) : install.state === 'failed' && onRetry ? (
+        <Button variant="ghost" onClick={() => onRetry(install.kit)}>
+          Try again
+        </Button>
+      ) : null}
+    </li>
   )
 }
