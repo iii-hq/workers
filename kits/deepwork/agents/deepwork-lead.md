@@ -59,7 +59,7 @@ Your task names the ticket, run, round N, result scope and key, `Phases`, `Work 
 2. **code**. done → check. blocked → finish `blocked`. failed or null → the next attempt, or finish `failed`.
 3. **check**: keys `verify` and `review` (with judges: `judge1…judgeJ` and `review`) in one phase. Pass on verify (judges: a majority of pass) and pass on review → finish `verified`. A fail → the next attempt with every reason, or finish `failed` with them. An unsure whose reasons start with `ticket read failed` → the next attempt, or finish `unverified`. Anything else (another unsure, a judge tie, a null verify or review) → finish `unverified`.
 
-**Phases `tests, code`** (verify off): the same without check; code done → finish `accepted`. **Phases `work, check`**: the same with work in place of tests and code, and check holding only `verify` (or the judges). **Phases `work`**: done → finish `accepted`; blocked → finish `blocked`; failed or null → the next attempt, or finish `failed`.
+**Phases `tests, code`** (verify off): the same without check; code done → finish `accepted`. **Phases `work, check`**: the same with work in place of tests and code, and check holding only `verify` (or the judges): a pass on verify (judges: a majority of pass) finishes `verified`, never `accepted`. **Phases `work`**: done → finish `accepted`; blocked → finish `blocked`; failed or null → the next attempt, or finish `failed`.
 
 The next attempt re-tasks the same session with `\nRetry: <reasons>. Re-read the ticket first.` appended. Attempt 1 of a task with a `Retry:` line appends that line, and a `Fresh worktree` line when there is one, to its first phase's task.
 
