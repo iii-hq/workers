@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use xa11y_core::{ElementData, Provider};
+use xa11y_core::{ElementData, Provider, Role};
 
 pub struct Budget {
     pub max_nodes: usize,
@@ -191,20 +191,24 @@ const SECRET_PARTS: &[&str] = &[
 /// "Spinner" stay readable.
 const SECRET_WORDS: &[&str] = &["pin", "senha"];
 
-pub fn is_secret(el: &ElementData) -> bool {
+/// A field the platform itself marks as a password: macOS secure fields by
+/// role/subrole; AT-SPI PASSWORD_TEXT by its role name (GTK, Qt) or xa11y's
+/// numeric fallback (AccessKit), which xa11y maps to a plain text field.
+pub fn secure_role(el: &ElementData) -> bool {
     let raw = |key: &str| el.raw.get(key).and_then(|v| v.as_str());
-    // macOS secure fields by role/subrole; AT-SPI PASSWORD_TEXT by its role
-    // name (GTK, Qt) or xa11y's numeric fallback (AccessKit), which xa11y
-    // maps to a plain text field.
-    if raw("ax_role") == Some("AXSecureTextField")
+    raw("ax_role") == Some("AXSecureTextField")
         || raw("ax_subrole") == Some("AXSecureTextField")
+        || raw("atspi_role")
+            .is_some_and(|r| r.eq_ignore_ascii_case("password text") || r == "role_num:40")
+}
+
+pub fn is_secret(el: &ElementData) -> bool {
+    if secure_role(el)
         // macOS could not read the subrole (vendor/xa11y-macos M4): it may
         // say AXSecureTextField, so fail closed.
         // ponytail: hides any such node's value, not only a text field's;
         // AppKit answers a missing subrole as absent, so this is rare.
         || el.raw.contains_key("ax_subrole_error")
-        || raw("atspi_role")
-            .is_some_and(|r| r.eq_ignore_ascii_case("password text") || r == "role_num:40")
     {
         return true;
     }
@@ -229,13 +233,36 @@ pub fn is_secret(el: &ElementData) -> bool {
         || words.windows(3).any(|w| w == ["mot", "de", "passe"])
 }
 
+const VALUE_KEYS: [&str; 3] = ["AXValue", "uia_value", "atspi_value"];
+
+/// The `raw` key a redacted secret field carries when it held text, so the
+/// tree can say `(set)` without the value. Never a selector attribute: raw
+/// keys are refused there. Linux never sets it: AT-SPI password text is
+/// never read (vendor/xa11y-linux P4).
+pub const FILLED: &str = "computer_filled";
+
 /// Drop a secret's value everywhere xa11y keeps it. Only the value keys
 /// leave `raw`: the Windows backend reads other raw keys while walking.
 pub fn redact(el: &mut ElementData) {
     if is_secret(el) {
+        let filled = el.value.as_deref().is_some_and(|v| !v.is_empty())
+            || VALUE_KEYS.iter().any(|k| {
+                el.raw
+                    .get(*k)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| !v.is_empty())
+            });
         el.value = None;
-        for key in ["AXValue", "uia_value", "atspi_value"] {
+        for key in VALUE_KEYS {
             el.raw.remove(key);
+        }
+        // Only a field holds typed text; a label named "Password:" carries
+        // its own name as its value.
+        let field = secure_role(el)
+            || el.states.editable
+            || matches!(el.role, Role::TextField | Role::TextArea | Role::ComboBox);
+        if filled && field {
+            el.raw.insert(FILLED.into(), true.into());
         }
     }
 }
@@ -466,5 +493,22 @@ mod tests {
         )
         .unwrap();
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn only_a_secret_field_holding_text_is_marked_filled() {
+        let el = |role: Role, name: &str, value: &str| {
+            let mut e = ElementData::for_role(role);
+            e.name = Some(name.into());
+            e.value = Some(value.into());
+            redact(&mut e);
+            assert_eq!(e.value, None, "{name}");
+            e.raw.contains_key(FILLED)
+        };
+        assert!(el(Role::TextField, "Senha", "hunter2"));
+        assert!(!el(Role::TextField, "Senha", ""));
+        // A label carries its own name as its value: never "set".
+        assert!(!el(Role::StaticText, "Password:", "Password:"));
+        assert!(!el(Role::Button, "Show password", "x"));
     }
 }

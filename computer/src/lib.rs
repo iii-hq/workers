@@ -8,6 +8,7 @@ pub mod driver;
 pub mod events;
 pub mod frames;
 pub mod functions;
+pub mod judge;
 pub mod manifest;
 pub mod semantic;
 pub mod session;

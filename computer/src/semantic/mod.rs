@@ -15,10 +15,11 @@ mod refs;
 mod selector;
 mod walk;
 
-pub use engine::{Query, Scope, SnapshotOut, Verb};
+pub use engine::{Query, Row, Scope, SnapshotOut, Verb};
 pub use error::{map_act_error, map_read_error, Code, SemanticError};
 pub use executor::SemanticSession;
 pub use selector::parse_selector;
+pub use walk::{is_secret, secure_role};
 
 use std::sync::Arc;
 use std::time::Duration;

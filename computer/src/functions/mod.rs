@@ -7,6 +7,7 @@ pub mod displays;
 pub mod find;
 pub mod frame;
 pub mod observe;
+pub mod run;
 pub mod screenshot;
 pub mod sessions;
 
@@ -56,6 +57,15 @@ pub const ACT_DESC: &str =
      computer::find (native sessions): invoke, set_value (with text), toggle, select — no \
      mouse or keyboard involved, and the effect is not verified, so confirm with computer::find. \
      A coordinate action invalidates refs.";
+pub const RUN_ID: &str = "computer::run";
+pub const RUN_DESC: &str =
+    "Drive one app toward a goal in one call, with the judge worker choosing each step by element \
+     (invoke, set_value, toggle or select by ref; no mouse, keyboard, scrolling or menus). Needs a \
+     native session and app_name or app_pid. State the goal as the end state and pass field text \
+     as `inputs` keyed by field label. Returns a status, the steps, and the app's tree with live \
+     refs for computer::act; `done` is the judge's reading, so confirm with computer::find. \
+     Approving a run approves every action it takes: not for destructive actions. Without a \
+     judge worker it returns judge_unavailable; drive with computer::find + computer::act.";
 pub const SCREENCAST_START_ID: &str = "computer::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
     "Internal: start capturing live desktop frames for the console viewport; each new frame \
@@ -109,6 +119,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<observe::ObserveInput, observe::ObserveOutput>(OBSERVE_ID, OBSERVE_DESC),
         spec::<find::FindInput, find::FindOutput>(FIND_ID, FIND_DESC),
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
+        spec::<run::RunInput, run::RunOutput>(RUN_ID, RUN_DESC),
         spec::<frame::ScreencastStartInput, frame::AckOutput>(
             SCREENCAST_START_ID,
             SCREENCAST_START_DESC,
@@ -130,6 +141,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_observe(iii, sessions);
     register_find(iii, sessions);
     register_act(iii, sessions);
+    register_run(iii, sessions);
     register_screencast_start(iii, sessions);
     register_screencast_stop(iii, sessions);
     register_frame(iii, sessions);
@@ -376,6 +388,33 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(ACT_DESC),
+    );
+}
+
+fn register_run(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sessions = sessions.clone();
+    let bus = iii.clone();
+    iii.register_function(
+        RUN_ID,
+        RegisterFunction::new_async(move |req: run::RunInput| {
+            let sessions = sessions.clone();
+            let bus = bus.clone();
+            async move {
+                let session = get_session(&sessions, &req.session_id).await?;
+                // The caller session's judge provider, read here in the
+                // handler's context and sent on every judge call of the run.
+                let provider = crate::judge::session_provider();
+                run::handle(&session, req, |evaluation, timeout_ms| {
+                    let (bus, provider) = (bus.clone(), provider.clone());
+                    async move {
+                        crate::judge::evaluate(&bus, evaluation, timeout_ms, provider.as_deref())
+                            .await
+                    }
+                })
+                .await
+            }
+        })
+        .description(RUN_DESC),
     );
 }
 

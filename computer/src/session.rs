@@ -173,6 +173,10 @@ pub struct Session {
     /// for every native session), so a coordinate action can never land
     /// between a semantic action's checks and its dispatch.
     pub act_lock: Arc<Mutex<()>>,
+    /// One `computer::run` at a time on this session.
+    // ponytail: per session; two native sessions can still run on one
+    // desktop at once (their semantic acts never share pointer or focus).
+    pub run_lock: Mutex<()>,
 }
 
 impl Session {
@@ -206,6 +210,7 @@ impl Session {
             frames,
             semantic,
             act_lock,
+            run_lock: Mutex::new(()),
         })
     }
 

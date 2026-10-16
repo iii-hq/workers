@@ -148,6 +148,17 @@ capture, input or accessibility call.
   listener (e.g. Orca) leaves; the warning reappears on the next `list`.
 - **Flatpak.** An app behind `xdg-dbus-proxy` may report the proxy's pid, so
   `app_pid` scoping can miss it (unverified).
+- **computer::run's reach.** Semantic verbs only: no keyboard, scrolling or
+  menus (the menu bar is never offered), combo boxes are never typed into,
+  and a field with no accessible name always returns `needs_text`. On Linux
+  a filled password field never reads `(set)` (its text is never read), so a
+  run may type it again until the repeat rule stops it. A modal
+  printed past the 32 KiB cap does not narrow the targets.
+- **computer::run's settle.** After an act it reads until the tree changes,
+  for at most 2 s, comparing exactly: a ticking clock reads as change, so
+  such an app never stalls and stops at `max_steps`. There is no hardware
+  input-idle abort; a click in the console viewport or `sessions::stop` ends
+  a run.
 - **Per-snapshot cost on Linux.** Every snapshot builds a provider (two D-Bus
   connections and an X one): about 32 ms per find attempt, measured in the e2e
   (`snapshot_cost_is_measured`).

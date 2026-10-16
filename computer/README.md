@@ -151,6 +151,13 @@ masks it): xa11y does not expose UIA's `IsPassword`. On Linux a password field
 is recognised by its AT-SPI role, whatever its name. Remote and sandbox
 sessions stay coordinate-only.
 
+`computer::run { app_name, goal, inputs }` drives one app toward a goal in a
+single call: each step, the [judge](https://github.com/iii-hq/workers/tree/main/judge)
+worker picks the next element and operation from the tree, the worker picks
+the verb and acts by ref, and the run returns a status, its steps and the
+tree with live refs. Text comes only from `inputs`, keyed by field label.
+Without a judge worker it returns `judge_unavailable` and the tree.
+
 ## Console
 
 The worker ships its own console page (page `computer`): a session rail, a live

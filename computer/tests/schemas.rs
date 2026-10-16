@@ -1,4 +1,4 @@
-//! Wire-schema snapshots for the eleven `computer::*` functions.
+//! Wire-schema snapshots for the twelve `computer::*` functions.
 //!
 //! `computer::functions::catalog()` is the single source of truth for each
 //! function's id, registration description, and schemars-derived
@@ -31,7 +31,7 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
     pretty
 }
 
-/// The catalog must cover exactly the eleven registered functions, in
+/// The catalog must cover exactly the twelve registered functions, in
 /// registration order (kept in lockstep with `register_all`).
 #[test]
 fn catalog_lists_all_functions_in_registration_order() {
@@ -47,6 +47,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "computer::observe",
             "computer::find",
             "computer::act",
+            "computer::run",
             "computer::screencast::start",
             "computer::screencast::stop",
             "computer::frame",

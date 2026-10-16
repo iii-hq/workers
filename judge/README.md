@@ -79,7 +79,8 @@ Six ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
 the calling session's provider: the console's composer (beside the model
 picker) stores it as the session's `judge_provider` metadata, the harness
 stamps it on every turn as the `iii.judge.provider` OTel baggage, and callers
-in that turn (function search, call reconciliation, `browser::run`) send it as
+in that turn (function search, call reconciliation, `browser::run`,
+`computer::run`) send it as
 `provider`; a request without one falls back to that baggage, then to the
 default. Each session routes on its own; no session changes another's judge
 or the default. A local provider keeps its model loaded while it is the

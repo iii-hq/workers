@@ -17,6 +17,7 @@ returned; `sessions::list` and `displays` are the two that do not.
 | `computer::observe` | `session_id`, `include_image?` (true), `include_a11y?` (false), `app_pid?`/`app_name?`/`root_ref?`, `max_nodes?` (≤256), `max_depth?` (≤12) | image (optional) + text content; with `include_a11y`, the tree as `[ref=…]` lines |
 | `computer::find` | `session_id`, `selector`, `app_pid?`/`app_name?`/`root_ref?`, `max_nodes?`, `max_depth?`, `timeout_ms?` (≤30000) | `tree`, `matches`, `truncated`, `waited_ms` |
 | `computer::act` | `session_id`, `action`, coordinates / `text` / `keys`, or `ref` | `ok`, `detail` |
+| `computer::run` | `session_id`, `goal`, `app_name?`/`app_pid?` (one required), `inputs?`, `max_steps?` (≤60), `timeout_ms?` (≤240000) | `status`, `reason?`, `steps[]`, `needs_text?`, `tree`, `judge_requests`, `elapsed_ms` |
 
 `act` actions: `click` (`left_click`), `right_click`, `double_click`, `move`,
 `drag` (`to_x`/`to_y`), `scroll` (`scroll_x`/`scroll_y`), `type` (`text`),
@@ -95,9 +96,11 @@ limits live in the worker, action-level policy lives above it.
 | Layer | Lives in | Examples |
 |---|---|---|
 | Device limits | this worker | permission preflight, `max_sessions`, capture downscale, command timeouts |
-| Action policy | engine + harness | dispatch policy (`options.functions`), the approval gate on `computer::act`, permission profiles |
+| Action policy | engine + harness | dispatch policy (`options.functions`), the approval gate on `computer::act` and `computer::run`, permission profiles |
 
-A raw `act` does what it is told, on a real machine. Anything that should ask a
+A raw `act` does what it is told, on a real machine. `computer::run` acts
+in-process, so approving one run approves every accessibility action it
+takes; there is no per-step gate. Anything that should ask a
 human first belongs in an approval-gate `pre-trigger` hook or a dispatch
 allow-list, where the human-facing surface (the console renders every capture
 inline) already is.

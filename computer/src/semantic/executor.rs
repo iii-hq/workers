@@ -126,6 +126,12 @@ impl SemanticSession {
         self.invalidations.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// The desktop's invalidation count: a run that sees it move did not
+    /// move it itself (semantic acts never do).
+    pub fn invalidations(&self) -> u64 {
+        self.invalidations.load(Ordering::SeqCst)
+    }
+
     /// Terminal: later calls fail with `unsupported_session` and never start
     /// a new executor. Never blocks.
     pub fn close(&self) {

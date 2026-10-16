@@ -5,7 +5,8 @@ a capability primitive — it captures pixels and moves a cursor, and on native
 sessions it also reads an app's accessibility tree and acts on
 its elements by reference. Everything an agentic computer-use product needs
 around that (the model loop, approval, transcripts, tracing) belongs to the
-engine and the harness, not here.
+engine and the harness, not here — except `computer::run`, a step loop over
+refs in which the optional judge worker classifies each step.
 
 ```text
   agent / console                worker                      the desktop
@@ -17,6 +18,7 @@ engine and the harness, not here.
   console viewport ◀── frame-changed ◀────┘ screencast pump (newest frame only)
         └────── computer::frame ──────▶ reads the stored frame
   sibling workers  ◀── session-started / session-stopped
+  computer::run ─▶ semantic/ ◀─▶ judge::evaluate (optional)
 ```
 
 ## Module map
@@ -36,6 +38,8 @@ engine and the harness, not here.
 | `driver/remote.rs` | A desktop reached through its guest executor over a WebSocket |
 | `session.rs` | Session registry, driver selection, durable records in `state`, the screencast pump |
 | `semantic/` | Semantic computer use beside the `Driver` (native sessions only): a per-session executor thread owning the xa11y provider, the active snapshot and its ref table, budgeted walk + redaction, selector validation, tree text, error mapping, the provider factory and, on Linux, the read-only AT-SPI bus probe (`fake.rs` is the Linux test provider) — see internals.md "Semantic layer" |
+| `functions/run.rs` | `computer::run`: per step one judge evaluation (operation, completion check, a target per operation), one verb per element chosen by code, a content re-check before acting, stop rules |
+| `judge.rs` | Optional `judge::evaluate` client: the calling session's provider from baggage, a 30 s pause per provider after an outage |
 | `events.rs` | `computer::session-started` / `session-stopped` trigger types and their subscriber fan-out |
 | `frames.rs` | `computer::frame-changed` trigger type: bounded bindings and per-binding coalescing delivery |
 | `functions/` | The `computer::*` wire surface, one module per function plus the golden-tested catalog |

@@ -44,7 +44,7 @@ impl Verb {
     }
 
     /// The xa11y action name an element advertises for this verb.
-    fn action_name(self) -> &'static str {
+    pub(crate) fn action_name(self) -> &'static str {
         match self {
             Self::Invoke => "press",
             Self::SetValue => "set_value",
@@ -77,6 +77,31 @@ pub struct SnapshotOut {
     pub matches: usize,
     /// The walk stopped at the node budget or the deadline.
     pub truncated: bool,
+    /// Elements listed, in tree order (observe only; empty for find).
+    pub rows: Vec<Row>,
+}
+
+/// One element an observe listed: for code that reasons over the tree
+/// (`computer::run`) instead of parsing its text.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub r#ref: String,
+    /// Level below the walk root (1 = its child).
+    pub depth: u32,
+    /// Its line without the ref, then up to three named ancestors (find's
+    /// line).
+    pub text: String,
+    pub el: ElementData,
+}
+
+/// An element's line without its ref, then up to three named ancestors.
+fn described(walk: &Walk, el: &ElementData) -> String {
+    let mut line = element_line(None, el);
+    for a in walk.ancestors(el.handle, 3) {
+        line.push_str(" ← ");
+        line.push_str(&label(&a));
+    }
+    line
 }
 
 struct Snapshot {
@@ -226,6 +251,7 @@ impl Engine {
         let (provider, root, app) = self.resolve_root(&q.scope)?;
         let mut out = Outline::new(app.clone());
         let mut refs = HashMap::new();
+        let mut rows = Vec::new();
         let matches;
         let truncated;
         let depth_cut;
@@ -248,6 +274,12 @@ impl Engine {
                         let indent = "  ".repeat(depth.saturating_sub(1) as usize);
                         // Only a printed line gets a live ref.
                         if out.push(format!("{indent}{}", element_line(Some(&r), &el))) {
+                            rows.push(Row {
+                                r#ref: r.clone(),
+                                depth,
+                                text: described(&walk, &el),
+                                el: el.clone(),
+                            });
                             refs.insert(r, el);
                         }
                     }
@@ -265,12 +297,7 @@ impl Engine {
                     matches = found.len();
                     for el in found.into_iter().take(MAX_FIND_LINES) {
                         let r = next_ref();
-                        let mut line = element_line(Some(&r), &el);
-                        for a in walk.ancestors(el.handle, 3) {
-                            line.push_str(" ← ");
-                            line.push_str(&label(&a));
-                        }
-                        if out.push(line) {
+                        if out.push(format!("[ref={r}] {}", described(&walk, &el))) {
                             refs.insert(r, el);
                         }
                     }
@@ -323,6 +350,7 @@ impl Engine {
             text: out.finish(),
             matches,
             truncated,
+            rows,
         })
     }
 
@@ -1012,10 +1040,41 @@ mod tests {
                 !text.contains("hunter2") && !text.contains("s3cr3t!"),
                 "{text}"
             );
-            assert!(text.contains("text_field \"Senha\""), "{text}");
+            assert!(text.contains("text_field \"Senha\" (set)"), "{text}");
             // A field that is not secret keeps its value.
             assert!(text.contains("value=\"João\""), "{text}");
         }
+        // An empty secret field is not marked set.
+        t.edit(senha, |e| {
+            e.value = Some(String::new());
+            e.raw.insert("AXValue".into(), "".into());
+            e.raw.remove("uia_value");
+        });
+        let observed = e.snapshot(&query(None), deadline(), true).unwrap().text;
+        let line = observed.lines().find(|l| l.contains("Senha")).unwrap();
+        assert!(!line.contains("(set)"), "{line}");
+    }
+
+    #[test]
+    fn observe_rows_match_the_printed_lines_with_their_ancestors() {
+        let t = form();
+        let (mut e, _) = engine(&t);
+        let out = e.snapshot(&query(None), deadline(), true).unwrap();
+        assert_eq!(out.rows.len(), out.matches);
+        let printed: Vec<&str> = out.text.lines().skip(2).collect();
+        for (row, line) in out.rows.iter().zip(&printed) {
+            assert!(line.contains(&format!("[ref={}]", row.r#ref)), "{line}");
+        }
+        let salvar = out.rows.iter().find(|r| r.text.contains("Salvar")).unwrap();
+        assert_eq!(salvar.text, "button \"Salvar\" ← window \"Doc\"");
+        assert_eq!(salvar.depth, 2);
+        assert!(salvar.el.actions.iter().any(|a| a == "press"));
+        // The ref acts, like the printed one.
+        e.act(&salvar.r#ref, Verb::Invoke, None).unwrap();
+        let found = e
+            .snapshot(&query(Some("button")), deadline(), false)
+            .unwrap();
+        assert!(found.rows.is_empty());
     }
 
     #[test]

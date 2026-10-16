@@ -439,6 +439,14 @@ async fn the_password_value_never_leaves() {
     let tree = s.snapshot(query(f.pid(), None), true).await.unwrap();
     assert!(tree.text.contains("Senha"), "{}", tree.text);
     assert!(!tree.text.contains(SECRET));
+    // It holds text, and says so without the value; AT-SPI password text is
+    // never read (vendor/xa11y-linux P4), so Linux cannot tell.
+    let senha = tree.text.lines().find(|l| l.contains("\"Senha\"")).unwrap();
+    assert_eq!(
+        senha.contains("(set)"),
+        cfg!(not(target_os = "linux")),
+        "{senha}"
+    );
     // Positive control: the field is there, so 0 below means the value hid it.
     assert_eq!(find(&s, f.pid(), "[name='Senha']").await.matches, 1);
     assert_eq!(
