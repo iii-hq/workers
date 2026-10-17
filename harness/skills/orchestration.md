@@ -60,11 +60,16 @@ and hand it this same discipline in its task.
 
 Your bindings wake you with the medium's events. On each wake you hold the
 full control plane again: read the medium, judge progress, respawn a failed
-item, extend the deadline, or finish. Worker failures reach you through the
-medium (an `error` status the worker managed to record) or through your
-deadline catching the silence — nothing is injected into your session on a
-worker's behalf. `harness::status { session_id: <child> }` answers a direct
-health question about a specific worker.
+item, extend the deadline, or finish. A function worker's failure reaches you
+through the medium (an `error` status it managed to record) or through your
+deadline catching the silence. A spawned child that ends while you are parked
+on a wake usually wakes you with `[notification] child ended: session <id> (turn <id>)
+status=<completed|failed>`: read the medium it was told to write, its
+result is there or it ended without writing it. The notice is best effort
+(it is not retried), so keep the deadline on your wake: it still catches a
+child whose notice never arrived. `harness::status
+{ session_id: <child> }` answers a direct health question about a specific
+worker.
 
 ## 5. Tear down
 

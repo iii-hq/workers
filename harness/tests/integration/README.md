@@ -47,6 +47,7 @@ No provider key or network access is required.
 | INT-037 | `ask-ends-turn` | direct | a valid `harness::ask` is answered by the turn loop (`details.status: "awaiting_answer"`, the card's questions) and the turn completes without a second model call; the answer arrives later as the user's next message |
 | INT-038 | `ask-bypasses-approval-hook` | direct | a `pre_trigger` hook that holds every call (`*`) is bound after turn 1; turn 2's `harness::ask` never reaches it (zero hook invocations), nothing parks, the result is `awaiting_answer`, and the turn completes without another model call |
 | INT-039 | `stop-held-call` | direct | `harness::stop` cancels a turn while its function call is still held, without waiting for the call to return; the call closes as a `cancelled` error |
+| INT-040 | `child-end-wakes-parent` | direct | a child that ends `completed` without writing the key its parent's wake watches wakes the parked parent with a `[notification] child ended: session <id> (turn <id>) status=completed` on the entry `e_childend_<child turn>`, long before the wake's deadline; the woken parent tears the wake down |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |

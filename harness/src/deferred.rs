@@ -536,8 +536,7 @@ async fn find_call_arguments(
 /// fire-and-forget spawn settles its call `Done` at spawn time and the parent
 /// turn has usually completed by the time the child finishes, so both
 /// `resolve` gates return `not_resolved` — the caller must then pick another
-/// channel if the outcome matters (see the child-failure notification in
-/// `finalize_failed`).
+/// channel if the outcome matters (see `subagent::notify_parent_of_end`).
 pub async fn resolve_parent(
     deps: &Deps,
     parent: &crate::types::turn::ParentLink,

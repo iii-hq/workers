@@ -11,6 +11,7 @@ mod binding_prefix_append_only;
 mod call_argument_diagnosis;
 mod call_argument_reconciliation;
 mod child_discovery_granted;
+mod child_end_wakes_parent;
 mod compaction_anchor;
 mod condition_failure_notice;
 mod console_streamed_text;
@@ -65,6 +66,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         ask_ends_turn::scenario(),
         binding_prefix_append_only::scenario(),
         child_discovery_granted::scenario(),
+        child_end_wakes_parent::scenario(),
         compaction_anchor::scenario(),
         condition_failure_notice::scenario(),
         console_streamed_text::scenario(),
@@ -106,7 +108,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 41);
+        assert_eq!(fixtures.len(), 42);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
