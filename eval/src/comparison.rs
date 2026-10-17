@@ -379,8 +379,11 @@ impl ObjectiveSummaryV1 {
         let tokens_per_generation = (generations > 0)
             .then(|| total_tokens.map(|tokens| tokens as f64 / generations as f64))
             .flatten();
+        // A lower bound (some generation had no price) is not a comparable
+        // cost: deltas against it could show a saving that never happened.
+        let cost_usd = totals.cost_usd.filter(|_| totals.cost_complete);
         let cost_per_generation_usd = (generations > 0)
-            .then(|| totals.cost_usd.map(|cost| cost / generations as f64))
+            .then(|| cost_usd.map(|cost| cost / generations as f64))
             .flatten();
         let max_depth = metrics.by_session.iter().map(|session| session.depth).max();
         let root_context = metrics
@@ -412,7 +415,7 @@ impl ObjectiveSummaryV1 {
             cache_read_tokens: totals.cache_read_tokens,
             cache_write_tokens: totals.cache_write_tokens,
             reasoning_tokens: totals.reasoning_tokens,
-            subject_cost_usd: totals.cost_usd,
+            subject_cost_usd: cost_usd,
             tokens_per_generation,
             cost_per_generation_usd,
             function_calls: Some(totals.function_calls),
@@ -641,6 +644,19 @@ mod tests {
         let partial = ObjectiveSummaryV1::from_metrics(&metrics(Some(10), None, 2));
         assert_eq!(partial.total_tokens, None);
         assert_eq!(partial.tokens_per_generation, None);
+    }
+
+    #[test]
+    fn a_lower_bound_cost_is_not_compared() {
+        let mut measured = metrics(Some(10), Some(2), 2);
+        measured.totals.cost_usd = Some(1.0);
+        let lower_bound = ObjectiveSummaryV1::from_metrics(&measured);
+        assert_eq!(lower_bound.subject_cost_usd, None);
+        assert_eq!(lower_bound.cost_per_generation_usd, None);
+        measured.totals.cost_complete = true;
+        let complete = ObjectiveSummaryV1::from_metrics(&measured);
+        assert_eq!(complete.subject_cost_usd, Some(1.0));
+        assert_eq!(complete.cost_per_generation_usd, Some(0.5));
     }
 
     #[test]

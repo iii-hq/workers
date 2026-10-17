@@ -61,7 +61,11 @@ impl EvalBenchmarkV1 {
             cache_read_tokens: metrics.totals.cache_read_tokens,
             cache_write_tokens: metrics.totals.cache_write_tokens,
             reasoning_tokens: metrics.totals.reasoning_tokens,
-            cost_usd: metrics.totals.cost_usd,
+            // A lower bound is not a cost to take a median of.
+            cost_usd: metrics
+                .totals
+                .cost_usd
+                .filter(|_| metrics.totals.cost_complete),
             trace_count: metrics.traces.as_ref().map(|traces| traces.trace_count),
             span_count: metrics.traces.as_ref().map(|traces| traces.span_count),
             error_span_count: metrics
