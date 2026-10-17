@@ -863,3 +863,35 @@ async fn owner_restart_replays_new_and_legacy_observers() {
     consumer.shutdown_async().await;
     second.iii.shutdown_async().await;
 }
+
+/// Events are routed in-process only: a worker that invokes the function
+/// directly with a forged event is refused, and no observer hears it.
+#[tokio::test(flavor = "multi_thread")]
+async fn invoking_the_source_directly_is_refused() {
+    let Some(url) = engine_url() else {
+        return eprintln!("skipping: III_TEST_ENGINE_URL not set");
+    };
+    let ns = namespace("forged");
+    let _db = DatabaseWorker::start(&url, &ns, &[]).await;
+    let consumer = client(&url, &ns, "consumer");
+    let mut events = sink(&consumer, "consumer::sink");
+    let handle = consumer.observe(
+        Source::function("database::on-row-changed")
+            .args(json!({ "db": "primary", "table": "orders" })),
+        "consumer::sink",
+    );
+    handle.ready().await.unwrap();
+    let attacker = client(&url, &ns, "attacker");
+    let forged = json!({
+        "db": "primary", "schema": null, "table": "orders", "op": "delete",
+        "affected_rows": 999, "at": 1
+    });
+    let err = attacker
+        .trigger(TriggerRequest::new("database::on-row-changed", forged))
+        .await
+        .expect_err("a direct invocation is refused");
+    assert!(err.to_string().contains("FORBIDDEN"), "{err}");
+    silent(&mut events, "forged event").await;
+    attacker.shutdown_async().await;
+    consumer.shutdown_async().await;
+}

@@ -1,14 +1,15 @@
-//! `database::on-row-changed`: the function whose invocations are committed
-//! write statements, and its owner side.
+//! `database::on-row-changed`: one event per committed write statement, and
+//! its owner side.
 //!
 //! The function is owner-delivered. Its observers' args (`{ db, table?, ops? }`)
 //! say which events they want; [`NativeCapture`] is its [`ObserveHandler`]:
 //! for each observer added it validates the args against the live config,
 //! installs native capture for the table when the database needs it, and
-//! files the observer in a routing index. The function's handler
-//! ([`NativeCapture::route`]) looks the event up in that index and hands it to
-//! each routed observer with `obs.emit`; the observer's own filters run in the
-//! SDK, so a miss sends nothing.
+//! files the observer in a routing index. [`NativeCapture::route`] looks each
+//! event up in that index and hands it to each routed observer with
+//! `obs.emit`; the observer's own filters run in the SDK, so a miss sends
+//! nothing. The bus calls it in-process, from the invocation that made the
+//! write; the function itself refuses invocations.
 //!
 //! Old consumers keep working two ways:
 //!
@@ -51,23 +52,29 @@ pub const ROW_CHANGED_DESCRIPTION: &str =
      database it reports any client's committed writes, with the changed rows' primary keys \
      as `returning` (capped; `truncated` flags the rest). Best-effort delivery, no replay.";
 
-/// Registers `database::on-row-changed` with `capture` as its handler and
-/// hooks, and attaches the returned ref to `capture`. Its observers' args are
-/// what the trigger config was; the old trigger type is its
-/// `legacy_trigger_type`, so the engine turns old `registerTrigger` calls into
-/// observers (the legacy shim).
+/// Registers `database::on-row-changed` with `capture` as its hooks, and
+/// attaches the returned ref to `capture`. Its observers' args are what the
+/// trigger config was; the old trigger type is its `legacy_trigger_type`, so
+/// the engine turns old `registerTrigger` calls into observers (the legacy
+/// shim).
+///
+/// Events are routed in-process by [`RowChangeBus`](super::RowChangeBus),
+/// never by invoking the function: a worker allowed to invoke it could
+/// otherwise hand the router a forged event, and the engine would attribute
+/// the report to this worker. Its handler refuses every invocation.
 pub fn register(iii: &IIIClient, capture: &Arc<NativeCapture>) -> FunctionRef {
     let function = iii.register_function(
         ROW_CHANGED_FN,
-        RegisterFunction::new_async({
-            let capture = capture.clone();
-            move |event: RowChangedEvent| {
-                let capture = capture.clone();
-                async move {
-                    capture.route(&event).await;
-                    Ok::<(), iii_sdk::errors::Error>(())
-                }
-            }
+        RegisterFunction::new(|_event: RowChangedEvent| {
+            Err::<(), _>(iii_sdk::errors::Error::Remote {
+                code: "FORBIDDEN".to_string(),
+                message: format!(
+                    "{ROW_CHANGED_FN} is an event source: observe it \
+                     (iii.observe({{ function_id: '{ROW_CHANGED_FN}', args: {{ db, table? }} }}, target)); \
+                     only the database worker emits its events"
+                ),
+                stacktrace: None,
+            })
         })
         .description(ROW_CHANGED_DESCRIPTION)
         .observe(
@@ -269,18 +276,14 @@ impl NativeCapture {
     }
 
     /// The registered function. Set once, right after `register_function`
-    /// returns (the handler and the hooks hold this capture, so it exists
-    /// before the function does).
+    /// returns (the hooks hold this capture, so it exists before the
+    /// function does).
     pub fn attach(&self, function: FunctionRef) {
         let _ = self.function.set(function);
     }
 
     pub fn function(&self) -> Option<&FunctionRef> {
         self.function.get()
-    }
-
-    pub(crate) fn dispatch_timeout_ms(&self) -> u64 {
-        self.dispatch_timeout_ms
     }
 
     /// Whether any event can reach anyone: an active observer, or a binding
@@ -290,19 +293,11 @@ impl NativeCapture {
         self.function.get().is_some_and(FunctionRef::is_observed) || self.index.has_trigger_sinks()
     }
 
-    /// Whether a `trigger` of the function runs in-process (the engine
-    /// confirmed it with local dispatch).
-    pub fn local_dispatch_active(&self) -> bool {
-        self.function
-            .get()
-            .is_some_and(FunctionRef::local_dispatch_active)
-    }
-
     pub fn route_count(&self) -> usize {
         self.index.len()
     }
 
-    /// The function's handler: hand `event` to every routed observer. A miss
+    /// Hand `event` to every routed observer (and fallback binding). A miss
     /// on an observer's filters, or an observer removed meanwhile, is
     /// `Ok(false)` from `emit`, so the loop needs no guard.
     pub async fn route(&self, event: &RowChangedEvent) {

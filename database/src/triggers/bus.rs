@@ -1,10 +1,10 @@
 //! The `database::on-row-changed` event, the transaction buffer, and the emit
 //! path.
 //!
-//! The worker announces its own writes as invocations of
-//! `database::on-row-changed`, an owner-delivered function (`capture.rs`):
-//! its handler routes each event to the observers whose args name its db,
-//! table and op. This module decides WHEN an event exists:
+//! The worker announces its own writes through `database::on-row-changed`,
+//! an owner-delivered function (`capture.rs`): each event is routed to the
+//! observers whose args name its db, table and op. This module decides WHEN
+//! an event exists:
 //!
 //! * **Emit after the write is durable, never before.** A statement inside a
 //!   transaction has not happened until the commit does, so interactive
@@ -26,12 +26,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::capture::{NativeCapture, ROW_CHANGED_FN};
+use super::capture::NativeCapture;
 use super::sql::{self, Op};
 
 /// The trigger type this worker registered before 0.25. Kept as the
@@ -352,33 +351,12 @@ impl RowChangeBus {
         if !self.capture.is_listened() {
             return;
         }
-        if !self.capture.local_dispatch_active() {
-            // An engine without observe (the fallback bindings), or local
-            // dispatch turned off: route in-process instead of a round trip
-            // through the engine. The caller the observers see is the same.
-            self.capture.route(&event).await;
-            return;
-        }
-        let payload = match serde_json::to_value(&event) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %e, "row-changed event serialize failed");
-                return;
-            }
-        };
-        // Local dispatch: the handler (NativeCapture::route) runs in-process
-        // and emits to the routed observers; the SDK checks their filters and
-        // reports only matches. Awaited, so a transaction's statements are
-        // reported in commit order.
-        let request = TriggerRequest {
-            function_id: ROW_CHANGED_FN.to_string(),
-            payload,
-            action: None,
-            timeout_ms: Some(self.capture.dispatch_timeout_ms()),
-        };
-        if let Err(e) = self.iii.trigger(request).await {
-            tracing::warn!(error = %e, "on-row-changed emit failed");
-        }
+        // Routed in-process, from the invocation that made the write (the
+        // `database::execute` / `commitTransaction` handler, or a native
+        // listener task): the SDK checks each routed observer's filters and
+        // reports only matches, with that invocation as the event's caller.
+        // Awaited, so a transaction's statements are reported in commit order.
+        self.capture.route(&event).await;
     }
 }
 
