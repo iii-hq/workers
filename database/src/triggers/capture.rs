@@ -494,18 +494,23 @@ impl NativeCapture {
 
     /// After a config reload: late-rejects every observer the new config no
     /// longer supports (its database was removed, or became native while the
-    /// observer names no table). Fallback bindings stay filed, as before.
+    /// observer names no table). Legacy bindings, shim observers or fallback
+    /// triggers, stay filed, as before.
     pub async fn revalidate(&self) {
         let Some(function) = self.function.get() else {
             return;
         };
         let live = self.config.read().await;
         for obs in function.observers() {
-            let args = match obs.legacy() {
-                Some(legacy) => Self::legacy_args(&legacy.config).map(|(args, _)| args),
-                None => obs.args::<RowChangedArgs>(),
+            // A legacy binding keeps its pre-0.25 behavior: it stays filed and
+            // matches again if its database comes back. Rejecting it would
+            // remove it for good, and its registrant would never hear why.
+            if obs.legacy().is_some() {
+                continue;
+            }
+            let Ok(args) = obs.args::<RowChangedArgs>() else {
+                continue;
             };
-            let Ok(args) = args else { continue };
             match live.databases.get(&args.db) {
                 None => obs.reject(
                     codes::UNKNOWN_DB,
