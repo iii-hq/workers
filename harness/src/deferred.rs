@@ -81,7 +81,13 @@ pub async fn resolve(
             let mut origin = serde_json::Map::new();
             origin.insert("turn_id".into(), json!(record.turn_id));
             if let Some(changes) = checkpoint.reconciled.as_deref() {
-                crate::reconcile::note_result(&mut delivered, &mut origin, changes, &function_id);
+                crate::reconcile::note_result(
+                    &mut delivered,
+                    &mut origin,
+                    changes,
+                    &function_id,
+                    &mut record.noted_parses,
+                );
             }
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
@@ -170,6 +176,7 @@ pub async fn resolve(
                             &mut origin,
                             changes,
                             &function_id,
+                            &mut record.noted_parses,
                         );
                     }
                     let entry_id =
@@ -265,6 +272,7 @@ pub async fn resolve(
                     checkpoint.reconciled.as_deref(),
                     &function_id,
                     &arguments,
+                    &mut record.noted_parses,
                 )
                 .await;
                 let entry_id =
@@ -429,6 +437,7 @@ pub async fn resolve(
                 checkpoint.reconciled.as_deref(),
                 &function_id,
                 &unstamped,
+                &mut record.noted_parses,
             )
             .await;
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
