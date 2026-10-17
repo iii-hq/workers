@@ -682,8 +682,12 @@ async fn wire_proxy(listen: u16, upstream: String) -> WireLog {
             tokio::spawn(async move { tokio::io::copy(&mut sr, &mut cw).await });
             let log = out.clone();
             tokio::spawn(async move {
-                // The HTTP upgrade request precedes the frames.
+                // The HTTP upgrade request precedes the frames. Only the main
+                // socket (`/`) is counted: the SDK's OpenTelemetry exporter
+                // also connects through this port (`/otel`) and sends binary
+                // OTLP batches whenever its interval comes round.
                 let mut handshake_done = false;
+                let mut main_socket = false;
                 let mut buf = Vec::new();
                 let mut chunk = vec![0u8; 64 * 1024];
                 loop {
@@ -699,10 +703,20 @@ async fn wire_proxy(listen: u16, upstream: String) -> WireLog {
                         let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
                             continue;
                         };
+                        let path = String::from_utf8_lossy(&buf[..end])
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or_default()
+                            .to_string();
+                        main_socket = path == "/" || path.starts_with("/?");
                         buf.drain(..end + 4);
                         handshake_done = true;
                     }
-                    drain_frames(&mut buf, &log);
+                    if main_socket {
+                        drain_frames(&mut buf, &log);
+                    } else {
+                        buf.clear();
+                    }
                 }
             });
         }
