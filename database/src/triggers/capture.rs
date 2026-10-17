@@ -45,12 +45,13 @@ use crate::pool::Pool;
 pub const ROW_CHANGED_FN: &str = "database::on-row-changed";
 
 pub const ROW_CHANGED_DESCRIPTION: &str =
-    "Invoked once per committed write statement. Observe it with args { db, table?, ops? } \
+    "One event per committed write statement. Observe it with args { db, table?, ops? } \
      (table canonical: bare, unquoted, lowercase) and filter on input.returning / caller. \
      On a `capture: statements` database (the default) it reports only writes made THROUGH \
      this worker, with the writer's own RETURNING rows as `returning`; on a `capture: native` \
      database it reports any client's committed writes, with the changed rows' primary keys \
-     as `returning` (capped; `truncated` flags the rest). Best-effort delivery, no replay.";
+     as `returning` (capped; `truncated` flags the rest). Best-effort delivery, no replay. \
+     Only the database worker emits its events: invoking it directly is refused.";
 
 /// Registers `database::on-row-changed` with `capture` as its hooks, and
 /// attaches the returned ref to `capture`. Its observers' args are what the

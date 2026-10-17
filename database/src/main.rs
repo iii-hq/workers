@@ -696,9 +696,9 @@ async fn main() -> Result<()> {
         );
     }
 
-    // The worker announces its own writes as invocations of an owner-delivered
-    // function. Registered AFTER the other functions so the console can
-    // attribute it.
+    // The worker announces its own writes through an owner-delivered function
+    // its observers name. Registered AFTER the other functions so the console
+    // can attribute it.
     database::triggers::capture::register(&iii, &capture);
 
     // An engine older than 0.25 has no observe: register the old trigger type
