@@ -2,9 +2,13 @@
 //! harness run in a child session, seeded through the same CAS as
 //! `harness::send`. Spawning is fire-and-forget: the caller gets the child's
 //! ids immediately and never its result — delegation flows one way, downward,
-//! and outcomes come back only through the state the child writes and the
-//! `harness::turn-completed` event its finalize emits. The `ParentLink` is
-//! kept for event filters and console nesting, not for result delivery.
+//! and results come back only through the state the child writes and the
+//! `harness::turn-completed` event its finalize emits. The one thing that
+//! flows back is the news that the child ended: a parent parked on a wake is
+//! woken by [`notify_parent_of_end`], since a child that fails or never writes
+//! the key the wake watches would otherwise leave it asleep until its
+//! deadline. The `ParentLink` serves event filters, console nesting and that
+//! notice, not result delivery.
 
 use std::collections::BTreeMap;
 
@@ -174,6 +178,93 @@ pub async fn spawn_child(
 ) -> Result<ChildIds, HarnessError> {
     let cfg = deps.cfg().await;
     seed_child(deps, &cfg, req, parent, None, false).await
+}
+
+/// A child that ends while its parent is parked on a wake is news the parent
+/// cannot otherwise get before its deadline: deliver it as a notification, the
+/// same path (and un-park) as an expired wake. `status` is `completed`,
+/// `failed` or `cancelled`; the kit parses the text's opening, so keep it.
+///
+/// Silent when the parent is not waiting (a chat parent, or one whose wake
+/// already fired), when a `completed` child is itself parked on a wake of its
+/// own (it ended its turn to wait, it did not end), and in a deletion cascade,
+/// which tells the surviving parent itself. Best effort and detached: the
+/// child's finalize holds the child's session lock, and the injection takes
+/// the parent's, which a parent step re-tasking this very child holds while it
+/// waits for the child's. Waiting here would be that AB-BA deadlock (see
+/// `deferred::resolve_parent`).
+pub async fn notify_parent_of_end(deps: &Deps, child: &TurnRecord, status: &str) {
+    let Some(parent) = parked_parent(deps, child, status).await else {
+        return;
+    };
+    inject_detached(
+        deps.clone(),
+        parent.session_id.clone(),
+        format!("e_childend_{}", child.turn_id),
+        AgentMessage::user_text(child_end_text(child, status)),
+        json!({ "notification": true, "child_session_id": child.session_id }),
+    );
+}
+
+// A plain fn, not inlined in the async one above: the injection can reach
+// `finalize_failed`, which awaits the notice, and an async body that spawns it
+// would need its own future to be `Send` while still being inferred.
+fn inject_detached(
+    deps: Deps,
+    session_id: String,
+    entry_id: String,
+    message: AgentMessage,
+    origin: Value,
+) {
+    tokio::spawn(async move {
+        if let Err(error) =
+            send::inject(&deps, &session_id, message, Some(&entry_id), Some(&origin)).await
+        {
+            tracing::warn!(%session_id, %entry_id, %error, "child-ended notification failed to deliver");
+        }
+    });
+}
+
+/// The child's parent, when it is parked on a wake and the child really ended:
+/// not part of a session tree being deleted, and, for a `completed` turn,
+/// not waiting on a wake of its own (a failed or cancelled child waits on
+/// nothing). An unreadable tombstone counts as deleted and an unreadable
+/// binding store as waiting: the notice is best effort, a wrong one is not.
+async fn parked_parent<'a>(
+    deps: &Deps,
+    child: &'a TurnRecord,
+    status: &str,
+) -> Option<&'a ParentLink> {
+    let parent = child.parent.as_ref()?;
+    let live = matches!(
+        crate::functions::delete_session_tree::guard_owner(deps, &child.session_id).await,
+        Ok(None)
+    );
+    let ended = status != "completed"
+        || !crate::bindings::session_expects_wake(deps, &child.session_id).await;
+    (live && ended && crate::bindings::session_expects_wake(deps, &parent.session_id).await)
+        .then_some(parent)
+}
+
+fn child_end_text(child: &TurnRecord, status: &str) -> String {
+    format!(
+        "[notification] child ended: session {} (turn {}) status={}{}{}. If a wake of yours \
+         watches its work, read that scope now: its result is there, or it ended without \
+         writing it.",
+        child.session_id,
+        child.turn_id,
+        status,
+        child
+            .stop_reason
+            .as_deref()
+            .map(|r| format!(" stop_reason={r}"))
+            .unwrap_or_default(),
+        child
+            .result_error
+            .as_deref()
+            .map(|e| format!(" error={e}"))
+            .unwrap_or_default(),
+    )
 }
 
 /// Resolve a child's dispatch policy. An in-turn child starts from the
@@ -2151,5 +2242,179 @@ mod tests {
         .await
         .expect("an internal-only id is dropped without a lookup");
         assert_eq!(seeded, (None, BTreeMap::new()));
+    }
+
+    fn ended_child(parent: bool) -> TurnRecord {
+        let mut child = parent_record(None);
+        child.session_id = "s_child".into();
+        child.turn_id = "t_child".into();
+        child.parent = parent.then(|| ParentLink {
+            session_id: "s_parent".into(),
+            turn_id: "t_parent".into(),
+            function_call_id: "call".into(),
+        });
+        child
+    }
+
+    /// The kit parses the notice's opening line; the tail is the model's cue.
+    #[test]
+    fn the_end_notice_opens_with_the_line_the_kit_parses() {
+        let mut child = ended_child(true);
+        assert_eq!(
+            child_end_text(&child, "completed"),
+            "[notification] child ended: session s_child (turn t_child) status=completed. If a \
+             wake of yours watches its work, read that scope now: its result is there, or it \
+             ended without writing it."
+        );
+        child.stop_reason = Some("max_turns".into());
+        child.result_error = Some("boom".into());
+        for status in ["completed", "failed", "cancelled"] {
+            assert!(child_end_text(&child, status).starts_with(&format!(
+                "[notification] child ended: session s_child (turn t_child) status={status} \
+                 stop_reason=max_turns error=boom. "
+            )));
+        }
+    }
+
+    /// One connection of a fake engine: every call is answered by `answer`.
+    async fn fake_engine(
+        answer: impl Fn(&str, &Value) -> Value + Send + 'static,
+    ) -> (Deps, tokio::task::JoinHandle<()>) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            while let Some(Ok(frame)) = socket.next().await {
+                let Ok(msg) = serde_json::from_str::<Value>(frame.to_text().unwrap_or("")) else {
+                    continue;
+                };
+                if msg["type"] != "invokefunction" || msg["invocation_id"].is_null() {
+                    continue;
+                }
+                let function = msg["function_id"].as_str().unwrap_or("");
+                let reply = json!({ "type": "invocationresult", "function_id": function,
+                    "invocation_id": msg["invocation_id"],
+                    "result": answer(function, &msg["data"]) });
+                if socket
+                    .send(Message::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let iii = std::sync::Arc::new(iii_sdk::register_worker(
+            &url,
+            iii_sdk::InitOptions::default(),
+        ));
+        let cfg = WorkerConfig {
+            session_timeout_ms: 2_000,
+            ..Default::default()
+        };
+        let deps = Deps::new(
+            iii.clone(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(cfg))),
+            crate::discovery::new_cell(),
+            crate::skills::new_cell(),
+            crate::events::TurnEvents::register(&iii),
+            crate::hooks::HookRegistry::register(&iii),
+        );
+        (deps, server)
+    }
+
+    fn armed_wake(owner: &str) -> Value {
+        use crate::bindings::{Binding, BindingTarget, Causation, Lifecycle, OwnerScope};
+        serde_json::to_value(Binding {
+            id: format!("sub_{owner}"),
+            trigger_id: None,
+            owner: OwnerScope {
+                session_id: owner.into(),
+                root_session_id: None,
+            },
+            target: BindingTarget::new(crate::functions::SEND_ID),
+            conditions: vec![],
+            lifecycle: Lifecycle {
+                once: true,
+                max_fires: None,
+                expires_at: None,
+            },
+            capability: None,
+            causation: Causation::default(),
+            dedup_key: None,
+            fires: 0,
+            created_at: 0,
+        })
+        .unwrap()
+    }
+
+    /// Whether `status` for a child under the given world would notify.
+    async fn notifies(
+        status: &str,
+        has_parent: bool,
+        parent_waits: bool,
+        child_waits: bool,
+        deleting: bool,
+    ) -> bool {
+        let wakes: Vec<Value> = [(parent_waits, "s_parent"), (child_waits, "s_child")]
+            .into_iter()
+            .filter(|(armed, _)| *armed)
+            .map(|(_, owner)| armed_wake(owner))
+            .collect();
+        let (deps, server) =
+            fake_engine(
+                move |function, data| match (function, data["scope"].as_str()) {
+                    ("harness::state::list", Some(crate::state::BINDING_SCOPE)) => json!(wakes),
+                    (
+                        "harness::state::get",
+                        Some(crate::functions::delete_session_tree::GUARDS),
+                    ) if deleting => json!("op_1"),
+                    ("session::get", _) => {
+                        json!({ "meta": { "session_id": data["session_id"], "metadata": {} } })
+                    }
+                    _ => Value::Null,
+                },
+            )
+            .await;
+        let child = ended_child(has_parent);
+        let notified = parked_parent(&deps, &child, status).await.is_some();
+        deps.iii.shutdown();
+        server.abort();
+        notified
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_child_end_notifies_only_a_parent_parked_on_a_wake() {
+        for status in ["completed", "failed", "cancelled"] {
+            assert!(
+                notifies(status, true, true, false, false).await,
+                "{status}: a parent parked on a wake is told"
+            );
+            assert!(
+                !notifies(status, true, false, false, false).await,
+                "{status}: a chat parent, or one whose wake already fired, is not"
+            );
+            assert!(
+                !notifies(status, false, true, false, false).await,
+                "{status}: a parentless child has nobody to tell"
+            );
+            assert!(
+                !notifies(status, true, true, false, true).await,
+                "{status}: a deletion cascade tells the surviving parent itself"
+            );
+        }
+    }
+
+    /// A lead ends its turn after arming its own wake: it waits, it is not done.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_completed_child_parked_on_its_own_wake_has_not_ended() {
+        assert!(!notifies("completed", true, true, true, false).await);
+        // Failed and cancelled children wait on nothing, whatever they armed.
+        assert!(notifies("failed", true, true, true, false).await);
+        assert!(notifies("cancelled", true, true, true, false).await);
     }
 }

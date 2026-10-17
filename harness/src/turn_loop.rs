@@ -2553,6 +2553,7 @@ async fn finalize_completed(
         } else {
             crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None)
                 .await;
+            crate::subagent::notify_parent_of_end(deps, record, "completed").await;
         }
     }
     // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
@@ -2801,12 +2802,12 @@ async fn finalize_failed(
     crate::usage_report::report(deps, record, "failed", Some(failure_class(failure))).await;
     if let Some(parent) = record.parent.clone() {
         // Settle any parked parent call. Fire-and-forget spawns settled `Done`
-        // at spawn time, so this usually no-ops — and that is the whole story:
-        // a child's failure reaches its parent only through the medium the
-        // child was told to write (an `error` status it managed to record) or
-        // through the parent's own deadlines (a `timer` wake, a binding
-        // `lifecycle`, a `harness::status` poll). Nothing is injected into the
-        // parent session on a child's behalf.
+        // at spawn time, so this usually no-ops. A parent parked on a wake
+        // learns of the failure from `notify_parent_of_end`; otherwise it
+        // reaches the parent only through the medium the child was told to
+        // write (an `error` status it managed to record) or through the
+        // parent's own deadlines (a `timer` wake, a binding `lifecycle`, a
+        // `harness::status` poll).
         crate::deferred::resolve_parent(
             deps,
             &parent,
@@ -2815,6 +2816,7 @@ async fn finalize_failed(
             Some(&summary),
         )
         .await;
+        crate::subagent::notify_parent_of_end(deps, record, "failed").await;
     }
     // Second post-terminal sweep, as in `finalize_completed`: closes the
     // enqueue-after-drain window against `try_enqueue`'s recheck.
@@ -2999,6 +3001,7 @@ pub(crate) async fn finalize_cancelled(
     crate::usage_report::report(deps, record, "cancelled", None).await;
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "cancelled", None, Some(reason)).await;
+        crate::subagent::notify_parent_of_end(deps, record, "cancelled").await;
     }
     // Second post-terminal sweep (see `finalize_completed`): a row enqueued
     // between the first drain and the terminal write still reaches the
