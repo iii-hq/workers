@@ -194,8 +194,13 @@
               "null"
             ]
           },
+          "cost_complete": {
+            "default": false,
+            "description": "Every generation carried a price, so `cost_usd` is the whole bill and not a lower bound. `false` when a generation had none, and when the harness that answered predates the field.",
+            "type": "boolean"
+          },
           "cost_usd": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that carried a price. A generation without one (a subscription model ships no pricing, or the provider cut the stream before usage came back) is left out of the sum, so while `cost_complete` is false this is a lower bound. `null` only when no generation was priced — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "double",
             "type": [
               "number",
@@ -450,8 +455,13 @@
               "null"
             ]
           },
+          "cost_complete": {
+            "default": false,
+            "description": "Every generation carried a price, so `cost_usd` is the whole bill and not a lower bound. `false` when a generation had none, and when the harness that answered predates the field.",
+            "type": "boolean"
+          },
           "cost_usd": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that carried a price. A generation without one (a subscription model ships no pricing, or the provider cut the stream before usage came back) is left out of the sum, so while `cost_complete` is false this is a lower bound. `null` only when no generation was priced — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "double",
             "type": [
               "number",
@@ -559,8 +569,13 @@
             ],
             "description": "The session's latest per-generation context snapshot (categories, budget, usage) — absent for sessions that have not generated since snapshots landed."
           },
+          "cost_complete": {
+            "default": false,
+            "description": "Every generation carried a price, so `cost_usd` is the whole bill and not a lower bound. `false` when a generation had none, and when the harness that answered predates the field.",
+            "type": "boolean"
+          },
           "cost_usd": {
-            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that carried a price. A generation without one (a subscription model ships no pricing, or the provider cut the stream before usage came back) is left out of the sum, so while `cost_complete` is false this is a lower bound. `null` only when no generation was priced — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "double",
             "type": [
               "number",

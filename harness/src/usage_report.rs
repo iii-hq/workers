@@ -173,6 +173,7 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
                         "cache_read_tokens": totals.cache_read_tokens,
                         "cache_write_tokens": totals.cache_write_tokens,
                         "cost_usd": totals.cost_usd,
+                        "cost_complete": totals.cost_complete,
                         "session_age_ms": (now - row.first_at).max(0),
                     });
                     if let Some(provider) = &record.options.provider {

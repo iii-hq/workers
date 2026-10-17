@@ -175,13 +175,19 @@ pub struct SessionUsageTotalsV1 {
     /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub reasoning_tokens: Option<u64>,
-    /// Summed over every generation that reported it. A single generation
-    /// without the counter (a stream the provider cut before usage came back)
-    /// is left out of the sum. `null` means no generation reported it or more
-    /// than one did not — never a measured zero, so the key is always present
-    /// and a reader can tell the two apart.
+    /// Summed over every generation that carried a price. A generation without
+    /// one (a subscription model ships no pricing, or the provider cut the
+    /// stream before usage came back) is left out of the sum, so while
+    /// `cost_complete` is false this is a lower bound. `null` only when no
+    /// generation was priced — never a measured zero, so the key is always
+    /// present and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
+    /// Every generation carried a price, so `cost_usd` is the whole bill and
+    /// not a lower bound. `false` when a generation had none, and when the
+    /// harness that answered predates the field.
+    #[serde(default)]
+    pub cost_complete: bool,
     /// The same counters per model that generated a step, ordered by provider
     /// then model. Absent when nothing generated, and from a harness that
     /// predates it.
@@ -234,13 +240,19 @@ pub struct SessionUsageV1 {
     /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub reasoning_tokens: Option<u64>,
-    /// Summed over every generation that reported it. A single generation
-    /// without the counter (a stream the provider cut before usage came back)
-    /// is left out of the sum. `null` means no generation reported it or more
-    /// than one did not — never a measured zero, so the key is always present
-    /// and a reader can tell the two apart.
+    /// Summed over every generation that carried a price. A generation without
+    /// one (a subscription model ships no pricing, or the provider cut the
+    /// stream before usage came back) is left out of the sum, so while
+    /// `cost_complete` is false this is a lower bound. `null` only when no
+    /// generation was priced — never a measured zero, so the key is always
+    /// present and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
+    /// Every generation carried a price, so `cost_usd` is the whole bill and
+    /// not a lower bound. `false` when a generation had none, and when the
+    /// harness that answered predates the field.
+    #[serde(default)]
+    pub cost_complete: bool,
     /// The same counters per model that generated a step, ordered by provider
     /// then model. Absent when nothing generated, and from a harness that
     /// predates it.
@@ -300,13 +312,19 @@ pub struct ModelUsageV1 {
     /// and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub reasoning_tokens: Option<u64>,
-    /// Summed over every generation that reported it. A single generation
-    /// without the counter (a stream the provider cut before usage came back)
-    /// is left out of the sum. `null` means no generation reported it or more
-    /// than one did not — never a measured zero, so the key is always present
-    /// and a reader can tell the two apart.
+    /// Summed over every generation that carried a price. A generation without
+    /// one (a subscription model ships no pricing, or the provider cut the
+    /// stream before usage came back) is left out of the sum, so while
+    /// `cost_complete` is false this is a lower bound. `null` only when no
+    /// generation was priced — never a measured zero, so the key is always
+    /// present and a reader can tell the two apart.
     #[schemars(required, schema_with = "Option::<f64>::json_schema")]
     pub cost_usd: Option<f64>,
+    /// Every generation carried a price, so `cost_usd` is the whole bill and
+    /// not a lower bound. `false` when a generation had none, and when the
+    /// harness that answered predates the field.
+    #[serde(default)]
+    pub cost_complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -951,6 +969,7 @@ impl UsageAccumulator {
                 cache_read_tokens: steps.cache_read.finish(),
                 cache_write_tokens: steps.cache_write.finish(),
                 reasoning_tokens: steps.reasoning.finish(),
+                cost_complete: steps.cost_usd.complete(),
                 cost_usd: steps.cost_usd.finish(),
             })
             .collect()
@@ -974,6 +993,7 @@ impl UsageAccumulator {
             cache_read_tokens: steps.cache_read.finish(),
             cache_write_tokens: steps.cache_write.finish(),
             reasoning_tokens: steps.reasoning.finish(),
+            cost_complete: steps.cost_usd.complete(),
             cost_usd: steps.cost_usd.finish(),
             by_model: Self::finish_by_model(self.by_model),
             context,
@@ -992,6 +1012,7 @@ impl UsageAccumulator {
             cache_read_tokens: steps.cache_read.finish(),
             cache_write_tokens: steps.cache_write.finish(),
             reasoning_tokens: steps.reasoning.finish(),
+            cost_complete: steps.cost_usd.complete(),
             cost_usd: steps.cost_usd.finish(),
             by_model: Self::finish_by_model(self.by_model),
         }
@@ -1057,9 +1078,16 @@ impl OptionalF64Sum {
         }
     }
 
+    /// The priced sum; a lower bound while `complete()` is false. A generation
+    /// without a price is a gap in the bill (a subscription model has none by
+    /// design), not a cut stream, so it never blanks what was priced.
     fn finish(self) -> Option<f64> {
-        (self.reported > 0 && self.unreported <= UNREPORTED_GENERATIONS_TOLERATED)
-            .then_some(self.value)
+        (self.reported > 0).then_some(self.value)
+    }
+
+    /// Every generation carried a price.
+    fn complete(&self) -> bool {
+        self.unreported == 0
     }
 }
 
@@ -1205,6 +1233,7 @@ mod tests {
         assert_eq!(totals.input_tokens, Some(15));
         assert_eq!(totals.output_tokens, Some(3));
         assert_eq!(totals.cost_usd, Some(0.75));
+        assert!(!totals.cost_complete, "the cut generation has no price");
         // A counter the provider never reports stays unreported.
         assert_eq!(totals.cache_read_tokens, None);
     }
@@ -1255,7 +1284,12 @@ mod tests {
             merged.input_tokens, None,
             "two gaps across sessions are not"
         );
-        assert_eq!(merged.cost_usd, None);
+        assert_eq!(
+            merged.cost_usd,
+            Some(0.75),
+            "cost keeps the priced sum however many generations lack a price"
+        );
+        assert!(!merged.cost_complete);
     }
 
     fn generation_by(provider: &str, model: &str, usage: serde_json::Value) -> AgentMessage {
@@ -1319,6 +1353,76 @@ mod tests {
             ],
             "ordered by provider, each with the session's null rule"
         );
+    }
+
+    #[test]
+    fn unpriced_generations_keep_the_priced_sum_and_flag_the_gap() {
+        // A run that switched to a subscription model: it ships no pricing, so
+        // its steps carry tokens and no cost, by design.
+        let generations = [
+            generation_by(
+                "anthropic",
+                "claude-opus-5-5",
+                json!({"output": 1, "cost_usd": 0.5}),
+            ),
+            generation_by(
+                "anthropic",
+                "claude-opus-5-5",
+                json!({"output": 1, "cost_usd": 0.25}),
+            ),
+            generation_by(
+                "claude-code",
+                "claude-code/claude-opus-5-5",
+                json!({"output": 1}),
+            ),
+            generation_by(
+                "claude-code",
+                "claude-code/claude-opus-5-5",
+                json!({"output": 1}),
+            ),
+        ];
+        let mut usage = UsageAccumulator::default();
+        for generation in &generations {
+            usage.observe(generation);
+        }
+        let totals = usage.clone().finish_totals(1);
+        assert_eq!(totals.cost_usd, Some(0.75));
+        assert!(!totals.cost_complete);
+        let by_model: Vec<_> = totals
+            .by_model
+            .iter()
+            .map(|model| (model.provider.as_str(), model.cost_usd, model.cost_complete))
+            .collect();
+        assert_eq!(
+            by_model,
+            [
+                ("anthropic", Some(0.75), true),
+                ("claude-code", None, false)
+            ],
+            "the priced row is complete, the subscription row is an incomplete null"
+        );
+
+        // The session row and a settled session resumed from the cache say the
+        // same: the flag lives in the sums the cache keeps.
+        let session = usage.clone().finish_session(&session("s", None, 0), None);
+        assert_eq!(
+            (session.cost_usd, session.cost_complete),
+            (Some(0.75), false)
+        );
+        let cache = UsageCache::default();
+        cache.remember("s", true, Some("e4".into()), &usage);
+        let cached = cache.settled("s", true).unwrap().usage.finish_totals(1);
+        assert_eq!((cached.cost_usd, cached.cost_complete), (Some(0.75), false));
+
+        // Priced throughout: the whole bill. Unpriced throughout: no sum at all.
+        let mut priced = UsageAccumulator::default();
+        priced.observe(&generations[0]);
+        let priced = priced.finish_totals(1);
+        assert_eq!((priced.cost_usd, priced.cost_complete), (Some(0.5), true));
+        let mut unpriced = UsageAccumulator::default();
+        unpriced.observe(&generations[2]);
+        let unpriced = unpriced.finish_totals(1);
+        assert_eq!((unpriced.cost_usd, unpriced.cost_complete), (None, false));
     }
 
     #[test]

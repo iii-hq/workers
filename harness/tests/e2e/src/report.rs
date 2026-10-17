@@ -186,9 +186,12 @@ impl E2eRunReport {
     }
 
     pub fn update_cost(&mut self, judge_expected: bool) {
+        // A sum missing a generation's price is only a lower bound: unknown,
+        // like the other costs here, not a figure to add up.
         let subject_usd = self
             .metrics
             .as_ref()
+            .filter(|metrics| metrics.totals.cost_complete)
             .and_then(|metrics| metrics.totals.cost_usd);
         let judge_skipped = !judge_expected || self.status == RunStatus::HardGateFailed;
         let judge_usd = if judge_skipped {
@@ -555,6 +558,31 @@ mod tests {
         assert!(value["scenarios"][0].get("threshold").is_none());
         assert_eq!(value["scenarios"][0]["runs"][0]["status"], "passed");
         assert!(value["scenarios"][0]["aggregate"]["cost"].is_object());
+    }
+
+    #[test]
+    fn a_cost_missing_a_generation_price_is_unknown() {
+        use harness::functions::metrics::SessionUsageTotalsV1;
+
+        let cost = |cost_complete| {
+            let mut report = run(90, true);
+            report.metrics = Some(SessionMetricsResponseV1 {
+                root_session_id: "session".into(),
+                complete: true,
+                totals: SessionUsageTotalsV1 {
+                    cost_usd: Some(0.75),
+                    cost_complete,
+                    ..Default::default()
+                },
+                by_session: Vec::new(),
+                traces: None,
+            });
+            report.update_cost(false);
+            report.cost
+        };
+        assert_eq!(cost(true).total_usd, Some(0.75));
+        assert_eq!(cost(false).subject_usd, None);
+        assert_eq!(cost(false).total_usd, None);
     }
 
     #[test]
