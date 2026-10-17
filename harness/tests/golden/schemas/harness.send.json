@@ -349,6 +349,23 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "CompactionStarted": {
+        "description": "What a `/compact` send started.",
+        "properties": {
+          "compaction_id": {
+            "type": "string"
+          },
+          "entry_id": {
+            "description": "The transcript row its start notice takes (the `idempotency_key`'s `e_idem_` id when the send carried one).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compaction_id",
+          "entry_id"
+        ],
+        "type": "object"
+      },
       "ResolvedReasoning": {
         "description": "What a `reasoning` preset resolved to for this send. `reasoning_effort` is the provider-native effort (the catalog's own string); both fields are absent when the model offers no effort choices and the provider decides.",
         "properties": {
@@ -396,6 +413,17 @@
     "properties": {
       "accepted": {
         "type": "boolean"
+      },
+      "compaction": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CompactionStarted"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Set when the message was the `/compact` command: nothing was appended and no turn ran. The compaction runs in the background; its start and outcome reach every client through the transcript and `harness::compaction`."
       },
       "deduplicated": {
         "description": "True when `idempotency_key` matched an earlier send.",

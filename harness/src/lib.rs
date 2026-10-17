@@ -12,6 +12,7 @@ pub mod ask;
 pub mod bindings;
 pub mod budget;
 pub mod clients;
+pub mod compaction;
 pub mod conditions;
 pub mod config;
 pub mod configuration;

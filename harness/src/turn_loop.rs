@@ -3503,16 +3503,16 @@ fn strip_compacted_thinking(
 /// The latest `compaction` custom entry on the path, resolved to where the
 /// model-facing window opens.
 #[derive(Debug, Default, PartialEq)]
-struct CompactionAnchor {
+pub(crate) struct CompactionAnchor {
     /// The persisted summary, passed back as `previous_summary`.
-    summary: Option<String>,
+    pub(crate) summary: Option<String>,
     /// Index into the path of the first entry the window keeps.
-    window_start: usize,
+    pub(crate) window_start: usize,
     /// Size of the history the summary replaced (display only).
-    summarized_head_tokens: Option<u64>,
+    pub(crate) summarized_head_tokens: Option<u64>,
     /// Path index of the record whose summary is in the prompt (0 when none):
     /// the entries before it were logged under a prefix that is gone.
-    record_index: usize,
+    pub(crate) record_index: usize,
 }
 
 /// Resolve the window from the latest compaction entry:
@@ -3526,7 +3526,7 @@ struct CompactionAnchor {
 /// - a record without a summary, or whose boundary is missing or not a
 ///   string: the whole path too — only an explicit JSON `null` opens the
 ///   window after the record.
-fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
+pub(crate) fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
     let latest = entries.iter().enumerate().rev().find_map(|(index, entry)| {
         let custom = entry.custom.as_ref()?;
         (custom.custom_type == "compaction").then_some((index, &custom.data))

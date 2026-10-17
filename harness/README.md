@@ -463,6 +463,39 @@ waits for terminal turns/in-flight tools, delivers one consolidated message to
 the surviving direct parent, and deletes child-first. Unconfirmed work fails
 closed with data retained. See [recovery, safety boundaries and tests](architecture/session-tree-deletion.md).
 
+## Compacting a conversation (`/compact`)
+
+`/compact` is a command, not a prompt. Sent through `harness::send` by any
+client — the console, the mobile apps, a bot — as the whole message (text only,
+optionally followed by guidance: `/compact keep the ticket ids`), it never
+reaches the model and no turn runs: the send returns at once with
+`compaction: { compaction_id, entry_id }` and the harness compacts in the
+background. `harness::compact { session_id, model?, provider?, instructions? }`
+runs the same compaction and returns its outcome (`ok` / `busy` / `empty` /
+`failed`, the user-facing `message`, the token counts and the `entry_ids` it
+wrote) for a caller that has to wait, such as the console's model switch.
+
+Every device watching the session learns about it, not only the one that asked:
+
+- a `notice` row "compacting the conversation…" lands when it starts — under
+  the send's `e_idem_<idempotency_key>` id, so the sender's optimistic
+  `/compact` row turns into it;
+- a `/compact` send shows the session `working` / "compacting context" while it
+  runs (a live turn keeps its own status line);
+- it ends with one row: the `compaction` record (the marker), or a `notice`
+  saying why there is none;
+- `harness::compaction` fires with `phase: started` and `phase: completed`;
+- the `harness_context` snapshot is rewritten for the compacted window, so the
+  `context` chip and `harness::status` (which returns the newer snapshot) stop
+  showing the old one.
+
+The window is the one the next turn would assemble (latest compaction anchor,
+`message_order`, replayed notices); the router resolves the summariser model's
+limits; and a live turn's unanswered calls stay in the verbatim tail with
+their results. It runs under the session's context-manager lease, so it is
+safe beside a running turn, and it does not depend on the requester staying
+connected.
+
 ## Asking the user (`harness::ask`)
 
 `harness::ask` lets the model put a decision with discrete options to the user
@@ -561,6 +594,7 @@ plug into in-path. Bind with the standard two-step pattern.
 | `harness::session-tree-deletion` | async event | A subtree deletion snapshot; config `{ session_id?, operation_id? }`. Terminal statuses are `completed` and `failed`. |
 | `harness::turn-started` | async event | A turn began executing (first loop step). Payload: `session_id`, `turn_id`, `timestamp`, `depth` (0 = top level), `message_preview` (first characters of the message that started the turn, when there is one), and `parent` / `parent_session_id` for sub-agents. Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
 | `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
+| `harness::compaction` | async event | An explicit compaction (`/compact`, `harness::compact`) started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids` it wrote). Payload also carries `session_id`, `compaction_id`, `timestamp`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
 | `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it directly and skips the compatibility handler. |
 | `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |
