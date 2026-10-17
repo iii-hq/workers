@@ -100,17 +100,21 @@ pub fn select(
     if tail_turns == 0 {
         return whole_head;
     }
+    let prefix = prefix_sums(sizes);
     let all = turns(messages);
     if all.is_empty() {
-        return whole_head;
+        // No user message: a window a prior compaction opened mid-turn, at an
+        // assistant boundary. Treat it as one turn so a verbatim tail still
+        // survives: summarising all of it hands the caller an empty context.
+        let whole = Turn {
+            start: 0,
+            end: messages.len(),
+        };
+        return split_turn(messages, &prefix, whole, budget)
+            .or_else(|| latest_safe_cut(messages))
+            .map_or_else(keep_everything, cut_at);
     }
     let recent = &all[all.len().saturating_sub(tail_turns)..];
-
-    let mut prefix: Vec<u64> = Vec::with_capacity(sizes.len() + 1);
-    prefix.push(0);
-    for size in sizes {
-        prefix.push(prefix[prefix.len() - 1] + size);
-    }
 
     let mut total: u64 = 0;
     let mut keep: Option<usize> = None;
@@ -136,10 +140,7 @@ pub fn select(
 
     // Prefer the budget-fitting safe boundary found above.
     if let Some(start) = keep {
-        return Selection {
-            head_len: start,
-            tail_start_index: Some(start),
-        };
+        return cut_at(start);
     }
 
     // Nothing fit the recent-tail budget. Never summarise the *entire*
@@ -149,20 +150,72 @@ pub fn select(
     // safe cut above index 0 — better slightly over budget than zero messages.
     for turn in all.iter().rev() {
         if turn.start > 0 && is_safe_cut(&messages[turn.start]) {
-            return Selection {
-                head_len: turn.start,
-                tail_start_index: Some(turn.start),
-            };
+            return cut_at(turn.start);
         }
     }
 
-    // A single turn (or no safe cut above index 0): nothing can be safely
-    // summarised, so do not compact — keep the whole history verbatim
-    // (head_len 0 makes the caller's `head.is_empty()` guard skip compaction).
-    Selection {
-        head_len: 0,
-        tail_start_index: Some(0),
+    // A single turn (one prompt, then a long tool run) with no suffix that
+    // fits: cut inside it at the latest safe boundary, the smallest tail that
+    // keeps every call with its result. Only a history with no safe cut above
+    // index 0 is kept whole (head_len 0 makes the caller's `head.is_empty()`
+    // guard skip compaction).
+    latest_safe_cut(messages).map_or_else(keep_everything, cut_at)
+}
+
+/// Deepen `selection` until the verbatim tail fits `ceiling`: the earliest
+/// safe cut at or after the selected one whose suffix fits, else the latest
+/// safe cut (the smallest tail that keeps calls with their results).
+///
+/// `select` keeps a whole recent turn when nothing fits the verbatim budget;
+/// for an explicit compaction after an oversized turn that tail alone can
+/// exceed the usable budget, and the compaction would free nothing.
+pub fn fit_tail(
+    messages: &[AgentMessage],
+    sizes: &[u64],
+    selection: Selection,
+    ceiling: u64,
+) -> Selection {
+    let Some(start) = selection.tail_start_index else {
+        return selection;
+    };
+    let prefix = prefix_sums(sizes);
+    let total = prefix[messages.len()];
+    if total - prefix[start] <= ceiling {
+        return selection;
     }
+    (start + 1..messages.len())
+        .filter(|&i| is_safe_cut(&messages[i]))
+        .find(|&i| total - prefix[i] <= ceiling)
+        .or_else(|| latest_safe_cut(messages).filter(|&i| i > start))
+        .map_or(selection, cut_at)
+}
+
+/// `prefix[i]` is the token sum of `messages[..i]`.
+fn prefix_sums(sizes: &[u64]) -> Vec<u64> {
+    let mut prefix: Vec<u64> = Vec::with_capacity(sizes.len() + 1);
+    prefix.push(0);
+    for size in sizes {
+        prefix.push(prefix[prefix.len() - 1] + size);
+    }
+    prefix
+}
+
+/// The newest safe cut above index 0, if any.
+fn latest_safe_cut(messages: &[AgentMessage]) -> Option<usize> {
+    (1..messages.len())
+        .rev()
+        .find(|&i| is_safe_cut(&messages[i]))
+}
+
+fn cut_at(start: usize) -> Selection {
+    Selection {
+        head_len: start,
+        tail_start_index: Some(start),
+    }
+}
+
+fn keep_everything() -> Selection {
+    cut_at(0)
 }
 
 #[cfg(test)]
@@ -371,9 +424,109 @@ mod tests {
     }
 
     #[test]
-    fn history_without_user_messages_is_all_head() {
+    fn single_oversized_turn_still_cuts_at_a_safe_boundary() {
+        // One prompt, then a long tool run whose last call+result alone
+        // exceeds the budget (a stopped or overflowed run). No suffix fits
+        // and there is no later turn start, but every assistant message is a
+        // safe cut: the fallback must use one instead of returning an empty
+        // head, which makes `/compact` answer `empty` for a huge history.
+        let messages = vec![
+            user("q", 1),
+            assistant_call("c1", 2),
+            result("c1", 4_000, 3),
+            assistant_call("c2", 4),
+            result("c2", 4_000, 5),
+        ];
+        let sel = select_est(&messages, 100, 2);
+        assert!(sel.head_len > 0, "nothing would be summarised: {sel:?}");
+        assert_eq!(sel.tail_start_index, Some(sel.head_len));
+        assert!(is_safe_cut(&messages[sel.head_len]));
+    }
+
+    #[test]
+    fn history_without_user_messages_keeps_a_safe_tail() {
+        // A window a prior compaction opened mid-turn has no user message.
+        // Summarising all of it would leave the caller nothing verbatim; the
+        // newest safe suffix that fits stays instead.
         let messages = vec![assistant("a", 1), assistant("b", 2)];
         let sel = select_est(&messages, 1_000, 2);
-        assert_eq!(sel.tail_start_index, None);
+        assert_eq!(sel.tail_start_index, Some(1));
+        assert_eq!(sel.head_len, 1);
+    }
+
+    #[test]
+    fn history_without_user_messages_and_no_fitting_suffix_cuts_at_the_latest_call() {
+        let messages = vec![
+            assistant_call("c1", 1),
+            result("c1", 4_000, 2),
+            assistant_call("c2", 3),
+            result("c2", 4_000, 4),
+        ];
+        let sel = select_est(&messages, 100, 2);
+        assert_eq!(sel.tail_start_index, Some(2));
+    }
+
+    #[test]
+    fn a_lone_message_is_kept_verbatim() {
+        let sel = select_est(&[assistant("only", 1)], 0, 2);
+        assert_eq!(sel.head_len, 0);
+        assert_eq!(sel.tail_start_index, Some(0));
+    }
+
+    fn sizes_of(messages: &[AgentMessage]) -> Vec<u64> {
+        messages
+            .iter()
+            .map(|m| HeuristicEstimator.message(m))
+            .collect()
+    }
+
+    #[test]
+    fn fit_tail_deepens_an_oversized_whole_turn_to_the_ceiling() {
+        let messages = vec![
+            user("q1", 1),
+            assistant("a1", 2),
+            user("q2", 3),
+            assistant_call("c1", 4),
+            result("c1", 4_000, 5),
+            assistant_call("c2", 6),
+            result("c2", 4_000, 7),
+            assistant_call("c3", 8),
+            result("c3", 4_000, 9),
+        ];
+        let sizes = sizes_of(&messages);
+        let kept_whole = select(&messages, &sizes, 0, 2);
+        assert_eq!(kept_whole.tail_start_index, Some(2));
+
+        let one_pair = sizes[7] + sizes[8];
+        let fitted = fit_tail(&messages, &sizes, kept_whole, one_pair + sizes[6]);
+        // The earliest safe cut whose suffix fits: the last call + result.
+        assert_eq!(fitted.tail_start_index, Some(7));
+        assert_eq!(fitted.head_len, 7);
+    }
+
+    #[test]
+    fn fit_tail_falls_back_to_the_latest_safe_cut() {
+        let messages = vec![
+            user("q", 1),
+            assistant_call("c1", 2),
+            result("c1", 4_000, 3),
+            assistant_call("c2", 4),
+            result("c2", 4_000, 5),
+        ];
+        let sizes = sizes_of(&messages);
+        let fitted = fit_tail(&messages, &sizes, cut_at(1), 10);
+        assert_eq!(fitted.tail_start_index, Some(3));
+    }
+
+    #[test]
+    fn fit_tail_leaves_a_fitting_tail_and_a_whole_head_alone() {
+        let messages = vec![user("q", 1), assistant("a", 2)];
+        let sizes = sizes_of(&messages);
+        assert_eq!(fit_tail(&messages, &sizes, cut_at(1), u64::MAX), cut_at(1));
+        let whole = Selection {
+            head_len: 2,
+            tail_start_index: None,
+        };
+        assert_eq!(fit_tail(&messages, &sizes, whole.clone(), 0), whole);
     }
 }
