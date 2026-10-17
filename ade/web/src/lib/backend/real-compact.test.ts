@@ -4,9 +4,13 @@ import { realBackend } from './real'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
 
-const user = (id: string, text: string) => ({
-  entry_id: id,
-  message: { role: 'user', content: [{ type: 'text', text }], timestamp: 1 },
+const outcome = (status: string, extra: Record<string, unknown> = {}) => ({
+  session_id: 's-1',
+  compaction_id: 'cmp_1',
+  status,
+  message: `outcome ${status}`,
+  entry_ids: ['e_cmp_1_started', 'e_cmp_1_outcome'],
+  ...extra,
 })
 
 describe('realBackend.compactSession', () => {
@@ -14,80 +18,110 @@ describe('realBackend.compactSession', () => {
 
   beforeEach(() => {
     trigger.mockReset()
-    trigger.mockImplementation(async (id: string) => {
-      switch (id) {
-        case 'harness::status':
-          return null
-        case 'session::messages':
-          return {
-            messages: [user('u1', 'a'), user('u2', 'b'), user('u3', 'c')],
-          }
-        case 'context::compact':
-          return {
-            status: 'ok',
-            summary: 'S',
-            tail_start_index: 1,
-            tokens_before: 9,
-          }
-        case 'session::append':
-          return { entry_id: 'marker', parent_id: 'u3', timestamp: 2 }
-      }
-      throw new Error(`unexpected ${id}`)
-    })
     vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
   })
 
-  it('returns the persisted compaction marker identity', async () => {
+  it('compacts on the harness and returns every row it wrote', async () => {
+    trigger.mockResolvedValue(
+      outcome('ok', { tokens_before: 9, tokens_after: 3, summary: 'S' }),
+    )
     const result = await realBackend.compactSession?.(
       's-1',
-      'claude-x' as never,
+      'anthropic::claude-x' as never,
+      200_000,
+      '  keep the ids  ',
     )
     expect(result).toEqual({
       status: 'ok',
       tokensBefore: 9,
       autoContinued: false,
       summaryText: 'S',
-      compactionEntryId: 'marker',
+      compactionEntryId: 'e_cmp_1_outcome',
+      ownEntryIds: ['e_cmp_1_started', 'e_cmp_1_outcome'],
+    })
+    // No catalog window and no made-up output allowance: the router resolves
+    // the summariser's real limits on the server.
+    expect(trigger).toHaveBeenCalledWith(
+      'harness::compact',
+      {
+        session_id: 's-1',
+        model: 'claude-x',
+        provider: 'anthropic',
+        instructions: 'keep the ids',
+      },
+      { timeoutMs: 330_000 },
+    )
+    expect(trigger).toHaveBeenCalledTimes(1)
+  })
+
+  it('maps every other outcome', async () => {
+    for (const [status, expected] of [
+      ['busy', { status: 'busy' }],
+      ['empty', { status: 'empty' }],
+      ['failed', { status: 'error', message: 'outcome failed' }],
+    ] as const) {
+      trigger.mockResolvedValueOnce(outcome(status))
+      expect(
+        await realBackend.compactSession?.(
+          's-1',
+          'anthropic::claude-x' as never,
+        ),
+      ).toEqual(expected)
+    }
+  })
+
+  it('reports a transport failure as an error', async () => {
+    trigger.mockRejectedValue(new Error('TIMEOUT: invocation timed out'))
+    expect(
+      await realBackend.compactSession?.('s-1', 'anthropic::claude-x' as never),
+    ).toEqual({
+      status: 'error',
+      message: expect.stringContaining('TIMEOUT'),
     })
   })
-  // Without the persisted entry nothing anchors on the summary, so the
-  // compaction did not happen and must not be reported as done.
-  it('reports an error when the compaction entry cannot be persisted', async () => {
-    trigger.mockImplementation(async (id: string) => {
-      if (id === 'session::append') throw new Error('session/not_found: gone')
-      if (id === 'harness::status') return null
-      if (id === 'session::messages') {
-        return {
-          messages: [user('u1', 'a'), user('u2', 'b'), user('u3', 'c')],
-        }
-      }
-      if (id === 'context::compact') {
-        return {
-          status: 'ok',
-          summary: 'S',
-          tail_start_index: 1,
-          tokens_before: 9,
-        }
-      }
-      throw new Error(`unexpected ${id}`)
-    })
-    const result = await realBackend.compactSession?.(
-      's-1',
-      'claude-x' as never,
-    )
-    expect(result).toEqual({
-      status: 'error',
-      message: expect.stringContaining('session/not_found'),
-    })
-    expect(trigger).toHaveBeenCalledWith('session::append', {
+})
+
+describe('realBackend.sendCompactCommand', () => {
+  const trigger = vi.fn()
+
+  beforeEach(() => {
+    trigger.mockReset().mockResolvedValue({
       session_id: 's-1',
-      custom: {
-        custom_type: 'compaction',
-        data: expect.objectContaining({
-          summary: 'S',
-          tail_start_entry_id: 'u2',
-        }),
-      },
+      turn_id: 't-1',
+      accepted: true,
+      compaction: { compaction_id: 'cmp_1', entry_id: 'e_idem_msg-1' },
     })
+    vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+  })
+
+  // The command rides the ordinary send, so the harness's one parser decides
+  // what `/compact` means for every client, and the idempotency key gives its
+  // start notice this row's entry id.
+  it('sends the typed command through harness::send', async () => {
+    await realBackend.sendCompactCommand?.(
+      's-1',
+      'anthropic::claude-x' as never,
+      '/compact keep the ids',
+      'msg-1',
+    )
+    expect(trigger).toHaveBeenCalledWith('harness::send', {
+      session_id: 's-1',
+      message: '/compact keep the ids',
+      model: 'claude-x',
+      provider: 'anthropic',
+      idempotency_key: 'msg-1',
+    })
+  })
+
+  it('surfaces a rejected send', async () => {
+    trigger.mockRejectedValue(new Error('harness/invalid_request: read-only'))
+    await expect(
+      realBackend.sendCompactCommand?.(
+        's-1',
+        'anthropic::claude-x' as never,
+        '/compact',
+        'msg-1',
+      ),
+    ).rejects.toThrow('read-only')
   })
 })

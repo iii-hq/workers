@@ -1086,6 +1086,29 @@ describe('entrySegments', () => {
     })
   })
 
+  it('lets a notice raise its own tone (a failed compaction warns)', () => {
+    const [failed] = entrySegments({
+      entry_id: 'e_cmp_1_outcome',
+      custom: {
+        custom_type: 'notice',
+        data: {
+          reason: 'compaction_failed',
+          message: 'compaction failed — the summariser timed out',
+          tone: 'warn',
+        },
+      },
+    })
+    expect(failed).toMatchObject({
+      tone: 'warn',
+      content: 'compaction failed — the summariser timed out',
+    })
+    const [odd] = entrySegments({
+      entry_id: 'e_x',
+      custom: { custom_type: 'notice', data: { message: 'm', tone: 'loud' } },
+    })
+    expect(odd).toMatchObject({ tone: 'info' })
+  })
+
   it('maps a trigger_fired custom entry to a turn-less notice carrying its record', () => {
     const [notice] = entrySegments({
       entry_id: 'e_trigfired_sub_1',
@@ -1342,6 +1365,36 @@ describe('entrySegments', () => {
 })
 
 describe('applyEntryUpsert', () => {
+  // `/compact` never becomes a user message: the harness writes its start
+  // notice under the send's entry id, so the sender's optimistic command row
+  // turns into the notice every other device shows.
+  it('turns the optimistic /compact row into the harness start notice', () => {
+    const optimistic: Message = {
+      id: 'e_idem_msg-1',
+      role: 'user',
+      content: '/compact',
+      command: true,
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert([optimistic], {
+      entry_id: 'e_idem_msg-1',
+      custom: {
+        custom_type: 'notice',
+        data: {
+          reason: 'compacting',
+          message: 'compacting the conversation…',
+          tone: 'info',
+        },
+      },
+    })
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e_idem_msg-1',
+      role: 'system',
+      content: 'compacting the conversation…',
+    })
+  })
+
   it('replaces the optimistic user message in place (predicted entry id)', () => {
     const optimistic: Message = {
       id: 'msg-1-user-0',

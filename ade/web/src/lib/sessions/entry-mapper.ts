@@ -152,7 +152,11 @@ function customNotice(
   fallback: string,
   timestamp: number,
 ): SystemMessage {
-  const d = (data ?? {}) as { reason?: unknown; message?: unknown }
+  const d = (data ?? {}) as {
+    reason?: unknown
+    message?: unknown
+    tone?: unknown
+  }
   const content =
     typeof d.message === 'string'
       ? d.message
@@ -166,7 +170,8 @@ function customNotice(
     role: 'system',
     kind: 'notice',
     content,
-    tone,
+    // A record may raise its own tone (a compaction that failed warns).
+    tone: d.tone === 'warn' || d.tone === 'error' ? d.tone : tone,
     createdAt: timestamp,
   }
 }
