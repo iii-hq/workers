@@ -69,6 +69,9 @@ export interface ModelUsage {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  /** `false` when a generation carried no price, so `cost_usd` is a lower
+      bound. Absent from a harness that predates it. */
+  cost_complete?: boolean
 }
 
 export interface SessionUsage {
@@ -84,6 +87,7 @@ export interface SessionUsage {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  cost_complete?: boolean
   by_model?: ModelUsage[]
   context?: ContextSnapshot
 }
@@ -99,6 +103,7 @@ export interface MetricsTotals {
   cache_write_tokens?: number
   reasoning_tokens?: number
   cost_usd?: number
+  cost_complete?: boolean
   by_model?: ModelUsage[]
 }
 
@@ -304,6 +309,7 @@ function modelRow(sessionId: string, m: ModelUsage): SessionUsage {
     cache_read_tokens: m.cache_read_tokens,
     cache_write_tokens: m.cache_write_tokens,
     cost_usd: m.cost_usd,
+    cost_complete: m.cost_complete,
   }
 }
 
@@ -313,21 +319,26 @@ function modelRow(sessionId: string, m: ModelUsage): SessionUsage {
  * model reporting nothing loses the tokens of the 53 steps that did. Its
  * `by_model` still has them: such a counter is filled with what the models
  * reported and marked partial (`≥`), and `unreported` names the models that
- * left it out.
+ * left it out. A cost the server did sum but flags `cost_complete: false`
+ * (a generation had no price) is marked partial too.
  */
 export function ownUsage(row: SessionUsage): UsageTotals {
   const own: UsageTotals = { ...row, partial: [], unreported: [], cacheHit: cacheHitPct(row) }
   const models = modelsOf(row)
-  if (!models.length || SUMMED.every((key) => row[key] != null)) return own
-  const sum = sumUsage(models.map((m) => modelRow(modelLabel(m), m)))
-  for (const key of SUMMED) {
-    if (row[key] == null && sum[key] != null) {
-      own[key] = sum[key]
-      own.partial.push(key)
+  // The server sums the generations that carried a price; one without leaves
+  // its cost a lower bound, not a gap.
+  if (row.cost_usd != null && row.cost_complete === false) own.partial.push('cost_usd')
+  if (models.length && SUMMED.some((key) => row[key] == null)) {
+    const sum = sumUsage(models.map((m) => modelRow(modelLabel(m), m)))
+    for (const key of SUMMED) {
+      if (row[key] == null && sum[key] != null) {
+        own[key] = sum[key]
+        own.partial.push(key)
+      }
     }
+    if (own.partial.length) own.cacheHit ??= sum.cacheHit
   }
   if (!own.partial.length) return own
-  own.cacheHit ??= sum.cacheHit
   own.unreported = models
     .filter((m) => m.turns > 0 && own.partial.some((key) => m[key] == null))
     .map(modelLabel)

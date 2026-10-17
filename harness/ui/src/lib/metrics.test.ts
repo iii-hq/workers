@@ -204,6 +204,19 @@ describe('ownUsage', () => {
   it('reads a harness without by_model as before', () => {
     expect(ownUsage(usage('s', undefined, 0, { output_tokens: undefined })).output_tokens).toBeUndefined()
   })
+
+  it('marks a summed cost a lower bound when a generation had no price', () => {
+    const subscription = { provider: 'claude-code', model: 'claude-code/claude-opus-5', turns: 2, function_calls: 0 }
+    const own = ownUsage(usage('s', undefined, 0, { cost_usd: 0.75, cost_complete: false, by_model: [subscription] }))
+    expect(own.cost_usd).toBe(0.75)
+    expect(own.partial).toEqual(['cost_usd'])
+    expect(own.unreported).toEqual(['claude-opus-5'])
+    expect(sumUsage([usage('root', undefined, 0), usage('s', 'root', 1, { cost_complete: false })]).partial).toEqual(['cost_usd'])
+
+    // Complete, or from a harness without the field: the sum stands as is.
+    expect(ownUsage(usage('s', undefined, 0, { cost_complete: true })).partial).toEqual([])
+    expect(ownUsage(usage('s', undefined, 0)).partial).toEqual([])
+  })
 })
 
 describe('sumUsage over models', () => {
