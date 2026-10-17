@@ -904,6 +904,13 @@ pub async fn edit_queued(
     deps: &Deps,
     req: EditQueuedRequest,
 ) -> Result<EditQueuedResponse, HarnessError> {
+    // A queued row drains into the transcript as a prompt: an edit to `/compact`
+    // would reach the model, which answers it with a made-up summary.
+    if compact_command(&req.message).is_some() {
+        return Err(HarnessError::InvalidRequest(
+            "/compact cannot replace a queued message; send it on its own".into(),
+        ));
+    }
     let cfg = deps.cfg().await;
     let rows =
         crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;

@@ -14,7 +14,7 @@ use harness::deps::Deps;
 use harness::discovery;
 use harness::events::TurnEvents;
 use harness::functions::compact::{self, CompactRequest};
-use harness::functions::send::{self, MessageInput, SendRequest};
+use harness::functions::send::{self, EditQueuedRequest, MessageInput, SendRequest};
 use harness::functions::status::{self, StatusRequest};
 use harness::hooks::HookRegistry;
 use harness::skills;
@@ -700,4 +700,24 @@ async fn a_second_compact_while_one_runs_answers_on_its_own_row() {
     let all = stack.completions(2).await;
     assert_eq!(all[1]["status"], "ok");
     assert_eq!(stack.world().compact_requests.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_queued_message_cannot_be_edited_into_the_command() {
+    let Some(stack) = Stack::new(idle_world(ok_reply(Some(4)))).await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let error = send::edit_queued(
+        &stack.deps,
+        EditQueuedRequest {
+            session_id: SESSION.into(),
+            entry_id: "e_idem_queued".into(),
+            message: MessageInput::Text("/compact keep the ids".into()),
+        },
+    )
+    .await
+    .expect_err("a queued row would reach the model as a prompt");
+    assert_eq!(error.code(), "harness/invalid_request");
+    assert!(stack.world().compact_requests.is_empty());
 }
