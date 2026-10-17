@@ -183,6 +183,23 @@ fn sink(iii: &IIIClient, id: &str) -> mpsc::UnboundedReceiver<Value> {
     rx
 }
 
+/// A sink that also records the invocation's metadata sidecar.
+fn sink_with_metadata(iii: &IIIClient, id: &str) -> mpsc::UnboundedReceiver<Value> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    iii.register_function(
+        id,
+        RegisterFunction::new_async(move |payload: Value| {
+            let tx = tx.clone();
+            let metadata = iii_sdk::current_invocation().and_then(|c| c.metadata);
+            async move {
+                let _ = tx.send(json!({ "payload": payload, "metadata": metadata }));
+                Ok::<(), iii_sdk::errors::Error>(())
+            }
+        }),
+    );
+    rx
+}
+
 async fn next(rx: &mut mpsc::UnboundedReceiver<Value>, what: &str) -> Value {
     tokio::time::timeout(WAIT, rx.recv())
         .await
@@ -366,7 +383,7 @@ async fn old_consumer_register_trigger_is_served_through_the_shim() {
     .await;
 
     let old = client(&url, &ns, "old-consumer");
-    let mut events = sink(&old, "legacy::on-orders");
+    let mut events = sink_with_metadata(&old, "legacy::on-orders");
     let mut input = RegisterTriggerInput::new(
         "database::row-changed",
         "legacy::on-orders",
@@ -387,7 +404,11 @@ async fn old_consumer_register_trigger_is_served_through_the_shim() {
     assert_eq!(obs.target(), "legacy::on-orders");
 
     db.sql("primary", "INSERT INTO orders (n) VALUES (7)").await;
-    let event = next(&mut events, "legacy delivery").await;
+    let delivery = next(&mut events, "legacy delivery").await;
+    // The trigger's metadata rides along as the sidecar (a harness binding's
+    // `__binding` pointer).
+    assert_eq!(delivery["metadata"]["__binding"], "sub_abc", "{delivery}");
+    let event = delivery["payload"].clone();
     // `deliver: input`: the event itself, in the pre-0.25 shape.
     assert_eq!(event["table"], "orders");
     assert_eq!(event["op"], "insert");
