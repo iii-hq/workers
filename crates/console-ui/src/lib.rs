@@ -427,6 +427,9 @@ fn register_asset_trigger(
     kind: AssetKind,
     path: &str,
 ) -> Result<iii_sdk::trigger::Trigger, Error> {
+    // Deprecated in the 0.25 SDK; the console keeps its asset trigger types
+    // until it moves to an observable function (`console::on-asset`).
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         kind.trigger_type().to_string(),
         function_id.to_string(),

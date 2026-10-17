@@ -47,8 +47,10 @@ fn namespace(test: &str) -> String {
 }
 
 fn client(url: &str, ns: &str, name: &str) -> IIIClient {
-    let mut metadata = WorkerMetadata::default();
-    metadata.name = name.to_string();
+    let metadata = WorkerMetadata {
+        name: name.to_string(),
+        ..WorkerMetadata::default()
+    };
     register_worker(
         url,
         InitOptions {
@@ -802,7 +804,7 @@ async fn unobserved_writes_put_zero_frames_on_the_wire() {
     let matched = wire.since(mark);
     eprintln!("observed, matching: 100 writes -> {matched:?}");
     let reports = matched.get("invocationsobserved").copied().unwrap_or(0);
-    assert!(reports >= 1 && reports <= 100, "{matched:?}");
+    assert!((1..=100).contains(&reports), "{matched:?}");
 
     // Disposed: back to zero.
     hit.dispose().await.unwrap();
