@@ -112,6 +112,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1276,10 +1285,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "iii-helpers"
-version = "0.24.5"
+name = "iii-filter"
+version = "0.24.5-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "153d1efa91fc973adda221013d28bf1428f6c39d48c2b5c0ad83f23eac6a137f"
+checksum = "b2bb2c2976c4e9ef926e63a152614d0d3fd75a634687b549810ee469074b3dc9"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "iii-helpers"
+version = "0.24.5-alpha.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f36629438a465295e4c9167866dc89bef298cc59a3c71430ed5d2abf251cdaa"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -1298,13 +1317,15 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.24.5"
+version = "0.24.5-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c40db04bca94554b42a6dbd697e44555f51c44d68a3ba3a4702d913d8fce80c"
+checksum = "34cfce76cdbe7d6a44092c39e19451b42833a828595ec32f2dcf2725b6db6e14"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "futures-util",
  "hostname",
+ "iii-filter",
  "iii-helpers",
  "reqwest",
  "schemars",

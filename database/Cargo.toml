@@ -14,9 +14,12 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "0.24.5"
+# The iii 0.25 Rust SDK (observable functions), from the alpha cut from
+# iii-hq/iii#2330 until 0.25.0 is published. Exact pins: an alpha anchors on
+# the latest stable, which a caret requirement would also accept.
+iii-sdk = "=0.24.5-alpha.3"
 iii-worker-paths = { path = "../crates/worker-paths" }
-iii-helpers = "0.24.5"
+iii-helpers = "=0.24.5-alpha.3"
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
