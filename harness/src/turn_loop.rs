@@ -3001,7 +3001,9 @@ pub(crate) async fn finalize_cancelled(
     crate::usage_report::report(deps, record, "cancelled", None).await;
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "cancelled", None, Some(reason)).await;
-        crate::subagent::notify_parent_of_end(deps, record, "cancelled").await;
+        // No child-ended notice: every cancellation is a stop or a deletion.
+        // Whoever stopped the child knows, and a stop that cascades down a
+        // tree must not wake the parked parent it just stopped.
     }
     // Second post-terminal sweep (see `finalize_completed`): a row enqueued
     // between the first drain and the terminal write still reaches the

@@ -182,8 +182,10 @@ pub async fn spawn_child(
 
 /// A child that ends while its parent is parked on a wake is news the parent
 /// cannot otherwise get before its deadline: deliver it as a notification, the
-/// same path (and un-park) as an expired wake. `status` is `completed`,
-/// `failed` or `cancelled`; the kit parses the text's opening, so keep it.
+/// same path (and un-park) as an expired wake. `status` is `completed` or
+/// `failed` (a cancelled turn was stopped or deleted on purpose, and
+/// `finalize_cancelled` sends nothing); the kit parses the text's opening, so
+/// keep it.
 ///
 /// Silent when the parent is not waiting (a chat parent, or one whose wake
 /// already fired), when a `completed` child is itself parked on a wake of its

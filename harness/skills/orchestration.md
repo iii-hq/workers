@@ -64,7 +64,7 @@ item, extend the deadline, or finish. A function worker's failure reaches you
 through the medium (an `error` status it managed to record) or through your
 deadline catching the silence. A spawned child that ends while you are parked
 on a wake wakes you with `[notification] child ended: session <id> (turn <id>)
-status=<completed|failed|cancelled>`: read the medium it was told to write, its
+status=<completed|failed>`: read the medium it was told to write, its
 result is there or it ended without writing it. `harness::status
 { session_id: <child> }` answers a direct health question about a specific
 worker.
