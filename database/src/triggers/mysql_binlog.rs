@@ -159,6 +159,7 @@ fn flush(
         let has_keys = !p.keys.is_empty();
         let _ = out.send(RowChangedEvent {
             db: db_name.to_string(),
+            schema: None,
             table: Some(p.table),
             op: p.op,
             affected_rows: p.n,

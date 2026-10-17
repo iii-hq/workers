@@ -185,6 +185,7 @@ pub(crate) fn parse_notification(db: &str, payload: &str) -> Option<RowChangedEv
     let truncated = p.keys.as_ref().is_some_and(|k| (k.len() as u64) < p.n);
     Some(RowChangedEvent {
         db: db.to_string(),
+        schema: None,
         table: Some(p.table),
         op: p.op,
         affected_rows: p.n,

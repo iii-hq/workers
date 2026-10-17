@@ -28,8 +28,9 @@ use database::handlers::{
     AppState,
 };
 use database::transaction::TxRegistry;
+use database::triggers::NativeCapture;
 use iii_helpers::observability::{Logger, OtelConfig};
-use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -80,7 +81,7 @@ async fn main() -> Result<()> {
     }
     metadata.description = Some(
         "SQL for PostgreSQL, MySQL, and SQLite: queries, statements, interactive \
-         transactions, and database::row-changed triggers (statements or native capture)."
+         transactions, and database::on-row-changed events (statements or native capture)."
             .to_string(),
     );
 
@@ -131,19 +132,30 @@ async fn main() -> Result<()> {
     let handles = Arc::new(HandleRegistry::new());
     let transactions = TxRegistry::new();
     let log = Logger::new();
-    let row_changes = Arc::new(database::triggers::RowChangeBus::new(
+    let pools = Arc::new(RwLock::new(pools));
+    let live_config = Arc::new(RwLock::new(cfg.clone()));
+    // Native capture and the routing index of `database::on-row-changed`,
+    // driven by its observers (and, against a pre-0.25 engine, by the old
+    // trigger type's bindings).
+    let capture = Arc::new(NativeCapture::new(
         iii.clone(),
+        live_config.clone(),
+        pools.clone(),
         ROW_CHANGE_DISPATCH_TIMEOUT_MS,
     ));
+    let row_changes = Arc::new(database::triggers::RowChangeBus::with_capture(
+        iii.clone(),
+        capture.clone(),
+    ));
     // One LISTEN task per `capture: native` postgres database, live from
-    // startup — external writes must be heard before any binding registers.
+    // startup — external writes must be heard before any observer registers.
     let native_listeners = Arc::new(database::triggers::NativeListeners::new(
         row_changes.clone(),
     ));
     native_listeners.sync(&cfg);
     let state = AppState {
-        pools: Arc::new(RwLock::new(pools)),
-        config: Arc::new(RwLock::new(cfg)),
+        pools,
+        config: live_config,
         handles: handles.clone(),
         transactions: transactions.clone(),
         log: log.clone(),
@@ -684,38 +696,37 @@ async fn main() -> Result<()> {
         );
     }
 
-    // The worker announces its own writes. Registered AFTER the functions so
-    // the console can attribute the type, and gated on the databases that
-    // actually exist — a binding on a typo'd handle would listen to nothing.
-    let _row_changed = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            database::triggers::ROW_CHANGED_TYPE,
-            "Fires after a row change commits, filtered by `db`, optional `table`, and optional `ops`. \
-             On a `capture: statements` database (the default) it reports only writes made THROUGH \
-             this worker, with the writer's own RETURNING rows as `returning` — a listener that needs \
-             to know WHICH row changed depends on the writer putting `RETURNING <key>` in its SQL. \
-             On a `capture: native` database it reports any client's committed writes, with the \
-             changed rows' primary keys as `returning` (capped; `truncated` flags the rest). \
-             Best-effort delivery, no replay.",
-            database::triggers::RowChangedHandler {
-                bus: row_changes.clone(),
-                config: state.config.clone(),
-                pools: state.pools.clone(),
-            },
-        )
-        .trigger_request_format::<database::triggers::RowChangedConfig>()
-        .call_request_format::<database::triggers::RowChangedEvent>(),
-    );
+    // The worker announces its own writes as invocations of an owner-delivered
+    // function. Registered AFTER the other functions so the console can
+    // attribute it.
+    database::triggers::capture::register(&iii, &capture);
 
-    configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()))
-        .context("registering configuration change trigger")?;
+    // An engine older than 0.25 has no observe: register the old trigger type
+    // over the same index so old consumers keep hearing their writes.
+    let engine_observes = database::triggers::legacy::engine_supports_observe(&iii).await;
+    let _row_changed_type = (!engine_observes).then(|| {
+        tracing::warn!(
+            "the engine does not support observe; registering the deprecated \
+             database::row-changed trigger type for old consumers"
+        );
+        database::triggers::legacy::register_trigger_type(&iii, capture.clone())
+    });
+
+    configuration::register_config_trigger(
+        &iii,
+        state.clone(),
+        Some(native_listeners.clone()),
+        engine_observes,
+    )
+    .context("registering configuration change observer")?;
 
     // Injectable console UI (function-trigger renderer) — after the
     // database::* functions so the console can attribute the assets.
     database::ui::register(&iii);
 
     tracing::info!(
-        "database worker registered 29 functions and 1 trigger type, waiting for invocations"
+        engine_observes,
+        "database worker registered 30 functions, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");

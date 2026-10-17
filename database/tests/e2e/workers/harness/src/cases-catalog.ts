@@ -33,6 +33,7 @@ const DATABASE_FUNCTIONS = [
   'database::listDatabases',
   'database::listSavedQueries',
   'database::listTables',
+  'database::on-row-changed',
   'database::prepareStatement',
   'database::query',
   'database::rollbackTransaction',

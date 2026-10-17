@@ -6,7 +6,7 @@ use crate::handlers::AppState;
 use crate::pool::{self, Pool};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -126,6 +126,13 @@ pub async fn apply_config(
     let mut config_guard = state.config.write().await;
     *pools_guard = new_pools;
     *config_guard = cfg;
+    drop(config_guard);
+    drop(pools_guard);
+    // Observers the new config no longer supports (their database is gone)
+    // get a late rejection: their `ready()` side moves to `error`.
+    if let Some(bus) = &state.row_changes {
+        bus.capture().revalidate().await;
+    }
     Ok(())
 }
 
@@ -147,11 +154,15 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration` trigger.
+/// Register the internal config-change handler and observe the engine's
+/// `configuration::on-updated` for this worker's entry. Against an engine
+/// without observe (`engine_observes` false), bind the old `configuration`
+/// trigger instead.
 pub fn register_config_trigger(
     iii: &IIIClient,
     state: AppState,
     listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
+    engine_observes: bool,
 ) -> Result<(), Error> {
     let st = state.clone();
     let engine = iii.clone();
@@ -172,6 +183,21 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
+    if engine_observes {
+        // The observer is replayed on reconnect; the handle is not needed.
+        let _ = iii.observe(
+            Source::function("configuration::on-updated")
+                .namespace("default")
+                .filters(json!({
+                    "input.id": { "$eq": config_id() },
+                    "input.event_type": { "$eq": "configuration:updated" },
+                }))
+                .deliver(Deliver::Input),
+            CONFIG_FN_ID,
+        );
+        return Ok(());
+    }
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),

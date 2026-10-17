@@ -221,15 +221,36 @@ fn mentions_dml(sql: &str) -> bool {
 /// schema qualifier. `public.orders`, `"Orders"` and `orders` all match — a
 /// subscriber should not have to guess how the writer spelled it.
 pub fn same_table(a: &str, b: &str) -> bool {
-    fn bare(t: &str) -> String {
-        let t = t.rsplit('.').next().unwrap_or(t).trim();
-        let t = [('"', '"'), ('`', '`'), ('[', ']')]
-            .into_iter()
-            .find_map(|(open, close)| t.strip_prefix(open)?.strip_suffix(close))
-            .unwrap_or(t);
-        t.to_ascii_lowercase()
-    }
-    bare(a) == bare(b)
+    canonical_table(a) == canonical_table(b)
+}
+
+/// One identifier part, unquoted and lowercased.
+fn bare_part(t: &str) -> String {
+    let t = t.trim();
+    let t = [('"', '"'), ('`', '`'), ('[', ']')]
+        .into_iter()
+        .find_map(|(open, close)| t.strip_prefix(open)?.strip_suffix(close))
+        .unwrap_or(t);
+    t.to_ascii_lowercase()
+}
+
+/// The canonical spelling of a table reference: the last dotted segment,
+/// unquoted, lowercased (the rule [`same_table`] matches by). Events carry it
+/// and observers' args must use it, so routing and filters compare exactly.
+pub fn canonical_table(t: &str) -> String {
+    bare_part(t.rsplit('.').next().unwrap_or(t))
+}
+
+/// A table reference split into its canonical `(schema, table)`. The schema
+/// is the segment before the table when the reference names one.
+pub fn split_table(t: &str) -> (Option<String>, String) {
+    let mut parts = t.rsplitn(2, '.');
+    let table = bare_part(parts.next().unwrap_or(t));
+    let schema = parts
+        .next()
+        .map(|s| bare_part(s.rsplit('.').next().unwrap_or(s)))
+        .filter(|s| !s.is_empty());
+    (schema, table)
 }
 
 #[cfg(test)]
@@ -412,6 +433,21 @@ mod tests {
         assert!(same_table("`orders`", "orders"));
         assert!(same_table("[orders]", "orders"));
         assert!(!same_table("orders", "order_items"));
+    }
+
+    #[test]
+    fn canonical_names_split_schema_and_table() {
+        assert_eq!(canonical_table("public.Orders"), "orders");
+        assert_eq!(canonical_table("\"Orders\""), "orders");
+        assert_eq!(split_table("orders"), (None, "orders".to_string()));
+        assert_eq!(
+            split_table("\"Public\".\"Orders\""),
+            (Some("public".to_string()), "orders".to_string())
+        );
+        assert_eq!(
+            split_table("db.app.orders"),
+            (Some("app".to_string()), "orders".to_string())
+        );
     }
 
     #[test]

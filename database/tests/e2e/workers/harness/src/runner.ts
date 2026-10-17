@@ -15,6 +15,44 @@ import { CATALOG_CASES } from './cases-catalog.ts'
 import { PG_ROUTING_CASES } from './cases-pg-routing.ts'
 import { HISTORY_CASES } from './cases-history.ts'
 
+const REGISTERED_TRIGGERS = 'engine::registered-triggers::list'
+
+/**
+ * observe transition: against a 0.25 engine and a migrated database worker,
+ * `registerTrigger({ type: 'database::row-changed' })` becomes an observer
+ * (the engine's legacy shim), which `engine::registered-triggers::list` does
+ * not report. The cases use that list as their "binding is live" sync point,
+ * so it is merged here with the shim observers from
+ * `engine::observers::list` (absent on an older engine).
+ */
+async function withShimBindings(iii: IIIClient, payload: unknown): Promise<any> {
+  const listed = await iii.trigger<unknown, any>({ function_id: REGISTERED_TRIGGERS, payload })
+  let observers: any[] = []
+  try {
+    const res = await iii.trigger<unknown, any>({ function_id: 'engine::observers::list', payload: {} })
+    observers = res?.observers ?? []
+  } catch {
+    // pre-0.25 engine: no observers
+  }
+  const shim = observers
+    .filter((o) => o.legacy && (o.state === 'active' || o.state === 'pending'))
+    .map((o) => ({ id: o.id, trigger_type: o.legacy.trigger_type, function_id: o.target.function_id, status: o.state }))
+  return { ...listed, registered_triggers: [...(listed?.registered_triggers ?? []), ...shim] }
+}
+
+function shimAwareClient(iii: IIIClient): IIIClient {
+  return new Proxy(iii, {
+    get(target, prop, receiver) {
+      if (prop === 'trigger') {
+        return (req: any) =>
+          req?.function_id === REGISTERED_TRIGGERS ? withShimBindings(target, req.payload) : target.trigger(req)
+      }
+      const value = Reflect.get(target, prop, receiver)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+}
+
 interface CaseResult {
   driver: DriverKey
   case: string
@@ -47,6 +85,7 @@ export class Runner {
   constructor(private opts: RunnerOptions) {}
 
   private async callOnce(functionId: string, payload: unknown): Promise<any> {
+    if (functionId === REGISTERED_TRIGGERS) return await withShimBindings(this.opts.iii, payload)
     return await this.opts.iii.trigger<unknown, any>({ function_id: functionId, payload })
   }
 
@@ -69,7 +108,7 @@ export class Runner {
       driver,
       dialect: dialects[driver],
       call: (id, payload) => this.callOnce(id, payload),
-      iii: this.opts.iii,
+      iii: shimAwareClient(this.opts.iii),
       expectError: async (fn, expectedCode) => {
         try {
           await fn()
