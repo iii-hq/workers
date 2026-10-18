@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- The tests, code and work phases follow the long-run recipe too, so a ticket no longer fails at its first build in a fresh worktree. 0.4.0 kept them on `shell::exec`, capped at 120 s, and the leads' child deny list blocked `engine::register_trigger`, so a cold Cargo build was killed before any test ran. The deny list no longer includes it, the recipe now names a cold first build and any command that hit the cap, and `deepwork-worker` (the base of `deepwork-impl`) preloads `shell::exec_bg`, `shell::status`, `shell::kill` and `engine::register_trigger`. A Verify line that is a long run keeps its command, args and `cwd`.
+
 ## 0.4.0
 
 - A parked parent now reacts when a child ends: a lead whose phase child ended without its result fails that attempt at once (`no result: <status>`), and the orchestrator closes the key of a lead that ended without one so the wave barrier still closes. Both use the `child ended` notice that a harness sends to a parked parent; older harnesses never send it, and the deadline wakes apply as before.

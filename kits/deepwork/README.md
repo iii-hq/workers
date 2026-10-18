@@ -142,7 +142,7 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
   | the harness | `state::barrier` |
   | orchestrator | `harness::spawn`, `harness::metrics`, `harness::stop`, `state::compare-and-set`, `kanban::ticket::list`, `kanban::project::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, plus `directory::agents::get` with `judges=` |
   | leads | `harness::spawn`, `harness::status`, `harness::stop`, `engine::register_trigger`, `engine::unregister_trigger`, `harness::triggers::list`, `state::list`, `state::compare-and-set`, `kanban::comment::create` |
-  | phase sub-agents | `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, `shell::exec`, `coder::read-file`, plus whatever the work needs. `deepwork-impl` also needs `coder::create-file` and `coder::update-file`. Checkers, and the worker of the plain flow's synthesis ticket, also need `state::get`; checkers also need `shell::exec_bg`, `shell::status`, `shell::kill` and `engine::register_trigger` for long runs |
+  | phase sub-agents | `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, `engine::register_trigger` (long runs), `coder::read-file`, plus whatever the work needs. `deepwork-impl` also needs `coder::create-file` and `coder::update-file`. Checkers, and the worker of the plain flow's synthesis ticket, also need `state::get` |
 
   A phase call that waits for approval parks its ticket as `blocked`. If every lead in a wave waits for approval, the run ends as `blocked`.
 - **`harness::stop`.** The repository rules (`iii-permissions.yaml`) deny it with a `'!harness::stop'` line. To allow it, remove that line and add `- harness::stop`. An allow above the deny line is not enough, because the console makes every deny rule session-wide. If you keep the deny, leads that time out are parked as `stuck`.
@@ -166,7 +166,7 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
 
    The report goes on the run ticket, into the chat and to `notify`.
 
-A command that outlives the foreground cap (`shell::exec` stops at 120 s), such as the baseline or the full suite, runs as a background job (`shell::exec_bg`). The agent registers a `shell::job-finished` wake for that job and ends its turn; the harness wakes it with the exit code when the job ends. It never polls, and it kills a job whose wake expires. This needs `ide` 0.12.19 or later.
+A command that outlives the foreground cap (`shell::exec` stops at 120 s), such as the baseline, the full suite or the first build in a fresh ticket worktree, runs as a background job (`shell::exec_bg`), in any phase. The agent registers a `shell::job-finished` wake for that job and ends its turn; the harness wakes it with the exit code when the job ends. It never polls, and it kills a job whose wake expires. This needs `ide` 0.12.19 or later.
 
 Results go through `state` rather than kanban events. State has compare-and-set, and a kanban outage won't lose results.
 
