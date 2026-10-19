@@ -18,7 +18,7 @@ name = "computer"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.5"
+iii-sdk = "=0.24.6"
 iii-console-ui = { path = "../crates/console-ui" }
 # Typed judge::evaluate messages for computer::run; the judge worker itself is
 # optional at runtime.
