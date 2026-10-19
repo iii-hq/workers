@@ -224,16 +224,23 @@ message. Three moments report:
 - `harness_user_turns`, when the user turns (root turns: one user message
   through its final reply) counted across every session in the state store
   reach 1, 2, 5, 10, 25 and 50, then every 50 after that (100, 150, ...). It
-  carries `user_turns_total`, `user_turns_delta` (user turns since the
-  previous report, so the deltas sum to the total), `sessions_total`, and
-  `by_model`: the user turns per provider and model of the root turn.
+  carries `user_turns_total`, `sessions_total`, and `by_model`: user turns per
+  provider and model of the root turn, and sessions per provider and model of
+  the session's first root turn.
 - `harness_model_calls`, on the same milestones of the model calls (assistant
   messages, sub-agents included) counted across every session in the state
   store. Model calls move several at a time, so a report goes out at the
-  highest milestone passed. It carries `model_calls_total`,
-  `model_calls_delta`, tool call and tool call error totals, token totals and
-  `cost_usd`, all across the state store, and `by_model`: model calls, tool
-  calls, tokens and cost per provider and model that generated them.
+  highest milestone passed. It carries `model_calls_total`, tool call and tool
+  call error totals, token totals, `cost_usd`, `user_turns_total` and
+  `sessions_total`, all across the state store, and `by_model`: model calls,
+  tool calls, tokens and cost per provider and model that generated them.
+
+Every counter on both events, in total and in each `by_model` entry, has a
+matching `*_delta` (for example `tool_calls_delta`, `cost_usd_delta`): the
+count since the previous report of the same event. The deltas of one state
+store sum to its totals, so they can be added up across stores and time
+windows.
+
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
   and `max_turns` outcomes. This keeps the reason a run stopped exact.
 
