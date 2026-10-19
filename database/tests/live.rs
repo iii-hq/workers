@@ -17,7 +17,7 @@ use database::config::WorkerConfig;
 use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{
-    browse, execute, insert_row, list_databases, query, test_connection, AppState,
+    browse, execute, insert_row, list_databases, query, schema, test_connection, AppState,
 };
 use database::runtime::Runtime;
 use database::secrets::{Fetch, SecretCache, SecretError, SecretValue};
@@ -91,6 +91,20 @@ async fn state(databases: Value) -> AppState {
 fn pg(user: &str, password: &str) -> Value {
     json!({ "driver": "postgres", "host": "127.0.0.1", "port": 55432, "user": user,
             "password": password, "database": "shop", "tls": { "mode": "disable" } })
+}
+
+/// Tests that create tables use the `iii_test` databases (created next to
+/// `shop` for the e2e harness), never `shop`, which the app shows.
+fn pg_scratch(user: &str, password: &str) -> Value {
+    let mut entry = pg(user, password);
+    entry["database"] = json!("iii_test");
+    entry
+}
+
+fn mysql_scratch(user: &str, password: &str) -> Value {
+    let mut entry = mysql(user, password);
+    entry["database"] = json!("iii_test");
+    entry
 }
 
 fn mysql(user: &str, password: &str) -> Value {
@@ -267,8 +281,8 @@ async fn raw_filters_never_write_even_as_a_superuser() {
     let tmp = tempfile::tempdir().unwrap();
     let lite = tmp.path().join("raw.db").display().to_string();
     let st = state(json!({
-        "pg": pg("postgres", "postgres-e2e"),
-        "my": mysql("root", "root-e2e"),
+        "pg": pg_scratch("postgres", "postgres-e2e"),
+        "my": mysql_scratch("root", "root-e2e"),
         "lite": { "driver": "sqlite", "database": lite, "pool": { "max": 1 } },
     }))
     .await;
@@ -297,7 +311,7 @@ async fn raw_filters_never_write_even_as_a_superuser() {
     )
     .await;
     // CREATE FUNCTION is not allowed over the prepared protocol: text protocol.
-    let root = mysql_async::Pool::new("mysql://root:root-e2e@127.0.0.1:53306/shop");
+    let root = mysql_async::Pool::new("mysql://root:root-e2e@127.0.0.1:53306/iii_test");
     {
         use mysql_async::prelude::Queryable;
         let mut c = root.get_conn().await.unwrap();
@@ -469,8 +483,8 @@ async fn insert_row_casts_values_to_each_column_type() {
     let _dir = env_or_skip!();
     let tmp = tempfile::tempdir().unwrap();
     let st = state(json!({
-        "pg": pg("shop", PG_PW),
-        "my": mysql("shop", PG_PW),
+        "pg": pg_scratch("shop", PG_PW),
+        "my": mysql_scratch("shop", PG_PW),
         "lite": { "driver": "sqlite", "database": tmp.path().join("ins.db").display().to_string() },
     }))
     .await;
@@ -489,6 +503,13 @@ async fn insert_row_casts_values_to_each_column_type() {
     };
 
     exec(&st, "pg", "DROP TABLE IF EXISTS iii_wcore_ins").await;
+    exec(
+        &st,
+        "pg",
+        "DO $$ BEGIN CREATE TYPE order_status AS ENUM ('pending', 'paid', 'shipped', 'delivered', \
+         'cancelled'); EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+    )
+    .await;
     exec(
         &st,
         "pg",
@@ -1111,7 +1132,8 @@ async fn json_arrays_bind_as_postgres_arrays() {
 #[tokio::test(flavor = "multi_thread")]
 async fn big_integers_are_inserted_exactly() {
     let _dir = env_or_skip!();
-    let st = state(json!({ "pg": pg("shop", PG_PW), "my": mysql("shop", PG_PW) })).await;
+    let st =
+        state(json!({ "pg": pg_scratch("shop", PG_PW), "my": mysql_scratch("shop", PG_PW) })).await;
     let insert = |db: &'static str, values: Value| {
         let st = st.clone();
         async move {
@@ -1196,4 +1218,347 @@ async fn sqlite_attach_is_refused_through_the_worker() {
         "{err}"
     );
     assert!(!target.exists(), "ATTACH must not create the file");
+}
+
+/// How many rows of `table` the structured `filters` match (browseTable's
+/// filtered count).
+async fn matching(st: &AppState, db: &str, table: &str, filters: Value) -> i64 {
+    let resp = browse::handle(
+        st,
+        serde_json::from_value(json!({
+            "db": db, "table": table, "filters": filters, "page_size": 1, "include_total": true
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("{db}.{table} {filters}: {e}"));
+    resp.total.expect("include_total")
+}
+
+/// Structured filters compare values as the column's type: on postgres each
+/// value is bound as text and cast to the catalog type, so `total > 100` on a
+/// NUMERIC, a date, a timestamptz, a uuid, an inet, a bool, an enum and an
+/// int8 all mean what they say (they used to fail, or match every row).
+/// Counts are the env seed's, checked against psql / mysql / sqlite.
+#[tokio::test(flavor = "multi_thread")]
+async fn structured_filters_compare_as_the_column_type() {
+    let dir = env_or_skip!();
+    let tmp = copy_sqlite(&dir);
+    let st = state(json!({
+        "pg": pg("shop", PG_PW),
+        "my": mysql("shop", PG_PW),
+        "lite": { "driver": "sqlite", "database": tmp.path().join("shop.db").display().to_string() },
+    }))
+    .await;
+
+    // orders: 2000 rows on every driver.
+    let uuid = "92be3413-b8bb-529c-93e2-f7c6dfb76fb9";
+    for (db, since) in [
+        ("pg", "2026-06-01T00:00:00Z"),
+        ("my", "2026-06-01 00:00:00"),
+        ("lite", "2026-06-01"),
+    ] {
+        let n = |filters: Value| {
+            let st = st.clone();
+            async move { matching(&st, db, "orders", filters).await }
+        };
+        assert_eq!(n(json!([])).await, 2000, "{db}");
+        assert_eq!(
+            n(json!([{ "column": "total", "op": "gt", "value": 100 }])).await,
+            1613,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "total", "op": "gt", "value": 100.5 }])).await,
+            1613,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "total", "op": "gt", "value": "100" }])).await,
+            1613,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "status", "op": "equals", "value": "shipped" }])).await,
+            200,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "status", "op": "in", "values": ["shipped", "delivered"] }]))
+                .await,
+            1400,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "status", "op": "not_in", "values": ["shipped", "delivered"] }]))
+                .await,
+            600,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "placed_at", "op": "gte", "value": since }])).await,
+            897,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "shipped_on", "op": "between", "value": "2026-03-01", "value2": "2026-03-31" }])).await,
+            159,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "id", "op": "between", "value": 10, "value2": "19" }])).await,
+            10,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "id", "op": "in", "values": [1, "2", 3] }])).await,
+            3,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "customer_id", "op": "equals", "value": 5 }])).await,
+            45,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "external_ref", "op": "equals", "value": uuid }])).await,
+            1,
+            "{db}"
+        );
+        // Pattern operators on non-text columns compare the column's text.
+        assert_eq!(
+            n(json!([{ "column": "total", "op": "starts_with", "value": "1" }])).await,
+            592,
+            "{db}"
+        );
+        assert_eq!(
+            n(json!([{ "column": "id", "op": "ends_with", "value": "7" }])).await,
+            200,
+            "{db}"
+        );
+    }
+
+    // type_zoo (postgres): rows 1 and 3 carry values, row 2 is NULL.
+    let n = |filters: Value| {
+        let st = st.clone();
+        async move { matching(&st, "pg", "type_zoo", filters).await }
+    };
+    let one = |column: &str, op: &str, value: Value| json!([{ "column": column, "op": op, "value": value }]);
+    assert_eq!(
+        n(one("c_bigint", "equals", json!("9007199254740993"))).await,
+        1
+    );
+    assert_eq!(
+        n(one("c_bigint", "lt", json!("-9007199254740992"))).await,
+        1
+    );
+    assert_eq!(n(one("c_bigint", "gt", json!(0))).await, 1);
+    assert_eq!(
+        n(one("c_numeric", "equals", json!("12345678.1234"))).await,
+        2
+    );
+    assert_eq!(n(one("c_numeric", "gte", json!(12345678.1234))).await, 2);
+    assert_eq!(n(one("c_numeric", "lt", json!(1))).await, 0);
+    assert_eq!(n(one("c_bool", "equals", json!(true))).await, 2);
+    assert_eq!(n(one("c_bool", "equals", json!("false"))).await, 0);
+    assert_eq!(n(one("c_date", "equals", json!("2026-02-28"))).await, 2);
+    assert_eq!(n(one("c_date", "gt", json!("2026-03-01"))).await, 0);
+    assert_eq!(
+        n(one(
+            "c_timestamptz",
+            "equals",
+            json!("2026-10-18T12:00:00Z")
+        ))
+        .await,
+        2
+    );
+    assert_eq!(
+        n(one(
+            "c_timestamptz",
+            "equals",
+            json!("2026-10-18 14:00:00+02")
+        ))
+        .await,
+        2
+    );
+    assert_eq!(
+        n(one(
+            "c_uuid",
+            "equals",
+            json!("6F1C2A8E-3B5D-4C7E-9F10-2A3B4C5D6E7F")
+        ))
+        .await,
+        2
+    );
+    assert_eq!(n(one("c_inet", "equals", json!("192.168.0.1/24"))).await, 2);
+    assert_eq!(n(one("c_inet", "contains", json!("168.0"))).await, 2);
+    assert_eq!(n(one("c_enum", "equals", json!("shipped"))).await, 2);
+    assert_eq!(n(one("c_enum", "not_equals", json!("pending"))).await, 2);
+    assert_eq!(n(one("c_int", "equals", json!(2147483647))).await, 1);
+    assert_eq!(
+        n(json!([{ "column": "c_enum", "op": "in", "values": ["paid", "shipped"] }])).await,
+        2
+    );
+    // A value the type cannot read is the caller's error, not every row.
+    let err = browse::handle(
+        &st,
+        serde_json::from_value(json!({
+            "db": "pg", "table": "type_zoo",
+            "filters": [{ "column": "c_uuid", "op": "equals", "value": "not-a-uuid" }]
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("uuid"), "{err}");
+    // So is a column the table does not have.
+    let err = browse::handle(
+        &st,
+        serde_json::from_value(json!({
+            "db": "pg", "table": "type_zoo",
+            "filters": [{ "column": "c_nope", "op": "equals", "value": 1 }]
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("no column `c_nope`"), "{err}");
+}
+
+async fn columns_of(st: &AppState, db: &str, table: &str) -> Vec<Value> {
+    let d = schema::describe_table(
+        st,
+        serde_json::from_value(json!({ "db": db, "table": table })).unwrap(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("{db}.{table}: {e}"));
+    d.columns
+        .iter()
+        .map(|c| serde_json::to_value(c).unwrap())
+        .collect()
+}
+
+fn flags(cols: &[Value], name: &str) -> (bool, bool) {
+    let c = cols
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no column {name}"));
+    (
+        c["auto_increment"].as_bool().unwrap(),
+        c["generated"].as_bool().unwrap(),
+    )
+}
+
+/// describeTable says which columns the database fills in (identity,
+/// serial, AUTO_INCREMENT, the sqlite rowid) and which are computed; and
+/// listTables carries the planner's row estimate where the catalog has one.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_catalog_marks_filled_in_and_generated_columns() {
+    let _dir = env_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let lite = tmp.path().join("gen.db").display().to_string();
+    let st = state(json!({
+        "pg": pg_scratch("shop", PG_PW),
+        "my": mysql_scratch("shop", PG_PW),
+        "lite": { "driver": "sqlite", "database": lite, "pool": { "max": 1 } },
+    }))
+    .await;
+    exec(&st, "pg", "DROP TABLE IF EXISTS iii_wcore_gen").await;
+    exec(
+        &st,
+        "pg",
+        "CREATE TABLE iii_wcore_gen (id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, \
+         s serial, n int, total numeric GENERATED ALWAYS AS (n * 2) STORED)",
+    )
+    .await;
+    exec(
+        &st,
+        "pg",
+        "INSERT INTO iii_wcore_gen (n) SELECT g FROM generate_series(1, 50) g",
+    )
+    .await;
+    exec(&st, "pg", "ANALYZE iii_wcore_gen").await;
+    exec(&st, "my", "DROP TABLE IF EXISTS iii_wcore_gen").await;
+    exec(
+        &st,
+        "my",
+        "CREATE TABLE iii_wcore_gen (id bigint AUTO_INCREMENT PRIMARY KEY, n int, \
+         at datetime DEFAULT CURRENT_TIMESTAMP, \
+         v int GENERATED ALWAYS AS (n * 2) VIRTUAL, st int AS (n + 1) STORED)",
+    )
+    .await;
+    exec(
+        &st,
+        "my",
+        "INSERT INTO iii_wcore_gen (n) VALUES (1), (2), (3)",
+    )
+    .await;
+    exec(&st, "my", "ANALYZE TABLE iii_wcore_gen").await;
+    exec(
+        &st,
+        "lite",
+        "CREATE TABLE gen (id INTEGER PRIMARY KEY, n int, v int GENERATED ALWAYS AS (n * 2), \
+         st int AS (n + 1) STORED)",
+    )
+    .await;
+    exec(
+        &st,
+        "lite",
+        "CREATE TABLE pair (a INTEGER, b INTEGER, PRIMARY KEY (a, b))",
+    )
+    .await;
+    exec(
+        &st,
+        "lite",
+        "CREATE TABLE norowid (id INTEGER PRIMARY KEY, x) WITHOUT ROWID",
+    )
+    .await;
+    exec(&st, "lite", "CREATE TABLE big (id BIGINT PRIMARY KEY)").await;
+
+    let c = columns_of(&st, "pg", "iii_wcore_gen").await;
+    assert_eq!(flags(&c, "id"), (true, false));
+    assert_eq!(flags(&c, "s"), (true, false));
+    assert_eq!(flags(&c, "n"), (false, false));
+    assert_eq!(flags(&c, "total"), (false, true));
+    let c = columns_of(&st, "my", "iii_wcore_gen").await;
+    assert_eq!(flags(&c, "id"), (true, false));
+    assert_eq!(flags(&c, "n"), (false, false));
+    // `DEFAULT CURRENT_TIMESTAMP` is DEFAULT_GENERATED in mysql 8: not generated.
+    assert_eq!(flags(&c, "at"), (false, false));
+    assert_eq!(flags(&c, "v"), (false, true));
+    assert_eq!(flags(&c, "st"), (false, true));
+    let c = columns_of(&st, "lite", "gen").await;
+    assert_eq!(flags(&c, "id"), (true, false));
+    assert_eq!(flags(&c, "n"), (false, false));
+    assert_eq!(flags(&c, "v"), (false, true));
+    assert_eq!(flags(&c, "st"), (false, true));
+    for (table, col) in [("pair", "a"), ("norowid", "id"), ("big", "id")] {
+        assert_eq!(
+            flags(&columns_of(&st, "lite", table).await, col),
+            (false, false),
+            "{table}"
+        );
+    }
+
+    let estimate = |db: &'static str| {
+        let st = st.clone();
+        async move {
+            let r = schema::list_tables(&st, serde_json::from_value(json!({ "db": db })).unwrap())
+                .await
+                .unwrap();
+            let t = r
+                .tables
+                .iter()
+                .find(|t| t.name == "iii_wcore_gen" || t.name == "gen")
+                .map(|t| serde_json::to_value(t).unwrap())
+                .unwrap();
+            t.get("row_count_estimate").cloned()
+        }
+    };
+    assert_eq!(estimate("pg").await, Some(json!(50)));
+    assert_eq!(estimate("my").await, Some(json!(3)));
+    assert_eq!(estimate("lite").await, None, "sqlite has no cheap estimate");
+
+    exec(&st, "pg", "DROP TABLE iii_wcore_gen").await;
+    exec(&st, "my", "DROP TABLE iii_wcore_gen").await;
 }

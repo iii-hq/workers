@@ -139,6 +139,12 @@ export const CATALOG_CASES: TestCase[] = [
         expectEqual(desc.columns.length, 3, 'three columns')
         const id = desc.columns.find((c: any) => c.name === 'id')
         expect(id !== undefined && id.primary_key === true, 'id is the primary key')
+        expect(id.auto_increment === true, `the database fills id in: ${JSON.stringify(id)}`)
+        const label = desc.columns.find((c: any) => c.name === 'label')
+        expect(
+          label.auto_increment === false && label.generated === false,
+          `label is a plain column: ${JSON.stringify(label)}`,
+        )
         expect(
           desc.columns.every((c: any) => typeof c.type === 'string' && c.type.length > 0),
           `every column reports a type: ${JSON.stringify(desc.columns)}`,
@@ -213,6 +219,20 @@ export const CATALOG_CASES: TestCase[] = [
         })
         expectEqual(filtered.total, 1, 'total honours filters')
         expectEqual(Number(filtered.rows[0].qty), 20, 'the filtered row')
+
+        // Values compare as the column's type (a numeric string on an INT
+        // column, a pattern over an INT's text form, a set of labels).
+        const count = async (filters: unknown[]) =>
+          (await call('database::browseTable', { db: driver, table: TABLE, page_size: 1, filters })).total
+        expectEqual(await count([{ column: 'qty', op: 'gt', value: '15' }]), 2, 'qty > "15" is numeric')
+        expectEqual(
+          await count([{ column: 'qty', op: 'between', value: 10, value2: '20' }]),
+          2,
+          'between takes numbers and numeric strings',
+        )
+        expectEqual(await count([{ column: 'qty', op: 'contains', value: '0' }]), 3, 'pattern over an INT')
+        expectEqual(await count([{ column: 'label', op: 'in', values: ['a', 'c'] }]), 2, 'in over text')
+        expectEqual(await count([{ column: 'label', op: 'starts_with', value: 'b' }]), 1, 'starts_with')
 
         const stats = await call('database::columnStats', {
           db: driver,
