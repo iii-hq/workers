@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import analyze
+import cache_probe
 import common
 import extract
 import label
@@ -568,3 +569,107 @@ class AnalyzeTest(unittest.TestCase):
         self.assertNotIn("No labels for", text)
         self.assertIn("- G1 FAIL: no judge arm passes. ", text)
         self.assertIn("| always-medium | top | 2 | 1 | 0.0% | 0.0% | 100.0% |", text)
+
+
+class CacheProbeTest(unittest.TestCase):
+    def test_first_step_usage_pick(self):
+        a, b, c = ({"input": 10, "output": 5, "cache_read": n, "cache_write": 0} for n in (1000, 2000, 3000))
+        result = {"role": "function_result", "content": [{"type": "text", "text": "42"}], "timestamp": 20}
+        lines = [
+            meta("s1", "e2e"),
+            user("u1", "do X", 0),
+            *assistant("a1", 10, usage=a),
+            entry("append", "f1", 0, 20, result),
+            *assistant("a2", 30, "done", b),
+            user("u2", "do Y", 40),
+            *assistant("a3", 50, "ok", c),
+        ]
+        self.assertEqual(cache_probe.first_step_usage(lines, 1), c)
+        self.assertEqual(cache_probe.first_step_usage(lines, 0), a)
+        self.assertEqual(cache_probe.first_step_usage(lines[:-1], 1), {})  # a3 is still empty: the caller re-reads
+        self.assertEqual(cache_probe.first_step_usage(lines, 2), {})  # no third turn yet
+
+    def test_retention_ratio(self):
+        self.assertEqual(cache_probe.retention(20000, 19000), 0.95)
+        self.assertEqual(cache_probe.retention(0, 5), 0.0)
+
+    def test_dry_run_then_a_row_per_pair(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out, data = Path(tmp.name) / "out", Path(tmp.name) / "data"
+        (data / "session-manager").mkdir(parents=True)
+        reads = {1: 0, 2: 20_000, 3: 19_000, 4: 19_600}  # the cache read of each turn's first step
+        sends, turns, polls = [], {}, {}
+
+        def stack(fn: str, payload: dict, timeout_s: float) -> dict:
+            """A send writes its turn to the session file; status shows the turn before, then running, then the end."""
+            if fn == "harness::send":
+                if payload["model"] == "m-down":
+                    raise common.TriggerError("transport", "no engine")
+                sends.append(payload)
+                sid = payload.get("session_id") or f"s{len(turns)}"
+                n = turns[sid] = turns.get(sid, 0) + 1
+                polls[sid] = 0
+                written = [user(f"u{n}", "msg", n), *assistant(f"a{n}", n, "ok", {"cache_read": reads[n]})]
+                with open(data / "session-manager" / f"{sid}.jsonl", "a", encoding="utf-8") as f:
+                    f.writelines(line(d) + "\n" for d in written)
+                return {"accepted": True, "session_id": sid, "turn_id": f"t{n}"}
+            sid = payload["session_id"]
+            n = turns[sid]
+            polls[sid] += 1
+            if polls[sid] == 1:  # the turn before is still the latest
+                return {"session_id": sid, "turn_id": f"t{n - 1}", "status": "completed"}
+            if polls[sid] == 2:
+                return {"session_id": sid, "turn_id": f"t{n}", "status": "running"}
+            if sends[-1]["model"] == "m-fail" and n == 3:
+                return {"session_id": sid, "turn_id": "t3", "status": "failed", "result_error": "overloaded"}
+            return {"session_id": sid, "turn_id": f"t{n}", "status": "completed"}
+
+        def probe_main(*args: str) -> list[str]:
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                cache_probe.main([str(out), "--data", str(data), *args])
+            return printed.getvalue().splitlines()
+
+        with mock.patch.object(common, "trigger", side_effect=stack) as call:
+            dry, dry_openai = probe_main(), probe_main("--with-openai")
+            self.assertEqual(call.call_count, 0)
+            models = {"m-ok": "anthropic", "m-fail": "anthropic", "m-down": "anthropic"}
+            with (
+                mock.patch.dict(cache_probe.MODELS, models, clear=True),
+                mock.patch.object(cache_probe.time, "sleep") as sleep,
+            ):
+                probe_main("--run")
+        self.assertTrue(dry[0].startswith("4 turns × 3 pairs × 3 models = 36 turns"), dry[0])
+        self.assertTrue(dry_openai[0].startswith("4 turns × 3 pairs × 4 models = 48 turns"), dry_openai[0])
+        self.assertEqual([p.split(":")[0] for p in dry_openai[1:]], ["anthropic", "openai"])  # never summed
+        history, *follow_ups = sends[:4]
+        text = history.pop("message")
+        self.assertTrue(text.startswith("Summarise each file below in three lines.\n\n### harness/src/judge.rs\n"))
+        self.assertIn("\n\n### harness/src/functions/send.rs\n", text)
+        self.assertLess(len(json.dumps(dict(history, message=text))), 131_072)  # one exec argument
+        want = {
+            "model": "m-ok",
+            "provider": "anthropic",
+            "session": {"kind": "e2e"},
+            "options": {"thinking_level": "medium"},
+        }
+        self.assertEqual(history, want)  # no functions: a plain chat loop
+        got = [(s["session_id"], s["options"]["thinking_level"], s["message"]) for s in follow_ups]
+        want = [
+            ("s0", "medium", "List the public functions in judge.rs above."),
+            ("s0", "low", "List the public functions in send.rs above."),
+            ("s0", "medium", "Which of those functions touch thinking_level?"),
+        ]
+        self.assertEqual(got, want)
+        self.assertEqual((len(sends), "session_id" in sends[4]), (3 * 4 + 3 * 3, False))  # m-fail stops at the flip
+        self.assertEqual({c.args for c in sleep.call_args_list}, {(2,)})  # status every 2 s; usage was there at once
+        rows = common.read_jsonl(out / "cache.jsonl")
+        keys = ["model", "pair", "control_read", "flip_read", "back_read", "retention", "retention_back", "invalid"]
+        self.assertEqual(list(rows[0]), keys)
+        valid = {"model": "m-ok", "control_read": 20_000, "flip_read": 19_000, "back_read": 19_600}
+        valid |= {"retention": 0.95, "retention_back": 0.98, "invalid": None}
+        failed = {"model": "m-fail", "control_read": 20_000, "flip_read": None, "back_read": None}
+        failed |= {"retention": None, "retention_back": None, "invalid": "turn 3: failed (overloaded)"}
+        down = dict(failed, model="m-down", control_read=None, invalid="turn 1: transport: no engine")
+        self.assertEqual(rows, [dict(row, pair=k) for row in (valid, failed, down) for k in range(3)])
