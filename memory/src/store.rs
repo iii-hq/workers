@@ -163,11 +163,36 @@ pub(crate) const STOPWORDS: &[&str] = &[
     "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
 ];
 
-/// Query tokens without stopwords (all kept when nothing else is left), with
+/// Bytes of a recall query kept: half from its head, half from its tail.
+const QUERY_MAX_BYTES: usize = 800;
+
+/// A recall query within [`QUERY_MAX_BYTES`]: a longer one (a pasted log, a
+/// sub-agent's brief) keeps its head and tail, where a request sits around
+/// a paste. Its middle would dilute BM25 over every memory sharing a word
+/// and can overrun or time out the query embed.
+// ponytail: identifiers mid-paste that match memories are dropped; measure
+// on a long-query eval before tuning the size.
+pub(crate) fn cap_query(query: &str) -> String {
+    if query.len() <= QUERY_MAX_BYTES {
+        return query.to_string();
+    }
+    let half = QUERY_MAX_BYTES / 2;
+    let head = crate::extract::clamp_char_boundary(query, half);
+    let mut tail = query.len() - half;
+    while !query.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}\n{}", &query[..head], &query[tail..])
+}
+
+/// Query tokens without stopwords (all kept when nothing else is left) or
+/// repeats (BM25 would count a pasted term once per occurrence), with
 /// first-person pronouns expanded to the `user` entity handle so identity
 /// questions reach memories phrased about the user.
 fn query_tokens(query: &str) -> Vec<String> {
     let mut tokens = crate::index::tokenize(query);
+    let mut seen = std::collections::HashSet::new();
+    tokens.retain(|t| seen.insert(t.clone()));
     let first_person = tokens
         .iter()
         .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
@@ -1057,6 +1082,24 @@ mod tests {
         );
         // An all-stopword query keeps its tokens rather than matching nothing.
         assert_eq!(query_tokens("what is it"), ["what", "is", "it"]);
+        // A pasted term counts once.
+        assert_eq!(
+            query_tokens("error: timeout\nerror: timeout\nwhy my error"),
+            ["error", "timeout", "user"]
+        );
+    }
+
+    #[test]
+    fn a_long_query_keeps_its_head_and_tail() {
+        assert_eq!(
+            cap_query("which db does ledgerly use"),
+            "which db does ledgerly use"
+        );
+        let paste = format!("why does this fail? {} end of the log é", "é".repeat(2_000));
+        let capped = cap_query(&paste);
+        assert!(capped.len() <= QUERY_MAX_BYTES + 1, "{}", capped.len());
+        assert!(capped.starts_with("why does this fail? "));
+        assert!(capped.ends_with(" end of the log é"));
     }
 
     #[tokio::test]

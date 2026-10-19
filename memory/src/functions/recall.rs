@@ -61,7 +61,8 @@ pub struct RecallResponse {
     pub retrieval: String,
 }
 
-pub async fn recall(deps: &Deps, req: RecallRequest) -> Result<RecallResponse, MemoryError> {
+pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallResponse, MemoryError> {
+    req.query = crate::store::cap_query(&req.query);
     let cfg = deps.config().await;
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;

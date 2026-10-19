@@ -330,16 +330,18 @@ pub(crate) async fn injection(
         rules_truncated,
         ..Injection::none()
     };
-    let query = query.filter(|q| !q.trim().is_empty());
+    let query = query
+        .filter(|q| !q.trim().is_empty())
+        .map(crate::store::cap_query);
     // On the turn's opening step, like recall: the message is persisted.
-    let reminder = query.and_then(|_| rules_reminder(&rules));
+    let reminder = query.as_ref().and_then(|_| rules_reminder(&rules));
     let bank = bank.filter(|_| cfg.inject_memories);
     let (Some(bank), Some(query)) = (bank, query) else {
         out.message = append_reminder(None, bank_name, reminder);
         return out;
     };
     // Fail-soft semantic signal; lexical-only when it misses.
-    let query_vec = crate::embed_client::query_vector(deps, query).await;
+    let query_vec = crate::embed_client::query_vector(deps, &query).await;
     out.retrieval = if query_vec.is_some() {
         "bm25-entity-semantic"
     } else {
@@ -348,7 +350,7 @@ pub(crate) async fn injection(
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
     let hits = bank
         .recall(
-            query,
+            &query,
             qv,
             query_model,
             cfg.recall_limit,
