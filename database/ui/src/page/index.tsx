@@ -305,10 +305,16 @@ export function DatabasePage({
       if (dbs.some((d) => d.name === targetDb)) setSelectedDb(targetDb)
       return
     }
-    if (!tables.some((t) => t.name === context.table)) return
+    // A connection without a table (a mention, say): showing it is all.
+    if (!context.table) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    const table = context.table
+    if (!tables.some((t) => t.name === table)) return
     appliedContextRef.current = panelContext.id
     setTrail([])
-    setSelectedTable(context.table)
+    setSelectedTable(table)
     setMode('data')
     if (narrow) setDrilled(true)
   }, [panelContext, activeDb, dbs, tables, narrow])
