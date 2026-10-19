@@ -44,6 +44,11 @@ pub struct ProviderRecord {
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<DiscoveryStatus>,
+    /// Its `provider::<id>::embed` has answered once, so callers may hold
+    /// its vectors; while it is down `router::embed` waits for it instead of
+    /// falling back (embed.rs). Older snapshots load as false.
+    #[serde(default)]
+    pub embeds: bool,
     // Leases deliberately do not survive restart; never persist resolved inputs.
     #[serde(skip)]
     pub discovery_lease: Option<(String, String)>,
@@ -109,6 +114,7 @@ fn build_record(
             .map(|e| e.generation.wrapping_add(1).max(1))
             .unwrap_or(1),
         discovery: existing.and_then(|e| e.discovery.clone()),
+        embeds: existing.is_some_and(|e| e.embeds),
         discovery_lease: None,
         declaration,
     }
@@ -319,6 +325,22 @@ impl RegistryStore {
         Ok(())
     }
 
+    /// Set `embeds` on a registered id the first time its `::embed`
+    /// answers: one durable write, never one per call (false when already
+    /// set or unregistered). Published before the write, so a state outage
+    /// costs one failed attempt; the next persist of any kind carries it.
+    pub async fn mark_embeds(&self, id: &str) -> bool {
+        let mut records = self.records.lock().await;
+        let Some(record) = records.get_mut(id).filter(|r| !r.embeds) else {
+            return false;
+        };
+        record.embeds = true;
+        if let Err(e) = self.persist(&records).await {
+            tracing::warn!(provider = id, error = %e, "persisting the embeds flag failed");
+        }
+        true
+    }
+
     /// Change availability only for the registration that originated an
     /// observed dispatch result. Availability is deliberately memory-only:
     /// persisted flags are stale after a restart and `load` always restores
@@ -422,6 +444,7 @@ mod tests {
         }))
         .expect("legacy registry snapshot remains readable");
         assert_eq!(record.generation, 0);
+        assert!(!record.embeds, "never seen embedding");
         let next = build_record(
             Some(&record),
             decl("anthropic"),
@@ -539,6 +562,23 @@ mod tests {
         let current = store.get("anthropic").await.expect("provider remains");
         assert_eq!(current.generation, second.record.generation);
         assert!(current.available);
+    }
+
+    #[tokio::test]
+    async fn the_embeds_flag_is_written_once_and_kept_across_reregistration() {
+        for persisted in [Ok(()), Err(Error::Timeout)] {
+            let store = store_with_persistence(persisted);
+            let record = build_record(None, decl("openai"), Some("w-1".into()), "tok");
+            store.records.lock().await.insert("openai".into(), record);
+
+            assert!(store.mark_embeds("openai").await, "first answer writes");
+            assert!(!store.mark_embeds("openai").await, "no write per call");
+            assert!(!store.mark_embeds("minilm").await, "unregistered: no-op");
+            let marked = store.get("openai").await.expect("provider remains");
+            assert_eq!(serde_json::to_value(&marked).unwrap()["embeds"], true);
+            let back = build_record(Some(&marked), decl("openai"), None, "tok");
+            assert!(back.embeds);
+        }
     }
 
     #[tokio::test]

@@ -6,12 +6,15 @@
 //! function-not-found, so a new embed-capable provider needs zero router
 //! changes to serve embeddings. An auto-pick also moves past a provider
 //! that is not configured for good (no api key, a missing secret), but
-//! never past a transient failure. When every registered provider is up
-//! and has no embed surface, an auto-pick tries embed-only providers last:
-//! a live `provider::<id>::embed` from a worker that never declared itself
-//! (it serves no chat models, so it has no place in the provider list).
-//! A registered provider that is down, restarting or not yet re-declared
-//! blocks that fallback: its vectors are the space callers hold.
+//! never past a transient failure. When every registered provider has no
+//! embed surface or is not configured for good, an auto-pick tries
+//! embed-only providers last: a live `provider::<id>::embed` from a worker
+//! that never declared itself (it serves no chat models, so it has no
+//! place in the provider list). A registered provider whose `embed` has
+//! answered before (its record's `embeds` flag) and is now down or
+//! restarting, or a declaring embedder not yet re-declared, blocks that
+//! fallback: its vectors are the space callers hold. A down provider never
+//! seen embedding does not block.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -144,8 +147,8 @@ pub fn make_embed(
                 }
             };
             let registered = candidates.clone();
-            let lister = iii.clone();
-            first_embedding(
+            let (lister, records) = (iii.clone(), registry.clone());
+            let resp = first_embedding(
                 candidates,
                 auto,
                 |provider| {
@@ -156,9 +159,22 @@ pub fn make_embed(
                     let (config, secrets) = (config.clone(), secrets.clone());
                     async move { unconfigured_for_good(&config, &provider, &secrets).await }
                 },
-                |not_found| async move { embed_only_ids(&lister, &registered, &not_found).await },
+                |not_found| async move {
+                    let embedders: Vec<String> = records
+                        .list()
+                        .await
+                        .into_iter()
+                        .filter(|r| r.embeds)
+                        .map(|r| r.declaration.id)
+                        .collect();
+                    embed_only_ids(&lister, &registered, &embedders, &not_found).await
+                },
             )
-            .await
+            .await?;
+            // Off the reply path: the first answer costs one state write.
+            let provider = resp.provider.clone();
+            tokio::spawn(async move { registry.mark_embeds(&provider).await });
+            Ok(resp)
         })
     }
 }
@@ -173,6 +189,7 @@ pub fn make_embed(
 async fn embed_only_ids(
     iii: &IIIClient,
     registered: &[String],
+    embedders: &[String],
     not_found: &[String],
 ) -> Result<Vec<String>, Error> {
     let listed = iii
@@ -190,7 +207,8 @@ async fn embed_only_ids(
             // The engine lists every namespace; `provider::<id>::embed` is
             // triggered in this worker's own.
             let namespace = iii.namespace().unwrap_or_else(|| "default".into());
-            fallback_ids(&value, &namespace, registered, not_found).map_err(Error::Handler)
+            fallback_ids(&value, &namespace, registered, embedders, not_found)
+                .map_err(Error::Handler)
         }
         Err(e) => {
             tracing::debug!(error = %e, "embed-only provider discovery failed");
@@ -228,27 +246,28 @@ fn provider_surfaces<'a>(listed: &'a Value, namespace: &str) -> Vec<(&'a str, &'
 /// try (a live `embed`, no `on_router_ready` since they never declare, not
 /// registered), or a `router/provider_unavailable` message when falling
 /// back could switch the caller's vector space. A registered id in
-/// `not_found` must be known to lack the surface: up (other live
-/// functions) with no live `embed`. Nothing live means down or restarting,
-/// a live `embed` means just back. A declaring embedder that has not
-/// registered yet (a router restart on an in-memory registry) blocks too.
-/// Callers retry later, as on any failure.
+/// `not_found` blocks when its `embed` is live again (just back) or when
+/// nothing of it is live (down or restarting) and it is one of `embedders`
+/// (its `embed` answered before). A down id never seen embedding counts as
+/// one without the surface: the registry never deletes a record, so a
+/// removed chat-only provider must not block for good. A declaring
+/// embedder that has not registered yet (a router restart on an in-memory
+/// registry) blocks too. Callers retry later, as on any failure.
 fn fallback_ids(
     listed: &Value,
     namespace: &str,
     registered: &[String],
+    embedders: &[String],
     not_found: &[String],
 ) -> Result<Vec<String>, String> {
     let surfaces = provider_surfaces(listed, namespace);
     let has = |id: &str, surface: &str| surfaces.contains(&(id, surface));
     let is_registered = |id: &str| registered.iter().any(|r| r == id);
-    // ponytail: the registry never deletes a record, so an uninstalled
-    // provider blocks this for good; mark records whose embed answered and
-    // block only on those if that bites.
+    let down = |id: &str| !surfaces.iter().any(|(live, _)| *live == id);
     let mut waiting: Vec<&str> = not_found
         .iter()
         .map(String::as_str)
-        .filter(|id| has(id, "embed") || !surfaces.iter().any(|(live, _)| live == id))
+        .filter(|id| has(id, "embed") || (embedders.iter().any(|e| e == id) && down(id)))
         .chain(
             surfaces
                 .iter()
@@ -584,32 +603,46 @@ mod tests {
         ]});
         let registered = ids(&["openai", "anthropic"]);
         assert_eq!(
-            fallback_ids(&listed, "default", &registered, &ids(&["anthropic"])),
+            fallback_ids(&listed, "default", &registered, &[], &ids(&["anthropic"])),
             Ok(ids(&["local", "minilm"])),
             "a live chat-only provider is known to have no embed surface"
         );
         assert_eq!(
-            fallback_ids(&json!({}), "default", &[], &[]),
+            fallback_ids(&json!({}), "default", &[], &[], &[]),
             Ok(Vec::new())
         );
     }
 
     #[test]
-    fn a_registered_provider_that_is_down_blocks_the_fallback() {
+    fn a_down_known_embedder_blocks_the_fallback() {
+        let openai = ids(&["openai"]);
         let listed = json!({ "functions": [row("provider::minilm::embed")] });
-        let err =
-            fallback_ids(&listed, "default", &ids(&["openai"]), &ids(&["openai"])).unwrap_err();
+        let err = fallback_ids(&listed, "default", &openai, &openai, &openai).unwrap_err();
         assert!(
             err.starts_with("router/provider_unavailable: waiting for openai"),
             "{err}"
         );
 
-        // Its embed is live again: retry it, not minilm.
+        // Its embed is live again: retry it, not minilm, flag or not.
         let back = json!({ "functions": [
             row("provider::openai::embed"),
             row("provider::minilm::embed"),
         ]});
-        assert!(fallback_ids(&back, "default", &ids(&["openai"]), &ids(&["openai"])).is_err());
+        assert!(fallback_ids(&back, "default", &openai, &[], &openai).is_err());
+    }
+
+    #[test]
+    fn a_stale_chat_only_record_does_not_block_the_fallback() {
+        // openai-codex was removed long ago; its record never goes away.
+        let listed = json!({ "functions": [
+            row("provider::anthropic::stream"),
+            row("provider::minilm::embed"),
+        ]});
+        let registered = ids(&["anthropic", "openai-codex"]);
+        assert_eq!(
+            fallback_ids(&listed, "default", &registered, &[], &registered),
+            Ok(ids(&["minilm"]))
+        );
     }
 
     #[test]
@@ -622,7 +655,7 @@ mod tests {
             row("provider::anthropic::on_router_ready"),
             row("provider::minilm::embed"),
         ]});
-        let err = fallback_ids(&listed, "default", &[], &[]).unwrap_err();
+        let err = fallback_ids(&listed, "default", &[], &[], &[]).unwrap_err();
         assert!(err.contains("waiting for openai"), "{err}");
 
         // A declaring provider with no embed surface does not block.
@@ -631,7 +664,7 @@ mod tests {
             row("provider::minilm::embed"),
         ]});
         assert_eq!(
-            fallback_ids(&chat_only, "default", &[], &[]),
+            fallback_ids(&chat_only, "default", &[], &[], &[]),
             Ok(ids(&["minilm"]))
         );
     }
@@ -643,11 +676,11 @@ mod tests {
             { "function_id": "provider::other::embed", "namespace": "my-ns" },
         ]});
         assert_eq!(
-            fallback_ids(&listed, "my-ns", &[], &[]),
+            fallback_ids(&listed, "my-ns", &[], &[], &[]),
             Ok(ids(&["other"]))
         );
         assert_eq!(
-            fallback_ids(&listed, "default", &[], &[]),
+            fallback_ids(&listed, "default", &[], &[], &[]),
             Ok(ids(&["minilm"]))
         );
     }

@@ -105,11 +105,17 @@ never calls `router::provider::register`, so it stays out of
 MiniLM (`minilm`) is one. A `router::embed` call that names no provider tries
 these embed-only surfaces last, alphabetically, found through
 `engine::functions::list` in the router's namespace, and only when every
-registered provider is up and has no embed surface (Anthropic only, say). A
-registered provider with no live function (down or restarting), or a declaring
-embedder that has not registered yet, blocks the fallback with
-`router/provider_unavailable`: another embedder would put the caller's vectors
-in another space, so the caller retries later.
+registered provider either has no embed surface (Anthropic only, say) or is
+not configured for good (provider-openai with no API key). Configuring that
+provider later moves callers to its vector space: memory re-embeds into the
+model the reply reports. Three cases block the fallback with
+`router/provider_unavailable`, since another embedder would put the caller's
+vectors in another space, so the caller retries later: a registered provider
+whose `embed` has answered before (its registry record keeps an `embeds` flag)
+has no live function (down or restarting); a registered provider's `embed` is
+live again; a declaring embedder has not registered yet. A down provider never
+seen embedding does not block: the registry keeps every record, so a removed
+chat-only provider must not hold the fallback for good.
 
 `router::chat` accepts an optional structured prompt next to the flat
 `system_prompt`: `system_sections` (ordered `{text, cache_boundary}` blocks)
