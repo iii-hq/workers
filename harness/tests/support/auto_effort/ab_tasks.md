@@ -6,7 +6,7 @@ check or stop rule changed after that call makes a new A/B with a new preregistr
 
 ## What it measures
 
-- `ratios.json`: per model, the mean `cost_units` of a run at `low` and at `high`, each over the mean at `medium`.
+- `ratios.json`: per model, the mean `cost_units` of a run at `low`, `high` and `xhigh`, each over the mean at `medium`.
   `analyze.py` scales corpus turns by these ratios for G3's modeled cost.
 - `ab.jsonl`: one row per run, `{model, level, task, run, pass, cost_units, steps, error}`.
   - G3's quality clause compares the pass rate at the level the G1-winning judge picks for each (model, task) with the
@@ -24,7 +24,7 @@ models are never added together.
 | Task | Kind | Prompt, sent verbatim | Pass when |
 |---|---|---|---|
 | a | easy lookup | What does `confident_choice` in harness/src/reconcile.rs return when the choice is `none`? | the answer contains `None` |
-| b | easy edit | Rename `units` to `cost_units_of` in harness/tests/support/auto_effort/common.py and update every caller. | `common.py` holds no `def units(`, and TEST_CMD passes in the worktree |
+| b | easy edit | Rename `units` to `cost_units_of` in harness/tests/support/auto_effort/common.py and update every caller. | `common.py` holds no `def units(`, and TEST_CMD passes in the tree |
 | c | hard fix | test_p95 in harness/tests/support/auto_effort fails; find and fix the bug without changing the test. | TEST_CMD with `-k test_p95` passes, and `test_auto_effort.py` is unchanged |
 | d | hard investigation | Why does a harness send that omits thinking_level keep the previous level? Cite file:line. | the answer contains `inherit_prior_reasoning` and `reasoning_fields_omitted` |
 
@@ -32,38 +32,47 @@ models are never added together.
 - TEST_CMD is this package's unit test command. Task b runs it instead of a cargo build, so a run needs no cold build.
 - Before task c, `ab.plant` does two things (R6):
   - It moves `analyze.p95` one rank down: `- 1]` becomes `- 2]` in the nearest-rank index.
-  - It writes the sha256 of `test_auto_effort.py` to `<worktree>.test-sha256`. That file sits beside the worktree,
+  - It writes the sha256 of `test_auto_effort.py` to `<tree>.test-sha256`. That file sits beside the tree,
     outside the session's filesystem scope.
 - Task c's check runs only `test_p95` (R6). On this package, as `test_plant_then_check_fix` runs it, the full suite would
   run that test, and so the check, again.
 
 ## Run setup
 
-- There are 72 runs: 2 models × 3 levels × 4 tasks × 3 runs.
-  - They run in this order: model, then task, then run, then level. Drift over the hours of a run then hits the three
+- There are 96 runs: 2 models × 4 levels × 4 tasks × 3 runs (R13).
+  - They run in this order: model, then task, then run, then level. Drift over the hours of a run then hits the four
     levels alike.
-  - The pilot's three runs are the first three of that order, so a `--run` after the pilot adds the other 69.
+  - The pilot's four runs are claude-opus-5-5 at `medium`, run 0 of each task. They belong to the full run, so a
+    `--run` after the pilot adds the other 92.
 - Each run has four steps:
-  1. `git worktree add --detach out_dir/worktrees/ab-<model>-<level>-<task>-<run> <sha>`, then `plant`. The sha is
-     resolved once, so every run checks out the same commit.
+  1. Build the run's tree (`ab.build_tree`, R15) in a new directory,
+     `out_dir/trees/ab-<model>-<level>-<task>-<run>-<random>`: `git -C <repo> archive --format=tar <sha>`, extracted
+     with `tarfile` (`filter="data"`), then `git init -q`, `git add -A` and one commit, `base`, by `ab <ab@localhost>`.
+     Then `plant`. The sha is resolved once, so every tree holds the same files.
   2. One `harness::send` on a new `e2e` session, which keeps it out of the user corpus:
-     `{"message", "model", "provider": "anthropic", "session": {"kind": "e2e"}, "options": {"thinking_level", "functions": {"allow": […]}, "metadata": {"fs_scope": {"root": <worktree>}}}}`.
+     `{"message", "model", "provider": "anthropic", "session": {"kind": "e2e"}, "options": {"thinking_level", "functions": {"allow": […]}, "metadata": {"fs_scope": {"root": <tree>}}}}`.
   3. Wait as the cache probe does.
      - Poll `harness::status` every 2 s until the turn ends, for at most 1,800 s. A status call that fails is retried;
        the third failure in a row ends the wait with that error.
      - Then re-read the session file under `--data` until the last assistant message carries its usage, for at most
        10 s.
      - A turn that did not complete, or whose wait a Ctrl-C interrupted, gets `harness::stop`, so it stops spending.
-  4. Run `check`, write the row to `ab.jsonl`, and remove the worktree with `git worktree remove --force`.
+  4. Run `check`, write the row to `ab.jsonl`, and remove the tree with `shutil.rmtree`. A removal that fails is
+     printed to stderr and the run goes on: every run's tree has a name of its own, a retry's too, so a leftover never
+     blocks a later run.
+- Isolation (R15): each run's git dir is its tree's own `.git`, so no other branch or stash is reachable from the
+  session, and no hook of the user's repository runs. A linked worktree would share the user's `.git` (stash, refs,
+  hooks) and reach every branch, the checks included.
 - Some runs carry an `error`: the turn failed, was cancelled or was stopped, or a send or status call failed.
-  - Such a run is no cost sample for `ratios`.
+  - Such a run is still a cost sample for `ratios` when it spent (`cost_units > 0`): timeouts cluster at high effort,
+    so leaving them out would bias the ratios. One that spent nothing is not (R17).
   - The next `--run` runs it again and replaces its row.
   - Rows without an error are never re-run. Delete `ab.jsonl` to start over.
 - The stack is the template stack (`iii trigger -n my-project`) with `harness`, `llm-router`, `provider-anthropic`,
   `session-manager` and `ide`.
-  - Its harness config sets `filesystem_boundary: workspace`, so `coder::*` calls stay inside the worktree.
-  - Its ide config (`exec_confinement: landlock`) lets `shell::exec` write only to the worktree, its git dir, `/tmp`
-    and tool caches.
+  - Its harness config sets `filesystem_boundary: workspace`, so `coder::*` calls stay inside the tree.
+  - Its ide config (`exec_confinement: landlock`) lets `shell::exec` write only to the tree, whose git dir is inside
+    it, `/tmp` and tool caches.
 - `--sha` is the parent of the commit that adds this file: `38193a004` on `feat/auto-effort-phase0`.
   - Its tree holds this package as Tasks 1-5 left it, with the four task targets.
   - It does not hold `ab.py`, this file or the A/B tests. They spell out every check, so they would hand a session its
@@ -115,41 +124,44 @@ The identity stays the harness's built-in prompt, with the default `agent_trigge
   miss means the saving clause cannot pass, so Phase 1 is not built for savings.
 - G3 gain clause: at least 2 more passes than at medium on the 12 hard runs (tasks c and d × 2 models × 3 runs), at the
   picked levels, for a modeled cost of at most +10%. A miss means there is no quality case for Phase 1.
-- Setup sanity: the pilot (opus, task a, one run per level) passes at least 1 of 3, with no errors. A miss stops the A/B
-  (see Stop rules).
+- Setup sanity: the pilot (opus at `medium`, each task once) runs with no errors and passes tasks a and b. A miss stops
+  the A/B (see Stop rules).
 
 The G3 thresholds are `analyze.py`'s preregistered constants (`G3_SAVING`, `G3_COST_CAP` and `G3_HARD_GAIN`). This A/B
 produces their inputs.
 
 ## Arms
 
-There are six arms, one per model and `thinking_level`. Every arm uses provider `anthropic`, the send options above,
+There are eight arms, one per model and `thinking_level`. Every arm uses provider `anthropic`, the send options above,
 and 12 runs (4 tasks × 3).
 
-- The cost estimate is about 100,000 units a run (`RUN_UNITS`).
+- The cost estimate is about 100,000 units a run (`RUN_UNITS`), at every level.
   - In the corpus, child tasks have a median of 25,000-33,000 units, and opus top-level turns a median of about 126,000
     units over 8 steps.
   - `gstack-eval-plan arms --input-tokens 90000 --output-tokens 2000` priced it at the catalog's input and output prices
     (`provider-anthropic/src/curated.rs`).
-- `xhigh` is not measured, so G3 cannot price a corpus turn that the judge sends to `xhigh`.
+- `xhigh` is measured (R13), so G3 can price a pick or a corpus row at `xhigh`. Its runs likely cost more than the
+  estimate, which the pilot, at `medium` only, does not measure.
 
 | Arm | Model | thinking_level | Runs | Cost per run |
 |---|---|---|--:|--:|
 | opus-low | claude-opus-5-5 | low | 12 | about $0.40 |
 | opus-medium | claude-opus-5-5 | medium | 12 | about $0.40 |
 | opus-high | claude-opus-5-5 | high | 12 | about $0.40 |
+| opus-xhigh | claude-opus-5-5 | xhigh | 12 | about $0.40 |
 | sonnet-low | claude-sonnet-5-5 | low | 12 | about $0.20 |
 | sonnet-medium | claude-sonnet-5-5 | medium | 12 | about $0.20 |
 | sonnet-high | claude-sonnet-5-5 | high | 12 | about $0.20 |
+| sonnet-xhigh | claude-sonnet-5-5 | xhigh | 12 | about $0.20 |
 
 ### Spend estimate
 
 | Step | claude-opus-5-5 | claude-sonnet-5-5 |
 |---|--:|--:|
-| Pilot (`--pilot --run`) | 3 runs, about 300,000 units, about $1.20 | none |
-| Full run (`--run`, after the pilot) | 33 runs, about 3,300,000 units, about $13.20 | 36 runs, about 3,600,000 units, about $7.20 |
+| Pilot (`--pilot --run`) | 4 runs, about 400,000 units, about $1.60 | none |
+| Full run (`--run`, after the pilot) | 44 runs, about 4,400,000 units, about $17.60 | 48 runs, about 4,800,000 units, about $9.60 |
 
-- All 72 runs cost about $21.60.
+- All 96 runs cost about $28.80: the earlier estimate's rate, $21.60 for 72 runs or $0.30 a run, scaled to 96.
 - The estimate prices every unit at the input price. That overstates opus's cache reads, which cost 0.05 of input
   while the unit weighs them at 0.1.
 - The pilot's measured cost replaces this guess.
@@ -174,13 +186,14 @@ A decoy that passes proves that the check accepts an outcome that did not do the
 
 - Before the pilot:
   - TEST_CMD passes at `--sha`, and at the commit that runs `ab.py`.
-  - The dry run prints `3 runs` with `--pilot` and `72 runs` without it.
+  - The dry run prints `4 runs` with `--pilot` and `96 runs` without it.
 - The pilot is paid and needs the user's OK. It runs
-  `python3 -I ab.py <out_dir> --sha <sha> --data <stack data dir> --pilot --run`.
-  - If any pilot run has an error, stop, fix the setup (the stack, `--data` or the functions), and run the pilot again.
-  - The plan's rule: an arm at 0/3 on an easy task stops. The pilot holds one run per level, so its three runs are read
-    together. If none of them passes task a, the opus arm stops. The full run stops too, because every arm shares the
-    setup.
+  `python3 -I ab.py <out_dir> --sha <sha> --data <stack data dir> --pilot --run`. Its four runs, opus at `medium` on
+  tasks a-d, go through the read, edit and exec paths once each (R13).
+  - If any pilot run has an `error`, the A/B stops until the plumbing (the stack, `--data`, the functions or the tree)
+    is fixed. Then run the pilot again.
+  - If the pilot fails task a or task b, the easy tasks at `medium`, the A/B stops for investigation. Every arm shares
+    the setup, so the full run waits too. A fail on c or d, the hard tasks, does not stop it.
   - If the pilot's mean cost is over 200,000 units a run (twice the estimate), re-estimate the full run and ask again.
   - Otherwise, show the user the spend table and wait for approval before the full run.
 - The full run is paid and needs the user's OK. It is the same command without `--pilot`.
@@ -198,4 +211,4 @@ A decoy that passes proves that the check accepts an outcome that did not do the
 |---|---|---|
 | The effortless holdout (20 cases in `cases/effortless-judge-cases.json`) | judged by the Task 3 arms for G1 | `ab.py` never reads it, and no A/B prompt comes from it |
 | The corpus prompts (`prompts.jsonl`) | labelled and judged in Tasks 2 and 3 | `ab.py` never reads them |
-| The four A/B prompts and their checks | none: they were written for this A/B | judged by the Task 3 arms through `ab_prompts.jsonl` (R4), and never labelled; the runs check out a commit without them |
+| The four A/B prompts and their checks | none: they were written for this A/B | judged by the Task 3 arms through `ab_prompts.jsonl` (R4), and never labelled; the runs' trees hold a commit without them |

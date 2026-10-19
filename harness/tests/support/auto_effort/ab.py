@@ -1,10 +1,10 @@
 """Level cost A/B: python3 -I ab.py <out_dir> --sha <commit> [--data <stack data dir>] [--pilot] [--run]
 
 ab_tasks.md preregisters the tasks, checks, arms and stop rules. --sha must predate this file, whose checks would hand a
-session its answers. A run checks out --sha in a fresh git worktree under out_dir/worktrees, plants task c's bug, sends
-the task on a new e2e session scoped to that worktree, waits for the turn, checks it and removes the worktree. Its
-answer is the session's last assistant text and its cost the summed units of all its assistant messages, read from the
-session file under --data. --pilot runs task a on claude-opus-5-5 once per level. Every call writes
+session its answers. A run builds a standalone repo of --sha's files under out_dir/trees (R15), plants task c's bug,
+sends the task on a new e2e session scoped to that tree, waits for the turn, checks it and removes the tree. Its answer
+is the session's last assistant text and its cost the summed units of all its assistant messages, read from the session
+file under --data. --pilot runs each task once on claude-opus-5-5 at medium (R13). Every call writes
 out_dir/ab_prompts.jsonl, the A/B prompts for judge.py --rows (R4); without --run it prints the run count and an
 estimated cost. A --run rewrites ab.jsonl after each run and ratios.json at the end. It skips the runs ab.jsonl holds
 without an error, so a --run after --pilot adds the rest and an errored run goes again; 3 errored runs in a row stop it.
@@ -13,10 +13,14 @@ without an error, so a --run after --pilot adds the rest and an errored run goes
 import argparse
 import contextlib
 import hashlib
+import io
 import json
+import shutil
 import statistics
 import subprocess
 import sys
+import tarfile
+import tempfile
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
@@ -29,7 +33,7 @@ import extract  # noqa: E402
 REPO = cache_probe.REPO
 PKG = "harness/tests/support/auto_effort"
 MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
-LEVELS = common.LEVELS[:3]  # xhigh is not measured
+LEVELS = common.LEVELS  # R13: xhigh too, so G3 can price a pick or a corpus row at xhigh
 RUNS = 3
 TASKS = {
     "a": "What does `confident_choice` in harness/src/reconcile.rs return when the choice is `none`?",
@@ -56,11 +60,12 @@ RUN_UNITS = 100_000  # ponytail: between the corpus's child tasks and opus top t
 def ratios(rows: list[dict]) -> dict[str, dict[str, float]]:
     """Mean cost_units per (model, level), passing and failing runs alike, over the model's medium mean.
 
-    A run with an error is no cost sample: its turn failed, was stopped or never started.
+    A run with an error counts when it spent (R17): timeouts cluster at high effort, so leaving them out would bias the
+    ratios. One that spent nothing, a turn that never started, is no cost sample.
     """
     costs = defaultdict(list)
     for row in rows:
-        if not row.get("error"):
+        if not row.get("error") or row["cost_units"] > 0:
             costs[row["model"], row["level"]].append(row["cost_units"])
     means = {key: statistics.fmean(cost) for key, cost in costs.items()}
     out = {}
@@ -96,7 +101,7 @@ def plant(task: str, repo: Path) -> None:
 
 
 def check(task: str, answer: str, repo: Path) -> bool:
-    """Whether a run passed its task's check in ab_tasks.md: a and d read the answer, b and c the worktree."""
+    """Whether a run passed its task's check in ab_tasks.md: a and d read the answer, b and c the tree."""
     pkg = repo / PKG
     if task == "a":
         return "None" in answer
@@ -111,6 +116,18 @@ def check(task: str, answer: str, repo: Path) -> bool:
 
 def git(*args: str) -> str:
     return subprocess.run(["git", "-C", str(REPO), *args], check=True, capture_output=True, encoding="utf-8").stdout
+
+
+def build_tree(repo: Path, sha: str, tree: Path) -> None:
+    """A standalone repo at tree holding sha's files in one commit (R15). Its git dir is its own .git, so a session in
+    it reaches no other branch, stash or hook of repo."""
+    archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", sha], check=True, capture_output=True)
+    # ponytail: the whole archive (140 MB at 38193a004) sits in memory; stream it through Popen and mode "r|" if needed
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+        tar.extractall(tree, filter="data")
+    commit = ("-c", "user.name=ab", "-c", "user.email=ab@localhost", "commit", "-qm", "base")
+    for args in (("init", "-q"), ("add", "-A"), commit):
+        subprocess.run(["git", "-C", str(tree), *args], check=True, capture_output=True)
 
 
 def replies(path: Path) -> list[dict]:
@@ -152,11 +169,12 @@ def converse(payload: dict, sessions: Path) -> tuple[list[dict], str | None]:
 
 
 def measure(item: tuple[str, str, str, int], sha: str, trees: Path, sessions: Path) -> dict:
-    """One ab.jsonl row: the task in a fresh worktree at sha, on a new session scoped to it."""
+    """One ab.jsonl row: the task in a standalone repo of sha's files, on a new session scoped to it."""
     model, level, task, run = item
-    tree = trees / f"ab-{model}-{level}-{task}-{run}"
-    git("worktree", "add", "--detach", str(tree), sha)
+    # a name of its own for every run, a retry too, so a tree a failed removal left behind never blocks a later one
+    tree = Path(tempfile.mkdtemp(prefix=f"ab-{model}-{level}-{task}-{run}-", dir=trees))
     try:
+        build_tree(REPO, sha, tree)
         plant(task, tree)
         options = {
             "thinking_level": level,
@@ -173,8 +191,10 @@ def measure(item: tuple[str, str, str, int], sha: str, trees: Path, sessions: Pa
         steps, error = converse(payload, sessions)
         passed = check(task, extract.text(steps[-1]) if steps else "", tree)
     finally:
-        with contextlib.suppress(subprocess.CalledProcessError):  # a leftover worktree must not cost the paid row
-            git("worktree", "remove", "--force", str(tree))
+        try:
+            shutil.rmtree(tree)
+        except OSError as err:  # a leftover tree costs disk only, never the paid row
+            print(f"could not remove {tree}: {err}", file=sys.stderr)
         Path(f"{tree}.test-sha256").unlink(missing_ok=True)
     cost = sum((common.units(m.get("usage")) for m in steps), 0.0)
     return {
@@ -196,9 +216,9 @@ def run_key(row: dict) -> tuple[str, str, str, int]:
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="ab.py")
     parser.add_argument("out_dir", type=Path)
-    parser.add_argument("--sha", required=True, help="the commit every run's worktree checks out")
+    parser.add_argument("--sha", required=True, help="the commit whose files every run's tree holds")
     parser.add_argument("--data", type=Path, help="the stack's data dir, which holds session-manager/; --run needs it")
-    parser.add_argument("--pilot", action="store_true", help="only task a on " + MODELS[0] + ", once per level")
+    parser.add_argument("--pilot", action="store_true", help=f"only {MODELS[0]} at medium, each task once")
     parser.add_argument("--run", action="store_true", help="drive the stack and write ab.jsonl and ratios.json")
     args = parser.parse_args(argv)
     if args.run and not (args.data and (args.data / "session-manager").is_dir()):
@@ -216,8 +236,8 @@ def main(argv: list[str]) -> None:
         for task, text in TASKS.items()
     ]
     common.write_jsonl(args.out_dir / "ab_prompts.jsonl", prompts)
-    if args.pilot:
-        items = [(MODELS[0], level, "a", 0) for level in LEVELS]
+    if args.pilot:  # R13: the read, edit and exec paths once each, before anything is paid at other levels
+        items = [(MODELS[0], "medium", task, 0) for task in TASKS]
     else:  # levels innermost, so drift over the hours of a run hits them alike
         items = [(m, lv, t, r) for m in MODELS for t in TASKS for r in range(RUNS) for lv in LEVELS]
     path = args.out_dir / "ab.jsonl"
@@ -230,7 +250,7 @@ def main(argv: list[str]) -> None:
             n = sum(item[0] == model for item in todo)
             print(f"{model}: {n} runs, about {n * RUN_UNITS:,} units if a run costs about {RUN_UNITS:,}")
         return
-    trees = args.out_dir.resolve() / "worktrees"  # absolute: git runs in REPO and fs_scope wants a root
+    trees = args.out_dir.resolve() / "trees"  # absolute: fs_scope wants a root
     trees.mkdir(parents=True, exist_ok=True)
     errored = 0  # runs in a row with an error: a broken setup (a wrong --data, a down stack) must not pay for all
     for item in todo:

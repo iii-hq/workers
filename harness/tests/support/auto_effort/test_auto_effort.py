@@ -874,8 +874,15 @@ class AbTest(unittest.TestCase):
         runs = [("m", "low", 60, True), ("m", "low", 70, False), ("m", "low", 80, False)]  # failing runs count alike
         runs += [("m", "medium", 100, True), ("m", "high", 130, False), ("n", "low", 50, True)]  # n has no medium
         rows = [{"model": m, "level": lv, "cost_units": c, "pass": p, "error": None} for m, lv, c, p in runs]
-        rows.append({"model": "m", "level": "high", "cost_units": 900, "pass": False, "error": "failed (overloaded)"})
+        rows.append({"model": "m", "level": "high", "cost_units": 0, "pass": False, "error": "failed (overloaded)"})
         self.assertEqual(ab.ratios(rows), {"m": {"low": 0.7, "medium": 1.0, "high": 1.3}})
+
+    def test_ratios_count_spent_errors(self):
+        """R17: an errored run that spent is a cost sample, as timeouts cluster at high effort; one that spent nothing
+        is not."""
+        runs = [("medium", 100, None), ("high", 150, "not ended after 1800 s"), ("high", 0, "transport: no engine")]
+        rows = [{"model": "m", "level": lv, "cost_units": c, "pass": False, "error": e} for lv, c, e in runs]
+        self.assertEqual(ab.ratios(rows), {"m": {"medium": 1.0, "high": 1.5}})
 
     def test_check_lookup(self):
         self.assertTrue(ab.check("a", "it returns None", Path()))
@@ -903,6 +910,35 @@ class AbTest(unittest.TestCase):
         with open(pkg / "test_auto_effort.py", "a", encoding="utf-8") as f:
             f.write("\n")
         self.assertFalse(ab.check("c", "", repo))  # the tests pass, but the test file changed
+
+    def test_run_tree_is_standalone(self):
+        """R15: a run's tree is a repo of its own holding sha's files in one commit: no other branch is reachable."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo, tree = Path(tmp.name) / "repo", Path(tmp.name) / "tree"
+        repo.mkdir()
+
+        def git(where: Path, *args: str) -> str:
+            argv = ["git", "-C", str(where), "-c", "user.name=t", "-c", "user.email=t@localhost", *args]
+            return subprocess.run(argv, check=True, capture_output=True, encoding="utf-8").stdout
+
+        git(repo, "init", "-q")
+        (repo / "f.txt").write_text("first\n", encoding="utf-8")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "first")
+        first = git(repo, "rev-parse", "HEAD").strip()
+        (repo / "f.txt").write_text("second\n", encoding="utf-8")
+        git(repo, "commit", "-qam", "second")
+        git(repo, "checkout", "-qb", "other", first)
+        (repo / "f.txt").write_text("other\n", encoding="utf-8")
+        git(repo, "commit", "-qam", "other")
+        ab.build_tree(repo, first, tree)
+        self.assertEqual([p.name for p in tree.iterdir() if p.name != ".git"], ["f.txt"])
+        self.assertEqual((tree / "f.txt").read_text(encoding="utf-8"), "first\n")
+        common_dir = (tree / git(tree, "rev-parse", "--git-common-dir").strip()).resolve()
+        self.assertTrue(common_dir.is_relative_to(tree.resolve()), common_dir)
+        self.assertEqual(len(git(tree, "branch", "-a").splitlines()), 1)
+        self.assertEqual(len(git(tree, "log", "--oneline").splitlines()), 1)
 
     def test_a_turn_that_does_not_end_is_stopped(self):
         tmp = tempfile.TemporaryDirectory()
@@ -973,9 +1009,11 @@ class AbTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         out, sessions = Path(tmp.name) / "out", Path(tmp.name) / "data" / "session-manager"
         sessions.mkdir(parents=True)
-        inputs = {"low": 700, "medium": 1000, "high": 1300}
-        answers = {"low": "It returns the key.", "medium": "It returns None.", "high": "It returns None."}
-        sends, stops, calls, failing = [], [], [], {"high"}  # high's first turn fails; its retry completes
+        tasks = {text: task for task, text in ab.TASKS.items()}
+        inputs = {"a": 700, "b": 1000, "c": 1300, "d": 1600}
+        answers = {"a": "It returns None.", "b": "Done.", "c": "Fixed."}
+        answers["d"] = "send.rs asks reasoning_fields_omitted, then calls inherit_prior_reasoning"
+        sends, stops, built, failing = [], [], [], {"d"}  # d's first turn fails after one step; its retry completes
 
         def stack(fn: str, payload: dict, timeout_s: float) -> dict:
             """A send writes its session file: one function step, then the answer unless the turn fails."""
@@ -984,42 +1022,42 @@ class AbTest(unittest.TestCase):
                 return {"stopping": False}
             if fn == "harness::send":
                 sends.append(payload)
-                sid, level = f"s{len(sends)}", payload["options"]["thinking_level"]
-                usage = {"input": inputs[level], "output": 0, "cache_read": 0, "cache_write": 0}
+                sid, task = f"s{len(sends)}", tasks[payload["message"]]
+                usage = {"input": inputs[task], "output": 0, "cache_read": 0, "cache_write": 0}
                 steps = assistant("a1", 10, usage=usage)
-                if level not in failing:
-                    steps += assistant("a2", 20, answers[level], usage)
+                if task not in failing:
+                    steps += assistant("a2", 20, answers[task], usage)
                 written = [meta(sid, "e2e"), user("u1", payload["message"], 0), *steps]
                 (sessions / f"{sid}.jsonl").write_text("".join(line(d) + "\n" for d in written), encoding="utf-8")
                 return {"accepted": True, "session_id": sid, "turn_id": "t1"}
             sid = payload["session_id"]
-            if sends[int(sid[1:]) - 1]["options"]["thinking_level"] in failing:
+            if tasks[sends[int(sid[1:]) - 1]["message"]] in failing:
                 failing.clear()
                 return {"session_id": sid, "turn_id": "t1", "status": "failed", "result_error": "overloaded"}
             return {"session_id": sid, "turn_id": "t1", "status": "completed"}
 
+        def build_tree(repo: Path, sha: str, tree: Path) -> None:
+            """The package stands in for sha's files; the runs before removed their trees."""
+            self.assertEqual((repo, sha, list(tree.parent.iterdir())), (ab.REPO, "f" * 40, [tree]))
+            built.append(tree)
+            shutil.copytree(HERE, tree / ab.PKG, ignore=shutil.ignore_patterns("__pycache__"))
+
         def git(*args: str) -> str:
-            calls.append(args)
             if args[0] == "rev-parse":
                 return "f" * 40 + "\n"
-            if args[0] == "cat-file":  # the sha predates ab.py
-                raise subprocess.CalledProcessError(128, args)
-            if args[1] == "add":
-                Path(args[3]).mkdir(parents=True)
-            else:
-                Path(args[3]).rmdir()
-            return ""
+            raise subprocess.CalledProcessError(128, args)  # cat-file: the sha predates ab.py
 
         def ab_main(*args: str) -> list[str]:
             printed = io.StringIO()
             with redirect_stdout(printed):
-                ab.main([os.path.relpath(out), "--sha", "HEAD", *args])  # the worktrees still get absolute paths
+                ab.main([os.path.relpath(out), "--sha", "HEAD", *args])  # the trees still get absolute paths
             return printed.getvalue().splitlines()
 
         data = ("--data", str(sessions.parent))
         with (
             mock.patch.object(common, "trigger", side_effect=stack) as call,
             mock.patch.object(ab, "git", side_effect=git),
+            mock.patch.object(ab, "build_tree", side_effect=build_tree),
         ):
             pilot, full = ab_main("--pilot"), ab_main()
             self.assertEqual(call.call_count, 0)
@@ -1028,7 +1066,6 @@ class AbTest(unittest.TestCase):
             self.assertEqual(call.call_count, 0)
             ab_main("--pilot", "--run", *data)
             first = common.read_jsonl(out / "ab.jsonl")
-            first_ratios = json.loads((out / "ratios.json").read_text(encoding="utf-8"))
             ab_main("--pilot", "--run", *data)  # only the run that errored goes again
             after = ab_main()
         with (
@@ -1038,18 +1075,17 @@ class AbTest(unittest.TestCase):
         ):
             ab.main([str(out), "--sha", "HEAD"])
         self.assertIn("holds ab.py", refused.getvalue())
-        self.assertEqual(pilot[0], f"3 runs at {'f' * 12}, 3 still to run")
-        self.assertEqual(full[0], f"72 runs at {'f' * 12}, 72 still to run")
+        self.assertEqual(pilot[0], f"4 runs at {'f' * 12}, 4 still to run")
+        self.assertEqual(full[0], f"96 runs at {'f' * 12}, 96 still to run")
         self.assertEqual([p.split(":")[0] for p in full[1:]], list(ab.MODELS))  # units per model, never summed
-        self.assertEqual(after[0], f"72 runs at {'f' * 12}, 69 still to run")  # the pilot's runs are the first three
-        self.assertEqual(after[1], "claude-opus-5-5: 33 runs, about 3,300,000 units if a run costs about 100,000")
-        trees = [out.resolve() / "worktrees" / f"ab-claude-opus-5-5-{level}-a-0" for level in ab.LEVELS]
+        self.assertEqual(after[0], f"96 runs at {'f' * 12}, 92 still to run")  # the pilot's four are among them
+        self.assertEqual(after[1], "claude-opus-5-5: 44 runs, about 4,400,000 units if a run costs about 100,000")
         allow = ["coder::read-file", "coder::search", "coder::tree", "coder::list-folder", "coder::update-file"]
         allow += ["shell::exec", "engine::functions::info"]  # file read and edit, the tests, and contracts
         options = {
-            "thinking_level": "low",
+            "thinking_level": "medium",
             "functions": {"allow": allow},
-            "metadata": {"fs_scope": {"root": str(trees[0])}},
+            "metadata": {"fs_scope": {"root": str(built[0])}},
         }
         want = {
             "message": "What does `confident_choice` in harness/src/reconcile.rs return when the choice is `none`?",
@@ -1059,28 +1095,28 @@ class AbTest(unittest.TestCase):
             "options": options,
         }
         self.assertEqual(sends[0], want)
-        self.assertEqual([s["options"]["thinking_level"] for s in sends], ["low", "medium", "high", "high"])
-        worktree = [c for c in calls if c[0] == "worktree"]
-        lifecycle = [
-            (("worktree", "add", "--detach", str(t), "f" * 40), ("worktree", "remove", "--force", str(t)))
-            for t in [*trees, trees[2]]
-        ]
-        self.assertEqual(worktree, [c for pair in lifecycle for c in pair])  # each removed before the next is added
-        self.assertEqual(stops, [{"session_id": "s3", "turn_id": "t1"}])  # the failed turn
+        got = [(s["model"], s["options"]["thinking_level"], tasks[s["message"]]) for s in sends]
+        self.assertEqual(got, [("claude-opus-5-5", "medium", task) for task in "abcdd"])
+        # every run, a retry too, gets a tree of its own name under out_dir/trees, and none is left behind
+        self.assertEqual([tree.parent for tree in built], [out.resolve() / "trees"] * 5)
+        self.assertEqual(len({tree.name for tree in built}), 5)
+        self.assertTrue(built[0].name.startswith("ab-claude-opus-5-5-medium-a-0-"), built[0])
+        self.assertEqual(list((out / "trees").iterdir()), [])  # nor task c's test hash beside its tree
+        self.assertEqual(stops, [{"session_id": "s4", "turn_id": "t1"}])  # the failed turn
         keys = ["model", "level", "task", "run", "pass", "cost_units", "steps", "error"]
         self.assertEqual(list(first[0]), keys)
-        got = [(r["level"], r["pass"], r["cost_units"], r["steps"], r["error"]) for r in first]
+        got = [(r["task"], r["pass"], r["cost_units"], r["steps"], r["error"]) for r in first]
         want = [
-            ("low", False, 1400.0, 2, None),
-            ("medium", True, 2000.0, 2, None),
-            ("high", False, 1300.0, 1, "failed (overloaded)"),
+            ("a", True, 1400.0, 2, None),
+            ("b", False, 2000.0, 2, None),  # the tree's common.py still defines units
+            ("c", False, 2600.0, 2, None),  # test_p95 fails on the planted bug
+            ("d", False, 1600.0, 1, "failed (overloaded)"),
         ]
         self.assertEqual(got, want)
-        self.assertEqual(first_ratios, {"claude-opus-5-5": {"low": 0.7, "medium": 1.0}})  # no cost from an error
-        retried = [(r["level"], r["pass"], r["error"]) for r in common.read_jsonl(out / "ab.jsonl")]
-        self.assertEqual(retried, [("low", False, None), ("medium", True, None), ("high", True, None)])
+        retried = [(r["task"], r["pass"], r["error"]) for r in common.read_jsonl(out / "ab.jsonl")]
+        self.assertEqual(retried, [("a", True, None), ("b", False, None), ("c", False, None), ("d", True, None)])
         ratios = json.loads((out / "ratios.json").read_text(encoding="utf-8"))
-        self.assertEqual(ratios, {"claude-opus-5-5": {"low": 0.7, "medium": 1.0, "high": 1.3}})
+        self.assertEqual(ratios, {"claude-opus-5-5": {"medium": 1.0}})  # the pilot runs at medium only
         prompts = common.read_jsonl(out / "ab_prompts.jsonl")
         self.assertEqual([p["id"] for p in prompts], [f"ab-{m}-{t}" for m in ab.MODELS for t in "abcd"])
         want = {"id": "ab-claude-opus-5-5-a", "slice": "ab", "model": "claude-opus-5-5", "level": "medium"}
@@ -1089,10 +1125,11 @@ class AbTest(unittest.TestCase):
         with (
             mock.patch.object(common, "trigger", side_effect=down) as call,
             mock.patch.object(ab, "git", side_effect=git),
+            mock.patch.object(ab, "build_tree", side_effect=build_tree),
             redirect_stdout(io.StringIO()),
             self.assertRaises(SystemExit) as stop,
         ):
             ab.main([str(out), "--sha", "HEAD", "--run", *data])  # the full run on a stack that is down
         self.assertIn("stopped: 3 runs in a row errored (transport: no engine)", str(stop.exception))
         self.assertEqual(call.call_count, 3)  # one send a run, and no turn to stop
-        self.assertEqual(len(common.read_jsonl(out / "ab.jsonl")), 3 + 3)  # the pilot's runs, then the errored ones
+        self.assertEqual(len(common.read_jsonl(out / "ab.jsonl")), 4 + 3)  # the pilot's runs, then the errored ones
