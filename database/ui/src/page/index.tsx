@@ -58,6 +58,7 @@ import {
   RefreshCw,
   Table2,
 } from 'lucide-react'
+import { ConnectionIcon } from '../lib/connection-icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ALL,
@@ -65,7 +66,7 @@ import {
   MIN_VERSION_HINT,
   probe,
 } from '../lib/capabilities'
-import { DB } from '../lib/rpc'
+import { DB, dbEndpoint } from '../lib/rpc'
 import { ChangesPanel } from './ChangesPanel'
 import {
   type DbInfo,
@@ -355,9 +356,10 @@ export function DatabasePage({
 
   // A configured database without a `url` (redacted in the worker's config
   // response) still counts as configured — fall back to its name, not to the
-  // "nothing here" copy.
+  // "nothing here" copy. Structured entries describe themselves as
+  // host:port/db (or the file).
   const subtitle = activeDb
-    ? (activeDb.url ?? activeDb.name)
+    ? dbEndpoint(activeDb)
     : dbsRead.error
       ? 'Worker not connected'
       : 'No database configured'
@@ -370,7 +372,13 @@ export function DatabasePage({
     <PageShell ref={shellRef} className="db-ui-shell">
       {dialog}
       <PageHeader
-        icon={<Database size={16} />}
+        icon={
+          activeDb ? (
+            <ConnectionIcon name={activeDb.icon} color={activeDb.color} />
+          ) : (
+            <Database size={16} />
+          )
+        }
         title="Database"
         description={subtitle}
         actions={
@@ -383,6 +391,11 @@ export function DatabasePage({
                   value: db.name,
                   label: db.name,
                   title: db.url,
+                  // The connection's state where it is chosen: one that the
+                  // worker could not open says why before it is picked.
+                  description: db.error
+                    ? `Unavailable · ${db.error}`
+                    : `${driverLabel(db.driver)} · ${dbEndpoint(db)}`,
                 }))}
                 onChange={async (next) => {
                   if (next === activeDb.name) return
@@ -437,6 +450,19 @@ export function DatabasePage({
           className={`db-ui-browser${narrow ? ' narrow' : ''}`}
           ref={rootRef}
         >
+          {activeDb?.error ? (
+            // The pool could not be built (an unresolvable secret, an
+            // unreachable host): every read below would fail with less
+            // context than the worker's own reason.
+            <div className="db-pad db-ui-conn-error">
+              <StatusPanel
+                variant="alert"
+                icon={<CircleAlert size={18} />}
+                headline={`${activeDb.name} is unavailable`}
+                detail={activeDb.error}
+              />
+            </div>
+          ) : null}
           <div className="db-ui-modesbar">
             <SegmentedControl<PanelMode>
               value={mode}
