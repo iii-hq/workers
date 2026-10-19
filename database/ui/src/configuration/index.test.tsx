@@ -202,7 +202,18 @@ function renderDatabase(url: string, focusField?: string[]) {
   return renderDatabaseValue({ databases: { primary: { url } } }, focusField)
 }
 
-function renderDatabaseValue(value: JsonValue, focusField?: string[], schema: Record<string, unknown> | null = null) {
+/** The shape of the worker's registered schema, reduced to what the form reads. */
+const STRUCTURED_SCHEMA = {
+  definitions: {
+    DatabaseConfig: { type: 'object', properties: { url: {}, driver: {}, host: {}, ssh: {}, tls: {}, display: {} } },
+  },
+}
+
+function renderDatabaseValue(
+  value: JsonValue,
+  focusField?: string[],
+  schema: Record<string, unknown> | null = STRUCTURED_SCHEMA,
+) {
   return renderToStaticMarkup(
     <DatabaseConfigForm
       id="database"
@@ -480,6 +491,16 @@ describe('DatabaseConfigForm', () => {
       expect(html).toContain('Mutual TLS needs both the client certificate and its key.')
       expect(html).toContain('The tunnel needs a password or a private key.')
       expect(html).toContain('Use an absolute path on the engine host.')
+    })
+  
+    it('without a schema, trusts entries already stored in the structured shape', () => {
+      const structured = renderDatabaseValue(shop(), SHOP_FOCUS, null)
+      const legacy = renderDatabaseValue({ databases: { primary: { url: 'postgres://db/app' } } }, DETAIL_FOCUS, null)
+
+      expect(structured).toContain('aria-label="Driver"')
+      expect(structured).toContain('SSH tunnel')
+      // Until the engine's function list answers, a url-only collection keeps the url-only form.
+      expect(legacy).not.toContain('Convert to fields')
     })
   })
 })

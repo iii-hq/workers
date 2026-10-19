@@ -40,7 +40,8 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { ConnectionIcon } from '../lib/connection-icons'
 import { errText } from '../lib/errors'
-import { type DbInfo, listDbs, testConnection } from '../lib/rpc'
+import { probe } from '../lib/capabilities'
+import { DB, type DbInfo, listDbs, testConnection } from '../lib/rpc'
 import { storeSecret } from '../lib/secrets'
 import {
   CONNECTION_DRIVERS,
@@ -499,8 +500,24 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
   const databases = asObject(databasesValue)
   const names = Object.keys(databases)
   // Whether this worker takes structured entries (driver/host/…, ssh,
-  // display, folder). An older worker keeps the url-only form.
-  const structured = supportsStructuredConnections(props.schema)
+  // display, folder). An older worker keeps the url-only form. The schema
+  // says so when there is one; without it, the engine's function list does
+  // (database::saveConnection shipped with the structured shape), and until
+  // that answers, entries already stored in the structured shape do.
+  const fromSchema = supportsStructuredConnections(props.schema)
+  const [probed, setProbed] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (fromSchema !== null) return
+    let alive = true
+    probe(props.host).then((caps) => {
+      if (alive) setProbed(caps.has(DB.saveConnection))
+    })
+    return () => {
+      alive = false
+    }
+  }, [fromSchema, props.host])
+  const structured =
+    fromSchema ?? probed ?? names.some((name) => isObjectValue(databases[name]) && asObject(databases[name]).driver !== undefined)
   // Async completions (a secret stored, a url converted) must apply to the
   // draft as it is when they land, not as it was when they started.
   const valueRef = useRef(value)

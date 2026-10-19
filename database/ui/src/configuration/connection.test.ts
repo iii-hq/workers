@@ -210,7 +210,7 @@ describe('schema detection', () => {
     const legacy = { definitions: { DatabaseConfig: { type: 'object', properties: { url: {}, tls: {}, pool: {} } } } }
     expect(supportsStructuredConnections(structured)).toBe(true)
     expect(supportsStructuredConnections(legacy)).toBe(false)
-    expect(supportsStructuredConnections(null)).toBe(true)
+    expect(supportsStructuredConnections(null)).toBeNull()
   })
 })
 

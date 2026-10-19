@@ -71,10 +71,10 @@ export function isNetworkDriver(driver: Driver): boolean {
  * Whether this worker's configuration schema knows the structured shape.
  * Detected from the JSON Schema the worker registered rather than assumed:
  * writing `driver:` to an older worker would fail its validation on save.
- * No schema at all is not evidence against it.
+ * `null` without a schema — the caller asks the engine instead.
  */
-export function supportsStructuredConnections(schema: Record<string, unknown> | null | undefined): boolean {
-  if (!schema) return true
+export function supportsStructuredConnections(schema: Record<string, unknown> | null | undefined): boolean | null {
+  if (!schema) return null
   let found = false
   const walk = (node: unknown, depth: number) => {
     if (found || depth > 12 || node === null || typeof node !== 'object') return
