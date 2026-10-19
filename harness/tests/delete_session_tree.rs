@@ -151,6 +151,7 @@ impl Store {
             "approval::list-pending" => Ok(json!({"pending":[]})),
             "approval::get-settings" => Ok(json!({"source":"defaults"})),
             "router::abort" => Ok(json!({"aborted":true})),
+            "shell::kill-session-jobs" => Ok(json!({"killed":[]})),
             "context::assemble" => {
                 Err("intentional boundary stop after observing LLM input".into())
             }
@@ -1593,6 +1594,41 @@ async fn ordinary_stop_persists_abort_on_router_failure_but_deletion_fails_close
     }
 }
 
+/// MOT-5407: a stop reaps the background jobs of the whole stopped subtree,
+/// idle members included, and never another branch's; a shell worker failure
+/// does not fail the stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_stop_kills_the_stopped_subtree_background_jobs() {
+    let stack = Stack::new("running").await;
+    ordinary_stop(&stack, "child2").await;
+    let swept: Vec<Value> = stack
+        .store
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|(id, _)| id == "shell::kill-session-jobs")
+        .map(|(_, data)| data["session_ids"].clone())
+        .collect();
+    assert_eq!(swept.len(), 1, "one sweep per stop: {swept:?}");
+    let mut ids: Vec<&str> = swept[0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec!["child2", "grandchild1"]);
+
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .fail
+        .insert("shell::kill-session-jobs".into());
+    ordinary_stop(&stack, "child1").await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_stop_of_unconfirmed_external_call_reports_stopping_with_abort() {
     let stack = Stack::new("running").await;
@@ -1666,6 +1702,34 @@ async fn recovery_skips_malformed_rows_and_continues_after_an_enqueue_failure() 
         enqueued(&stack.store.lock().unwrap()),
         vec![failing.operation_id.clone()]
     );
+}
+
+/// MOT-5407: an agent's `shell::exec_bg` reaches the shell worker owned by the
+/// calling session, whatever owner the model put in the arguments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_exec_bg_is_stamped_with_the_calling_session() {
+    let stack = Stack::new("completed").await;
+    let engine = stack.deps.engine().await;
+    let policy = harness::policy::CompiledPolicy::from(None);
+    harness::functions::subscribe::invoke(
+        &stack.deps,
+        &engine,
+        &policy,
+        "shell::exec_bg",
+        &json!({"command": "sleep", "args": ["300"], "session_id": "parent"}),
+        "child1",
+        false,
+        None,
+    )
+    .await;
+    let store = stack.store.lock().unwrap();
+    let (_, sent) = store
+        .calls
+        .iter()
+        .find(|(id, _)| id == "shell::exec_bg")
+        .expect("exec_bg reached the target");
+    assert_eq!(sent["session_id"], "child1");
+    assert_eq!(sent["command"], "sleep");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+
+- The docs and prompts no longer say a stop leaves `shell::exec_bg` jobs running. A harness and ide that reap background jobs on stop kill the stopped tree's jobs (MOT-5407); with older ones they still keep running, so workers are still told to `shell::kill` a job before their write. The orchestrator knows a parked lead whose job is killed may wake sooner.
+
 ## 0.4.3
 
 - With `isolation=ticket`, the full test suite runs once on the run branch after each wave that landed a ticket, as a background job, before the next wave. Each ticket was verified alone in its own worktree, so two tickets that pass apart and fail together were caught only by the branch review at the end. The result is a `r<N> w<W> landed: green|red|not run` comment on the run ticket. A failure the baseline did not have becomes one `Fix: <tests> after landing <keys>` ticket, retried like any To do ticket. It gets one landing round past `max_rounds` (only those tickets, no critic), so a run that catches a red branch in its last round still fixes it. The suite is skipped, as green, when the wave landed one ticket whose Verify lines ran the same test command on the very tree the run branch now has (`git rev-parse HEAD^{tree}` equals the ticket branch's).

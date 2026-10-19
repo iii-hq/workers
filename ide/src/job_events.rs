@@ -391,6 +391,7 @@ mod tests {
                 finalized: true,
                 child: None,
                 host_pid: None,
+                owner_session_id: None,
             })),
         );
         fire(&finished).await;
@@ -504,6 +505,7 @@ mod tests {
         let shell_cfg = Arc::new(crate::config::ShellConfig::default());
         let sandbox_id = uuid::Uuid::new_v4();
         let response = crate::functions::exec_bg::spawn_sandbox_job(
+            None,
             Some(job_id.clone()),
             shell_cfg.clone(),
             engine.clone(),
@@ -514,6 +516,7 @@ mod tests {
         .await
         .unwrap();
         let duplicate = crate::functions::exec_bg::spawn_sandbox_job(
+            None,
             Some(job_id.clone()),
             shell_cfg,
             engine.clone(),
@@ -556,6 +559,7 @@ mod tests {
             finalized: true,
             child: None,
             host_pid: None,
+            owner_session_id: None,
         }));
         crate::jobs::JOBS
             .map
@@ -617,6 +621,7 @@ mod tests {
             finalized: true,
             child: None,
             host_pid: None,
+            owner_session_id: None,
         }));
         crate::jobs::JOBS
             .map
@@ -678,6 +683,7 @@ mod tests {
             finalized: false,
             child: None,
             host_pid: None,
+            owner_session_id: None,
         }));
         let job_id = handle.lock().await.record.id.clone();
         crate::jobs::JOBS
@@ -772,6 +778,7 @@ mod tests {
         }
         let _guard = crate::jobs::GAUGE_TEST_GUARD.lock().await;
         let response = crate::functions::exec_bg::spawn_sandbox_job(
+            None,
             None,
             std::sync::Arc::new(crate::config::ShellConfig::default()),
             std::sync::Arc::new(UnresponsiveEngine),

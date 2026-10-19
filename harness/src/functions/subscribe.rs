@@ -307,6 +307,12 @@ pub async fn invoke(
                 let args = with_caller_session_id(arguments, session_id);
                 trigger::invoke_target_classified(engine, policy, function_id, &args).await
             }
+            // Tag the job with its owner so `harness::stop` can reap it
+            // (`shell::kill-session-jobs`); the stamp overwrites a forged one.
+            "shell::exec_bg" => {
+                let args = with_caller_session_id(arguments, session_id);
+                trigger::invoke_target_classified(engine, policy, function_id, &args).await
+            }
             internal if agent_call_forbidden(internal) => (trigger::denied_result(internal), false),
             _ => trigger::invoke_target_classified(engine, policy, function_id, arguments).await,
         }

@@ -86,6 +86,9 @@ rules:
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
   - '!shell::config-status'
+  # Harness-internal stop sweep: kills every job a session owns, so a model
+  # could reap another session's jobs. harness::stop calls it worker-to-worker.
+  - '!shell::kill-session-jobs'
   # The agent-CLI terminals (the terminal halves of claude-code and pi) are opened by
   # a person from the console: their describe/activity/ui-content surfaces are
   # plumbing, `activity` writes to the events stream on the session's behalf,

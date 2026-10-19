@@ -217,6 +217,14 @@
 
 ### Fixed
 
+- **Stopping a session kills its background jobs.** A `sleep 300` started
+  with `shell::exec_bg` kept running after `harness::stop` stopped the agent
+  that started it, and nothing could tell whose job it was. Each job now
+  remembers the harness session that started it (the harness stamps it on
+  the call), and the new harness-internal `shell::kill-session-jobs
+  { session_ids }` kills the running jobs those sessions own; `harness::stop`
+  calls it for the whole stopped tree. Jobs of other sessions, and jobs
+  started outside a harness session, are untouched. Models cannot call it.
 - **A fresh project no longer fails on its first restart.** On the first boot
   the worker looked for a stored value before offering its default, found the
   default the stack injects for the entry, and offered nothing, so the engine
