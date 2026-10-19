@@ -116,6 +116,16 @@ describe('telemetry', () => {
     })
   })
 
+  it('loads no per-click capture and no surveys', async () => {
+    await load()
+    expect(init.mock.calls[0][1]).toMatchObject({
+      autocapture: false,
+      rageclick: false,
+      capture_dead_clicks: false,
+      disable_surveys: true,
+    })
+  })
+
   it('reports a visit at 15, 30, 45, 60 minutes, then hourly, with the delta only', async () => {
     const t = await load()
     expect(init).toHaveBeenCalledOnce()

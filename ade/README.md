@@ -344,8 +344,8 @@ file path, a chat or a function id is reported by its kind only, and a chat
 screen is reported as `chat`. URLs are sent without their hash, query values
 are masked, and the referrer is not sent. Session replay masks all text and inputs and
 blocks images and other media. An exception is sent with its error type and
-stack frames only, not its message. Autocapture is off. Heatmaps, web vitals
-and exceptions are on.
+stack frames only, not its message. Autocapture, rage clicks, dead clicks
+and surveys are off. Heatmaps, web vitals and exceptions are on.
 
 The events use the engine's device id from `~/.iii/telemetry.yaml`, so they
 join the same PostHog person as the engine and harness events.

@@ -89,6 +89,8 @@ export async function initTelemetry(): Promise<void> {
     save_referrer: false,
     autocapture: false,
     rageclick: false,
+    capture_dead_clicks: false,
+    disable_surveys: true,
     // Sent per workspace tab by `trackScreens` instead.
     capture_pageview: false,
     enable_heatmaps: true,
