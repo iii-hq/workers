@@ -7,8 +7,8 @@
  * `ade/src/telemetry.rs`). With telemetry off, posthog-js is never started and
  * nothing here sends.
  *
- * Events are kept few on purpose:
- * - `setup_wizard_step`: once per wizard step per device.
+ * Events are kept few on purpose (setup wizard steps are reported through
+ * the engine instead, see `lib/onboarding/telemetry.ts`):
  * - `$pageview`: once per workspace tab change, naming the screen kinds shown.
  * - `ade_usage`: a batched report of the last 25 palette commands and, per
  *   screen kind, how often it opened and how long it was visible. A visit
@@ -32,7 +32,6 @@ export const VISIT_OFFSETS = [15, 30, 45, 60].map((m) => m * MIN)
 export const POST_SETUP_OFFSETS = [0.5, 1, 5, 30, 60].map((m) => m * MIN)
 
 const MAX_COMMANDS = 25
-const SENT_STEPS_KEY = 'iii-telemetry-setup-steps'
 const POST_SETUP_KEY = 'iii-telemetry-post-setup'
 
 /** Palette kinds whose ids are fixed by the console, never by user data. */
@@ -126,17 +125,6 @@ export function trackCommand(entry: { id: string; kind: string }): void {
   if (commands.length > MAX_COMMANDS) commands = commands.slice(-MAX_COMMANDS)
 }
 
-export function trackSetupStep(
-  step: string,
-  properties: Record<string, unknown> = {},
-): void {
-  if (!enabled) return
-  const sent = readList(SENT_STEPS_KEY)
-  if (sent.includes(step)) return
-  capture('setup_wizard_step', { step, ...properties })
-  write(SENT_STEPS_KEY, JSON.stringify([...sent, step]))
-}
-
 /** Setup finished: run the post-setup schedule, once per device. */
 export function setupCompleted(): void {
   if (!enabled || read(POST_SETUP_KEY)) return
@@ -223,19 +211,10 @@ function read(key: string): string | null {
   }
 }
 
-function readList(key: string): string[] {
-  try {
-    const value: unknown = JSON.parse(read(key) ?? '[]')
-    return Array.isArray(value) ? value : []
-  } catch {
-    return []
-  }
-}
-
 function write(key: string, value: string): void {
   try {
     localStorage.setItem(key, value)
   } catch {
-    // Private mode or blocked storage: a step may report again next visit.
+    // Private mode or blocked storage: the post-setup schedule may run again.
   }
 }

@@ -102,7 +102,6 @@ describe('telemetry', () => {
     const t = await load({ enabled: false })
     t.trackScreens(['chat'])
     t.trackCommand({ id: 'action:setup', kind: 'action' })
-    t.trackSetupStep('welcome')
     vi.advanceTimersByTime(3 * 60 * MIN)
     expect(init).not.toHaveBeenCalled()
     expect(capture).not.toHaveBeenCalled()
@@ -168,18 +167,6 @@ describe('telemetry', () => {
     t.setVisible(true)
     vi.advanceTimersByTime(5 * MIN)
     expect(usage()[0][1].screens.chat.ms).toBe(10 * MIN)
-  })
-
-  it('sends a setup step once per device', async () => {
-    const t = await load()
-    t.trackSetupStep('models', { providers: ['anthropic'] })
-    t.trackSetupStep('models', { providers: ['openai'] })
-    const steps = capture.mock.calls.filter(
-      ([name]) => name === 'setup_wizard_step',
-    )
-    expect(steps.map(([, properties]) => properties)).toEqual([
-      { step: 'models', providers: ['anthropic'] },
-    ])
   })
 
   it('runs the post-setup schedule once, then hourly', async () => {

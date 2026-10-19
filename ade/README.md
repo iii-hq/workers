@@ -325,9 +325,6 @@ The SPA bundle is embedded into the binary at compile time via [`rust-embed`](ht
 The console sends anonymous product events from the browser to PostHog. It
 sends these events:
 
-- `setup_wizard_step`, one time for each setup wizard step on a device. It
-  carries the step id and the choice of that step: the provider ids, whether
-  Chromium is installed, or the judge id.
 - `$pageview`, when the screens of the active workspace change. It carries the
   screen kinds, for example `chat` and `traces`.
 - `ade_usage`, a batched report. It carries the last 25 command palette
@@ -337,6 +334,10 @@ sends these events:
   device, the reports go at 30 seconds, 1, 5, 30 and 60 minutes, then one time
   each hour. Each report carries only the data since the report before it. An
   empty report is not sent.
+
+The setup wizard steps do not use this path. The browser publishes them on
+the `onboarding:steps:complete` topic, and the engine sends them as
+`onboarding_step` events.
 
 The events carry no text that a user wrote. A palette command that can hold a
 file path, a chat or a function id is reported by its kind only, and a chat
