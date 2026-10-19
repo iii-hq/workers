@@ -39,13 +39,16 @@ describe('computer overlay store', () => {
     assert.deepEqual(overlaySessions(), ['c1'])
   })
 
-  it('keeps a session with no picture off the deck until it stops', () => {
+  it('keeps a session with no picture off the deck until it stops or a run retries it', () => {
     showCard('wayland')
     showCard('x11')
     markBlind('wayland')
     assert.deepEqual(overlaySessions(), ['x11'], 'the blind card no longer hides the deck')
+    showCard('wayland')
+    assert.deepEqual(overlaySessions(), ['x11'], 'plain activity leaves it off')
     showCard('wayland', true)
-    assert.deepEqual(overlaySessions(), ['x11'])
+    assert.deepEqual(overlaySessions(), ['x11', 'wayland'], 'a new run retries a capture error')
+    markBlind('wayland')
     forgetSession('wayland')
     showCard('wayland')
     assert.deepEqual(overlaySessions(), ['x11', 'wayland'], 'a new session under that id may show')

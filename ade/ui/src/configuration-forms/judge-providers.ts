@@ -221,7 +221,8 @@ export function useJudgeProviders(host: Host, owner: string): JudgeProviders {
 
 export type SetupState =
   | { phase: 'idle' }
-  | { phase: 'running'; note: string | null }
+  /** `waiting`: compose is done, the worker has yet to register. */
+  | { phase: 'running'; note: string | null; waiting?: boolean }
   | { phase: 'failed'; error: string }
 
 /**
@@ -244,9 +245,12 @@ export function useJudgeSetup(host: Host, pending: boolean) {
     if (!pending && state.phase === 'running') setState({ phase: 'idle' })
   }, [pending, state.phase])
 
-  // Added but never registered: say so instead of spinning forever.
+  // Added but never registered: say so instead of spinning forever. Only
+  // once compose is done — a download can outlast the wait, and failing
+  // early would offer Retry while the first add still runs.
+  const waiting = state.phase === 'running' && state.waiting === true
   useEffect(() => {
-    if (state.phase !== 'running' || !pending) return
+    if (!waiting || !pending) return
     const timer = window.setTimeout(
       () =>
         setState({
@@ -256,7 +260,7 @@ export function useJudgeSetup(host: Host, pending: boolean) {
       REGISTER_GIVE_UP_MS,
     )
     return () => window.clearTimeout(timer)
-  }, [state.phase, pending])
+  }, [waiting, pending])
 
   const run = useCallback(
     async (setup: JudgeSetup) => {
@@ -300,7 +304,7 @@ export function useJudgeSetup(host: Host, pending: boolean) {
             if (!alive.current) return
           }
         }
-        report({ phase: 'running', note: 'Waiting for it to register' })
+        report({ phase: 'running', note: 'Waiting for it to register', waiting: true })
       } catch (error) {
         report({ phase: 'failed', error: errorMessage(error) })
       }

@@ -38,10 +38,15 @@ export function overlaySessions(): readonly string[] {
 
 /**
  * Bring a session's card up. Plain activity (`computer::act`) respects a hide
- * until it pauses for DISMISS_IDLE_MS; `force` (a new `computer::run`) doesn't.
+ * until it pauses for DISMISS_IDLE_MS; `force` (a new `computer::run`) doesn't,
+ * and it retries a session marked blind too: a capture error before the first
+ * frame can be passing, and a desktop that truly has no picture marks itself
+ * again on its first error.
  */
 export function showCard(sessionId: string, force = false, now = Date.now()): void {
-  if (onPage.has(sessionId) || blind.has(sessionId)) return
+  if (onPage.has(sessionId)) return
+  if (force) blind.delete(sessionId)
+  else if (blind.has(sessionId)) return
   const hiddenAt = dismissed.get(sessionId)
   if (!force && hiddenAt !== undefined && now - hiddenAt < DISMISS_IDLE_MS) {
     dismissed.set(sessionId, now)
@@ -61,7 +66,7 @@ export function hideCard(sessionId: string): void {
   if (order.includes(sessionId)) set(order.filter((id) => id !== sessionId))
 }
 
-/** The session has no picture to show: off the deck until it stops. */
+/** The session has no picture to show: off the deck until it stops or a run retries it. */
 export function markBlind(sessionId: string): void {
   blind.add(sessionId)
   hideCard(sessionId)
