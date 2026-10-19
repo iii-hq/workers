@@ -113,7 +113,7 @@ model the reply reports. One rule blocks the fallback with
 vectors in another space, so the caller retries later: a registered provider
 whose `embed` has answered before (its registry record keeps an `embeds` flag)
 is not found and was live in the last 15 minutes (its registration, its last
-answered embed, or the router's own start), whatever else of it is live
+answered embed, or the first 3 minutes after the router starts), whatever else of it is live
 (restarting, partly re-registered, or the router just restarted). After that
 window it no longer blocks: the registry keeps every record, so a removed
 provider must not hold the fallback for good.

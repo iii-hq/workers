@@ -21,6 +21,11 @@ const REGISTRY_KEY: &str = "registry";
 /// How long an embedder callers may hold vectors from stays awaited after
 /// it was last seen live (see [`ProviderRecord::awaited_embedder`]).
 const EMBEDDER_GRACE_MS: i64 = 15 * 60 * 1000;
+/// What a restored record gets of that window at router start: enough for a
+/// provider restarting with the router to re-declare (which renews the full
+/// window), short enough that a long-removed embedder holds the fallback
+/// only briefly on each boot.
+const BOOT_GRACE_MS: i64 = 3 * 60 * 1000;
 
 fn hash_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
@@ -52,8 +57,9 @@ pub struct ProviderRecord {
     /// false.
     #[serde(default)]
     pub embeds: bool,
-    /// When this router last saw it live: boot for a restored record, its
-    /// last registration, its last answered `::embed`. Memory-only.
+    /// When this router last saw it live: its last registration, its last
+    /// answered `::embed`; a restored record keeps only [`BOOT_GRACE_MS`] of
+    /// the window from boot. Memory-only.
     #[serde(skip)]
     pub last_live_ms: i64,
     // Leases deliberately do not survive restart; never persist resolved inputs.
@@ -95,6 +101,15 @@ struct RegistrationRevision {
 impl PreparedUpsert {
     pub fn record(&self) -> &ProviderRecord {
         &self.record
+    }
+}
+
+/// Records restored at router start: DOWN until they re-declare, and seen
+/// live only [`BOOT_GRACE_MS`] of the embedder window ago.
+fn restore<'a>(records: impl Iterator<Item = &'a mut ProviderRecord>, booted: i64) {
+    for rec in records {
+        rec.available = false;
+        rec.last_live_ms = booted - EMBEDDER_GRACE_MS + BOOT_GRACE_MS;
     }
 }
 
@@ -202,10 +217,7 @@ impl RegistryStore {
         // `router::ready` (upsert emits the op:"available" recovery), and a
         // successful dispatch heals it too (chat.rs `Done` arm). Not persisted
         // here — flags re-persist on their next real change.
-        for rec in records.values_mut() {
-            rec.available = false;
-            rec.last_live_ms = booted;
-        }
+        restore(records.values_mut(), booted);
         Ok(())
     }
 
@@ -666,6 +678,23 @@ mod tests {
         assert!(
             !record.awaited_embedder(seen + EMBEDDER_GRACE_MS + 1),
             "gone longer (removed): no longer holds the fallback"
+        );
+    }
+
+    #[test]
+    fn a_restored_embedder_is_awaited_only_briefly_after_boot() {
+        let mut record = build_record(None, decl("openai"), None, "tok");
+        record.embeds = true;
+        let booted = 1_000_000_000;
+        restore(std::iter::once(&mut record), booted);
+        assert!(!record.available);
+        assert!(
+            record.awaited_embedder(booted),
+            "restarting with the router"
+        );
+        assert!(
+            !record.awaited_embedder(booted + BOOT_GRACE_MS + 1),
+            "removed long ago: holds the fallback only briefly on each boot"
         );
     }
 
