@@ -8,9 +8,9 @@ Run from the repository root:
 pnpm --dir ade/web test:e2e:workers
 ```
 
-The Console Playwright CI job runs this suite in a separate step from `test:e2e`, using its dedicated configuration and retaining failure traces with the Console artifacts.
+CI runs this suite in its own `run Workers settings Playwright` job of the Harness integration workflow. It needs no stack bundle, so it starts alongside the stack build instead of after it, and keeps failure traces in the `workers-settings-e2e-artifacts` artifact.
 
-Playwright starts the isolated Vite server on port 4180, reuses that specific harness when already running, and stops a server it started when the run finishes. For a persistent manual preview:
+Playwright builds the harness into `target/workers-harness-dist` and serves that production bundle with `vite preview` on port 4180: an unbundled development page costs about four seconds of CPU per load, a built one about one. It reuses a harness already running on that port, and stops a server it started when the run finishes. For a persistent manual preview with the development server:
 
 ```sh
 pnpm --dir ade/web exec vite --config e2e/workers-harness/vite.config.ts

@@ -20,7 +20,8 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'pnpm exec vite --config e2e/workers-harness/vite.config.ts',
+    command:
+      'pnpm exec vite build --config e2e/workers-harness/vite.config.ts && pnpm exec vite preview --config e2e/workers-harness/vite.config.ts',
     cwd: fileURLToPath(new URL('../..', import.meta.url)),
     url: 'http://127.0.0.1:4180/e2e/workers-harness/index.html',
     reuseExistingServer: true,

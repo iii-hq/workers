@@ -5293,7 +5293,8 @@ test('blocks malformed YAML and accepts a corrected mapping', async ({
   page,
 }) => {
   await openSettings(page)
-  await replaceYaml(page, 'ui: [unterminated')
+  // Monaco auto-closes brackets and quotes, so the malformed input uses none.
+  await replaceYaml(page, 'ui: retries: 3')
   const save = page.getByRole('button', {
     name: 'Save and restart',
     exact: true,
