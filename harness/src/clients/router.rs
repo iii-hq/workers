@@ -680,6 +680,27 @@ impl RouterClient {
         serde_json::from_value::<Model>(model).ok()
     }
 
+    /// Whether the router catalog lists this model: `Some(false)` only when
+    /// the router answered that it is not registered, `None` when the lookup
+    /// itself failed and the answer is unknown.
+    pub async fn model_listed(&self, provider: Option<&str>, id: &str) -> Option<bool> {
+        let mut payload = json!({ "id": id });
+        if let Some(p) = provider {
+            payload["provider"] = json!(p);
+        }
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::models::get".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await
+            .ok()?;
+        Some(resp.get("model").is_some_and(|m| !m.is_null()))
+    }
+
     /// One provider's declared starting point (`None` when the router is
     /// absent, the provider is unregistered, or it declares none — the
     /// caller keeps its old behaviour).

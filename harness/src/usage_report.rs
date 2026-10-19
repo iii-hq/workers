@@ -48,6 +48,9 @@
 //! row (`_machine`) holding the counters, updated by compare-and-set so
 //! sessions finishing turns at once never lose or double an increment.
 //!
+//! The counting events carry no top-level `model`/`provider`: their totals
+//! span every model, so `by_model` splits them instead.
+//!
 //! Nothing a user wrote is reported: no message text, no prompts, no file
 //! paths, no function ids, no error strings. Model, provider, counters, and
 //! the fixed failure buckets `failure_class` already defines.
@@ -62,7 +65,9 @@ use serde_json::{json, Value};
 use iii_sdk::protocol::TriggerRequest;
 
 use crate::deps::Deps;
-use crate::functions::metrics::{self, SessionMetricsRequestV1, SessionUsageTotalsV1};
+use crate::functions::metrics::{
+    self, ModelUsageV1, SessionMetricsRequestV1, SessionUsageTotalsV1,
+};
 use crate::state::{self, USAGE_SCOPE};
 use crate::types::message::AgentMessage;
 use crate::types::turn::TurnRecord;
@@ -185,6 +190,94 @@ impl ModelUsage {
     }
 }
 
+impl ModelUsage {
+    /// One model's share of a session tree, filled the same way as
+    /// [`ModelUsage::observed`]. Tool call errors are not split by model.
+    fn observed_model(u: &ModelUsageV1, prev: &ModelUsage) -> Self {
+        Self {
+            model_calls: u.turns,
+            tool_calls: u.function_calls,
+            tool_call_errors: 0,
+            input_tokens: u.input_tokens.unwrap_or(prev.input_tokens),
+            output_tokens: u.output_tokens.unwrap_or(prev.output_tokens),
+            cache_read_tokens: u.cache_read_tokens.unwrap_or(prev.cache_read_tokens),
+            cache_write_tokens: u.cache_write_tokens.unwrap_or(prev.cache_write_tokens),
+            cost_usd: u.cost_usd.unwrap_or(prev.cost_usd),
+        }
+    }
+}
+
+/// One provider and model's share of the counts: the user turns it ran as
+/// the root turn's model, and the model calls it generated.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelEntry {
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub user_turns: u64,
+    #[serde(default)]
+    pub usage: ModelUsage,
+}
+
+/// The entry for `provider`/`model`, added when missing.
+fn entry<'a>(list: &'a mut Vec<ModelEntry>, provider: &str, model: &str) -> &'a mut ModelEntry {
+    let i = match list
+        .iter()
+        .position(|e| e.provider == provider && e.model == model)
+    {
+        Some(i) => i,
+        None => {
+            list.push(ModelEntry {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                ..Default::default()
+            });
+            list.len() - 1
+        }
+    };
+    &mut list[i]
+}
+
+fn usage_of<'a>(list: &'a [ModelEntry], provider: &str, model: &str) -> Option<&'a ModelUsage> {
+    list.iter()
+        .find(|e| e.provider == provider && e.model == model)
+        .map(|e| &e.usage)
+}
+
+/// A session tree's usage as `harness::metrics` reports it, in total and per
+/// model.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Observed {
+    pub total: ModelUsage,
+    pub by_model: Vec<ModelEntry>,
+}
+
+impl Observed {
+    fn read(
+        totals: &SessionUsageTotalsV1,
+        prev: &ModelUsage,
+        prev_by_model: &[ModelEntry],
+    ) -> Self {
+        let none = ModelUsage::default();
+        Self {
+            total: ModelUsage::observed(totals, prev),
+            by_model: totals
+                .by_model
+                .iter()
+                .map(|u| ModelEntry {
+                    provider: u.provider.clone(),
+                    model: u.model.clone(),
+                    user_turns: 0,
+                    usage: ModelUsage::observed_model(
+                        u,
+                        usage_of(prev_by_model, &u.provider, &u.model).unwrap_or(&none),
+                    ),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Per-session reporting bookkeeping (`harness_usage/<session_id>`).
 ///
 /// Durable rather than in memory because it is what makes a report happen
@@ -207,6 +300,9 @@ pub struct UsageRow {
     /// as the baseline instead of counting it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folded: Option<ModelUsage>,
+    /// `folded`, per model.
+    #[serde(default)]
+    pub folded_by_model: Vec<ModelEntry>,
 }
 
 impl UsageRow {
@@ -235,6 +331,9 @@ pub struct MachineRow {
     /// `usage.model_calls` as of the last `harness_model_calls` published.
     #[serde(default)]
     pub model_calls_announced: u64,
+    /// `user_turns` and `usage`, per model.
+    #[serde(default)]
+    pub by_model: Vec<ModelEntry>,
 }
 
 /// What one finished root turn adds to the machine row.
@@ -243,16 +342,40 @@ pub struct Fold {
     pub user_turns: u64,
     pub sessions: u64,
     pub usage: ModelUsage,
+    pub by_model: Vec<ModelEntry>,
 }
 
 impl MachineRow {
     fn fold(&self, add: &Fold) -> Self {
+        let mut by_model = self.by_model.clone();
+        for e in &add.by_model {
+            let mine = entry(&mut by_model, &e.provider, &e.model);
+            mine.user_turns += e.user_turns;
+            mine.usage = mine.usage.plus(&e.usage);
+        }
         Self {
             user_turns: self.user_turns + add.user_turns,
             sessions: self.sessions + add.sessions,
             usage: self.usage.plus(&add.usage),
+            by_model,
             ..self.clone()
         }
+    }
+
+    /// [`MachineRow::fold`], claiming any milestone the fold reaches in the
+    /// same compare-and-set: the announced baseline moves to the new total
+    /// here, so a concurrent fold computes its delta from this one's total
+    /// and the deltas never overlap. A failed publish gives its delta back
+    /// (see [`announce`]).
+    fn fold_and_claim(&self, add: &Fold) -> Self {
+        let mut next = self.fold(add);
+        if crossed(self.user_turns, next.user_turns).is_some() {
+            next.user_turns_announced = next.user_turns;
+        }
+        if crossed(self.usage.model_calls, next.usage.model_calls).is_some() {
+            next.model_calls_announced = next.usage.model_calls;
+        }
+        next
     }
 }
 
@@ -261,20 +384,38 @@ impl MachineRow {
 /// whose usage can be read: that usage becomes its baseline and adds nothing,
 /// because the user turns behind it were never counted here and the old
 /// per-session events already reported it.
+///
+/// The user turn is credited to `turn_model` (provider, model): the model the
+/// root turn ran on.
 fn fold_for(
     first_turn: bool,
     legacy: bool,
-    observed: Option<&ModelUsage>,
+    observed: Option<&Observed>,
     prev_folded: &ModelUsage,
+    prev_by_model: &[ModelEntry],
+    turn_model: (&str, &str),
 ) -> Fold {
+    let none = ModelUsage::default();
+    let mut by_model = Vec::new();
     let usage = match (legacy, observed) {
-        (false, Some(now)) => now.since(prev_folded),
+        (false, Some(now)) => {
+            for e in &now.by_model {
+                let prev = usage_of(prev_by_model, &e.provider, &e.model).unwrap_or(&none);
+                let delta = e.usage.since(prev);
+                if delta != none {
+                    entry(&mut by_model, &e.provider, &e.model).usage = delta;
+                }
+            }
+            now.total.since(prev_folded)
+        }
         _ => ModelUsage::default(),
     };
+    entry(&mut by_model, turn_model.0, turn_model.1).user_turns = 1;
     Fold {
         user_turns: 1,
         sessions: u64::from(first_turn || (legacy && observed.is_some())),
         usage,
+        by_model,
     }
 }
 
@@ -317,6 +458,7 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
         row.folded.get_or_insert_with(ModelUsage::default);
     }
     let prev_folded = row.folded.clone().unwrap_or_default();
+    let prev_by_model = row.folded_by_model.clone();
     row.turns += 1;
     if first_turn {
         row.first_at = AgentMessage::now_ms();
@@ -344,20 +486,29 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     )
     .await
     {
-        Ok(m) => Some(ModelUsage::observed(&m.totals, &prev_folded)),
+        Ok(m) => Some(Observed::read(&m.totals, &prev_folded, &prev_by_model)),
         Err(e) => {
             tracing::debug!(session_id = %session_id, error = %e, "usage metrics unavailable");
             None
         }
     };
-    let add = fold_for(first_turn, legacy, observed.as_ref(), &prev_folded);
+    let provider = record.options.provider.clone().unwrap_or_default();
+    let add = fold_for(
+        first_turn,
+        legacy,
+        observed.as_ref(),
+        &prev_folded,
+        &prev_by_model,
+        (&provider, &record.options.model),
+    );
 
-    match update_machine(deps, timeout_ms, |m| m.fold(&add)).await {
+    match update_machine(deps, timeout_ms, |m| m.fold_and_claim(&add)).await {
         Ok((before, after)) => {
-            if observed.is_some() {
-                row.folded = observed;
+            if let Some(now) = observed {
+                row.folded = Some(now.total);
+                row.folded_by_model = now.by_model;
             }
-            announce(deps, record, &before, &after, timeout_ms).await;
+            announce(deps, &before, &after, timeout_ms).await;
         }
         Err(e) => {
             // The session row keeps its old `folded`, so the next turn folds
@@ -376,56 +527,44 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     }
 }
 
-/// Publish the milestones a fold reached, and record each one published so
-/// the next report's delta starts from it. The fold that reached a milestone
-/// is the only one that sees it in `(before, after]`, so concurrent turns
-/// never announce the same milestone twice.
-async fn announce(
-    deps: &Deps,
-    record: &TurnRecord,
-    before: &MachineRow,
-    after: &MachineRow,
-    timeout_ms: u64,
-) {
+/// Publish the milestones a fold reached. The fold claimed them (see
+/// [`MachineRow::fold_and_claim`]), so it is the only one that sees them in
+/// `(before, after]` and concurrent turns never announce one twice. A failed
+/// publish gives its delta back to the baseline, so the next report carries
+/// it.
+async fn announce(deps: &Deps, before: &MachineRow, after: &MachineRow, timeout_ms: u64) {
     let ns = deps
         .iii
         .namespace()
         .unwrap_or_else(|| "default".to_string());
     if let Some(reached) = crossed(before.user_turns, after.user_turns) {
-        if publish(
-            deps,
-            user_turns_payload(record, &ns, reached, after),
-            timeout_ms,
-        )
-        .await
-        {
-            let total = after.user_turns;
-            let marked = update_machine(deps, timeout_ms, |m| MachineRow {
-                user_turns_announced: m.user_turns_announced.max(total),
+        let delta = after.user_turns.saturating_sub(before.user_turns_announced);
+        let payload = user_turns_payload(&ns, reached, after, delta);
+        if !publish(deps, payload, timeout_ms).await {
+            let back = update_machine(deps, timeout_ms, |m| MachineRow {
+                user_turns_announced: m.user_turns_announced.saturating_sub(delta),
                 ..m.clone()
             })
             .await;
-            if let Err(e) = marked {
-                tracing::debug!(error = %e, "user-turn report not recorded");
+            if let Err(e) = back {
+                tracing::debug!(error = %e, "unpublished user-turn delta not given back");
             }
         }
     }
     if let Some(reached) = crossed(before.usage.model_calls, after.usage.model_calls) {
-        if publish(
-            deps,
-            model_calls_payload(record, &ns, reached, after),
-            timeout_ms,
-        )
-        .await
-        {
-            let total = after.usage.model_calls;
-            let marked = update_machine(deps, timeout_ms, |m| MachineRow {
-                model_calls_announced: m.model_calls_announced.max(total),
+        let delta = after
+            .usage
+            .model_calls
+            .saturating_sub(before.model_calls_announced);
+        let payload = model_calls_payload(&ns, reached, after, delta);
+        if !publish(deps, payload, timeout_ms).await {
+            let back = update_machine(deps, timeout_ms, |m| MachineRow {
+                model_calls_announced: m.model_calls_announced.saturating_sub(delta),
                 ..m.clone()
             })
             .await;
-            if let Err(e) = marked {
-                tracing::debug!(error = %e, "model-call report not recorded");
+            if let Err(e) = back {
+                tracing::debug!(error = %e, "unpublished model-call delta not given back");
             }
         }
     }
@@ -457,48 +596,70 @@ fn failed_payload(
     with_provider(payload, record)
 }
 
-/// `harness_user_turns`: the machine's user turns. `user_turns_delta` is the
-/// user turns since the last one of these that was published, so summing it
-/// over a machine's events gives its `user_turns_total`.
-fn user_turns_payload(record: &TurnRecord, ns: &str, reached: u64, m: &MachineRow) -> Value {
-    with_provider(
-        json!({
-            "event": USER_TURNS_EVENT,
-            "dedupe_key": format!("{ns}:user_turns:{reached}"),
-            "milestone": reached,
-            "user_turns_total": m.user_turns,
-            "user_turns_delta": m.user_turns.saturating_sub(m.user_turns_announced),
-            "sessions_total": m.sessions,
-            "model": record.options.model,
-        }),
-        record,
-    )
+/// `harness_user_turns`: the store's user turns. `user_turns_delta` is the
+/// user turns since the previous report, so summing it over a store's events
+/// gives its `user_turns_total`. `by_model` splits the total by the model each
+/// root turn ran on; there is no single `model`, because the total spans every
+/// model.
+fn user_turns_payload(ns: &str, reached: u64, m: &MachineRow, delta: u64) -> Value {
+    let by_model: Vec<Value> = m
+        .by_model
+        .iter()
+        .filter(|e| e.user_turns > 0)
+        .map(|e| json!({ "provider": e.provider, "model": e.model, "user_turns": e.user_turns }))
+        .collect();
+    json!({
+        "event": USER_TURNS_EVENT,
+        "dedupe_key": format!("{ns}:user_turns:{reached}"),
+        "milestone": reached,
+        "user_turns_total": m.user_turns,
+        "user_turns_delta": delta,
+        "sessions_total": m.sessions,
+        "by_model": by_model,
+    })
 }
 
-/// `harness_model_calls`: the machine's model calls and everything that goes
+/// `harness_model_calls`: the store's model calls and everything that goes
 /// with them. `model_calls_delta` sums to `model_calls_total` the same way.
-fn model_calls_payload(record: &TurnRecord, ns: &str, reached: u64, m: &MachineRow) -> Value {
+/// `by_model` splits the totals by the model that generated each call.
+fn model_calls_payload(ns: &str, reached: u64, m: &MachineRow, delta: u64) -> Value {
     let u = &m.usage;
-    with_provider(
-        json!({
-            "event": MODEL_CALLS_EVENT,
-            "dedupe_key": format!("{ns}:model_calls:{reached}"),
-            "milestone": reached,
-            "model_calls_total": u.model_calls,
-            "model_calls_delta": u.model_calls.saturating_sub(m.model_calls_announced),
-            "tool_calls_total": u.tool_calls,
-            "tool_call_errors_total": u.tool_call_errors,
-            "input_tokens": u.input_tokens,
-            "output_tokens": u.output_tokens,
-            "cache_read_tokens": u.cache_read_tokens,
-            "cache_write_tokens": u.cache_write_tokens,
-            "cost_usd": u.cost_usd,
-            "user_turns_total": m.user_turns,
-            "sessions_total": m.sessions,
-            "model": record.options.model,
-        }),
-        record,
-    )
+    let by_model: Vec<Value> = m
+        .by_model
+        .iter()
+        .filter(|e| e.usage.model_calls > 0)
+        .map(|e| {
+            let u = &e.usage;
+            json!({
+                "provider": e.provider,
+                "model": e.model,
+                "model_calls": u.model_calls,
+                "tool_calls": u.tool_calls,
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cache_read_tokens": u.cache_read_tokens,
+                "cache_write_tokens": u.cache_write_tokens,
+                "cost_usd": u.cost_usd,
+            })
+        })
+        .collect();
+    json!({
+        "event": MODEL_CALLS_EVENT,
+        "dedupe_key": format!("{ns}:model_calls:{reached}"),
+        "milestone": reached,
+        "model_calls_total": u.model_calls,
+        "model_calls_delta": delta,
+        "tool_calls_total": u.tool_calls,
+        "tool_call_errors_total": u.tool_call_errors,
+        "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens,
+        "cache_read_tokens": u.cache_read_tokens,
+        "cache_write_tokens": u.cache_write_tokens,
+        "cost_usd": u.cost_usd,
+        "user_turns_total": m.user_turns,
+        "sessions_total": m.sessions,
+        "by_model": by_model,
+    })
 }
 
 /// Apply `next` to the machine row by compare-and-set, retrying when another
@@ -681,6 +842,25 @@ mod tests {
         assert_eq!(delta, ModelUsage::default());
     }
 
+    fn one_turn() -> Fold {
+        Fold {
+            user_turns: 1,
+            ..Default::default()
+        }
+    }
+
+    fn observed(provider: &str, model: &str, u: ModelUsage) -> Observed {
+        Observed {
+            total: u.clone(),
+            by_model: vec![ModelEntry {
+                provider: provider.into(),
+                model: model.into(),
+                user_turns: 0,
+                usage: u,
+            }],
+        }
+    }
+
     /// Prevents: sessions overwriting each other's counts instead of adding.
     #[test]
     fn turns_from_different_sessions_add_up_on_the_machine() {
@@ -694,6 +874,7 @@ mod tests {
                 user_turns: 1,
                 sessions: u64::from(first),
                 usage: session_usage,
+                by_model: Vec::new(),
             });
         }
         assert_eq!(m.user_turns, 3);
@@ -703,55 +884,76 @@ mod tests {
         assert_eq!(m.user_turns_announced, 0);
     }
 
-    /// Prevents: per-machine deltas that do not sum to the total, including
-    /// after a report whose publish failed.
+    /// Prevents: deltas that do not sum to the total, including after a
+    /// report whose publish failed and gave its delta back.
     #[test]
     fn user_turn_deltas_sum_to_the_total() {
-        let record = crate::types::turn::tests::record();
         let mut m = MachineRow::default();
         let mut sum = 0;
         for _ in 1..=200u64 {
             let before = m.clone();
-            m = m.fold(&Fold {
-                user_turns: 1,
-                ..Default::default()
-            });
+            m = m.fold_and_claim(&one_turn());
             if let Some(reached) = crossed(before.user_turns, m.user_turns) {
-                // Milestone 10's publish fails: never recorded.
+                let delta = m.user_turns - before.user_turns_announced;
+                // Milestone 10's publish fails: its delta goes back.
                 if reached == 10 {
+                    m.user_turns_announced -= delta;
                     continue;
                 }
-                let payload = user_turns_payload(&record, "default", reached, &m);
-                sum += payload["user_turns_delta"].as_u64().unwrap();
+                sum += user_turns_payload("default", reached, &m, delta)["user_turns_delta"]
+                    .as_u64()
+                    .unwrap();
                 assert_eq!(sum, m.user_turns);
-                m.user_turns_announced = m.user_turns;
             }
         }
         assert_eq!(sum, 200);
     }
 
+    /// Prevents: two turns that cross milestones at once both taking their
+    /// delta from the same stale baseline, so the deltas sum past the total.
+    #[test]
+    fn concurrent_claims_never_overlap() {
+        let start = MachineRow::default();
+        // A folds and claims 1; B folds onto A's row and claims 2 before A
+        // has published anything.
+        let a_after = start.fold_and_claim(&one_turn());
+        let b_after = a_after.fold_and_claim(&one_turn());
+        let a_delta = a_after.user_turns - start.user_turns_announced;
+        let b_delta = b_after.user_turns - a_after.user_turns_announced;
+        assert_eq!((a_delta, b_delta), (1, 1));
+        assert_eq!(a_delta + b_delta, b_after.user_turns);
+    }
+
     #[test]
     fn the_user_turns_event_carries_machine_counts() {
-        let record = crate::types::turn::tests::record();
         let m = MachineRow {
             user_turns: 100,
             sessions: 7,
-            user_turns_announced: 50,
+            by_model: vec![ModelEntry {
+                provider: "anthropic".into(),
+                model: "m1".into(),
+                user_turns: 100,
+                usage: usage(9, 0, 0.0),
+            }],
             ..Default::default()
         };
-        let p = user_turns_payload(&record, "default", 100, &m);
+        let p = user_turns_payload("default", 100, &m, 50);
         assert_eq!(p["event"], USER_TURNS_EVENT);
         assert_eq!(p["dedupe_key"], "default:user_turns:100");
         assert_eq!(p["milestone"], 100);
         assert_eq!(p["user_turns_total"], 100);
         assert_eq!(p["user_turns_delta"], 50);
         assert_eq!(p["sessions_total"], 7);
+        assert_eq!(
+            p["by_model"],
+            json!([{ "provider": "anthropic", "model": "m1", "user_turns": 100 }])
+        );
+        assert!(p.get("model").is_none());
         assert!(p.get("model_calls_total").is_none());
     }
 
     #[test]
     fn the_model_calls_event_carries_everything_for_model_calls() {
-        let record = crate::types::turn::tests::record();
         let m = MachineRow {
             user_turns: 12,
             sessions: 3,
@@ -765,10 +967,23 @@ mod tests {
                 cache_write_tokens: 5,
                 cost_usd: 1.5,
             },
-            model_calls_announced: 52,
+            by_model: vec![
+                ModelEntry {
+                    provider: "anthropic".into(),
+                    model: "m1".into(),
+                    user_turns: 12,
+                    usage: usage(100, 8_000, 1.0),
+                },
+                ModelEntry {
+                    provider: "openai".into(),
+                    model: "m2".into(),
+                    user_turns: 0,
+                    usage: usage(3, 1_000, 0.5),
+                },
+            ],
             ..Default::default()
         };
-        let p = model_calls_payload(&record, "default", 100, &m);
+        let p = model_calls_payload("default", 100, &m, 51);
         assert_eq!(p["event"], MODEL_CALLS_EVENT);
         assert_eq!(p["dedupe_key"], "default:model_calls:100");
         assert_eq!(p["milestone"], 100);
@@ -779,7 +994,53 @@ mod tests {
         assert_eq!(p["input_tokens"], 9_000);
         assert_eq!(p["cost_usd"], 1.5);
         assert_eq!(p["user_turns_total"], 12);
+        assert_eq!(p["by_model"][1]["model"], "m2");
+        assert_eq!(p["by_model"][1]["model_calls"], 3);
+        assert_eq!(p["by_model"][1]["cost_usd"], 0.5);
+        assert!(p.get("model").is_none());
+        assert!(p.get("provider").is_none());
         assert!(p.get("turns_total").is_none());
+    }
+
+    /// Prevents: a model's usage credited to another model, or a session
+    /// that switched models losing the share of either.
+    #[test]
+    fn usage_is_split_by_the_model_that_generated_it() {
+        let prev = vec![ModelEntry {
+            provider: "anthropic".into(),
+            model: "m1".into(),
+            user_turns: 0,
+            usage: usage(2, 20, 0.2),
+        }];
+        let now = Observed {
+            total: usage(5, 50, 0.5),
+            by_model: vec![
+                ModelEntry {
+                    usage: usage(3, 30, 0.3),
+                    ..prev[0].clone()
+                },
+                ModelEntry {
+                    provider: "openai".into(),
+                    model: "m2".into(),
+                    user_turns: 0,
+                    usage: usage(2, 20, 0.2),
+                },
+            ],
+        };
+        let add = fold_for(
+            false,
+            false,
+            Some(&now),
+            &usage(2, 20, 0.2),
+            &prev,
+            ("openai", "m2"),
+        );
+        let m = MachineRow::default().fold(&add);
+        let m1 = m.by_model.iter().find(|e| e.model == "m1").unwrap();
+        let m2 = m.by_model.iter().find(|e| e.model == "m2").unwrap();
+        assert_eq!((m1.usage.model_calls, m1.user_turns), (1, 0));
+        assert_eq!((m2.usage.model_calls, m2.user_turns), (2, 1));
+        assert_eq!(m.usage.model_calls, 3);
     }
 
     #[test]
@@ -828,50 +1089,62 @@ mod tests {
     /// while its earlier user turns and the session itself go uncounted.
     #[test]
     fn a_legacy_session_takes_its_history_as_the_baseline() {
-        let history = usage(4, 700, 0.2);
-        let add = fold_for(false, true, Some(&history), &ModelUsage::default());
+        let history = observed("anthropic", "m1", usage(4, 700, 0.2));
+        let none = ModelUsage::default();
+        let add = fold_for(false, true, Some(&history), &none, &[], ("anthropic", "m1"));
         assert_eq!(add.user_turns, 1);
         assert_eq!(add.sessions, 1);
-        assert_eq!(add.usage, ModelUsage::default());
+        assert_eq!(add.usage, none);
+        assert_eq!(add.by_model.len(), 1);
+        assert_eq!(
+            (add.by_model[0].user_turns, &add.by_model[0].usage),
+            (1, &none)
+        );
 
         // Usage unreadable: count the turn, keep the session for the next one.
-        let add = fold_for(false, true, None, &ModelUsage::default());
+        let add = fold_for(false, true, None, &none, &[], ("anthropic", "m1"));
         assert_eq!((add.user_turns, add.sessions), (1, 0));
     }
 
     #[test]
     fn a_new_session_folds_its_usage_and_counts_once() {
-        let first = fold_for(
-            true,
-            false,
-            Some(&usage(2, 50, 0.1)),
-            &ModelUsage::default(),
-        );
+        let none = ModelUsage::default();
+        let key = ("anthropic", "m1");
+        let first_seen = observed(key.0, key.1, usage(2, 50, 0.1));
+        let first = fold_for(true, false, Some(&first_seen), &none, &[], key);
         assert_eq!(first.sessions, 1);
         assert_eq!(first.usage.model_calls, 2);
 
-        let next = fold_for(false, false, Some(&usage(5, 80, 0.3)), &usage(2, 50, 0.1));
+        let next_seen = observed(key.0, key.1, usage(5, 80, 0.3));
+        let next = fold_for(
+            false,
+            false,
+            Some(&next_seen),
+            &first_seen.total,
+            &first_seen.by_model,
+            key,
+        );
         assert_eq!(next.sessions, 0);
         assert_eq!(next.usage.model_calls, 3);
         assert_eq!(next.usage.input_tokens, 30);
+        assert_eq!(next.by_model[0].usage.model_calls, 3);
     }
 
     /// Prevents: two projects on one engine (one namespace each) sharing a
     /// milestone key, so the engine drops the second project's report.
     #[test]
     fn milestone_keys_carry_the_namespace() {
-        let record = crate::types::turn::tests::record();
         let m = MachineRow {
             user_turns: 1,
             usage: usage(1, 0, 0.0),
             ..Default::default()
         };
         assert_ne!(
-            user_turns_payload(&record, "a", 1, &m)["dedupe_key"],
-            user_turns_payload(&record, "b", 1, &m)["dedupe_key"]
+            user_turns_payload("a", 1, &m, 1)["dedupe_key"],
+            user_turns_payload("b", 1, &m, 1)["dedupe_key"]
         );
         assert_eq!(
-            model_calls_payload(&record, "b", 1, &m)["dedupe_key"],
+            model_calls_payload("b", 1, &m, 1)["dedupe_key"],
             "b:model_calls:1"
         );
     }

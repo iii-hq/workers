@@ -223,23 +223,25 @@ message. Three moments report:
 
 - `harness_user_turns`, when the user turns (root turns: one user message
   through its final reply) counted across every session in the state store
-  reach
-  1, 2, 5, 10, 25 and 50, then every 50 after that (100, 150, ...). It carries
-  `user_turns_total`, `user_turns_delta` (user turns since the previous
-  report, so the deltas sum to the total) and `sessions_total`.
+  reach 1, 2, 5, 10, 25 and 50, then every 50 after that (100, 150, ...). It
+  carries `user_turns_total`, `user_turns_delta` (user turns since the
+  previous report, so the deltas sum to the total), `sessions_total`, and
+  `by_model`: the user turns per provider and model of the root turn.
 - `harness_model_calls`, on the same milestones of the model calls (assistant
   messages, sub-agents included) counted across every session in the state
-  store.
-  Model calls move several at a time, so a report goes out at the highest
-  milestone passed. It carries `model_calls_total`, `model_calls_delta`, tool
-  call and tool call error totals, token totals and `cost_usd`, all across
-  the state store.
+  store. Model calls move several at a time, so a report goes out at the
+  highest milestone passed. It carries `model_calls_total`,
+  `model_calls_delta`, tool call and tool call error totals, token totals and
+  `cost_usd`, all across the state store, and `by_model`: model calls, tool
+  calls, tokens and cost per provider and model that generated them.
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
   and `max_turns` outcomes. This keeps the reason a run stopped exact.
 
-A message carries the model name, the provider name, the counters above and a
-fixed failure class. It carries no message text, no prompt, no file path and no
-function id. Sub-agent turns report nothing of their own; their model calls are
+`harness_turn_failed` carries the failed turn's model and provider; the two
+counting events carry them only inside `by_model`, because their totals span
+every model. Beyond those and the counters above, a message carries only a
+fixed failure class: no message text, no prompt, no file path and no function
+id. Sub-agent turns report nothing of their own; their model calls are
 counted through their root session when its turn ends.
 
 - A spawn with only a display parent (`parent_session_id`) is not a root turn.

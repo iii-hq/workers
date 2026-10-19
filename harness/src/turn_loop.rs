@@ -2585,22 +2585,18 @@ struct FailurePresentation {
     next_actions: Vec<&'static str>,
 }
 
-/// The failure for an assembly overflow: [`UNKNOWN_MODEL_FAILURE`] when the
-/// router catalog does not list the turn's model, else
-/// [`CONTEXT_OVERFLOW_FAILURE`].
-// ponytail: an unreachable router also reads as an unknown model; the turn
-// cannot generate either way, so the bucket is only less precise.
+/// The failure for an assembly overflow: [`UNKNOWN_MODEL_FAILURE`] only when
+/// the router catalog confirms it does not list the turn's model. A lookup
+/// that fails keeps [`CONTEXT_OVERFLOW_FAILURE`].
 async fn overflow_failure(deps: &Deps, record: &TurnRecord) -> FailureInfo<'static> {
-    let known = deps
+    let listed = deps
         .router()
         .await
-        .models_get(record.options.provider.as_deref(), &record.options.model)
-        .await
-        .is_some();
-    if known {
-        CONTEXT_OVERFLOW_FAILURE
-    } else {
-        UNKNOWN_MODEL_FAILURE
+        .model_listed(record.options.provider.as_deref(), &record.options.model)
+        .await;
+    match listed {
+        Some(false) => UNKNOWN_MODEL_FAILURE,
+        _ => CONTEXT_OVERFLOW_FAILURE,
     }
 }
 
