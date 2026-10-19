@@ -101,10 +101,15 @@ capable, `provider::<id>::refresh_models` (model discovery),
 
 A worker that serves only embeddings registers `provider::<id>::embed` and
 never calls `router::provider::register`, so it stays out of
-`router::provider::list` and out of every model picker. When no registered
-provider can serve, a `router::embed` call that names no provider tries these
-embed-only surfaces last, alphabetically, found through
-`engine::functions::list`. iii-directory's local MiniLM (`minilm`) is one.
+`router::provider::list` and out of every model picker; iii-directory's local
+MiniLM (`minilm`) is one. A `router::embed` call that names no provider tries
+these embed-only surfaces last, alphabetically, found through
+`engine::functions::list` in the router's namespace, and only when every
+registered provider is up and has no embed surface (Anthropic only, say). A
+registered provider with no live function (down or restarting), or a declaring
+embedder that has not registered yet, blocks the fallback with
+`router/provider_unavailable`: another embedder would put the caller's vectors
+in another space, so the caller retries later.
 
 `router::chat` accepts an optional structured prompt next to the flat
 `system_prompt`: `system_sections` (ordered `{text, cache_boundary}` blocks)
