@@ -103,7 +103,7 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
 /// (the memory page's add field, the CLI): about the user, so it is read
 /// under every directory bank too.
 fn about_the_user(entities: &[String], bank: &str, default_bank: &str) -> bool {
-    entities.is_empty() && bank == default_bank
+    entities.iter().all(|e| e.trim().is_empty()) && bank == default_bank
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -525,6 +525,10 @@ mod tests {
     #[test]
     fn an_entityless_save_into_the_default_bank_is_about_the_user() {
         assert!(about_the_user(&[], "main", "main"));
+        assert!(
+            about_the_user(&[" ".into()], "main", "main"),
+            "blank entities name nothing"
+        );
         assert!(!about_the_user(&["ledger-sync".into()], "main", "main"));
         assert!(!about_the_user(&[], "w-abc123", "main"));
     }

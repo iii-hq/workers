@@ -53,9 +53,12 @@ fn root_field(metadata: Option<&Value>) -> Option<&str> {
 /// from the canonical path, so two folders of one name never share. `None`
 /// when `root` does not exist.
 pub(crate) fn root_bank(root: &Path) -> Option<String> {
-    let hashed = match common_dir(root) {
+    // Canonical first: a missing path under a repository selects nothing,
+    // and a symlink is discovered from where it points.
+    let root = root.canonicalize().ok()?;
+    let hashed = match common_dir(&root) {
         Some(common) => common.canonicalize().ok()?,
-        None => root.canonicalize().ok()?,
+        None => root,
     };
     // `<checkout>/.git` names the checkout; a bare `<name>.git` itself.
     let named = match hashed.file_name() {
@@ -978,6 +981,11 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         assert!(root_bank(&plain).unwrap().starts_with("notes-dir-"));
         assert_eq!(root_bank(&tmp.path().join("missing")), None);
+        assert_eq!(
+            root_bank(&repo.join("missing")),
+            None,
+            "a missing path inside a repository selects nothing"
+        );
     }
 
     #[test]

@@ -47,7 +47,8 @@ function useBankOptions(value: string | null, conciseLabels: boolean) {
     {
       value: AUTO,
       label: conciseLabels ? 'Auto' : 'memory: auto',
-      title: "use the memory worker's default bank",
+      title:
+        "let the memory worker pick: this chat's repository or directory bank, else the default bank",
     },
     ...banks.map((bank) => ({
       value: bank.name,
