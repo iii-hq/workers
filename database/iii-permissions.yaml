@@ -1,0 +1,36 @@
+# Agent permissions for the database worker.
+version: 1
+
+rules:
+  # Console asset delivery and the reload sinks are engine plumbing, never
+  # agent-callable. The reload handlers re-fetch the authoritative value and
+  # ignore their payload; the denies close the surface anyway.
+  - '!database::ui-content'
+  - '!database::on-config-change'
+  - '!database::on-secret-change'
+  # Connection management is the human's call, made from a connection editor
+  # (the console, the app): like configuration::set, these rewrite which
+  # servers and credentials the worker uses. getConnection returns the stored
+  # entry (literals redacted, but references, hosts and users intact).
+  - '!database::saveConnection'
+  - '!database::deleteConnection'
+  - '!database::getConnection'
+  # The chat mention provider is console plumbing; agents read a mentioned
+  # connection through database::listTables (the provider's declared details).
+  - '!database::mention::search'
+  - '!database::mention::get'
+  # Reads are safe to allow by default: they run in read-only transactions.
+  - database::listDatabases
+  - database::listTables
+  - database::describeTable
+  - database::describeSchema
+  - database::query
+  - database::browseTable
+  - database::distinctValues
+  - database::formatSql
+  - database::explain
+  - database::columnStats
+  - database::schemaDiagram
+  - database::history
+  - database::listSavedQueries
+  - database::getTableView

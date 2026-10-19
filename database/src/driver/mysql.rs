@@ -126,6 +126,13 @@ fn sql_type_name(col: &mysql_async::Column) -> String {
     use mysql_async::consts::{ColumnFlags, ColumnType::*};
 
     let binary = col.character_set() == BINARY_CHARSET;
+    // ENUM and SET travel as strings; only the flags tell them apart.
+    if col.flags().contains(ColumnFlags::ENUM_FLAG) {
+        return "enum".into();
+    }
+    if col.flags().contains(ColumnFlags::SET_FLAG) {
+        return "set".into();
+    }
     let name = match col.column_type() {
         MYSQL_TYPE_TINY => "tinyint",
         MYSQL_TYPE_SHORT => "smallint",

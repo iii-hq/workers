@@ -45,6 +45,7 @@ pub mod format_sql;
 pub mod health;
 pub mod insert_row;
 pub mod list_databases;
+pub mod mentions;
 pub mod prepare;
 pub mod query;
 pub mod rollback_transaction;

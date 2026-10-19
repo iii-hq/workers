@@ -154,6 +154,16 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
+  # database: the secrets::changed sink, connection management (rewrites
+  # servers and credentials, like configuration::set; getConnection exposes
+  # the stored entry) and the chat mention provider (console plumbing; agents
+  # use database::listTables) are never agent-callable.
+  - '!database::on-secret-change'
+  - '!database::saveConnection'
+  - '!database::deleteConnection'
+  - '!database::getConnection'
+  - '!database::mention::search'
+  - '!database::mention::get'
   - '!judge::on-config-change'
   - '!judge-semif::on-config-change'
   - '!judge-semif::on-judge-config-change'

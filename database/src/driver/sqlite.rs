@@ -106,6 +106,8 @@ fn read(
         }
         rows_out.push(Row(vals));
     }
+    drop(rows);
+    json_columns(&columns, &mut rows_out);
     Ok(QueryResult {
         columns,
         rows: rows_out,
@@ -134,6 +136,32 @@ fn row_value_at(row: &rusqlite::Row<'_>, idx: usize) -> Result<RowValue, DbError
         ValueRef::Text(t) => RowValue::Text(String::from_utf8_lossy(t).into_owned()),
         ValueRef::Blob(b) => RowValue::Bytes(b.to_vec()),
     })
+}
+
+/// SQLite stores JSON as TEXT; a column declared `JSON`/`JSONB` hands its
+/// documents back as JSON values (objects and arrays; anything else stays
+/// the text it is), the shape postgres and mysql json columns have.
+fn json_columns(columns: &[ColumnMeta], rows: &mut [Row]) {
+    let json_idx: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches!(c.ty.to_ascii_uppercase().as_str(), "JSON" | "JSONB"))
+        .map(|(i, _)| i)
+        .collect();
+    if json_idx.is_empty() {
+        return;
+    }
+    for row in rows.iter_mut() {
+        for &i in &json_idx {
+            if let Some(RowValue::Text(text)) = row.0.get(i) {
+                if let Ok(v @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) =
+                    serde_json::from_str::<serde_json::Value>(text)
+                {
+                    row.0[i] = RowValue::Json(v);
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn map_err(e: rusqlite::Error) -> DbError {
@@ -427,6 +455,7 @@ pub async fn execute(
                         }
                         returned.push(Row(vals));
                     }
+                    json_columns(&columns, &mut returned);
                     (returned.len() as u64, returned, columns)
                 } else {
                     let affected = stmt.execute(bound_refs.as_slice()).map_err(map_err)?;

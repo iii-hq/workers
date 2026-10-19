@@ -827,6 +827,45 @@ async fn main() -> Result<()> {
         );
     }
 
+    {
+        let st = state.clone();
+        iii.register_function(
+            database::handlers::mentions::SEARCH_FN,
+            RegisterFunction::new_async(move |req: mention_contract::MentionSearchRequest| {
+                let st = st.clone();
+                async move {
+                    Ok::<_, iii_sdk::errors::Error>(
+                        database::handlers::mentions::search(&st, req).await,
+                    )
+                }
+            })
+            .description(
+                "Search the configured connections for the chat @database mention menu, by \
+                 name, driver or host; best match first.",
+            )
+            .metadata(database::handlers::mentions::search_metadata()),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            database::handlers::mentions::GET_FN,
+            RegisterFunction::new_async(move |req: mention_contract::MentionGetRequest| {
+                let st = st.clone();
+                async move {
+                    Ok::<_, iii_sdk::errors::Error>(
+                        database::handlers::mentions::get(&st, req).await,
+                    )
+                }
+            })
+            .description(
+                "Resolve a @database(id=…) chat mention to its pill, preview card and agent \
+                 summary; null for an unknown connection. Declares the database mention provider.",
+            )
+            .metadata(database::handlers::mentions::provider().metadata()),
+        );
+    }
+
     // The worker announces its own writes through an owner-delivered function
     // its observers name. Registered AFTER the other functions so the console
     // can attribute it.
@@ -860,7 +899,7 @@ async fn main() -> Result<()> {
 
     tracing::info!(
         engine_observes,
-        "database worker registered 30 functions, waiting for invocations"
+        "database worker registered 39 functions, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");
