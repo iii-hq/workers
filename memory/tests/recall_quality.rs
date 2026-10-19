@@ -584,11 +584,13 @@ async fn gate(vectors_file: &str, baseline_file: &str) {
 }
 
 /// Regenerates `tests/recall_quality/vectors.json` through a live engine's
-/// `router::embed`. Pins the model so reruns are comparable.
+/// `router::embed`. Pins the model so reruns are comparable, and the
+/// provider: only provider-openai serves it, and an auto-pick could land on
+/// one that echoes the requested model (llama-server) with its own vectors.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a live engine with an embed provider; rewrites tests/recall_quality/vectors.json"]
+#[ignore = "needs a live engine with provider-openai; rewrites tests/recall_quality/vectors.json"]
 async fn embed_golden_set() {
-    embed_golden(EMBED_MODEL, EMBED_DIMS, None, "vectors.json").await;
+    embed_golden(EMBED_MODEL, EMBED_DIMS, "openai", "vectors.json").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -596,20 +598,13 @@ async fn embed_golden_set() {
 async fn embed_golden_set_minilm() {
     // Named: an auto-pick tries every registered embedder first, and one
     // that echoes the requested model (llama-server) would answer for it.
-    embed_golden(
-        MINILM_MODEL,
-        MINILM_DIMS,
-        Some("minilm"),
-        "vectors-minilm.json",
-    )
-    .await;
+    embed_golden(MINILM_MODEL, MINILM_DIMS, "minilm", "vectors-minilm.json").await;
 }
 
-/// `provider` `None` lets the router pick, as memory does. The reply must be
-/// from `model` (bare or `model@<revision>`) and, when named, `provider`.
+/// The reply must be from `model` (bare or `model@<revision>`) and `provider`.
 /// Only Matryoshka text-embedding-3-small is cut to its first `dims`; any
 /// other model's vectors must be exactly `dims` long, and none may be shorter.
-async fn embed_golden(model: &str, dims: usize, provider: Option<&str>, file: &str) {
+async fn embed_golden(model: &str, dims: usize, provider: &str, file: &str) {
     let golden = load_golden();
     validate(&golden);
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".into());
@@ -626,14 +621,10 @@ async fn embed_golden(model: &str, dims: usize, provider: Option<&str>, file: &s
         )
         .collect();
     let texts: Vec<String> = items.iter().map(|(_, t)| t.clone()).collect();
-    let mut payload = serde_json::json!({ "input": texts, "model": model });
-    if let Some(provider) = provider {
-        payload["provider"] = provider.into();
-    }
     let reply = iii
         .trigger(iii_sdk::protocol::TriggerRequest {
             function_id: "router::embed".into(),
-            payload,
+            payload: serde_json::json!({ "input": texts, "model": model, "provider": provider }),
             action: None,
             timeout_ms: Some(120_000),
         })
@@ -644,9 +635,7 @@ async fn embed_golden(model: &str, dims: usize, provider: Option<&str>, file: &s
         reported == model || reported.starts_with(&format!("{model}@")),
         "router::embed answered with {reported:?}, not {model}"
     );
-    if let Some(provider) = provider {
-        assert_eq!(reply["provider"], provider, "answered by another provider");
-    }
+    assert_eq!(reply["provider"], provider, "answered by another provider");
     let embedded: Vec<Vec<f32>> =
         serde_json::from_value(reply["embeddings"].clone()).expect("embeddings array");
     assert_eq!(embedded.len(), texts.len(), "one vector per input");
