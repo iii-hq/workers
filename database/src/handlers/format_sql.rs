@@ -5,6 +5,13 @@
 //! put back verbatim afterwards: postgres dollar-quoted bodies (a function
 //! body is code in another language) and sqlite `[bracket identifiers]`
 //! (the formatter would pad them with spaces, renaming the column).
+//!
+//! Keyword case is applied here, not by the formatter: its keyword list
+//! includes words that are routinely column names (`status`, `name`,
+//! `type`, `date`, `key`), and uppercasing those renames a quoted-less
+//! identifier in a reader's eyes. Only reserved words in [`RESERVED`] change
+//! case; every identifier, function name and non-reserved keyword keeps the
+//! case it was written in.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -76,7 +83,9 @@ pub fn format(sql: &str, driver: Option<DriverKind>, uppercase: bool, indent: u8
     let (protected, kept) = protect(sql, driver);
     let options = FormatOptions {
         indent: Indent::Spaces(indent),
-        uppercase: Some(uppercase),
+        // Case is ours to apply (see the module doc): keep everything as
+        // written here.
+        uppercase: None,
         // A blank line between statements.
         lines_between_queries: 2,
         dialect: match driver {
@@ -86,7 +95,196 @@ pub fn format(sql: &str, driver: Option<DriverKind>, uppercase: bool, indent: u8
         ..Default::default()
     };
     let formatted = sqlformat::format(&protected, &QueryParams::None, &options);
-    restore(&formatted, &kept)
+    restore(&recase(&formatted, driver, uppercase), &kept)
+}
+
+/// Words that are reserved (or structural) in SQL on every supported driver
+/// and are not plausible column names. Changing their case never changes
+/// what an identifier means.
+const RESERVED: &[&str] = &[
+    "ADD",
+    "ALL",
+    "ALTER",
+    "AND",
+    "ANY",
+    "AS",
+    "ASC",
+    "BETWEEN",
+    "BIGINT",
+    "BOOLEAN",
+    "BY",
+    "CASCADE",
+    "CASE",
+    "CAST",
+    "CHECK",
+    "COLLATE",
+    "COLUMN",
+    "COMMIT",
+    "CONSTRAINT",
+    "CREATE",
+    "CROSS",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "CURRENT_USER",
+    "DECIMAL",
+    "DEFAULT",
+    "DELETE",
+    "DESC",
+    "DISTINCT",
+    "DROP",
+    "ELSE",
+    "END",
+    "ESCAPE",
+    "EXCEPT",
+    "EXISTS",
+    "EXPLAIN",
+    "FALSE",
+    "FETCH",
+    "FOR",
+    "FOREIGN",
+    "FROM",
+    "FULL",
+    "FUNCTION",
+    "GRANT",
+    "GROUP",
+    "HAVING",
+    "IF",
+    "ILIKE",
+    "IN",
+    "INDEX",
+    "INNER",
+    "INSERT",
+    "INTEGER",
+    "INTERSECT",
+    "INTERVAL",
+    "INTO",
+    "IS",
+    "JOIN",
+    "LATERAL",
+    "LEFT",
+    "LIKE",
+    "LIMIT",
+    "MATERIALIZED",
+    "NATURAL",
+    "NOT",
+    "NULL",
+    "NUMERIC",
+    "OFFSET",
+    "ON",
+    "OR",
+    "ORDER",
+    "OUTER",
+    "OVER",
+    "PARTITION",
+    "PRIMARY",
+    "PROCEDURE",
+    "RECURSIVE",
+    "REFERENCES",
+    "REPLACE",
+    "RESTRICT",
+    "RETURNING",
+    "RETURNS",
+    "REVOKE",
+    "RIGHT",
+    "ROLLBACK",
+    "SELECT",
+    "SET",
+    "SMALLINT",
+    "SOME",
+    "TABLE",
+    "TEMPORARY",
+    "THEN",
+    "TRIGGER",
+    "TRUE",
+    "TRUNCATE",
+    "UNION",
+    "UNIQUE",
+    "UPDATE",
+    "USING",
+    "VALUES",
+    "VARCHAR",
+    "VIEW",
+    "WHEN",
+    "WHERE",
+    "WINDOW",
+    "WITH",
+];
+
+/// Uppercase (or lowercase) the [`RESERVED`] words outside quotes and
+/// comments. `KEY` changes only after `PRIMARY` / `FOREIGN` (it is a common
+/// column name). A word after `.` is a qualified name, left alone.
+fn recase(sql: &str, driver: Option<DriverKind>, upper: bool) -> String {
+    let b = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0usize;
+    let mut prev_word = String::new();
+    let skip_quoted = |start: usize, close: u8| -> usize {
+        let mut j = start + 1;
+        while j < b.len() {
+            if b[j] == b'\\' && close == b'\'' && driver == Some(DriverKind::Mysql) {
+                j += 2;
+                continue;
+            }
+            if b[j] == close {
+                if j + 1 < b.len() && b[j + 1] == close {
+                    j += 2;
+                    continue;
+                }
+                return j + 1;
+            }
+            j += 1;
+        }
+        b.len()
+    };
+    while i < b.len() {
+        let c = b[i];
+        let end = match c {
+            b'\'' | b'"' | b'`' => skip_quoted(i, c),
+            b'[' if driver == Some(DriverKind::Sqlite) => {
+                sql[i..].find(']').map_or(b.len(), |p| i + p + 1)
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => sql[i..].find('\n').map_or(b.len(), |p| i + p),
+            b'#' if driver == Some(DriverKind::Mysql) => {
+                sql[i..].find('\n').map_or(b.len(), |p| i + p)
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                sql[i + 2..].find("*/").map_or(b.len(), |p| i + 2 + p + 2)
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let mut j = i;
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_' || b[j] == b'$')
+                {
+                    j += 1;
+                }
+                let word = &sql[i..j];
+                let upper_word = word.to_ascii_uppercase();
+                let qualified = i > 0 && b[i - 1] == b'.';
+                let reserved = RESERVED.binary_search(&upper_word.as_str()).is_ok()
+                    || (upper_word == "KEY" && matches!(prev_word.as_str(), "PRIMARY" | "FOREIGN"));
+                if reserved && !qualified {
+                    if upper {
+                        out.push_str(&upper_word);
+                    } else {
+                        out.push_str(&word.to_ascii_lowercase());
+                    }
+                } else {
+                    out.push_str(word);
+                }
+                prev_word = upper_word;
+                i = j;
+                continue;
+            }
+            _ => {
+                // A multibyte character is copied whole.
+                let ch = sql[i..].chars().next().map_or(1, char::len_utf8);
+                i + ch
+            }
+        };
+        out.push_str(&sql[i..end]);
+        i = end;
+    }
+    out
 }
 
 const MARK: &str = "__iii_fmt_";
@@ -241,6 +439,52 @@ mod tests {
         assert!(out.contains("`a b`"), "{out}");
         assert!(out.contains("# note"), "{out}");
         assert!(out.contains("'x\\'y'"), "{out}");
+    }
+
+    #[test]
+    fn identifiers_that_are_non_reserved_keywords_keep_their_case() {
+        let out = format(
+            "select status, name, type, key, date from orders where status = 'paid' order by date",
+            Some(DriverKind::Postgres),
+            true,
+            2,
+        );
+        assert!(out.contains("  status,"), "{out}");
+        assert!(out.contains("  name,"), "{out}");
+        assert!(out.contains("  key,"), "{out}");
+        assert!(out.contains("status = 'paid'"), "{out}");
+        assert!(out.contains("ORDER BY"), "{out}");
+        assert!(out.contains("SELECT") && out.contains("WHERE"), "{out}");
+        // Function names keep their case too; strings and comments are data.
+        let out = format(
+            "select count(*), now() from t -- select from",
+            None,
+            true,
+            2,
+        );
+        assert!(out.contains("count(*)") && out.contains("now()"), "{out}");
+        assert!(out.contains("-- select from"), "{out}");
+        let out = format(
+            "create table t (id int primary key, key text)",
+            None,
+            true,
+            2,
+        );
+        assert!(out.contains("PRIMARY KEY"), "{out}");
+        assert!(out.contains("key text"), "{out}");
+        // Lowercase on request.
+        let out = format("SELECT Status FROM T", None, false, 2);
+        assert!(
+            out.contains("select") && out.contains("Status") && out.contains("T"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_reserved_list_is_sorted_for_binary_search() {
+        let mut sorted = RESERVED.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted, RESERVED);
     }
 
     #[test]

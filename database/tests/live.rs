@@ -491,16 +491,23 @@ async fn insert_row_casts_values_to_each_column_type() {
         &st,
         "my",
         "CREATE TABLE iii_wcore_ins (id bigint AUTO_INCREMENT PRIMARY KEY, price decimal(10,2), \
-         active tinyint(1), meta json, born date, data blob, note varchar(16) DEFAULT 'none')",
+         active tinyint(1), meta json, born date, data blob, note varchar(16) DEFAULT 'none', \
+         at datetime(3))",
     )
     .await;
     let r = insert(
         "my",
-        json!({ "price": "12.5", "active": true, "meta": { "a": 1 }, "born": "2026-01-02", "data": "AAEC" }),
+        json!({ "price": "12.5", "active": true, "meta": { "a": 1 }, "born": "2026-01-02", "data": "AAEC",
+                "at": "2026-01-02T05:04:05.250+02:00" }),
     )
     .await
     .unwrap();
     let row = r.row.expect("mysql re-selects by last_insert_id");
+    assert_eq!(row["at"], json!("2026-01-02T03:04:05.250Z"));
+    let r = insert("my", json!({ "at": "2026-01-02 03:04" }))
+        .await
+        .unwrap();
+    assert_eq!(r.row.unwrap()["at"], json!("2026-01-02T03:04:00Z"));
     assert_eq!(row["price"], json!("12.50"));
     assert_eq!(row["active"], json!(1));
     assert_eq!(row["meta"], json!({ "a": 1 }));

@@ -976,6 +976,23 @@ mod tests {
     }
 
     #[test]
+    fn a_raw_filter_deserializes_alone_or_next_to_a_column_and_op() {
+        for v in [
+            json!({ "raw": "n > 1" }),
+            json!({ "column": "", "op": "equals", "raw": "n > 1" }),
+        ] {
+            let f: FilterSpec = serde_json::from_value(v).unwrap();
+            assert_eq!(
+                compile_where(DriverKind::Postgres, &[f], 1).unwrap().sql,
+                "(n > 1)"
+            );
+        }
+        // Without raw, op is still required.
+        let f: FilterSpec = serde_json::from_value(json!({ "column": "a" })).unwrap();
+        assert!(compile_where(DriverKind::Postgres, &[f], 1).is_err());
+    }
+
+    #[test]
     fn raw_filters_that_could_leave_their_parentheses_are_refused() {
         for driver in ALL {
             for bad in [

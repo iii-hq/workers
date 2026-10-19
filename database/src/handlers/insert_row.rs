@@ -99,6 +99,38 @@ fn is_bool(driver: DriverKind, ty: &str) -> bool {
     }
 }
 
+/// MySQL's DATETIME/TIMESTAMP/DATE literals want `YYYY-MM-DD HH:MM:SS`;
+/// accept ISO 8601 too (`T` separator, `Z` or an offset — converted to UTC,
+/// the zone this worker reads those columns back in).
+fn mysql_temporal(ty: &str, value: &Value) -> Value {
+    let t = ty.to_ascii_lowercase();
+    let Value::String(text) = value else {
+        return value.clone();
+    };
+    if !(t.starts_with("datetime") || t.starts_with("timestamp") || t == "date") {
+        return value.clone();
+    }
+    let text = text.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text) {
+        let naive = dt.naive_utc();
+        let formatted = if t == "date" {
+            naive.format("%Y-%m-%d").to_string()
+        } else {
+            naive.format("%Y-%m-%d %H:%M:%S%.f").to_string()
+        };
+        return Value::String(formatted);
+    }
+    // `2026-01-02T03:04[:05]` without a zone: just the separator.
+    if text.len() > 10 && text.as_bytes()[10] == b'T' {
+        return Value::String(format!(
+            "{} {}",
+            &text[..10],
+            text[11..].trim_end_matches('Z')
+        ));
+    }
+    value.clone()
+}
+
 /// A catalog type spelling safe to splice after `::` (format_type output:
 /// letters, digits, spaces, `_ . " [ ] ( ) ,`).
 fn safe_pg_type(ty: &str) -> Result<&str, DbError> {
@@ -233,6 +265,7 @@ fn bind(driver: DriverKind, col: &ColumnDesc, value: &Value, n: usize) -> Result
                 _ if is_bool(driver, &col.ty) => truthy(&col.name, value)?,
                 Value::Bool(b) => Value::from(i64::from(*b)),
                 Value::Array(_) | Value::Object(_) => Value::String(value.to_string()),
+                Value::String(_) => mysql_temporal(&col.ty, value),
                 other => other.clone(),
             };
             Ok(Bound {
@@ -532,6 +565,26 @@ mod tests {
             r#"INSERT INTO "t" ("b", "n", "ok") VALUES (unhex(?), ?, ?) RETURNING *"#
         );
         assert_eq!(params, vec![json!("000102"), json!("42"), json!(0)]);
+    }
+
+    #[test]
+    fn mysql_temporal_values_accept_iso_8601_and_the_space_form() {
+        let at = |v: &str| mysql_temporal("datetime(3)", &json!(v));
+        assert_eq!(at("2026-01-02T03:04:05Z"), json!("2026-01-02 03:04:05"));
+        assert_eq!(
+            at("2026-01-02T05:04:05.5+02:00"),
+            json!("2026-01-02 03:04:05.500")
+        );
+        assert_eq!(at("2026-01-02T03:04"), json!("2026-01-02 03:04"));
+        assert_eq!(at("2026-01-02 03:04"), json!("2026-01-02 03:04"));
+        assert_eq!(
+            mysql_temporal("date", &json!("2026-01-02T23:30:00-03:00")),
+            json!("2026-01-03")
+        );
+        assert_eq!(
+            mysql_temporal("varchar(20)", &json!("2026-01-02T03:04:05Z")),
+            json!("2026-01-02T03:04:05Z")
+        );
     }
 
     #[test]
