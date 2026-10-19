@@ -6,7 +6,10 @@
 //! function-not-found, so a new embed-capable provider needs zero router
 //! changes to serve embeddings. An auto-pick also moves past a provider
 //! that is not configured for good (no api key, a missing secret), but
-//! never past a transient failure.
+//! never past a transient failure. When no registered provider serves,
+//! an auto-pick tries embed-only providers last: a live
+//! `provider::<id>::embed` from a worker that never declared itself
+//! (it serves no chat models, so it has no place in the provider list).
 
 use std::future::Future;
 use std::sync::Arc;
@@ -25,6 +28,9 @@ use crate::secrets::SecretCache;
 use crate::types::errors::{is_function_not_found, is_provider_unconfigured};
 
 const EMBED_TIMEOUT_MS: u64 = 30_000;
+/// Bound on the embed-only discovery list, so a slow engine cannot eat
+/// the caller's whole budget before any provider is tried.
+const LIST_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RouterEmbedRequest {
@@ -135,13 +141,10 @@ pub fn make_embed(
                     ids
                 }
             };
-            if candidates.is_empty() {
-                return Err(Error::Handler(
-                    "router/no_embed_provider: no providers are registered".into(),
-                ));
-            }
+            let registered = candidates.clone();
+            let lister = iii.clone();
             first_embedding(
-                &candidates,
+                candidates,
                 auto,
                 |provider| {
                     let (iii, model, input) = (iii.clone(), req.model.clone(), req.input.clone());
@@ -151,10 +154,55 @@ pub fn make_embed(
                     let (config, secrets) = (config.clone(), secrets.clone());
                     async move { unconfigured_for_good(&config, &provider, &secrets).await }
                 },
+                || async move { embed_only_ids(&lister, &registered).await },
             )
             .await
         })
     }
+}
+
+/// Embed-only providers: a live `provider::<id>::embed` whose id never
+/// declared itself to the router. A worker that serves embeddings and no
+/// chat (iii-directory's local MiniLM) stays out of `router::provider::list`
+/// this way, so model pickers never show it as a provider without models.
+/// Alphabetical; empty when the engine cannot list functions.
+async fn embed_only_ids(iii: &IIIClient, registered: &[String]) -> Vec<String> {
+    let listed = iii
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".into(),
+            // Embed surfaces are tagged internal (never agent-discovered),
+            // and the default list hides exactly those.
+            payload: json!({ "prefix": "provider::", "include_internal": true }),
+            action: None,
+            timeout_ms: Some(LIST_TIMEOUT_MS),
+        })
+        .await;
+    match listed {
+        Ok(value) => embed_only_from(&value, registered),
+        Err(e) => {
+            tracing::debug!(error = %e, "embed-only provider discovery failed");
+            Vec::new()
+        }
+    }
+}
+
+/// The provider ids in an `engine::functions::list` reply that have an
+/// `embed` surface and are not in `registered`.
+fn embed_only_from(listed: &Value, registered: &[String]) -> Vec<String> {
+    let mut ids: Vec<String> = listed
+        .get("functions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("function_id").and_then(Value::as_str))
+        .filter_map(|id| id.strip_prefix("provider::")?.strip_suffix("::embed"))
+        .filter(|id| !id.is_empty() && !id.contains("::"))
+        .filter(|id| !registered.iter().any(|r| r == id))
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// Walk the candidates in order. `Ok(None)` (no embed surface) moves on;
@@ -163,29 +211,52 @@ pub fn make_embed(
 /// Any other error is returned as is: falling back past a transient
 /// failure (an upstream error, a secrets outage) would embed the same
 /// caller's corpus into another model's vector space, and callers cannot
-/// tell the spaces apart (they retry later instead).
-async fn first_embedding<F, Fut, G, GFut>(
-    candidates: &[String],
+/// tell the spaces apart (they retry later instead). An auto-pick that
+/// runs out asks `more` once (the embed-only providers): never when a
+/// registered provider answered, so a working setup pays no extra lookup.
+async fn first_embedding<F, Fut, G, GFut, M, MFut>(
+    mut candidates: Vec<String>,
     auto: bool,
     mut attempt: F,
     mut for_good: G,
+    more: M,
 ) -> Result<RouterEmbedResponse, Error>
 where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = Result<Option<RouterEmbedResponse>, Error>>,
     G: FnMut(String) -> GFut,
     GFut: Future<Output = bool>,
+    M: FnOnce() -> MFut,
+    MFut: Future<Output = Vec<String>>,
 {
+    let mut more = auto.then_some(more);
     let mut unconfigured = Vec::new();
-    for provider in candidates {
+    let mut next = 0;
+    loop {
+        if next == candidates.len() {
+            match more.take() {
+                Some(more) => candidates.extend(more().await),
+                None => break,
+            }
+            if next == candidates.len() {
+                break;
+            }
+        }
+        let provider = candidates[next].clone();
+        next += 1;
         match attempt(provider.clone()).await {
             Ok(Some(resp)) => return Ok(resp),
             Ok(None) => {}
             Err(e) if auto && is_provider_unconfigured(&e) && for_good(provider.clone()).await => {
-                unconfigured.push(provider.as_str())
+                unconfigured.push(provider)
             }
             Err(e) => return Err(e),
         }
+    }
+    if candidates.is_empty() {
+        return Err(Error::Handler(
+            "router/no_embed_provider: no providers are registered".into(),
+        ));
     }
     let detail = if unconfigured.is_empty() {
         String::new()
@@ -193,7 +264,7 @@ where
         format!("; not configured: {}", unconfigured.join(", "))
     };
     Err(Error::Handler(format!(
-        "router/no_embed_provider: none of the registered providers ({}) can serve \
+        "router/no_embed_provider: none of the providers ({}) can serve \
          provider::<id>::embed{detail}",
         candidates.join(", ")
     )))
@@ -205,6 +276,7 @@ type BoxedEmbedFuture =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn ok(provider: &str) -> RouterEmbedResponse {
         RouterEmbedResponse {
@@ -233,11 +305,21 @@ mod tests {
         }
     }
 
+    async fn no_more() -> Vec<String> {
+        Vec::new()
+    }
+
     #[tokio::test]
     async fn an_auto_pick_moves_past_a_provider_unconfigured_for_good() {
-        let resp = first_embedding(&candidates(), true, openai_unconfigured, |_| async { true })
-            .await
-            .unwrap();
+        let resp = first_embedding(
+            candidates(),
+            true,
+            openai_unconfigured,
+            |_| async { true },
+            no_more,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.provider, "llamacpp");
     }
 
@@ -245,9 +327,13 @@ mod tests {
     async fn an_unresolved_secret_is_transient_and_returned() {
         // The provider says "not configured" while its secret is still
         // resolving (or the secrets worker is down): no fallback.
-        let err = first_embedding(&candidates(), true, openai_unconfigured, |_| async {
-            false
-        })
+        let err = first_embedding(
+            candidates(),
+            true,
+            openai_unconfigured,
+            |_| async { false },
+            no_more,
+        )
         .await
         .unwrap_err();
         assert!(err.to_string().contains("provider/not_configured"));
@@ -261,7 +347,7 @@ mod tests {
                 _ => Ok(Some(ok(&p))),
             }
         };
-        let err = first_embedding(&candidates(), true, upstream, |_| async { true })
+        let err = first_embedding(candidates(), true, upstream, |_| async { true }, no_more)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("provider/upstream_status: 503"));
@@ -269,11 +355,21 @@ mod tests {
 
     #[tokio::test]
     async fn an_explicit_provider_is_never_substituted() {
-        let only = ["openai".to_string()];
-        let err = first_embedding(&only, false, openai_unconfigured, |_| async { true })
-            .await
-            .unwrap_err();
+        let asked = AtomicBool::new(false);
+        let err = first_embedding(
+            vec!["openai".to_string()],
+            false,
+            openai_unconfigured,
+            |_| async { true },
+            || async {
+                asked.store(true, Ordering::SeqCst);
+                vec!["minilm".to_string()]
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("provider/not_configured"));
+        assert!(!asked.load(Ordering::SeqCst), "no embed-only discovery");
     }
 
     #[tokio::test]
@@ -284,11 +380,100 @@ mod tests {
                 _ => Ok(None),
             }
         };
-        let err = first_embedding(&candidates(), true, no_surface, |_| async { true })
+        let err = first_embedding(candidates(), true, no_surface, |_| async { true }, no_more)
             .await
             .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("router/no_embed_provider"), "{msg}");
         assert!(msg.contains("not configured: openai"), "{msg}");
+    }
+
+    /// Only `minilm` serves; every registered provider lacks the surface.
+    async fn only_minilm(p: String) -> Result<Option<RouterEmbedResponse>, Error> {
+        Ok((p == "minilm").then(|| ok(&p)))
+    }
+
+    #[tokio::test]
+    async fn embed_only_providers_are_tried_after_the_registered_ones() {
+        let resp = first_embedding(
+            candidates(),
+            true,
+            only_minilm,
+            |_| async { true },
+            || async { vec!["minilm".to_string()] },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.provider, "minilm");
+
+        let alone = first_embedding(
+            Vec::new(),
+            true,
+            only_minilm,
+            |_| async { true },
+            || async { vec!["minilm".to_string()] },
+        )
+        .await
+        .unwrap();
+        assert_eq!(alone.provider, "minilm", "no provider registered at all");
+    }
+
+    #[tokio::test]
+    async fn a_registered_provider_that_serves_skips_discovery() {
+        let asked = AtomicBool::new(false);
+        let resp = first_embedding(
+            candidates(),
+            true,
+            |p: String| async move { Ok(Some(ok(&p))) },
+            |_| async { true },
+            || async {
+                asked.store(true, Ordering::SeqCst);
+                Vec::new()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.provider, "openai");
+        assert!(!asked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn an_embed_only_provider_unconfigured_is_named_too() {
+        let err = first_embedding(
+            Vec::new(),
+            true,
+            |_| async { Err(remote("provider/not_configured: MiniLM bundle missing")) },
+            |_| async { true },
+            || async { vec!["minilm".to_string()] },
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("router/no_embed_provider"), "{msg}");
+        assert!(msg.contains("not configured: minilm"), "{msg}");
+
+        let nothing = first_embedding(Vec::new(), true, only_minilm, |_| async { true }, no_more)
+            .await
+            .unwrap_err();
+        assert!(nothing.to_string().contains("no providers are registered"));
+    }
+
+    #[test]
+    fn embed_only_ids_are_live_embed_surfaces_nobody_declared() {
+        let listed = json!({ "functions": [
+            { "function_id": "provider::openai::embed" },
+            { "function_id": "provider::minilm::embed" },
+            { "function_id": "provider::minilm::embed" },
+            { "function_id": "provider::anthropic::stream" },
+            { "function_id": "provider::a::b::embed" },
+            { "function_id": "provider::::embed" },
+            { "function_id": "directory::embed" },
+            { "function_id": 7 },
+        ]});
+        assert_eq!(
+            embed_only_from(&listed, &["openai".to_string()]),
+            vec!["minilm".to_string()]
+        );
+        assert!(embed_only_from(&json!({}), &[]).is_empty());
     }
 }

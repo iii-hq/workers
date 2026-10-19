@@ -137,6 +137,8 @@ struct Inner {
     active: RwLock<Option<Arc<DenseIndex>>>,
     desired_catalog: Mutex<Option<String>>,
     rebuild: tokio::sync::Mutex<()>,
+    /// One model load at a time (a catalog rebuild and the embed surface).
+    load: tokio::sync::Mutex<()>,
 }
 
 struct DenseIndex {
@@ -202,28 +204,14 @@ impl SemanticSearch {
             if !is_desired(&inner, &fingerprint) {
                 return;
             }
-            let Some(model_dir) = inner.model_dir.clone() else {
+            if inner.model_dir.is_none() {
                 return;
-            };
-            let loaded_model = { inner.model.read().expect("semantic model").clone() };
-            let model = match loaded_model {
-                Some(model) => model,
-                None => {
-                    let loaded =
-                        tokio::task::spawn_blocking(move || load_verified_minilm(&model_dir)).await;
-                    let model = match loaded {
-                        Ok(Ok(model)) => Arc::new(model),
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "semantic model unavailable");
-                            return;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "semantic model load task failed");
-                            return;
-                        }
-                    };
-                    *inner.model.write().expect("semantic model") = Some(model.clone());
-                    model
+            }
+            let model = match ensure_model(&inner).await {
+                Ok(model) => model,
+                Err(error) => {
+                    tracing::warn!(%error, "semantic model unavailable");
+                    return;
                 }
             };
             if !is_desired(&inner, &fingerprint) {
@@ -303,6 +291,43 @@ impl SemanticSearch {
             }
             publish_if_desired(&inner, &fingerprint, index);
         });
+    }
+
+    /// Embed `texts` with the pinned MiniLM: one L2-normalized
+    /// [`MINILM_DIMENSIONS`]-dim vector per text, in order. Loads the model
+    /// on first use whatever the search mode: `disabled` gates catalog
+    /// rebuilds only. Backs `provider::minilm::embed`.
+    pub(crate) async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
+        if !cfg!(minilm) {
+            return Err(EmbedError::Unconfigured(
+                "MiniLM is not compiled for this target".into(),
+            ));
+        }
+        let Some(dir) = self.inner.model_dir.as_deref() else {
+            return Err(EmbedError::Unconfigured(
+                "function_search_model_path is null".into(),
+            ));
+        };
+        let loaded = self.inner.model.read().expect("semantic model").is_some();
+        if !loaded && !minilm_artifact_contract_matches(dir) {
+            return Err(EmbedError::Unconfigured(format!(
+                "the MiniLM bundle at {} is not provisioned",
+                dir.display()
+            )));
+        }
+        // A bundle that fails to verify or initialize stays broken until
+        // someone re-provisions it: as lasting as a missing one.
+        let model = ensure_model(&self.inner)
+            .await
+            .map_err(|error| EmbedError::Unconfigured(error.to_string()))?;
+        let count = texts.len();
+        let vectors = tokio::task::spawn_blocking(move || model.encode(&texts, Some(32)))
+            .await
+            .map_err(|error| EmbedError::Failed(format!("embed task failed: {error}")))?
+            .map_err(|error| EmbedError::Failed(error.to_string()))?;
+        validate_vectors(&vectors, count, MINILM_DIMENSIONS)
+            .map_err(|error| EmbedError::Failed(error.to_string()))?;
+        Ok(vectors)
     }
 
     pub(crate) async fn rank(
@@ -519,6 +544,43 @@ impl SemanticSearch {
             .as_ref()
             .map(|index| index.catalog_fingerprint.clone())
     }
+}
+
+/// The model `embed` reports: the repository at its pinned revision, so a
+/// caller that keys stored vectors by model re-embeds when the pin moves.
+pub(crate) fn embedding_model_id() -> String {
+    format!("{MINILM_REPOSITORY}@{}", &MINILM_REVISION[..12])
+}
+
+/// Why [`SemanticSearch::embed`] could not serve.
+#[derive(Debug, PartialEq)]
+pub(crate) enum EmbedError {
+    /// Lasts until someone provisions the model (or the target gains a
+    /// pinned runtime): a caller may move on to another embedder.
+    Unconfigured(String),
+    /// Anything else.
+    Failed(String),
+}
+
+/// The loaded model, loading the verified bundle first when no one has yet.
+async fn ensure_model(inner: &Inner) -> Result<Arc<LoadedModel>, SemanticUnavailable> {
+    if let Some(model) = inner.model.read().expect("semantic model").clone() {
+        return Ok(model);
+    }
+    let _load = inner.load.lock().await;
+    if let Some(model) = inner.model.read().expect("semantic model").clone() {
+        return Ok(model);
+    }
+    let dir = inner
+        .model_dir
+        .clone()
+        .ok_or_else(|| unavailable("no model directory configured"))?;
+    let model = tokio::task::spawn_blocking(move || load_verified_minilm(&dir))
+        .await
+        .map_err(|error| unavailable(format!("semantic model load task failed: {error}")))??;
+    let model = Arc::new(model);
+    *inner.model.write().expect("semantic model") = Some(model.clone());
+    Ok(model)
 }
 
 fn unavailable(message: impl Into<String>) -> SemanticUnavailable {

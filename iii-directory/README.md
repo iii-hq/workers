@@ -750,6 +750,32 @@ Both `directory::registry::*` responses are cached in-process for
 There is **no** `directory::skills::register` — see
 [Migration](#migration-from-skills-v02x) below.
 
+### Local embeddings — `provider::minilm::embed`
+
+The MiniLM model that ranks `directory::search_functions` candidates also
+serves `router::embed`, so a stack with no embeddings API (Anthropic only, for
+example) still gets vectors, with no key and no extra process. The memory
+worker's semantic recall is one caller.
+
+- **Request and response.** `{model?, input[1..512]}` →
+  `{model: "sentence-transformers/all-MiniLM-L6-v2@<revision>", embeddings}`:
+  384 dimensions, L2-normalized, in input order.
+- **Loading.** The model loads on first use, in every `function_search_mode`.
+  The boot-time bundle download still runs only in `hybrid` and `judge` mode.
+- **Not configured.** The surface answers `provider/not_configured` when:
+  - the build has no MiniLM;
+  - `function_search_model_path` is `null`;
+  - the bundle is not provisioned;
+  - the caller names another model.
+
+  The router then moves on.
+- **Not a declared provider.** It never declares itself to the router, so it
+  lists no models and no model picker shows it. `router::embed` tries it only
+  after every registered provider, so an OpenAI or llama.cpp embeddings setup
+  keeps its vectors.
+- **Access.** Agents cannot call it directly: the root permissions deny
+  `provider::*`.
+
 ---
 
 ## Function search & pre-generate hint

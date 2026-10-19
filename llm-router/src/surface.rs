@@ -40,8 +40,8 @@ pub const ABORT_DESC: &str =
 pub const EMBED_ID: &str = "router::embed";
 pub const EMBED_DESC: &str =
     "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider \
-     or discovers the first embed-capable one from the live registry; one vector per input, \
-     order preserved.";
+     or discovers the first embed-capable one from the live registry, then from embed-only \
+     workers; one vector per input, order preserved.";
 
 pub const TRANSCRIBE_ID: &str = "router::transcribe";
 pub const TRANSCRIBE_DESC: &str =
