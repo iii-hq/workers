@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use sha2::{Digest, Sha256};
 
@@ -35,6 +35,9 @@ const MINILM_MAX_LENGTH: usize = 512;
 /// surface takes 8 (~370 ms), well inside memory's 2 s recall budget.
 const ENCODE_CHUNK: usize = 32;
 const EMBED_CHUNK: usize = 8;
+/// How long a load failure other than a verification mismatch stands
+/// before the next call retries it (each retry re-hashes 90 MB).
+const LOAD_RETRY: Duration = Duration::from_secs(30);
 
 pub(crate) const RERANKER_REPOSITORY: &str = "cross-encoder/ms-marco-MiniLM-L6-v2";
 pub(crate) const RERANKER_REVISION: &str = "233902d25c440f23af6f7d6e94d2946bac0bee0a";
@@ -157,12 +160,12 @@ struct Inner {
     rebuild: tokio::sync::Mutex<()>,
     /// One model load at a time (a catalog rebuild and the embed surface).
     load: tokio::sync::Mutex<()>,
-    /// The last load that failed verification (a size or SHA-256 mismatch)
-    /// and the bundle's [`bundle_stamp`] it saw: the failure stands, without
-    /// re-hashing 90 MB per call, until a file's length or mtime changes
-    /// (someone re-provisioned the bundle). Any other load error (I/O, ORT
-    /// init, a failed task) is retried on the next call.
-    failed_load: Mutex<Option<(BundleStamp, String)>>,
+    /// The last failed load, the bundle's [`bundle_stamp`] it saw and when
+    /// it may be retried: the failure stands, without re-hashing 90 MB per
+    /// call, until a file's length or mtime changes (someone re-provisioned
+    /// the bundle) or, for anything but a verification mismatch (I/O, ORT
+    /// init, a failed task, all of which may clear), [`LOAD_RETRY`] passes.
+    failed_load: Mutex<Option<(BundleStamp, Option<Instant>, String)>>,
 }
 
 struct DenseIndex {
@@ -339,8 +342,9 @@ impl SemanticSearch {
                 dir.display()
             )));
         }
-        // A bundle that fails to verify or initialize stays broken until
-        // someone re-provisions it: as lasting as a missing one.
+        // A bundle that fails to load reads as not provisioned: one that
+        // fails verification stays so until someone re-provisions it, any
+        // other failure for up to `LOAD_RETRY`.
         let model = ensure_model(&self.inner)
             .await
             .map_err(|error| EmbedError::Unconfigured(error.to_string()))?;
@@ -600,8 +604,8 @@ async fn ensure_model(inner: &Inner) -> Result<Arc<LoadedModel>, SemanticUnavail
         .clone()
         .ok_or_else(|| unavailable("no model directory configured"))?;
     let stamp = bundle_stamp(&dir);
-    if let Some((failed, error)) = &*inner.failed_load.lock().expect("failed load") {
-        if *failed == stamp {
+    if let Some((failed, retry_at, error)) = &*inner.failed_load.lock().expect("failed load") {
+        if *failed == stamp && retry_at.is_none_or(|at| Instant::now() < at) {
             return Err(unavailable(error.clone()));
         }
     }
@@ -613,9 +617,10 @@ async fn ensure_model(inner: &Inner) -> Result<Arc<LoadedModel>, SemanticUnavail
             )))
         })
         .inspect_err(|error| {
-            if error.0.starts_with(ARTIFACT_MISMATCH) {
-                *inner.failed_load.lock().expect("failed load") = Some((stamp, error.0.clone()));
-            }
+            let retry_at =
+                (!error.0.starts_with(ARTIFACT_MISMATCH)).then(|| Instant::now() + LOAD_RETRY);
+            *inner.failed_load.lock().expect("failed load") =
+                Some((stamp, retry_at, error.0.clone()));
         })?;
     let model = Arc::new(model);
     *inner.model.write().expect("semantic model") = Some(model.clone());
@@ -1249,15 +1254,13 @@ mod tests {
         }
         let semantic = SemanticSearch::new(Some(dir.path().into()));
         assert!(ensure_model(&semantic.inner).await.is_err());
-        // Swap in a marker: only the cache can answer with it.
-        semantic
-            .inner
-            .failed_load
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .1 = "cached".into();
+        {
+            let mut failed = semantic.inner.failed_load.lock().unwrap();
+            let failed = failed.as_mut().unwrap();
+            assert!(failed.1.is_none(), "no retry while the files stay");
+            // Swap in a marker: only the cache can answer with it.
+            failed.2 = "cached".into();
+        }
         let cached = ensure_model(&semantic.inner).await.err().unwrap();
         assert_eq!(cached.0, "cached", "unchanged bundle: no reload");
 
@@ -1274,12 +1277,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn any_other_load_failure_is_retried() {
+    async fn any_other_load_failure_is_retried_at_a_bounded_rate() {
         // An unreadable bundle (here: none) fails on I/O, not verification.
         let dir = tempfile::tempdir().unwrap();
         let semantic = SemanticSearch::new(Some(dir.path().into()));
         assert!(ensure_model(&semantic.inner).await.is_err());
-        assert!(semantic.inner.failed_load.lock().unwrap().is_none());
+        // Swap in a marker (only the cache can answer with it), expired or not.
+        let mark = |expired: bool| {
+            let mut failed = semantic.inner.failed_load.lock().unwrap();
+            let failed = failed.as_mut().unwrap();
+            assert!(failed.1.is_some(), "retried later");
+            if expired {
+                failed.1 = Some(Instant::now());
+            }
+            failed.2 = "cached".into();
+        };
+        mark(false);
+        let cached = ensure_model(&semantic.inner).await.err().unwrap();
+        assert_eq!(cached.0, "cached", "within LOAD_RETRY: no reload");
+
+        mark(true);
+        let retried = ensure_model(&semantic.inner).await.err().unwrap();
+        assert_ne!(retried.0, "cached", "past LOAD_RETRY: reloads");
     }
 
     #[test]
