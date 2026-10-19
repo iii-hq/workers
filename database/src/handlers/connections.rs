@@ -304,6 +304,7 @@ pub async fn save(state: &AppState, req: SaveConnectionReq) -> Result<SaveConnec
             databases.remove(previous);
         }
     }
+    let databases_entry = entry.clone();
     databases.insert(req.name.clone(), entry);
     if let Some(obj) = raw.as_object_mut() {
         obj.insert("databases".into(), Value::Object(databases));
@@ -315,6 +316,18 @@ pub async fn save(state: &AppState, req: SaveConnectionReq) -> Result<SaveConnec
         .await
         .map_err(|e| config_error(format!("configuration::set refused the value: {e}")))?;
 
+    // The saved entry's references are read again now: saving right after
+    // correcting a secret must not build the pool from a cached value.
+    if let Ok(db) = parse_entry(&req.name, &databases_entry) {
+        state
+            .runtime
+            .secrets
+            .refresh(
+                crate::connector::references(&db),
+                crate::secrets::Refetch::Invalidate,
+            )
+            .await;
+    }
     let (error, error_stage) = reload(state, &iii, &req.name).await;
     Ok(SaveConnectionResp {
         name: req.name,

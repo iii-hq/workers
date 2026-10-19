@@ -1562,3 +1562,114 @@ async fn the_catalog_marks_filled_in_and_generated_columns() {
     exec(&st, "pg", "DROP TABLE iii_wcore_gen").await;
     exec(&st, "my", "DROP TABLE iii_wcore_gen").await;
 }
+
+fn secret_pg(reference: &str) -> Value {
+    let mut entry = pg("shop", "unused");
+    entry["password"] = json!(reference);
+    entry
+}
+
+/// testConnection resolves its references now, not from the stored
+/// connections' cache: a password corrected a second ago, or a secret
+/// deleted and re-created under the same name, is what the next Test sees.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_connection_reads_its_secrets_fresh() {
+    let _dir = env_or_skip!();
+    let secrets: Secrets = Default::default();
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_PROBE".into(), "wrong-password".into());
+    let st = state_with(json!({ "pg": pg("shop", PG_PW) }), secrets.clone()).await;
+    let candidate = secret_pg("secret://WCORE_PROBE");
+
+    let r = probe(&st, candidate.clone()).await;
+    assert!(!r.ok);
+    assert_eq!(
+        serde_json::to_value(r.stage).unwrap(),
+        json!("auth"),
+        "{:?}",
+        r.message
+    );
+
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_PROBE".into(), PG_PW.into());
+    let r = probe(&st, candidate.clone()).await;
+    assert!(r.ok, "corrected secret, tested again: {:?}", r.message);
+
+    secrets.lock().unwrap().remove("secret://WCORE_PROBE");
+    let r = probe(&st, candidate.clone()).await;
+    assert_eq!(
+        serde_json::to_value(r.stage).unwrap(),
+        json!("secrets"),
+        "{:?}",
+        r.message
+    );
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_PROBE".into(), PG_PW.into());
+    let r = probe(&st, candidate).await;
+    assert!(r.ok, "re-created secret: {:?}", r.message);
+}
+
+/// A `secrets::changed` delivery rebuilds the stored connections that use
+/// the secret at once (corrected, deleted, re-created), and drops the cached
+/// value of a secret no stored connection uses.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_secret_rebuilds_its_connection_at_once() {
+    let _dir = env_or_skip!();
+    let secrets: Secrets = Default::default();
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_STORED".into(), "wrong-password".into());
+    let st = state_with(
+        json!({ "pg": secret_pg("secret://WCORE_STORED"), "lite": { "driver": "sqlite", "database": ":memory:" } }),
+        secrets.clone(),
+    )
+    .await;
+    let err = q(&st, "pg", "SELECT 1 AS one").await.unwrap_err();
+    assert!(err.contains("password") || err.contains("auth"), "{err}");
+
+    // Corrected: rebuilt now, not after the cache's 5 minutes.
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_STORED".into(), PG_PW.into());
+    configuration::on_secret_changed(&st, "secret://WCORE_STORED", None).await;
+    assert_eq!(
+        q(&st, "pg", "SELECT 1 AS one").await.unwrap().rows[0]["one"],
+        json!(1)
+    );
+
+    // Deleted: the connection reports it; re-created: back.
+    secrets.lock().unwrap().remove("secret://WCORE_STORED");
+    configuration::on_secret_changed(&st, "secret://WCORE_STORED", None).await;
+    let err = q(&st, "pg", "SELECT 1 AS one").await.unwrap_err();
+    assert!(err.contains("secret://WCORE_STORED"), "{err}");
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_STORED".into(), PG_PW.into());
+    configuration::on_secret_changed(&st, "secret://WCORE_STORED", None).await;
+    assert_eq!(
+        q(&st, "pg", "SELECT 1 AS one").await.unwrap().rows[0]["one"],
+        json!(1)
+    );
+
+    // A secret no stored connection uses: its cached value is dropped.
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_OTHER".into(), "x".into());
+    st.runtime
+        .secrets
+        .ensure(["secret://WCORE_OTHER".to_string()])
+        .await;
+    assert!(st.runtime.secrets.lookup("secret://WCORE_OTHER").is_some());
+    configuration::on_secret_changed(&st, "secret://WCORE_OTHER", None).await;
+    assert!(st.runtime.secrets.lookup("secret://WCORE_OTHER").is_none());
+}

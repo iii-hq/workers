@@ -289,6 +289,34 @@ const SECRET_FN_ID: &str = "database::on-secret-change";
 /// only the connections whose resolved values changed are rebuilt. The
 /// payload is advisory (it never carries a value) and anything unrelated is
 /// ignored, so a direct call can at most cause a re-read.
+/// A `secrets::changed` delivery for `reference` (canonical). Whatever uses
+/// it, its cached value is dropped; when a stored connection uses it, it is
+/// re-read now and the connections whose resolved values changed are rebuilt
+/// (deleted → those connections report the error; re-created → they come
+/// back).
+pub async fn on_secret_changed(
+    state: &AppState,
+    reference: &str,
+    listeners: Option<&crate::triggers::NativeListeners>,
+) {
+    let cfg = state.config.read().await.clone();
+    let referenced = cfg.databases.values().any(|db| {
+        crate::connector::references(db)
+            .iter()
+            .any(|r| r == reference)
+    });
+    if !referenced {
+        state.runtime.secrets.forget(reference);
+        return;
+    }
+    state
+        .runtime
+        .secrets
+        .refresh([reference.to_string()], crate::secrets::Refetch::Invalidate)
+        .await;
+    let _ = apply_config(state, cfg, listeners).await;
+}
+
 pub fn register_secret_trigger(
     iii: &IIIClient,
     state: AppState,
@@ -307,18 +335,7 @@ pub fn register_secret_trigger(
                         ok: false,
                     });
                 };
-                let cfg = st.config.read().await.clone();
-                let referenced = cfg
-                    .databases
-                    .values()
-                    .any(|db| crate::connector::references(db).contains(&reference));
-                if referenced {
-                    st.runtime
-                        .secrets
-                        .refresh([reference], crate::secrets::Refetch::Invalidate)
-                        .await;
-                    let _ = apply_config(&st, cfg, listeners.as_deref()).await;
-                }
+                on_secret_changed(&st, &reference, listeners.as_deref()).await;
                 Ok(OnConfigChangeResponse { ok: true })
             }
         })

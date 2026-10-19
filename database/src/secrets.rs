@@ -365,6 +365,32 @@ impl SecretCache {
         self.fetch_and_store(keys.into_iter().collect(), mode).await
     }
 
+    /// Resolve the references now, bypassing (and leaving untouched) the
+    /// cache: for a probe, which must see the value as it is this moment —
+    /// a password corrected a second ago, a secret deleted and re-created —
+    /// not one cached for a stored connection.
+    pub async fn resolve_fresh(
+        &self,
+        keys: impl IntoIterator<Item = String>,
+    ) -> HashMap<String, Result<SecretValue, SecretError>> {
+        let keys: BTreeSet<String> = keys.into_iter().collect();
+        join_all(keys.into_iter().map(|key| {
+            let fetch = (self.fetch)(key.clone());
+            async move { (key, fetch.await) }
+        }))
+        .await
+        .into_iter()
+        .collect()
+    }
+
+    /// Drop (and wipe) one entry; the next [`Self::ensure`] re-reads it.
+    pub fn forget(&self, key: &str) {
+        self.entries
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(key);
+    }
+
     /// Drop (and wipe) every entry not in `keep`.
     pub fn retain(&self, keep: &BTreeSet<String>) {
         self.entries
@@ -582,6 +608,42 @@ mod tests {
             vec!["secret://A".to_string()]
         );
         assert_eq!(cache.lookup("secret://A").unwrap().unwrap().expose(), "v2");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_resolution_bypasses_the_cache_and_forget_drops_an_entry() {
+        let fake = FakeSecrets::default();
+        fake.set("secret://A", Ok("wrong"));
+        let cache = fake.cache();
+        cache.ensure(["secret://A".to_string()]).await;
+        fake.set("secret://A", Ok("right"));
+        // The cache still holds the old value (its TTL has not run out)…
+        assert_eq!(
+            cache.lookup("secret://A").unwrap().unwrap().expose(),
+            "wrong"
+        );
+        // …a fresh resolution reads the new one and leaves the cache alone.
+        let fresh = cache
+            .resolve_fresh(["secret://A".to_string(), "secret://GONE".to_string()])
+            .await;
+        assert_eq!(fresh["secret://A"].as_ref().unwrap().expose(), "right");
+        assert_eq!(
+            fresh["secret://GONE"].as_ref().unwrap_err(),
+            &SecretError::NotFound
+        );
+        assert_eq!(
+            cache.lookup("secret://A").unwrap().unwrap().expose(),
+            "wrong"
+        );
+        assert!(cache.lookup("secret://GONE").is_none());
+        // Forgotten → the next ensure re-reads it.
+        cache.forget("secret://A");
+        assert!(cache.lookup("secret://A").is_none());
+        cache.ensure(["secret://A".to_string()]).await;
+        assert_eq!(
+            cache.lookup("secret://A").unwrap().unwrap().expose(),
+            "right"
+        );
     }
 
     #[tokio::test]

@@ -286,12 +286,14 @@ async fn run_probe(
         host_key,
         credentials,
     };
-    state
+    // Fresh, never the stored connections' cache: a person who just fixed
+    // the secret and taps Test again must see the fix.
+    let fresh = state
         .runtime
         .secrets
-        .ensure(connector::references(db))
+        .resolve_fresh(connector::references(db))
         .await;
-    let material = Material::resolve(db, |key| state.runtime.secrets.lookup(key))
+    let material = Material::resolve(db, |key| fresh.get(key).cloned())
         .map_err(|e| fail(e, None, Vec::new()))?;
     let credentials = material.credentials();
     let connector =
