@@ -80,6 +80,7 @@ import {
 } from '@/lib/pane-focus'
 import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
+import { trackScreens } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import {
   clearTabDirty,
@@ -219,6 +220,12 @@ export function App({
   )
   const workspace = useWorkspaceTabs()
   const { activeTabId } = workspace
+  // One report per change of what the active workspace shows: switching tabs
+  // or changing a panel's screen.
+  const activeScreens = JSON.stringify(workspace.activeTab.screens)
+  useEffect(() => {
+    trackScreens(JSON.parse(activeScreens))
+  }, [activeScreens])
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
   // Per-workspace phone panel, derived so a tab switch renders its own panel first.
