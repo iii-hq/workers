@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import ab
 import analyze
 import cache_probe
 import common
@@ -673,3 +675,208 @@ class CacheProbeTest(unittest.TestCase):
         failed |= {"retention": None, "retention_back": None, "invalid": "turn 3: failed (overloaded)"}
         down = dict(failed, model="m-down", control_read=None, invalid="turn 1: transport: no engine")
         self.assertEqual(rows, [dict(row, pair=k) for row in (valid, failed, down) for k in range(3)])
+
+
+class AbTest(unittest.TestCase):
+    def test_ratios_relative_to_medium(self):
+        runs = [("m", "low", 60, True), ("m", "low", 70, False), ("m", "low", 80, False)]  # failing runs count alike
+        runs += [("m", "medium", 100, True), ("m", "high", 130, False), ("n", "low", 50, True)]  # n has no medium
+        rows = [{"model": m, "level": lv, "cost_units": c, "pass": p, "error": None} for m, lv, c, p in runs]
+        rows.append({"model": "m", "level": "high", "cost_units": 900, "pass": False, "error": "failed (overloaded)"})
+        self.assertEqual(ab.ratios(rows), {"m": {"low": 0.7, "medium": 1.0, "high": 1.3}})
+
+    def test_check_lookup(self):
+        self.assertTrue(ab.check("a", "it returns None", Path()))
+        self.assertFalse(ab.check("a", "it returns the key", Path()))
+
+    def test_check_investigation(self):
+        both = "send.rs:408 asks reasoning_fields_omitted, then send.rs:411 calls inherit_prior_reasoning"
+        self.assertTrue(ab.check("d", both, Path()))
+        self.assertFalse(ab.check("d", "send.rs:1453 inherit_prior_reasoning", Path()))
+        self.assertFalse(ab.check("d", "send.rs:1445 reasoning_fields_omitted", Path()))
+
+    def test_plant_then_check_fix(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name) / "repo"  # plant writes repo.test-sha256 beside it
+        pkg = repo / ab.PKG
+        shutil.copytree(HERE, pkg, ignore=shutil.ignore_patterns("__pycache__"))  # the test module imports them all
+        ab.plant("a", repo)
+        self.assertEqual((pkg / "analyze.py").read_bytes(), (HERE / "analyze.py").read_bytes())
+        self.assertFalse(Path(f"{repo}.test-sha256").exists())
+        ab.plant("c", repo)
+        self.assertFalse(ab.check("c", "", repo))  # test_p95 fails
+        shutil.copy(HERE / "analyze.py", pkg / "analyze.py")
+        self.assertTrue(ab.check("c", "", repo))
+        with open(pkg / "test_auto_effort.py", "a", encoding="utf-8") as f:
+            f.write("\n")
+        self.assertFalse(ab.check("c", "", repo))  # the tests pass, but the test file changed
+
+    def test_a_turn_that_does_not_end_is_stopped(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        sessions = Path(tmp.name)
+        usage = {"input": 10, "output": 1}
+        written = [meta("s1", "e2e"), user("u1", "do X", 0), *assistant("a1", 10, usage=usage)]
+        (sessions / "s1.jsonl").write_text("".join(line(d) + "\n" for d in written), encoding="utf-8")
+        replies = {
+            "harness::send": {"accepted": True, "session_id": "s1", "turn_id": "t1"},
+            "harness::status": {"session_id": "s1", "turn_id": "t1", "status": "running"},
+            "harness::stop": {"stopping": True},
+        }
+        with (
+            mock.patch.object(common, "trigger", side_effect=lambda fn, payload, timeout_s: replies[fn]) as call,
+            mock.patch.object(ab, "TURN_S", 0),
+        ):
+            steps, why = ab.converse({"message": "do X"}, sessions)
+        self.assertEqual(why, "not ended after 0 s")
+        self.assertEqual(call.call_args.args[:2], ("harness::stop", {"session_id": "s1", "turn_id": "t1"}))
+        self.assertEqual([m["usage"] for m in steps], [usage])  # what it ran up still counts
+        down = common.TriggerError("transport", "no engine")
+        with mock.patch.object(common, "trigger", side_effect=down) as call:
+            self.assertEqual(ab.converse({"message": "do X"}, sessions), ([], "transport: no engine"))
+        self.assertEqual(call.call_count, 1)  # no turn, nothing to stop
+
+    def test_cost_waits_for_the_final_usage(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "s1.jsonl"
+        empty = {"role": "assistant", "content": [], "timestamp": 10}
+        written = [meta("s1", "e2e"), user("u1", "do X", 0), entry("append", "a1", 0, 10, empty)]
+        path.write_text("".join(line(d) + "\n" for d in written), encoding="utf-8")
+        usage = {"input": 10, "output": 1}
+        final = entry("entry", "a1", 1, 10, dict(empty, content=[{"type": "text", "text": "done"}], usage=usage))
+
+        def late(seconds: float) -> None:
+            """The final revision lands while the runner waits."""
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line(final) + "\n")
+
+        replies = {
+            "harness::send": {"accepted": True, "session_id": "s1", "turn_id": "t1"},
+            "harness::status": {"session_id": "s1", "turn_id": "t1", "status": "completed"},
+        }
+        with (
+            mock.patch.object(common, "trigger", side_effect=lambda fn, payload, timeout_s: replies[fn]),
+            mock.patch.object(cache_probe.time, "sleep", side_effect=late) as sleep,
+        ):
+            steps, why = ab.converse({"message": "do X"}, path.parent)
+        self.assertEqual((why, [m["usage"] for m in steps], sleep.call_args_list), (None, [usage], [mock.call(0.5)]))
+
+    def test_pilot_run_then_resume(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out, sessions = Path(tmp.name) / "out", Path(tmp.name) / "data" / "session-manager"
+        sessions.mkdir(parents=True)
+        inputs = {"low": 700, "medium": 1000, "high": 1300}
+        answers = {"low": "It returns the key.", "medium": "It returns None.", "high": "It returns None."}
+        sends, stops, calls, failing = [], [], [], {"high"}  # high's first turn fails; its retry completes
+
+        def stack(fn: str, payload: dict, timeout_s: float) -> dict:
+            """A send writes its session file: one function step, then the answer unless the turn fails."""
+            if fn == "harness::stop":
+                stops.append(payload)
+                return {"stopping": False}
+            if fn == "harness::send":
+                sends.append(payload)
+                sid, level = f"s{len(sends)}", payload["options"]["thinking_level"]
+                usage = {"input": inputs[level], "output": 0, "cache_read": 0, "cache_write": 0}
+                steps = assistant("a1", 10, usage=usage)
+                if level not in failing:
+                    steps += assistant("a2", 20, answers[level], usage)
+                written = [meta(sid, "e2e"), user("u1", payload["message"], 0), *steps]
+                (sessions / f"{sid}.jsonl").write_text("".join(line(d) + "\n" for d in written), encoding="utf-8")
+                return {"accepted": True, "session_id": sid, "turn_id": "t1"}
+            sid = payload["session_id"]
+            if sends[int(sid[1:]) - 1]["options"]["thinking_level"] in failing:
+                failing.clear()
+                return {"session_id": sid, "turn_id": "t1", "status": "failed", "result_error": "overloaded"}
+            return {"session_id": sid, "turn_id": "t1", "status": "completed"}
+
+        def git(*args: str) -> str:
+            calls.append(args)
+            if args[0] == "rev-parse":
+                return "f" * 40 + "\n"
+            if args[0] == "cat-file":  # the sha predates ab.py
+                raise subprocess.CalledProcessError(128, args)
+            if args[1] == "add":
+                Path(args[3]).mkdir(parents=True)
+            else:
+                Path(args[3]).rmdir()
+            return ""
+
+        def ab_main(*args: str) -> list[str]:
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                ab.main([str(out), "--sha", "HEAD", *args])
+            return printed.getvalue().splitlines()
+
+        data = ("--data", str(sessions.parent))
+        with (
+            mock.patch.object(common, "trigger", side_effect=stack) as call,
+            mock.patch.object(ab, "git", side_effect=git),
+        ):
+            pilot, full = ab_main("--pilot"), ab_main()
+            self.assertEqual(call.call_count, 0)
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                ab_main("--pilot", "--run")  # no --data
+            self.assertEqual(call.call_count, 0)
+            ab_main("--pilot", "--run", *data)
+            first = common.read_jsonl(out / "ab.jsonl")
+            first_ratios = json.loads((out / "ratios.json").read_text(encoding="utf-8"))
+            ab_main("--pilot", "--run", *data)  # only the run that errored goes again
+            after = ab_main()
+        with (
+            mock.patch.object(ab, "git", return_value="f" * 40),  # cat-file finds ab.py in the sha's tree
+            redirect_stderr(io.StringIO()) as refused,
+            self.assertRaises(SystemExit),
+        ):
+            ab.main([str(out), "--sha", "HEAD"])
+        self.assertIn("holds ab.py", refused.getvalue())
+        self.assertEqual(pilot[0], f"3 runs at {'f' * 12}, 3 still to run")
+        self.assertEqual(full[0], f"72 runs at {'f' * 12}, 72 still to run")
+        self.assertEqual([p.split(":")[0] for p in full[1:]], list(ab.MODELS))  # units per model, never summed
+        self.assertEqual(after[0], f"72 runs at {'f' * 12}, 69 still to run")  # the pilot's runs are the first three
+        self.assertEqual(after[1], "claude-opus-5-5: 33 runs, about 3,300,000 units if a run costs about 100,000")
+        trees = [out / "worktrees" / f"ab-claude-opus-5-5-{level}-a-0" for level in ab.LEVELS]
+        allow = ["coder::read-file", "coder::search", "coder::tree", "coder::list-folder", "coder::update-file"]
+        allow += ["shell::exec", "engine::functions::info"]  # file read and edit, the tests, and contracts
+        options = {
+            "thinking_level": "low",
+            "functions": {"allow": allow},
+            "metadata": {"fs_scope": {"root": str(trees[0])}},
+        }
+        want = {
+            "message": "What does `confident_choice` in harness/src/reconcile.rs return when the choice is `none`?",
+            "model": "claude-opus-5-5",
+            "provider": "anthropic",
+            "session": {"kind": "e2e"},
+            "options": options,
+        }
+        self.assertEqual(sends[0], want)
+        self.assertEqual([s["options"]["thinking_level"] for s in sends], ["low", "medium", "high", "high"])
+        worktree = [c for c in calls if c[0] == "worktree"]
+        lifecycle = [
+            (("worktree", "add", "--detach", str(t), "f" * 40), ("worktree", "remove", "--force", str(t)))
+            for t in [*trees, trees[2]]
+        ]
+        self.assertEqual(worktree, [c for pair in lifecycle for c in pair])  # each removed before the next is added
+        self.assertEqual(stops, [{"session_id": "s3", "turn_id": "t1"}])  # the failed turn
+        keys = ["model", "level", "task", "run", "pass", "cost_units", "steps", "error"]
+        self.assertEqual(list(first[0]), keys)
+        got = [(r["level"], r["pass"], r["cost_units"], r["steps"], r["error"]) for r in first]
+        want = [
+            ("low", False, 1400.0, 2, None),
+            ("medium", True, 2000.0, 2, None),
+            ("high", False, 1300.0, 1, "failed (overloaded)"),
+        ]
+        self.assertEqual(got, want)
+        self.assertEqual(first_ratios, {"claude-opus-5-5": {"low": 0.7, "medium": 1.0}})  # no cost from an error
+        retried = [(r["level"], r["pass"], r["error"]) for r in common.read_jsonl(out / "ab.jsonl")]
+        self.assertEqual(retried, [("low", False, None), ("medium", True, None), ("high", True, None)])
+        ratios = json.loads((out / "ratios.json").read_text(encoding="utf-8"))
+        self.assertEqual(ratios, {"claude-opus-5-5": {"low": 0.7, "medium": 1.0, "high": 1.3}})
+        prompts = common.read_jsonl(out / "ab_prompts.jsonl")
+        self.assertEqual([p["id"] for p in prompts], [f"ab-{m}-{t}" for m in ab.MODELS for t in "abcd"])
+        want = {"id": "ab-claude-opus-5-5-a", "slice": "ab", "model": "claude-opus-5-5", "level": "medium"}
+        self.assertEqual(prompts[0], dict(want, context="", message=ab.TASKS["a"]))

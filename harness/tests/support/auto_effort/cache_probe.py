@@ -75,7 +75,7 @@ def poll(check: Callable[[], dict | None], every: float, within: float) -> dict 
     return result
 
 
-def wait(session_id: str, turn_id: str) -> str | None:
+def wait(session_id: str, turn_id: str, within: float = 300) -> str | None:
     """None once the turn completes; else why it did not."""
 
     def ended() -> dict | None:
@@ -83,9 +83,9 @@ def wait(session_id: str, turn_id: str) -> str | None:
         done = status.get("turn_id") == turn_id and status.get("status") in ("completed", "cancelled", "failed")
         return status if done else None
 
-    status = poll(ended, 2, 300)
+    status = poll(ended, 2, within)
     if status is None:
-        return "not ended after 300 s"
+        return f"not ended after {within:g} s"
     if status["status"] == "completed":
         return None
     return status["status"] + (f" ({status['result_error']})" if status.get("result_error") else "")
