@@ -1,0 +1,9 @@
+# Agent permissions for the iii-directory worker.
+# Spec: tech-specs/2026-06-agentic/llm-router.md § Security.
+version: 1
+
+rules:
+  # The local MiniLM embed surface is router::embed's fallback: a direct call
+  # bypasses the router's provider choice and vector-space rules — never
+  # agent-callable. The router invokes it worker-to-worker.
+  - '!provider::minilm::embed'
