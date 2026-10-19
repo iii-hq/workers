@@ -5,21 +5,29 @@
  * `database::execute` — a "write" note appears by the actions before a
  * mutating statement runs, and the result line reports affected rows.
  *
+ * A buffer holding several statements runs them one after another, stopping
+ * at the first failure, with a step per statement (its own result, rows and
+ * time); a selection runs on its own from the editor's selection bar. Reads
+ * are capped by the row limit (`max_rows`, default 100) and say so when the
+ * cap cut them short. Format goes through `database::formatSql`.
+ *
  * Explain goes through `database::explain`, which parses the dialect's own
- * plan format into one tree. The panel no longer knows which driver it is
- * talking to, which is why there is no `driver` prop.
+ * plan format into one tree. `driver` only tells the statement splitter
+ * where strings and comments end.
  */
 
 import {
   Button,
   CodeEditor,
   type CodeEditorHandle,
+  type CodeEditorSelectionAction,
   type Host,
   IconButton,
+  Select,
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { CircleAlert, History, Play, X } from 'lucide-react'
+import { CircleAlert, History, Play, WandSparkles, X } from 'lucide-react'
 import {
   forwardRef,
   useCallback,
@@ -30,11 +38,14 @@ import {
   useState,
 } from 'react'
 import { errText } from '../lib/errors'
-import { type ExplainResult, explain } from '../lib/rpc'
+import { type ExplainResult, explain, formatSql } from '../lib/rpc'
+import { splitStatements } from '../lib/sql'
 import {
   type AdhocResult,
+  type DbDriver,
   ddlInfo,
   isReadOnlySql,
+  resultSummary,
   runAdhocSql,
 } from './db-data'
 import { PlanTree } from './PlanTree'
@@ -43,6 +54,12 @@ import { ResultGrid } from './result-grid'
 interface SqlPanelProps {
   host: Host
   db: string
+  /** For the statement splitter: `#` comments on MySQL, `$$` bodies on Postgres. */
+  driver?: DbDriver
+  /** `database::formatSql` is registered. */
+  canFormat?: boolean
+  /** The worker honours `max_rows` (and reports `truncated`). */
+  canLimit?: boolean
   /** Prefill from "query this table" affordances; applied when it changes. */
   seedSql?: string
   /** Table names in the active database — fed to the editor's autocomplete
@@ -76,6 +93,38 @@ export interface SqlPanelHandle {
 }
 
 const HISTORY_LIMIT = 20
+
+/** Row caps offered for reads; `0` is no cap. */
+const ROW_LIMITS = [100, 500, 1000, 5000, 0] as const
+const DEFAULT_ROW_LIMIT = 100
+const LIMIT_KEY = 'iii-console:database:sql-row-limit'
+
+function loadLimit(): number {
+  try {
+    const raw = Number(window.localStorage.getItem(LIMIT_KEY))
+    return (ROW_LIMITS as readonly number[]).includes(raw) && window.localStorage.getItem(LIMIT_KEY) !== null
+      ? raw
+      : DEFAULT_ROW_LIMIT
+  } catch {
+    return DEFAULT_ROW_LIMIT
+  }
+}
+
+function saveLimit(limit: number) {
+  try {
+    window.localStorage.setItem(LIMIT_KEY, String(limit))
+  } catch {
+    // a remembered limit is a convenience
+  }
+}
+
+/** One statement of a run, with what it returned or why it failed. */
+interface RunStep {
+  sql: string
+  result?: AdhocResult
+  error?: string
+}
+
 
 /** The run chord, written the way this keyboard has it. */
 const RUN_CHORD =
@@ -147,7 +196,18 @@ function saveHistory(db: string, entries: string[]) {
 
 export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
   function SqlPanel(
-    { host, db, seedSql, tables, starterSql, onWrite, onDirtyChange },
+    {
+      host,
+      db,
+      driver,
+      canFormat,
+      canLimit,
+      seedSql,
+      tables,
+      starterSql,
+      onWrite,
+      onDirtyChange,
+    },
     ref,
   ) {
     const [sql, setSql] = useState(seedSql ?? '')
@@ -156,8 +216,18 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
       [tables],
     )
     const [running, setRunning] = useState(false)
+    const [formatting, setFormatting] = useState(false)
+    const [formatError, setFormatError] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
-    const [outcome, setOutcome] = useState<AdhocResult | null>(null)
+    const [steps, setSteps] = useState<RunStep[] | null>(null)
+    const [stepIndex, setStepIndex] = useState(0)
+    const [limit, setLimit] = useState<number>(() => loadLimit())
+    const statements = useMemo(
+      () => splitStatements(sql, driver ?? 'unknown'),
+      [sql, driver],
+    )
+    const step = steps?.[stepIndex] ?? null
+    const outcome = step?.result ?? null
     const [history, setHistory] = useState<string[]>(() => loadHistory(db))
     const [historyOpen, setHistoryOpen] = useState(false)
     const [plan, setPlan] = useState<ExplainResult | null>(null)
@@ -218,34 +288,81 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
     // Unmount (db switch, page close) always releases the guard.
     useEffect(() => () => onDirtyChangeRef.current?.(false), [])
 
+    /**
+     * Run `text`: one statement as before, several one after another. A
+     * failure stops the run there — later statements may depend on it — and
+     * the steps so far stay inspectable.
+     */
     const run = useCallback(
-      async (statement: string) => {
-        const trimmed = statement.trim()
+      async (text: string) => {
+        const trimmed = text.trim()
         if (!trimmed || running) return
+        const parts = splitStatements(trimmed, driver ?? 'unknown')
+        const queue = parts.length > 1 ? parts.map((p) => p.text) : [trimmed]
         setRunning(true)
         setError(null)
         setPlan(null)
-        try {
-          const next = await runAdhocSql(host, db, trimmed)
-          setOutcome(next)
-          setRanSql(trimmed)
-          if (next.write) onWrite?.()
-          setHistory((cur) => {
-            const updated = [
-              trimmed,
-              ...cur.filter((s) => s !== trimmed),
-            ].slice(0, HISTORY_LIMIT)
-            saveHistory(db, updated)
-            return updated
-          })
-        } catch (err) {
-          setOutcome(null)
-          setError(errText(err))
-        } finally {
-          setRunning(false)
+        const done: RunStep[] = []
+        let wrote = false
+        const maxRows = canLimit && limit > 0 ? limit : null
+        for (const statement of queue) {
+          try {
+            const result = await runAdhocSql(host, db, statement, { maxRows })
+            if (result.write) wrote = true
+            done.push({ sql: statement, result })
+          } catch (err) {
+            done.push({ sql: statement, error: errText(err) })
+            break
+          }
         }
+        const failed = done.findIndex((d) => d.error !== undefined)
+        setSteps(done)
+        setStepIndex(failed >= 0 ? failed : done.length - 1)
+        setError(
+          failed >= 0
+            ? queue.length > 1
+              ? `Statement ${failed + 1} of ${queue.length} failed — ${done[failed].error}`
+              : (done[failed].error ?? null)
+            : null,
+        )
+        setRanSql(trimmed)
+        setRunning(false)
+        if (wrote) onWrite?.()
+        setHistory((cur) => {
+          const updated = [trimmed, ...cur.filter((s) => s !== trimmed)].slice(
+            0,
+            HISTORY_LIMIT,
+          )
+          saveHistory(db, updated)
+          return updated
+        })
       },
-      [host, db, running, onWrite],
+      [host, db, driver, running, onWrite, canLimit, limit],
+    )
+
+    const format = useCallback(async () => {
+      if (!sql.trim() || formatting) return
+      setFormatting(true)
+      setFormatError(null)
+      try {
+        setSql(await formatSql(host, db, sql))
+      } catch (err) {
+        setFormatError(errText(err))
+      } finally {
+        setFormatting(false)
+      }
+    }, [host, db, sql, formatting])
+
+    const selectionActions = useMemo<CodeEditorSelectionAction[]>(
+      () => [
+        {
+          id: 'run-selection',
+          label: 'Run selection',
+          icon: <Play size={16} aria-hidden />,
+          run: (selection) => void run(selection.text),
+        },
+      ],
+      [run],
     )
 
     /**
@@ -258,7 +375,7 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
       if (!trimmed || running) return
       setRunning(true)
       setError(null)
-      setOutcome(null)
+      setSteps(null)
       try {
         setPlan(await explain(host, db, trimmed))
       } catch (err) {
@@ -285,6 +402,7 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
               placeholder={`select * from … — ${RUN_CHORD} runs against ${db}`}
               aria-label="sql statement"
               completions={completions}
+              selectionActions={selectionActions}
               ref={editorRef}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -318,10 +436,47 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
               size="sm"
               onClick={() => void run(sql)}
               disabled={running || sql.trim() === ''}
+              title={
+                statements.length > 1
+                  ? 'Runs every statement in order; select text to run only that'
+                  : undefined
+              }
             >
               <Play size={16} aria-hidden />
-              {running ? 'Running…' : 'Run'}
+              {running
+                ? 'Running…'
+                : statements.length > 1
+                  ? `Run all · ${statements.length}`
+                  : 'Run'}
             </Button>
+            {canFormat ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void format()}
+                disabled={running || formatting || sql.trim() === ''}
+              >
+                <WandSparkles size={16} aria-hidden />
+                {formatting ? 'Formatting…' : 'Format'}
+              </Button>
+            ) : null}
+            {canLimit ? (
+              <Select
+                appearance="inline"
+                aria-label="row limit"
+                sheetTitle="Row limit"
+                value={String(limit)}
+                options={ROW_LIMITS.map((n) => ({
+                  value: String(n),
+                  label: n === 0 ? 'No limit' : `Limit ${n.toLocaleString()}`,
+                }))}
+                onChange={(next) => {
+                  const n = Number(next)
+                  setLimit(n)
+                  saveLimit(n)
+                }}
+              />
+            ) : null}
             <Button
               variant="ghost"
               size="sm"
@@ -351,18 +506,14 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
                   : `write — runs and commits on ${db}`}
               </span>
             ) : null}
+            {formatError ? (
+              <span className="db-sql-warn" role="alert">
+                format failed — {formatError}
+              </span>
+            ) : null}
             {outcome ? (
               <span className={`db-sql-meta${stale ? ' stale' : ''}`}>
-                {outcome.write
-                  ? (outcome.write.echo ??
-                    `${outcome.write.affectedRows} affected${
-                      outcome.write.lastInsertId !== null
-                        ? ` · id ${outcome.write.lastInsertId}`
-                        : ''
-                    }`)
-                  : `${outcome.result.row_count} row${outcome.result.row_count === 1 ? '' : 's'}`}{' '}
-                · {outcome.durationMs}
-                ms
+                {resultSummary(outcome)}
               </span>
             ) : null}
             {/* The audible twin of the visual states: one polite live region
@@ -375,9 +526,7 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
                 : error
                   ? `query failed: ${error}`
                   : outcome
-                    ? outcome.write
-                      ? `${outcome.write.echo ?? `${outcome.write.affectedRows} rows affected`} in ${outcome.durationMs}ms`
-                      : `${outcome.result.row_count} rows in ${outcome.durationMs}ms`
+                    ? resultSummary(outcome)
                     : isWrite
                       ? `write statement — runs and commits on ${db}`
                       : ''}
@@ -422,7 +571,28 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
           ) : null}
         </div>
         <div className={`db-sql-results${running ? ' running' : ''}`}>
-          {error ? (
+          {steps && steps.length > 1 ? (
+            <ol className="db-sql-steps" aria-label="statements run">
+              {steps.map((s, i) => (
+                <li key={`${i}:${s.sql}`}>
+                  <button
+                    type="button"
+                    className={`db-sql-step${s.error ? ' failed' : ''}`}
+                    aria-current={i === stepIndex ? 'step' : undefined}
+                    onClick={() => setStepIndex(i)}
+                    title={s.sql}
+                  >
+                    <span className="idx">{i + 1}</span>
+                    <span className="sql">{s.sql}</span>
+                    <span className="meta">
+                      {s.result ? resultSummary(s.result) : 'failed'}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : null}
+          {error && (!steps || !outcome) ? (
             <div className="db-pad">
               <StatusPanel
                 variant="alert"

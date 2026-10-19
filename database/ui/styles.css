@@ -825,6 +825,62 @@
 [data-iii-ui="database"] .db-sql-meta.stale {
   opacity: 0.45;
 }
+/* One row per statement of a multi-statement run; the current one is the
+   grid below. */
+[data-iii-ui="database"] .db-sql-steps {
+  margin: 0;
+  padding: 6px 8px;
+  list-style: none;
+  border-bottom: 1px solid var(--color-edge);
+  max-height: 136px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+[data-iii-ui="database"] .db-sql-step {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-sql-step:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="database"] .db-sql-step[aria-current="step"] {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="database"] .db-sql-step .idx {
+  min-width: 1.5em;
+  color: var(--color-ink-ghost);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="database"] .db-sql-step .sql {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-sql-step .meta {
+  color: var(--color-ink-faint);
+  font-size: 11px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="database"] .db-sql-step.failed .idx,
+[data-iii-ui="database"] .db-sql-step.failed .sql,
+[data-iii-ui="database"] .db-sql-step.failed .meta {
+  color: var(--color-alert-strong);
+}
 [data-iii-ui="database"] .db-sql-history {
   border-top: 1px solid var(--color-edge);
   max-height: 160px;

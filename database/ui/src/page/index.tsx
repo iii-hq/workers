@@ -595,6 +595,11 @@ export function DatabasePage({
                       ref={sqlPanelRef}
                       host={host}
                       db={activeDb.name}
+                      driver={activeDb.driver}
+                      canFormat={caps.has(DB.formatSql)}
+                      // `max_rows` shipped with formatSql: a worker that has
+                      // one honours the other.
+                      canLimit={caps.has(DB.formatSql)}
                       seedSql={seedSql}
                       tables={tables.map((t) => t.name)}
                       starterSql={starterSql}
