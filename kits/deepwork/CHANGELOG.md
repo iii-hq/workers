@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+
+- With `isolation=ticket`, the full test suite runs once on the run branch after each wave that landed a ticket, as a background job, before the next wave. Each ticket was verified alone in its own worktree, so two tickets that pass apart and fail together were caught only by the branch review at the end. The result is a `r<N> w<W> landed: green|red|not run` comment on the run ticket. A failure the baseline did not have becomes one `Fix: <tests> after landing <keys>` ticket, retried like any To do ticket.
+
 ## 0.4.2
 
 - A lead no longer copies its ticket's result into the document it writes for the orchestrator. Copies of large results came back `null` or cut down to a pointer, so the synthesis and the final report lost them. The lead's document carries `result_from` (the scope and key of the phase document with status `done`), and the orchestrator, the synthesis card's Inputs and the report read the result there with `state::get`, which the orchestrator now preloads. The synthesis runs when at least two done tickets have a `result_from`.
