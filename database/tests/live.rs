@@ -115,10 +115,54 @@ async fn exec(st: &AppState, db: &str, sql: &str) {
     .unwrap_or_else(|e| panic!("{db}: {sql}: {e}"));
 }
 
+/// Literal credentials travel in `credentials` (the worker refuses them
+/// inside `connection`); references and file paths stay in the entry.
+fn split_credentials(mut connection: Value) -> (Value, Value) {
+    let mut credentials = json!({});
+    let literal = |v: &Value| {
+        v.as_str().is_some_and(|s| {
+            !s.starts_with("secret://") && !s.starts_with("env://") && !s.starts_with('/')
+        })
+    };
+    for path in [
+        vec!["password"],
+        vec!["tls", "client_key"],
+        vec!["ssh", "password"],
+        vec!["ssh", "private_key"],
+        vec!["ssh", "passphrase"],
+    ] {
+        let parent = if path.len() == 1 {
+            Some(&mut connection)
+        } else {
+            connection.get_mut(path[0])
+        };
+        let Some(obj) = parent.and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let key = path[path.len() - 1];
+        if obj.get(key).is_some_and(literal) {
+            let value = obj.remove(key).unwrap();
+            if path.len() == 1 {
+                credentials[key] = value;
+            } else {
+                if credentials.get(path[0]).is_none() {
+                    credentials[path[0]] = json!({});
+                }
+                credentials[path[0]][key] = value;
+            }
+        }
+    }
+    (connection, credentials)
+}
+
 async fn probe(st: &AppState, connection: Value) -> test_connection::TestConnectionResp {
+    let (connection, credentials) = split_credentials(connection);
     test_connection::handle(
         st,
-        serde_json::from_value(json!({ "connection": connection, "timeout_ms": 20000 })).unwrap(),
+        serde_json::from_value(
+            json!({ "connection": connection, "credentials": credentials, "timeout_ms": 20000 }),
+        )
+        .unwrap(),
     )
     .await
     .unwrap()
@@ -974,4 +1018,182 @@ async fn a_dropped_ssh_session_reconnects_on_the_next_connection() {
         answered,
         "the tunnel did not come back after the bastion restarted"
     );
+}
+
+/// One caller's session state never reaches the next caller of a pooled
+/// postgres connection: settings, advisory locks.
+#[tokio::test(flavor = "multi_thread")]
+async fn postgres_session_state_is_reset_between_pooled_calls() {
+    let _dir = env_or_skip!();
+    let mut entry = pg("shop", PG_PW);
+    entry["pool"] = json!({ "max": 1 });
+    let st = state(json!({ "pg": entry })).await;
+    q(
+        &st,
+        "pg",
+        "SELECT set_config('application_name', 'leaked', false)",
+    )
+    .await
+    .unwrap();
+    let name = q(&st, "pg", "SELECT current_setting('application_name') AS a")
+        .await
+        .unwrap();
+    assert_ne!(
+        name.rows[0]["a"],
+        json!("leaked"),
+        "a session setting outlived its call"
+    );
+    q(&st, "pg", "SELECT pg_advisory_lock(424242)")
+        .await
+        .unwrap();
+    // The next checkout recycles the connection (unlocking everything)...
+    q(&st, "pg", "SELECT 1").await.unwrap();
+    // ...so another session can take the lock.
+    let (other, conn) = tokio_postgres::connect(
+        &format!("postgres://shop:{PG_PW}@127.0.0.1:55432/shop"),
+        tokio_postgres::NoTls,
+    )
+    .await
+    .unwrap();
+    tokio::spawn(conn);
+    let row = other
+        .query_one("SELECT pg_try_advisory_lock(424242) AS got", &[])
+        .await
+        .unwrap();
+    assert!(row.get::<_, bool>(0), "the advisory lock outlived its call");
+    other
+        .execute("SELECT pg_advisory_unlock_all()", &[])
+        .await
+        .unwrap();
+}
+
+/// A JSON array is a postgres array parameter, nested arrays dimensions.
+#[tokio::test(flavor = "multi_thread")]
+async fn json_arrays_bind_as_postgres_arrays() {
+    let _dir = env_or_skip!();
+    let st = state(json!({ "pg": pg("shop", PG_PW) })).await;
+    let run = |sql: &'static str, params: Value| {
+        let st = st.clone();
+        async move {
+            query::handle(
+                &st,
+                serde_json::from_value(json!({ "db": "pg", "sql": sql, "params": params }))
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let r = run("SELECT $1::int[] AS a", json!([[1, 2, 3]]))
+        .await
+        .unwrap();
+    assert_eq!(r.rows[0]["a"], json!([1, 2, 3]));
+    let r = run("SELECT $1::text[] AS a", json!([["x", null, "y z"]]))
+        .await
+        .unwrap();
+    assert_eq!(r.rows[0]["a"], json!(["x", null, "y z"]));
+    let r = run("SELECT $1::int8[] AS a", json!([[[1, 2], [3, 4]]]))
+        .await
+        .unwrap();
+    assert_eq!(r.rows[0]["a"], json!([["1", "2"], ["3", "4"]]));
+    let r = run("SELECT cardinality($1::int[]) AS n", json!([[]]))
+        .await
+        .unwrap();
+    assert_eq!(r.rows[0]["n"], json!(0));
+    // A jsonb parameter still takes the document.
+    let r = run("SELECT $1::jsonb AS j", json!([[1, "a"]]))
+        .await
+        .unwrap();
+    assert_eq!(r.rows[0]["j"], json!([1, "a"]));
+}
+
+/// Integers beyond 2^53 (and beyond i64) are stored exactly, as JSON
+/// numbers where they fit i64/u64 and as numeric strings everywhere.
+#[tokio::test(flavor = "multi_thread")]
+async fn big_integers_are_inserted_exactly() {
+    let _dir = env_or_skip!();
+    let st = state(json!({ "pg": pg("shop", PG_PW), "my": mysql("shop", PG_PW) })).await;
+    let insert = |db: &'static str, values: Value| {
+        let st = st.clone();
+        async move {
+            insert_row::handle(
+                &st,
+                serde_json::from_value(
+                    json!({ "db": db, "table": "iii_wcore_big", "values": values }),
+                )
+                .unwrap(),
+            )
+            .await
+        }
+    };
+    exec(&st, "pg", "DROP TABLE IF EXISTS iii_wcore_big").await;
+    exec(
+        &st,
+        "pg",
+        "CREATE TABLE iii_wcore_big (id bigint PRIMARY KEY, n numeric)",
+    )
+    .await;
+    let r = insert(
+        "pg",
+        json!({ "id": 9007199254740993i64, "n": "123456789012345678901234567890" }),
+    )
+    .await
+    .unwrap();
+    let row = r.row.unwrap();
+    assert_eq!(row["id"], json!("9007199254740993"));
+    assert_eq!(row["n"], json!("123456789012345678901234567890"));
+    let r = insert("pg", json!({ "id": "9007199254740995" }))
+        .await
+        .unwrap();
+    assert_eq!(r.row.unwrap()["id"], json!("9007199254740995"));
+    exec(&st, "pg", "DROP TABLE iii_wcore_big").await;
+
+    exec(&st, "my", "DROP TABLE IF EXISTS iii_wcore_big").await;
+    exec(
+        &st,
+        "my",
+        "CREATE TABLE iii_wcore_big (id bigint unsigned PRIMARY KEY, n bigint)",
+    )
+    .await;
+    let r = insert(
+        "my",
+        json!({ "id": 18446744073709551615u64, "n": 9007199254740993i64 }),
+    )
+    .await
+    .unwrap();
+    let row = r.row.expect("re-selected by the supplied key");
+    assert_eq!(row["id"], json!("18446744073709551615"));
+    assert_eq!(row["n"], json!(9007199254740993i64));
+    let r = insert(
+        "my",
+        json!({ "id": "9007199254740993", "n": "-9007199254740993" }),
+    )
+    .await
+    .unwrap();
+    let row = r.row.unwrap();
+    assert_eq!(row["id"], json!("9007199254740993"));
+    assert_eq!(row["n"], json!(-9007199254740993i64));
+    exec(&st, "my", "DROP TABLE iii_wcore_big").await;
+}
+
+/// No sqlite connection can attach another file, from `query` or `execute`.
+#[tokio::test(flavor = "multi_thread")]
+async fn sqlite_attach_is_refused_through_the_worker() {
+    let _dir = env_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("stolen.db");
+    let st = state(json!({ "lite": { "driver": "sqlite", "database": tmp.path().join("main.db").display().to_string() } })).await;
+    let attach = format!("ATTACH DATABASE '{}' AS stolen", target.display());
+    let err = q(&st, "lite", &attach).await.unwrap_err();
+    assert!(err.contains("DRIVER_ERROR"), "{err}");
+    let err = execute::handle(
+        &st,
+        serde_json::from_value(json!({ "db": "lite", "sql": attach })).unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("too many attached") || err.contains("DRIVER_ERROR"),
+        "{err}"
+    );
+    assert!(!target.exists(), "ATTACH must not create the file");
 }

@@ -161,8 +161,14 @@ export const CONNECTION_CASES: TestCase[] = [
     async run({ call }) {
       const ok = await call('database::testConnection', { connection: { driver: 'sqlite', database: ':memory:' } })
       expectEqual(ok.ok, true, 'in-memory sqlite answers')
-      const bad = await call('database::testConnection', {
+      const literal = await call('database::testConnection', {
         connection: { driver: 'postgres', host: '127.0.0.1', port: 1, user: 'u', password: 'p', tls: { mode: 'disable' } },
+        timeout_ms: 3000,
+      })
+      expectEqual(literal.stage, 'config', 'a literal password inside connection is refused')
+      const bad = await call('database::testConnection', {
+        connection: { driver: 'postgres', host: '127.0.0.1', port: 1, user: 'u', tls: { mode: 'disable' } },
+        credentials: { password: 'p' },
         timeout_ms: 3000,
       })
       expectEqual(bad.ok, false, 'a refused port fails')
@@ -209,6 +215,16 @@ export const CONNECTION_CASES: TestCase[] = [
       expectEqual(Number(q.rows[0].one), 1, 'the stored password was kept')
       const again = await call('database::getConnection', { name: driver })
       expectEqual(again.connection.url, got.connection.url, 'still redacted the same way')
+      // The stored password never goes to another server.
+      const moved = String(got.connection.url).replace(/@[^/]+\//, '@127.0.0.1:1/')
+      const elsewhere = await call('database::testConnection', {
+        connection: { ...got.connection, url: moved },
+        name: driver,
+        timeout_ms: 3000,
+      })
+      expectEqual(elsewhere.ok, false, 'a redacted password aimed elsewhere is refused')
+      expectEqual(elsewhere.stage, 'config', 'before any connection is made')
+      expect(String(elsewhere.message).includes('different server'), `says why: ${elsewhere.message}`)
     },
   },
 ]

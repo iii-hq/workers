@@ -105,9 +105,10 @@ databases:
     capture: statements
 ```
 
-- `display` and `folder` are metadata for clients; the worker validates and stores them, never reads the folder.
+- `display` and `folder` are metadata for clients; the worker validates and stores them, never reads the folder. `folder` must be absolute; neither `folder` nor a sqlite `database` path may contain `..` segments.
+- `pool.max` is 1–500, `pool.idle_timeout_ms` at most 24 h, `pool.acquire_timeout_ms` 1 ms–10 min (the schema and `saveConnection` refuse anything else).
 - Connection names written through `database::saveConnection` are 1–64 letters, digits, `_`, `-` or `.`, starting with a letter, digit or `_`.
-- A connection that cannot be built (an unresolvable secret, an SSH failure, an unreadable certificate) does **not** fail the configuration: it gets no pool, `database::listDatabases` reports its `error` and `error_stage`, and its calls fail with `CONFIG_ERROR` naming the cause. Every other connection keeps working, and the worker retries it every 15 s.
+- A connection that cannot be built (an unresolvable secret, an SSH failure, an unreadable certificate — or a hand-edited entry that does not parse or validate) does **not** fail the configuration: it gets no pool, `database::listDatabases` reports its `error` and `error_stage`, and its calls fail with `CONFIG_ERROR` naming the cause. Every other connection keeps working, and the worker retries it every 15 s.
 
 ### Secrets
 
@@ -118,7 +119,9 @@ databases:
 
 The worker resolves them through `secrets::resolve` as consumer **`database`**, so each secret must list `database` in its consumers (`secrets::set` / `secrets::access`). Resolved values are cached (re-read every 5 minutes, failures after 10 s), wiped from memory when replaced, and never logged, returned or written to the configuration. When a secret is rotated, deleted or re-shared, `secrets::changed` makes the worker re-read it and rebuild **only** the connections whose resolved values changed. The worker depends on the `secrets` worker (`iii.worker.yaml`).
 
-**Literal credentials and traces.** A worker's trace spans record each call's payload, redacting keys that look sensitive (`password`, `private_key`, `secret`, `credential`, …) but not `passphrase`, `client_key` or a password inside `url`. A literal sent to `database::testConnection` or `database::saveConnection` in those fields would therefore be readable in the engine's traces. Send credentials as `secret://` / `env://` references (safe anywhere), or put the literals in the request's **`credentials`** object — the same shape as the entry, sensitive fields only (`password`, `url`, `tls.client_key`, `ssh.password`, `ssh.private_key`, `ssh.passphrase`), merged over `connection` by the worker — which traces redact whole. Responses never carry a credential (`getConnection` returns literals as `"__redacted__"`), and no client can observe these three functions.
+**Literal credentials and traces.** A worker's trace spans record each call's payload, redacting keys that look sensitive (`password`, `private_key`, `secret`, `credential`, …) but not `passphrase`, `client_key` or a password inside `url`. So `database::testConnection` and `database::saveConnection` **refuse** a literal credential inside `connection` (a password, an inline key, a passphrase, a url password — `CONFIG_ERROR` naming the field): send it as a `secret://` / `env://` reference (safe anywhere), or in the request's **`credentials`** object — the same shape as the entry, sensitive fields only (`password`, `url`, `tls.client_key`, `ssh.password`, `ssh.private_key`, `ssh.passphrase`), merged over `connection` by the worker — which traces redact whole. Key file paths, `${VAR}` templates and `"__redacted__"` stay in `connection`. Responses never carry a credential (`getConnection` returns literals as `"__redacted__"`), no client can observe these three functions, and the configuration-change observer receives no configuration value (it re-reads it). What traces can still show: a literal that sits in the stored configuration itself (written by hand or by `configuration::set`) whenever another path ships the stored value.
+
+**Where a credential may go.** `database::testConnection` (denied to agents) sends credentials only where they belong: a `"__redacted__"` value taken from the stored entry `name`, or a `secret://` / `env://` reference that a stored connection already uses, is accepted only when the candidate targets that connection's server — the same driver, host and port, the same SSH server and user, and a TLS mode no weaker than the stored one (for `ssh.*` fields: the same SSH server and user). Anything else is refused with `stage: "config"` before a connection is made; enter the value itself to test against a different server. References no stored connection uses (a new connection's fresh secret) are free.
 
 An unresolvable reference fails only its connection, with a message that names the reference and what to do (`secret://X did not resolve: database is not allowed to read secret X; add database to the secret's consumers`), never a value.
 
@@ -273,7 +276,7 @@ const { rows } = await iii.trigger({
 | `database::getConnection` | `{ name }` → `{ name, connection }`: the entry as stored, `${VAR}` templates and `secret://` references intact; a literal password, passphrase, inline private/client key or url password comes back as `"__redacted__"`. |
 | `database::saveConnection` | `{ name, previous_name?, connection, credentials? }` → `{ name, saved, error?, error_stage? }`. Creates (`previous_name` absent; a taken name is refused), updates (`previous_name` = `name`) or renames (`previous_name` = the old name). A field still holding `"__redacted__"` keeps its stored value. Read-modify-write of the whole configuration through `configuration::set` (raw, so other entries' templates survive); returns after the pools reloaded, with the saved connection's build error, if any (it is saved either way). |
 | `database::deleteConnection` | `{ name }` → `{ deleted }`. The last connection cannot be removed. |
-| `database::testConnection` | Probe a candidate entry before saving: `{ connection, credentials?, name?, timeout_ms? }` (legacy `{ url, tls }` still works; `name` resolves `"__redacted__"` from the stored entry). One throwaway connection (and tunnel); secrets resolve like a saved connection's. Returns `{ ok, driver, latency_ms, server_version?, message?, stage?, ssh_host_key? }` — `stage` is where it failed: `config`, `secrets`, `ssh`, `tcp`, `tls`, `auth` or `database`. Failures are data, not errors. |
+| `database::testConnection` | Probe a candidate entry before saving (people only — agents are denied it): `{ connection, credentials?, name?, timeout_ms? }` (legacy `{ url, tls }` still works, a url password going in `credentials.url`; `name` resolves `"__redacted__"` from the stored entry, for the same server only — see "Where a credential may go"). One throwaway connection (and tunnel); secrets resolve like a saved connection's. Returns `{ ok, driver, latency_ms, server_version?, message?, stage?, ssh_host_key? }` — `stage` is where it failed: `config`, `secrets`, `ssh`, `tcp`, `tls`, `auth` or `database`. Failures are data, not errors. |
 
 ### Reading the schema
 
@@ -289,8 +292,8 @@ const { rows } = await iii.trigger({
 | Function | Description |
 |---|---|
 | `database::browseTable` | Paged, sorted, filtered table read — no SQL from the caller. Filters are structured (`{ column, op, value }`) and compile to a parameterised `WHERE` for the driver in hand; `total` honours the same filters. Sorts accept a `mode` (`natural`, `length`, `absolute_value`, `random`) applied across the whole table, not just the page. To follow a foreign key, filter on equality with `page_size: 1`. A filter may instead be **`{ raw: "<SQL boolean expression>" }`**, ANDed in its own parentheses (`column`/`op` ignored). A raw filter can never write: it is refused when it could leave its parentheses (a `;`, a comment, an unbalanced `)`, a placeholder, or a backslash whose meaning depends on server settings — quotes, dollar quotes, backticks and sqlite brackets are lexed like the server lexes them), and it runs in a read-only transaction (postgres, mysql) or under `PRAGMA query_only` (sqlite) through the single-statement protocol. Returns `elapsed_ms` too. |
-| `database::distinctValues` | `{ table, schema?, column, search?, limit? }` → `{ values: [{ value, count }], truncated, elapsed_ms }`: a column's distinct values, most frequent first (default 50, max 500). `search` keeps values whose text form contains it, case-insensitively and literally. For filter pickers. |
-| `database::formatSql` | `{ sql, db?, driver?, uppercase?, indent? }` → `{ sql }`: pretty-printed for the driver's dialect (keywords uppercased by default, 2-space indent); statements and comments preserved, postgres dollar-quoted bodies and sqlite `[identifiers]` untouched. Nothing runs. |
+| `database::distinctValues` | `{ table, schema?, column, search?, limit? }` → `{ values: [{ value, count }], truncated, elapsed_ms }`: a column's distinct values, most frequent first (`limit` 1–500, default 50; 0 is refused). `search` keeps values whose text form contains it, case-insensitively and literally. For filter pickers. |
+| `database::formatSql` | `{ sql, db?, driver?, uppercase?, indent? }` → `{ sql }`: pretty-printed for the driver's dialect (keywords uppercased by default, 2-space indent); statements and comments preserved, literal bytes (strings, quoted identifiers, dollar-quoted bodies, sqlite `[identifiers]`) never change. Refused: NUL bytes, parentheses nested more than 100 deep, and input that could format to more than 8 MB. Nothing runs. |
 | `database::explain` | The query plan as a tree with per-node cost, row estimates and warnings, instead of the driver's raw text. `analyze` collects real timings by **running** the statement, so it defaults to `false` and is refused for anything that is not a single read. |
 | `database::columnStats` | Profile a table's columns. Reads the planner's own statistics by default — free and approximate, labelled `source: planner`. `exact: true` runs real aggregates and scans the table; it is refused above a row-count ceiling. To profile rows you already hold, pipe a `browseTable` result through the `fp` worker instead. |
 
@@ -343,6 +346,8 @@ Every driver returns rows as JSON objects. Values are encoded by column type, so
 | postgres arrays | JSON arrays of the element encoding (nested for several dimensions) |
 | postgres composites / domains | JSON object by field name / the base type's encoding |
 | anything else (extension types) | its bytes as text when printable, else `"\\x…"` hex |
+
+Parameters (`params`, `insertRow` values) take the same forms back. Integers beyond 2^53 are exact when sent as JSON numbers that fit 64 bits **or as numeric strings** — send them as strings from JavaScript, whose numbers lose precision past 2^53. On postgres a JSON array bound to an array parameter (`$1::int[]`) is that array (nested arrays are dimensions).
 
 sqlite returns what each value is stored as (its affinity): `NUMERIC` columns may hold integers or reals, and dates are whatever text was stored. A cell that cannot be decoded never fails the query.
 
@@ -432,6 +437,12 @@ Worth knowing:
   fails its own INSERT with `no such function`. MySQL carries keys only under
   `binlog_row_metadata=FULL`; on the `MINIMAL` default the events are
   count-only and registration warns.
+
+## Isolation between callers
+
+- **Postgres** pooled connections are reset when they come back to the pool (`RESET ALL`, `UNLISTEN *`, `pg_advisory_unlock_all()`, temporary tables and sequences, open cursors), so one call's `set_config(…, false)` or advisory lock never reaches the next caller. Reads run in read-only transactions.
+- **SQLite** connections refuse `ATTACH` (and so `VACUUM`, which attaches underneath): a call can only ever see and write its own database file.
+- **Observers.** `database::query`, `execute`, `browseTable`, `insertRow` and the other data functions are ordinary observable functions: an observer capturing `input` / `output` sees other clients' SQL and rows — the same reach as calling `database::query` itself, so grant `observe` on them as you would grant the call. `testConnection`, `saveConnection` and `getConnection` refuse every observer.
 
 ## Errors
 
