@@ -1334,6 +1334,43 @@ Formal."
         assert_eq!(merged.len(), 4);
     }
 
+    #[tokio::test]
+    async fn the_shared_scale_is_the_callers_not_an_out_of_scope_memorys() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path().to_path_buf()).unwrap();
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        // Not about the user: the layer never ranks it, yet it scores best.
+        main.commit(memory(
+            "fp-legacy",
+            "ledger-sync Bazel deploy: Bazel builds ledger-sync, Bazel deploys it.",
+        ))
+        .await
+        .unwrap();
+        let tea = Memory {
+            entities: vec!["user".into()],
+            ..memory("fp-tea", "The user deploys after tea.")
+        };
+        main.commit(tea.clone()).await.unwrap();
+        let query = "how do I deploy ledger-sync with Bazel";
+        let max = main.bm25_max(query, crate::scope::in_layer).await;
+        let (main, tea_id) = (&main, tea.id.as_str());
+        let score = |shared: f32| async move {
+            {
+                main.recall_scaled(query, None, "", 10, 30, false, shared)
+                    .await
+                    .into_iter()
+                    .find(|(m, _)| m.id == tea_id)
+                    .map(|(_, s)| s)
+                    .unwrap()
+            }
+        };
+        let (at_max, at_double) = (score(max).await, score(2.0 * max).await);
+        assert!(
+            (at_max / at_double - 2.0).abs() < 1e-3,
+            "the caller's scale divides: {at_max} vs {at_double}"
+        );
+    }
+
     #[test]
     fn ambient_floor_respects_a_small_recall_limit() {
         let out = apply_ambient_floor(vec![], vec![memory("fp1", "a"), memory("fp2", "b")], 1);

@@ -758,8 +758,8 @@ impl Bank {
             .fold(0.0, f32::max)
     }
 
-    /// [`Bank::recall`] with the lexical arm divided by `bm25_max` (or this
-    /// bank's own best, when larger), so hits from banks recalled with the
+    /// [`Bank::recall`] with the lexical arm divided by `bm25_max` (this
+    /// bank's own best when it is 0), so hits from banks recalled with the
     /// same `bm25_max` compare by score.
     #[allow(clippy::too_many_arguments)]
     pub async fn recall_scaled(
@@ -810,12 +810,14 @@ impl Bank {
                     .then(|| (f.clone(), s, sem.get(&id).copied().unwrap_or(0.0)))
             })
             .collect();
-        // BM25 over the best candidate (or the caller's shared maximum);
-        // cosine on an absolute scale, so a weak best match stays weak.
-        let max_bm25 = candidates
-            .iter()
-            .map(|c| c.1)
-            .fold(bm25_max.max(f32::EPSILON), f32::max);
+        // BM25 over the caller's shared maximum (computed over what it can
+        // rank), else this bank's best candidate; cosine on an absolute
+        // scale, so a weak best match stays weak.
+        let max_bm25 = if bm25_max > 0.0 {
+            bm25_max
+        } else {
+            candidates.iter().map(|c| c.1).fold(f32::EPSILON, f32::max)
+        };
         let now = now_ms();
         let mut scored: Vec<(Memory, f32)> = candidates
             .into_iter()

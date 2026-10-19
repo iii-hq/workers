@@ -195,15 +195,17 @@ async fn listed(
     (lexical, by_meaning): (usize, usize),
     keep: impl Fn(&Memory) -> bool,
 ) -> Vec<Memory> {
-    let mut seen = HashSet::new();
-    let mut out: Vec<Memory> = bank
+    let lexical_hits: Vec<Memory> = bank
         .recall(query, None, "", usize::MAX, half_life_days, false)
         .await
         .into_iter()
         .map(|(m, _)| m)
-        .filter(|m| keep(m) && seen.insert(m.id.clone()))
-        .take(lexical)
+        .filter(|m| keep(m))
         .collect();
+    // Every lexical hit, listed or past the cap, stays out of meaning's
+    // quota: that quota is for what only the vector finds.
+    let mut seen: HashSet<String> = lexical_hits.iter().map(|m| m.id.clone()).collect();
+    let mut out: Vec<Memory> = lexical_hits.into_iter().take(lexical).collect();
     if let Some(qv) = qv {
         let semantic = bank.semantic(qv, model, usize::MAX, false).await;
         out.extend(
@@ -1872,7 +1874,14 @@ mod tests {
                 "Deploy step {n} of the release runs from the ops folder."
             ));
             lexical.insert(m.id.clone());
-            repo.commit(m).await.unwrap();
+            repo.commit(m.clone()).await.unwrap();
+            // Past the cap and found by the vector too: still a lexical hit,
+            // never in meaning's quota.
+            if n == MAX_KNOWN {
+                repo.set_vector(&m.id, "m", &m.text, vec![1.0, 0.0])
+                    .await
+                    .unwrap();
+            }
         }
         // Paraphrases only the vector finds.
         let shipping = known("Shipping goes out through the pipeline.");
