@@ -3,4 +3,12 @@ ignore = [
   # rust_decimal 1.41 locks optional rkyv 0.7 support, but this project only
   # enables db-tokio-postgres. The vulnerable rkyv code is not compiled.
   "RUSTSEC-2026-0235",
+  # rsa (Marvin: timing side channel on private-key operations; no fixed
+  # release, 0.10 rc included). Only database/Cargo.lock has it, through
+  # russh's `rsa` feature, so the worker can authenticate to an SSH bastion
+  # with an RSA key and verify RSA host keys. The private-key operation is
+  # one signature per SSH session, toward a server the operator chose; the
+  # attack needs an observer timing many operations. Drop `rsa` from russh's
+  # features (Ed25519/ECDSA only) if this ever stops being acceptable.
+  "RUSTSEC-2023-0071",
 ]
