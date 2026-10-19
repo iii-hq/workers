@@ -317,13 +317,17 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             function_id: "router::complete".into(),
             payload: json!({
                 "model": model,
-                "system_prompt": EXTRACT_SYSTEM,
+                "system_prompt": format!(
+                    "{EXTRACT_SYSTEM}\n- Return at most {} memories and {MAX_RULES_PER_TURN} \
+            rules, the most durable first.",
+                    cfg.max_memories_per_turn
+                ),
                 "messages": [{
                     "role": "user",
                     "content": [{ "type": "text", "text": extraction_input(&known, &transcript) }],
                     "timestamp": now_ms() as i64,
                 }],
-                "max_output_tokens": 1024,
+                "max_output_tokens": 2048,
             }),
             action: None,
             timeout_ms: Some(cfg.extraction_timeout_ms),
@@ -911,26 +915,28 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
 /// The items of a `router::complete` reply. A provider failure (rate limit,
 /// expired auth, overload) comes back as Ok with the error text as content:
 /// read as "nothing to save", it would advance the cursor past the turn, so
-/// it is an error and the queue retries.
+/// it is an error and the queue retries. So is a reply cut before any whole
+/// item (reasoning spent the budget, a prose preamble ran long).
 fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, String> {
     let message = &reply["message"];
-    match message["stop_reason"].as_str() {
-        Some("error") => {
-            return Err(format!(
-                "router::complete: provider error {}: {}",
-                message["error_kind"].as_str().unwrap_or("unknown"),
-                message["error_message"].as_str().unwrap_or("")
-            ))
-        }
-        Some("length") => {
-            tracing::warn!(
-                session_id,
-                "extraction reply hit max_output_tokens; keeping its whole items"
-            );
-        }
-        _ => {}
+    if message["stop_reason"] == "error" {
+        return Err(format!(
+            "router::complete: provider error {}: {}",
+            message["error_kind"].as_str().unwrap_or("unknown"),
+            message["error_message"].as_str().unwrap_or("")
+        ));
     }
-    parse_items(&content_text(message.get("content")))
+    let items = parse_items(&content_text(message.get("content")))?;
+    if message["stop_reason"] == "length" {
+        if items.is_empty() {
+            return Err("router::complete: reply hit max_output_tokens before any item".into());
+        }
+        tracing::warn!(
+            session_id,
+            "extraction reply hit max_output_tokens; keeping its whole items"
+        );
+    }
+    Ok(items)
 }
 
 /// Parse the model reply item by item: one malformed item is skipped, not
@@ -1077,6 +1083,12 @@ mod tests {
             texts(&reply_items(&reply("length", cut), "s").unwrap()),
             ["The user lives in Porto."]
         );
+        for cut in ["", "Looking at the excerpt, the user"] {
+            assert!(
+                reply_items(&reply("length", cut), "s").is_err(),
+                "cut before any item: retry, never advance past the turn"
+            );
+        }
         assert!(reply_items(&reply("end", "[]"), "s").unwrap().is_empty());
     }
 
