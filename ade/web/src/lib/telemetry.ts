@@ -82,6 +82,11 @@ export async function initTelemetry(): Promise<void> {
     bootstrap: settings.distinct_id
       ? { distinctID: settings.distinct_id, isIdentifiedID: true }
       : undefined,
+    // Hash routes can carry worker context (`#/worker/...?context=`), so no
+    // URL field keeps its hash, query values are masked, and no referrer.
+    disable_capture_url_hashes: true,
+    mask_personal_data_properties: true,
+    save_referrer: false,
     autocapture: false,
     rageclick: false,
     // Sent per workspace tab by `trackScreens` instead.

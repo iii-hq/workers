@@ -107,6 +107,15 @@ describe('telemetry', () => {
     expect(capture).not.toHaveBeenCalled()
   })
 
+  it('keeps URL hashes, query values and the referrer out of every event', async () => {
+    await load()
+    expect(init.mock.calls[0][1]).toMatchObject({
+      disable_capture_url_hashes: true,
+      mask_personal_data_properties: true,
+      save_referrer: false,
+    })
+  })
+
   it('reports a visit at 15, 30, 45, 60 minutes, then hourly, with the delta only', async () => {
     const t = await load()
     expect(init).toHaveBeenCalledOnce()
