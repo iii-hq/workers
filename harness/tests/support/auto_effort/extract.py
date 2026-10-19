@@ -34,6 +34,8 @@ def is_turn_start(message: dict) -> bool:
 def session_rows(path: Path, source: str) -> list[dict]:
     lines = common.read_jsonl(path)
     meta = next((line["meta"] for line in reversed(lines) if "meta" in line), {})
+    if meta.get("kind", "user") != "user":  # e2e and automation sessions are scripted; the store's default is user
+        return []
     metadata = meta.get("metadata") or {}
     sid = meta.get("session_id", path.stem)
     child = bool(metadata.get("parent_session_id"))

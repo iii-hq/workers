@@ -16,8 +16,8 @@ def line(d: dict) -> str:
     return json.dumps(d)
 
 
-def meta(sid: str, **metadata) -> dict:
-    return {"type": "meta", "meta": {"session_id": sid, "kind": "user", "metadata": metadata}}
+def meta(sid: str, kind: str = "user", **metadata) -> dict:
+    return {"type": "meta", "meta": {"session_id": sid, "kind": kind, "metadata": metadata}}
 
 
 def entry(type_: str, eid: str, rev: int, ts: int, message: dict) -> dict:
@@ -50,8 +50,8 @@ class ExtractTest(unittest.TestCase):
         self.dir = Path(tmp.name) / "src" / "data" / "session-manager"
         self.dir.mkdir(parents=True)
 
-    def write(self, sid: str, lines: list[dict], **metadata) -> None:
-        text = "".join(line(d) + "\n" for d in [meta(sid, **metadata), *lines])
+    def write(self, sid: str, lines: list[dict], kind: str = "user", **metadata) -> None:
+        text = "".join(line(d) + "\n" for d in [meta(sid, kind, **metadata), *lines])
         (self.dir / f"{sid}.jsonl").write_text(text, encoding="utf-8")
 
     def rows(self) -> list[dict]:
@@ -66,6 +66,13 @@ class ExtractTest(unittest.TestCase):
         lines = [user("u1", "build the parser", 0), *assistant("a1", 10, "done"), user("u2", "also add tests", 20)]
         self.write("c1", lines, parent_session_id="s1")
         self.assertEqual([(r["slice"], r["message"]) for r in self.rows()], [("child", "build the parser")])
+
+    def test_keeps_only_user_sessions(self):
+        self.write("a", [user("u1", "do X", 0)], kind="e2e")
+        self.write("b", [user("u1", "do X", 0)])
+        self.write("c", [user("u1", "do Y", 0)], kind="automation")
+        (self.dir / "d.jsonl").write_text(line(user("u1", "do Z", 0)) + "\n", encoding="utf-8")  # no meta: kind user
+        self.assertEqual([r["session_id"] for r in self.rows()], ["b", "d"])
 
     def test_dedupes_same_text_in_slice(self):
         self.write("s1", [user("u1", "same text", 0)])
