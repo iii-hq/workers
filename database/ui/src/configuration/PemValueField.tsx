@@ -137,7 +137,9 @@ function PemValueControl({
             <span className="db-cfg-secret-ref" data-field={dataField}>
               {pemSummary(text)}
             </span>
-            <span className="db-cfg-secret-status">Inline in configuration · {text.trim().split('\n').length} lines</span>
+            <span className="db-cfg-secret-status">
+              Inline in configuration · {text.trim().split('\n').length} lines
+            </span>
           </span>
           <span className="db-cfg-secret-buttons">
             <Button type="button" variant="ghost" size="sm" onClick={() => setPasting(true)}>

@@ -22,6 +22,7 @@ vi.mock('@iii-dev/console-ui', () => ({
     <div data-dropdown-content="">{children}</div>
   ),
   DropdownMenuItem: ({ children, onSelect: _onSelect }: { children?: ReactNode; onSelect?: () => void }) => (
+    // biome-ignore lint/a11y/useFocusableInteractive: a markup stand-in for the console's DropdownMenuItem
     <div role="menuitem">{children}</div>
   ),
   List: ({ children, ...props }: ComponentProps<'div'>) => <div {...props}>{children}</div>,
@@ -56,6 +57,7 @@ vi.mock('@iii-dev/console-ui', () => ({
   }) => (
     <div role="radiogroup" aria-label={ariaLabel} data-segmented-value={value}>
       {options.map((option) => (
+        // biome-ignore lint/a11y/useSemanticElements: mirrors the console's SegmentedControl markup
         <button key={option.value} type="button" role="radio" aria-checked={option.value === value}>
           {option.label}
         </button>
@@ -381,10 +383,11 @@ describe('DatabaseConfigForm', () => {
     })
 
     it('asks for a file path, not a server, for SQLite', () => {
-      const html = renderDatabaseValue(
-        { databases: { shop: { driver: 'sqlite', database: './data/shop.db' } } },
-        ['databases', 'shop', 'database'],
-      )
+      const html = renderDatabaseValue({ databases: { shop: { driver: 'sqlite', database: './data/shop.db' } } }, [
+        'databases',
+        'shop',
+        'database',
+      ])
 
       expect(html).toContain('Database file')
       expect(html).toContain('value="./data/shop.db"')
@@ -450,8 +453,16 @@ describe('DatabaseConfigForm', () => {
       const legacySchema = {
         definitions: { DatabaseConfig: { type: 'object', properties: { url: {}, tls: {}, pool: {} } } },
       }
-      const html = renderDatabaseValue({ databases: { primary: { url: 'postgres://db/app' } } }, DETAIL_FOCUS, legacySchema)
-      const overview = renderDatabaseValue({ databases: { primary: { url: 'postgres://db/app' } } }, undefined, legacySchema)
+      const html = renderDatabaseValue(
+        { databases: { primary: { url: 'postgres://db/app' } } },
+        DETAIL_FOCUS,
+        legacySchema,
+      )
+      const overview = renderDatabaseValue(
+        { databases: { primary: { url: 'postgres://db/app' } } },
+        undefined,
+        legacySchema,
+      )
 
       expect(html).toContain('Connection URL')
       expect(html).not.toContain('Convert to fields')
@@ -470,7 +481,7 @@ describe('DatabaseConfigForm', () => {
       expect(html).toContain('role="menuitem">PostgreSQL<')
       expect(html).toContain('role="menuitem">SQLite<')
     })
-  
+
     it('keeps a key file path as a path, not a secret', () => {
       const html = renderDatabaseValue(
         shop({ ssh: { host: 'bastion', user: 'ubuntu', private_key: '/home/me/.ssh/id_ed25519' } }),
@@ -492,7 +503,7 @@ describe('DatabaseConfigForm', () => {
       expect(html).toContain('The tunnel needs a password or a private key.')
       expect(html).toContain('Use an absolute path on the engine host.')
     })
-  
+
     it('without a schema, trusts entries already stored in the structured shape', () => {
       const structured = renderDatabaseValue(shop(), SHOP_FOCUS, null)
       const legacy = renderDatabaseValue({ databases: { primary: { url: 'postgres://db/app' } } }, DETAIL_FOCUS, null)

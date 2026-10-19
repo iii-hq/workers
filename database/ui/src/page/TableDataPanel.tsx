@@ -35,13 +35,7 @@ import { cellText, rowAsTsv } from '../lib/grid-cursor'
 import { type FilterSpec, isComplete, PAGE_SIZE } from '../lib/rpc'
 import { CellInspector } from './CellInspector'
 import { ColumnStatsPanel } from './ColumnStatsPanel'
-import {
-  browseTableRef,
-  type DbDriver,
-  distinctValuesRef,
-  type TableSort,
-  tableColumns,
-} from './db-data'
+import { browseTableRef, type DbDriver, distinctValuesRef, type TableSort, tableColumns } from './db-data'
 import { FilterBar, type SuggestFn } from './FilterBar'
 import { NewRowDialog } from './NewRowDialog'
 import { Pagination } from './pagination'
@@ -87,11 +81,7 @@ const SUGGESTIONS = 12
 const INSERTED_NOTE_MS = 4000
 
 /** The modifier key, written the way this keyboard has it. */
-const MOD =
-  typeof navigator !== 'undefined' &&
-  /mac/i.test(navigator.platform || navigator.userAgent)
-    ? '⌘'
-    : 'ctrl+'
+const MOD = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent) ? '⌘' : 'ctrl+'
 
 export function TableDataPanel({
   host,
@@ -124,10 +114,7 @@ export function TableDataPanel({
   // Only complete, enabled chips are sent. Serialising them into the fetcher's
   // dependency key means a half-typed value does not trigger a read, and the
   // page settles once the chip becomes valid.
-  const applied = useMemo(
-    () => filters.filter((f) => !f.disabled && isComplete(f)),
-    [filters],
-  )
+  const applied = useMemo(() => filters.filter((f) => !f.disabled && isComplete(f)), [filters])
   const appliedKey = JSON.stringify(applied)
 
   // Editing a filter invalidates the page number and the selected row: page 4
@@ -165,15 +152,9 @@ export function TableDataPanel({
   )
 
   const columnInfo = useMemo(() => columnsRead.data ?? [], [columnsRead.data])
-  const primaryKeys = useMemo(
-    () => columnInfo.filter((c) => c.pk).map((c) => c.name),
-    [columnInfo],
-  )
+  const primaryKeys = useMemo(() => columnInfo.filter((c) => c.pk).map((c) => c.name), [columnInfo])
   const foreignKeys = useMemo(() => {
-    const out: Record<
-      string,
-      NonNullable<(typeof columnInfo)[number]['fk']>
-    > = {}
+    const out: Record<string, NonNullable<(typeof columnInfo)[number]['fk']>> = {}
     for (const c of columnInfo) {
       if (c.fk) out[c.name] = c.fk
     }
@@ -211,9 +192,7 @@ export function TableDataPanel({
     onActivate: (r) => setSelectedRow((cur) => (cur === r ? null : r)),
   })
 
-  const cursorColumn = keyboard.cursor
-    ? gridCols[keyboard.cursor.col]
-    : undefined
+  const cursorColumn = keyboard.cursor ? gridCols[keyboard.cursor.col] : undefined
   const cursorMeta = columnInfo.find((c) => c.name === cursorColumn)
   const totalPages = useMemo(() => {
     if (total !== null) return Math.max(1, Math.ceil(total / pageSize))
@@ -296,11 +275,7 @@ export function TableDataPanel({
                 ? `no rows in ${table} match the ${applied.length} filter${applied.length === 1 ? '' : 's'} above`
                 : `${table} has no rows`
             }
-            action={
-              insertable
-                ? { label: 'New row', onClick: () => setNewRowOpen(true) }
-                : undefined
-            }
+            action={insertable ? { label: 'New row', onClick: () => setNewRowOpen(true) } : undefined}
           />
           {insertedNote ? (
             <span className="db-sr-only" role="status">
@@ -314,8 +289,7 @@ export function TableDataPanel({
   }
 
   const rows = result.rows
-  const detailRow =
-    selectedRow !== null && selectedRow < rows.length ? rows[selectedRow] : null
+  const detailRow = selectedRow !== null && selectedRow < rows.length ? rows[selectedRow] : null
 
   return (
     <div className="db-data">
@@ -328,21 +302,13 @@ export function TableDataPanel({
             insertable || onOpenInSql ? (
               <>
                 {insertable ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setNewRowOpen(true)}
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => setNewRowOpen(true)}>
                     <Plus size={16} aria-hidden />
                     New row
                   </Button>
                 ) : null}
                 {onOpenInSql ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onOpenInSql(table)}
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => onOpenInSql(table)}>
                     Open in SQL
                   </Button>
                 ) : null}
@@ -353,8 +319,7 @@ export function TableDataPanel({
           <span className="name">{table}</span>
           <span>
             {(() => {
-              const n =
-                result.columns?.length ?? Object.keys(rows[0] ?? {}).length
+              const n = result.columns?.length ?? Object.keys(rows[0] ?? {}).length
               return `${n} column${n === 1 ? '' : 's'}`
             })()}
           </span>
@@ -362,13 +327,9 @@ export function TableDataPanel({
               beside three active filters reads as the table's size. The
               worker counts with the same filters applied, so say so. */}
           <span className={total === null ? uiClasses.pulse : undefined}>
-            {total !== null
-              ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}`
-              : '… rows'}
+            {total !== null ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}` : '… rows'}
             {filtering ? ' matching' : ''}
-            {typeof result.elapsed_ms === 'number'
-              ? ` · ${result.elapsed_ms} ms`
-              : ''}
+            {typeof result.elapsed_ms === 'number' ? ` · ${result.elapsed_ms} ms` : ''}
           </span>
           {insertedNote ? (
             <span className="db-data-note" role="status">
@@ -394,17 +355,14 @@ export function TableDataPanel({
               Sorted by {sort.column} {sort.dir} · Clear
             </Button>
           ) : null}
-          {pageRead.loading ? (
-            <span className={uiClasses.pulse}>Refreshing…</span>
-          ) : null}
+          {pageRead.loading ? <span className={uiClasses.pulse}>Refreshing…</span> : null}
           {view.view.hidden.length > 0 ? (
             <Button variant="ghost" size="sm" onClick={view.showAll}>
               {view.view.hidden.length} column
               {view.view.hidden.length === 1 ? '' : 's'} hidden · Show all
             </Button>
           ) : null}
-          {Object.keys(view.view.widths).length > 0 ||
-          view.view.order.length > 0 ? (
+          {Object.keys(view.view.widths).length > 0 || view.view.order.length > 0 ? (
             <Button variant="ghost" size="sm" onClick={view.reset}>
               Reset layout
             </Button>
@@ -414,11 +372,7 @@ export function TableDataPanel({
             catches keys bubbling from the focused cell, so it is a scroll
             region rather than a control of its own. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: scroll container catching keys bubbled from the focused gridcell */}
-        <div
-          className="db-data-scroll"
-          ref={gridRef}
-          onKeyDown={keyboard.onKeyDown}
-        >
+        <div className="db-data-scroll" ref={gridRef} onKeyDown={keyboard.onKeyDown}>
           <ResultGrid
             keyboard={keyboard}
             view={view}
@@ -435,11 +389,7 @@ export function TableDataPanel({
             onRowClick={(i) => setSelectedRow((cur) => (cur === i ? null : i))}
             selectedRow={selectedRow}
             foreignKeys={foreignKeys}
-            onFollowFk={
-              onFollow
-                ? (fk, value) => onFollow(fk.table, fk.column, value)
-                : undefined
-            }
+            onFollowFk={onFollow ? (fk, value) => onFollow(fk.table, fk.column, value) : undefined}
             stickyHeader
             hideFooter
           />
@@ -467,8 +417,7 @@ export function TableDataPanel({
           {/* Advertised nowhere else — without this line the roving-cursor
               grid reads as mouse-only. */}
           <span className="db-kbd-hint">
-            Arrows move · PgUp/PgDn turn pages · {MOD}c copies a cell · {MOD}⇧c
-            the row
+            Arrows move · PgUp/PgDn turn pages · {MOD}c copies a cell · {MOD}⇧c the row
           </span>
         </StatusBar>
       </div>
@@ -503,9 +452,7 @@ export function TableDataPanel({
               </IconButton>
             </div>
             <TabsContent value="row">
-              {detailRow ? (
-                <RowDetail row={detailRow} columns={columnInfo} />
-              ) : null}
+              {detailRow ? <RowDetail row={detailRow} columns={columnInfo} /> : null}
             </TabsContent>
             <TabsContent value="cell">
               {keyboard.cursor && cursorColumn ? (
@@ -519,23 +466,12 @@ export function TableDataPanel({
                   col={keyboard.cursor.col}
                   colCount={gridCols.length}
                   foreignKey={cursorMeta?.fk}
-                  onFollow={
-                    onFollow
-                      ? (fk, v) => onFollow(fk.table, fk.column, v)
-                      : undefined
-                  }
+                  onFollow={onFollow ? (fk, v) => onFollow(fk.table, fk.column, v) : undefined}
                 />
               ) : null}
             </TabsContent>
             <TabsContent value="stats">
-              {cursorColumn ? (
-                <ColumnStatsPanel
-                  host={host}
-                  db={db}
-                  table={table}
-                  column={cursorColumn}
-                />
-              ) : null}
+              {cursorColumn ? <ColumnStatsPanel host={host} db={db} table={table} column={cursorColumn} /> : null}
             </TabsContent>
           </Tabs>
         </div>

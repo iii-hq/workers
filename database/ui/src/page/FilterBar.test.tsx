@@ -5,7 +5,12 @@ import { rawFilter } from '../lib/rpc'
 import { FilterBar } from './FilterBar'
 
 vi.mock('@iii-dev/console-ui', () => ({
-  Button: ({ children, variant: _v, size: _s, ...props }: ComponentProps<'button'> & { variant?: string; size?: string }) => (
+  Button: ({
+    children,
+    variant: _v,
+    size: _s,
+    ...props
+  }: ComponentProps<'button'> & { variant?: string; size?: string }) => (
     <button type="button" {...props}>
       {children}
     </button>

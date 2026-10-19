@@ -25,7 +25,7 @@ import { ChevronLeft, ChevronRight, CircleAlert, KeyRound, Link2 } from 'lucide-
 import { type ReactNode, useCallback, useMemo, useState } from 'react'
 import { errText } from '../lib/errors'
 import { cellText } from '../lib/grid-cursor'
-import { type FilterSpec, isComplete, insertRow } from '../lib/rpc'
+import { type FilterSpec, insertRow, isComplete } from '../lib/rpc'
 import type { SqlDialect } from '../lib/sql'
 import { browseTableRef, type ColumnInfo, splitTableRef, tableColumns } from './db-data'
 import { FilterBar } from './FilterBar'
@@ -163,12 +163,7 @@ export function NewRowDialog({
               ))}
             </div>
             {failure ? (
-              <StatusPanel
-                variant="alert"
-                icon={<CircleAlert size={18} />}
-                headline="Insert failed"
-                detail={failure}
-              />
+              <StatusPanel variant="alert" icon={<CircleAlert size={18} />} headline="Insert failed" detail={failure} />
             ) : null}
             <div className="db-newrow-actions">
               {Object.keys(errors).length > 0 ? (
@@ -225,9 +220,7 @@ function FieldRow({
 
   let control: ReactNode
   if (state.mode !== 'value') {
-    control = (
-      <span className="db-newrow-placeholder">{state.mode === 'null' ? 'NULL' : defaultLabel}</span>
-    )
+    control = <span className="db-newrow-placeholder">{state.mode === 'null' ? 'NULL' : defaultLabel}</span>
   } else if (kind === 'bool') {
     control = (
       <Select

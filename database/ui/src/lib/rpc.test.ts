@@ -45,7 +45,11 @@ describe('raw filter chips', () => {
       raw: 'a > 1',
       disabled: true,
     })
-    expect(toWireFilter({ column: 'a', op: 'gt', value: 1, raw: undefined })).toEqual({ column: 'a', op: 'gt', value: 1 })
+    expect(toWireFilter({ column: 'a', op: 'gt', value: 1, raw: undefined })).toEqual({
+      column: 'a',
+      op: 'gt',
+      value: 1,
+    })
   })
 
   it('sends complete chips only, raw ones in wire form', async () => {
@@ -134,7 +138,10 @@ describe('new functions', () => {
   it('inserts a row and reads back what was stored', async () => {
     const { host, calls } = fakeHost(() => ({ row: { id: 9, email: 'a@x' }, affected_rows: 1, elapsed_ms: 2 }))
     const res = await insertRow(host, 'sq', 'users', null, { email: 'a@x' })
-    expect(calls[0]).toEqual({ fn: 'database::insertRow', payload: { db: 'sq', table: 'users', values: { email: 'a@x' } } })
+    expect(calls[0]).toEqual({
+      fn: 'database::insertRow',
+      payload: { db: 'sq', table: 'users', values: { email: 'a@x' } },
+    })
     expect(res.row).toEqual({ id: 9, email: 'a@x' })
   })
 

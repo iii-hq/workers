@@ -25,6 +25,7 @@ export function IconPicker({
     <div className="db-cfg-icons" role="radiogroup" aria-label={label}>
       {custom ? (
         // Written by another client: kept as stored, shown as the fallback glyph.
+        // biome-ignore lint/a11y/useSemanticElements: icon buttons styled as a radio group; native radios would need the whole control restyled
         <button type="button" role="radio" aria-checked className="db-cfg-icon" title={`${value} (kept as stored)`}>
           <ConnectionIcon name={value} color={color} />
         </button>
@@ -32,6 +33,7 @@ export function IconPicker({
       {CONNECTION_ICONS.map((icon) => {
         const selected = !custom && icon === current
         return (
+          // biome-ignore lint/a11y/useSemanticElements: icon buttons styled as a radio group; native radios would need the whole control restyled
           <button
             key={icon}
             type="button"
@@ -63,10 +65,17 @@ export function ColorPicker({
   const custom = normalized !== undefined && !CONNECTION_COLORS.includes(normalized)
   return (
     <div className="db-cfg-swatches" role="radiogroup" aria-label={label}>
-      <Button type="button" variant="ghost" size="sm" aria-pressed={value === undefined} onClick={() => onChange(undefined)}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-pressed={value === undefined}
+        onClick={() => onChange(undefined)}
+      >
         None
       </Button>
       {CONNECTION_COLORS.map((color) => (
+        // biome-ignore lint/a11y/useSemanticElements: colour swatches styled as a radio group; native radios would need the whole control restyled
         <button
           key={color}
           type="button"

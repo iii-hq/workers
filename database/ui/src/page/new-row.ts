@@ -12,7 +12,18 @@
 import type { ForeignKeyRef } from '../lib/rpc'
 import { typeCategory } from '../lib/rpc'
 
-export type InputKind = 'integer' | 'number' | 'decimal' | 'bool' | 'date' | 'datetime' | 'time' | 'json' | 'text' | 'longtext' | 'binary'
+export type InputKind =
+  | 'integer'
+  | 'number'
+  | 'decimal'
+  | 'bool'
+  | 'date'
+  | 'datetime'
+  | 'time'
+  | 'json'
+  | 'text'
+  | 'longtext'
+  | 'binary'
 
 export interface InsertColumn {
   name: string

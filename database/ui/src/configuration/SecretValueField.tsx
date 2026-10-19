@@ -92,7 +92,7 @@ function SecretValueControl({
   const [reload, setReload] = useState(0)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `reload` re-reads after this field stored a value
+  // `reload` re-reads after this field stored a value.
   useEffect(() => {
     let alive = true
     setMeta(undefined)
@@ -239,7 +239,13 @@ function SecretValueControl({
                   event.target.value = ''
                 }}
               />
-              <Button type="button" variant="ghost" size="sm" disabled={locked} onClick={() => fileRef.current?.click()}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={locked}
+                onClick={() => fileRef.current?.click()}
+              >
                 <Upload size={16} aria-hidden />
                 Upload file
               </Button>

@@ -133,8 +133,8 @@ describe('resultSummary', () => {
         write: { affectedRows: 3, lastInsertId: null, echo: null },
       }),
     ).toBe('3 affected in 2 ms')
-    expect(
-      resultSummary({ ...read(0), write: { affectedRows: 0, lastInsertId: null, echo: 'dropped table x' } }),
-    ).toBe('dropped table x in 40 ms')
+    expect(resultSummary({ ...read(0), write: { affectedRows: 0, lastInsertId: null, echo: 'dropped table x' } })).toBe(
+      'dropped table x in 40 ms',
+    )
   })
 })

@@ -92,8 +92,7 @@ export function FilterBar({
   /** Value suggestions for a column; absent when the worker cannot give them. */
   suggest?: SuggestFn
 }) {
-  const replace = (i: number, f: FilterSpec) =>
-    onChange(filters.map((x, j) => (j === i ? f : x)))
+  const replace = (i: number, f: FilterSpec) => onChange(filters.map((x, j) => (j === i ? f : x)))
   const remove = (i: number) => {
     setTarget(null)
     onChange(filters.filter((_, j) => j !== i))
@@ -102,8 +101,7 @@ export function FilterBar({
   const [target, setTarget] = useState<SuggestTarget | null>(null)
   const [suggestions, setSuggestions] = useState<ValueSuggestion[]>([])
   const targetFilter = target ? filters[target.index] : undefined
-  const targetColumn =
-    targetFilter && !isRawFilter(targetFilter) ? targetFilter.column : ''
+  const targetColumn = targetFilter && !isRawFilter(targetFilter) ? targetFilter.column : ''
 
   useEffect(() => {
     if (!suggest || !target || !targetColumn) {
@@ -141,17 +139,13 @@ export function FilterBar({
   const add = () => {
     const first = columns[0]
     if (!first) return
-    onChange([
-      ...filters,
-      { column: first.name, op: opsFor(typeCategory(first.type))[0] },
-    ])
+    onChange([...filters, { column: first.name, op: opsFor(typeCategory(first.type))[0] }])
   }
 
   const active = filters.filter((f) => !f.disabled && isComplete(f)).length
   const drafts = filters.filter((f) => !isComplete(f)).length
-  const focusValue =
-    (index: number) => (slot: SuggestTarget['slot'], search: string) =>
-      setTarget({ index, slot, search })
+  const focusValue = (index: number) => (slot: SuggestTarget['slot'], search: string) =>
+    setTarget({ index, slot, search })
 
   return (
     <div className="db-filters">
@@ -179,12 +173,7 @@ export function FilterBar({
         ),
       )}
 
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={add}
-        disabled={columns.length === 0}
-      >
+      <Button variant="ghost" size="sm" onClick={add} disabled={columns.length === 0}>
         <Plus size={16} aria-hidden />
         Filter
       </Button>
@@ -216,11 +205,7 @@ export function FilterBar({
         // A row of its own under the chips rather than a popover: a chip
         // clips its contents, and a strip stays readable at any pane width.
         // Picking keeps the focus in the value input (mousedown is swallowed).
-        <div
-          className="db-suggest"
-          role="listbox"
-          aria-label={`values of ${targetColumn}`}
-        >
+        <div className="db-suggest" role="listbox" aria-label={`values of ${targetColumn}`}>
           <span className="db-suggest-label">{targetColumn}</span>
           {suggestions.map((s) => (
             <button
@@ -276,25 +261,15 @@ function RawChip({
   }
   const pending = draft !== applied
   return (
-    <span
-      className={`db-chip raw${!isComplete(filter) || pending ? ' draft' : ''}${filter.disabled ? ' off' : ''}`}
-    >
+    <span className={`db-chip raw${!isComplete(filter) || pending ? ' draft' : ''}${filter.disabled ? ' off' : ''}`}>
       <button
         type="button"
         className="db-chip-seg toggle"
         aria-pressed={!filter.disabled}
-        title={
-          filter.disabled
-            ? 'apply this filter'
-            : 'switch this filter off without removing it'
-        }
+        title={filter.disabled ? 'apply this filter' : 'switch this filter off without removing it'}
         onClick={() => onChange({ ...filter, disabled: !filter.disabled })}
       >
-        {filter.disabled ? (
-          <EyeOff size={16} aria-hidden />
-        ) : (
-          <Eye size={16} aria-hidden />
-        )}
+        {filter.disabled ? <EyeOff size={16} aria-hidden /> : <Eye size={16} aria-hidden />}
       </button>
       <span className="db-chip-seg op" title="a SQL boolean expression, ANDed with the other filters">
         SQL
@@ -319,12 +294,7 @@ function RawChip({
           onBlur={commit}
         />
       </span>
-      <button
-        type="button"
-        className="db-chip-seg remove"
-        onClick={onRemove}
-        aria-label="remove filter"
-      >
+      <button type="button" className="db-chip-seg remove" onClick={onRemove} aria-label="remove filter">
         <X size={16} aria-hidden />
       </button>
     </span>
@@ -370,8 +340,7 @@ function Chip({
     // reads as complete while holding a value its operator ignores.
     const carry: FilterSpec = { ...filter, op }
     if (SET_OPS.has(op)) {
-      carry.values =
-        filter.values ?? (filter.value != null ? [filter.value] : [])
+      carry.values = filter.values ?? (filter.value != null ? [filter.value] : [])
       carry.value = undefined
       carry.value2 = undefined
     } else {
@@ -383,25 +352,15 @@ function Chip({
   }
 
   return (
-    <span
-      className={`db-chip${draft ? ' draft' : ''}${filter.disabled ? ' off' : ''}`}
-    >
+    <span className={`db-chip${draft ? ' draft' : ''}${filter.disabled ? ' off' : ''}`}>
       <button
         type="button"
         className="db-chip-seg toggle"
         aria-pressed={!filter.disabled}
-        title={
-          filter.disabled
-            ? 'apply this filter'
-            : 'switch this filter off without removing it'
-        }
+        title={filter.disabled ? 'apply this filter' : 'switch this filter off without removing it'}
         onClick={() => onChange({ ...filter, disabled: !filter.disabled })}
       >
-        {filter.disabled ? (
-          <EyeOff size={16} aria-hidden />
-        ) : (
-          <Eye size={16} aria-hidden />
-        )}
+        {filter.disabled ? <EyeOff size={16} aria-hidden /> : <Eye size={16} aria-hidden />}
       </button>
 
       <Picker
@@ -427,9 +386,7 @@ function Chip({
           <SetValue
             values={(filter.values ?? []) as unknown[]}
             onChange={(values) => onChange({ ...filter, values })}
-            onFocusText={
-              onValueFocus ? (search) => onValueFocus('values', search) : undefined
-            }
+            onFocusText={onValueFocus ? (search) => onValueFocus('values', search) : undefined}
             onBlur={onValueBlur}
           />
         ) : (
@@ -451,9 +408,7 @@ function Chip({
                   onChange({ ...filter, value2 })
                   onValueFocus?.('value2', value2)
                 }}
-                onFocus={() =>
-                  onValueFocus?.('value2', cellTextOrEmpty(filter.value2))
-                }
+                onFocus={() => onValueFocus?.('value2', cellTextOrEmpty(filter.value2))}
                 onBlur={onValueBlur}
                 label="Upper bound"
               />
@@ -462,25 +417,14 @@ function Chip({
         )
       ) : null}
 
-      <button
-        type="button"
-        className="db-chip-seg remove"
-        onClick={onRemove}
-        aria-label="remove filter"
-      >
+      <button type="button" className="db-chip-seg remove" onClick={onRemove} aria-label="remove filter">
         <X size={16} aria-hidden />
       </button>
     </span>
   )
 }
 
-const NO_VALUE: ReadonlySet<FilterOp> = new Set([
-  'is_true',
-  'is_false',
-  'is_null',
-  'is_not_null',
-  'is_empty',
-])
+const NO_VALUE: ReadonlySet<FilterOp> = new Set(['is_true', 'is_false', 'is_null', 'is_not_null', 'is_empty'])
 
 function Picker({
   label,
@@ -571,7 +515,7 @@ function SetValue({
   // text follows it rather than holding the list it had before.
   const shown = parseSetText(text).join('\u0000')
   const given = values.map((v) => String(v)).join('\u0000')
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-sync only when the list itself changes
+  // Re-sync only when the list itself changes.
   useEffect(() => {
     if (shown !== given) setText(values.map((v) => String(v)).join(', '))
   }, [given])

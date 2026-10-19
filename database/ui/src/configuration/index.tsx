@@ -38,11 +38,12 @@ import {
 } from '@iii-dev/console-ui'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { probe } from '../lib/capabilities'
 import { ConnectionIcon } from '../lib/connection-icons'
 import { errText } from '../lib/errors'
-import { probe } from '../lib/capabilities'
 import { DB, type DbInfo, listDbs, testConnection } from '../lib/rpc'
 import { storeSecret } from '../lib/secrets'
+import { ColorPicker, IconPicker } from './ConnectionAppearance'
 import {
   CONNECTION_DRIVERS,
   type ConnectionDriver,
@@ -68,7 +69,6 @@ import {
   urlEntryToFields,
   valueKind,
 } from './connection'
-import { ColorPicker, IconPicker } from './ConnectionAppearance'
 import {
   booleanLiteralForRawValue,
   DEFAULT_HISTORY_MAX_BYTES,
