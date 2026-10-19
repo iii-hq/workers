@@ -196,3 +196,52 @@ describe('telemetry', () => {
     })
   })
 })
+
+describe('scrubException', () => {
+  it('keeps only the error type of an exception', async () => {
+    const { scrubException } = await import('./telemetry')
+    const event = scrubException({
+      uuid: 'u',
+      event: '$exception',
+      properties: {
+        $exception_list: [
+          {
+            type: 'TypeError',
+            value: "cannot read '/home/me/secret.txt'",
+            stacktrace: {
+              type: 'raw',
+              frames: [{ filename: 'app.js', lineno: 3 }],
+            },
+          },
+        ],
+        $exception_message: "cannot read '/home/me/secret.txt'",
+        $exception_values: ["cannot read '/home/me/secret.txt'"],
+        $exception_steps: [{ message: 'typed text' }],
+        $exception_type: 'TypeError',
+      },
+    })
+    expect(JSON.stringify(event)).not.toContain('secret')
+    expect(JSON.stringify(event)).not.toContain('typed text')
+    expect(event?.properties.$exception_list).toEqual([
+      {
+        type: 'TypeError',
+        value: 'TypeError',
+        stacktrace: {
+          type: 'raw',
+          frames: [{ filename: 'app.js', lineno: 3 }],
+        },
+      },
+    ])
+    expect(event?.properties.$exception_message).toBe('TypeError')
+  })
+
+  it('leaves other events alone', async () => {
+    const { scrubException } = await import('./telemetry')
+    const event = {
+      uuid: 'u',
+      event: 'ade_usage',
+      properties: { commands: ['x'] },
+    }
+    expect(scrubException(event)).toEqual(event)
+  })
+})

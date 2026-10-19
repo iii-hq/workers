@@ -19,9 +19,10 @@
  *
  * No text a user wrote is sent: command ids that can hold paths or titles are
  * reduced to their kind, chat screens to `chat`, and session replay masks
- * every text node and input and blocks media.
+ * every text node and input and blocks media. An exception keeps only its
+ * error type and stack frames: its message can hold what a user typed.
  */
-import posthog, { type CaptureOptions } from 'posthog-js'
+import posthog, { type CaptureOptions, type CaptureResult } from 'posthog-js'
 import { isChatScreen, type TabScreen } from '@/lib/workspace-tabs'
 
 const MIN = 60_000
@@ -88,6 +89,7 @@ export async function initTelemetry(): Promise<void> {
     enable_heatmaps: true,
     capture_performance: { web_vitals: true },
     capture_exceptions: true,
+    before_send: scrubException,
     mask_all_text: true,
     mask_all_element_attributes: true,
     session_recording: {
@@ -104,6 +106,23 @@ export async function initTelemetry(): Promise<void> {
   )
   setVisible(document.visibilityState === 'visible')
   startSchedule(VISIT_OFFSETS)
+}
+
+/** Replace each exception message with its error type, and drop the
+ * message copies and the steps leading up to it. */
+export function scrubException(
+  event: CaptureResult | null,
+): CaptureResult | null {
+  if (event?.event !== '$exception') return event
+  const p = event.properties
+  const list: { type?: string }[] = Array.isArray(p.$exception_list)
+    ? p.$exception_list
+    : []
+  p.$exception_list = list.map((e) => ({ ...e, value: e.type }))
+  p.$exception_message = p.$exception_type ?? list[0]?.type
+  delete p.$exception_values
+  delete p.$exception_steps
+  return event
 }
 
 /** The screens shown on the newly active tab. */
