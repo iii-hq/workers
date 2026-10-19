@@ -4,7 +4,9 @@
 //!
 //! Order: turn metadata `memory_bank` → session metadata `memory_bank` →
 //! the parent turn's bank, else the parent session's, walked up (a sub-agent
-//! works in its parent's bank) → `default_bank`. `""` is absent. An invalid
+//! works in its parent's bank) → the bank of the turn's `fs_scope.root`
+//! repository, else of that directory ([`root_bank`]) → `default_bank`.
+//! `""` is absent. An invalid
 //! name, a deleted bank other than the default, or a parent that no longer
 //! exists means NO memory — never a fallback to another bank. A failed
 //! session lookup is an error: the hook injects nothing new, extraction
@@ -12,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use iii_sdk::protocol::TriggerRequest;
@@ -35,15 +38,110 @@ pub(crate) fn bank_field(metadata: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// `fs_scope.root` (the turn's working directory) in a metadata object.
+fn root_field(metadata: Option<&Value>) -> Option<&str> {
+    metadata?
+        .pointer("/fs_scope/root")
+        .and_then(Value::as_str)
+        .filter(|r| !r.is_empty())
+}
+
+/// The bank a working directory selects: `<name>-<6 hex>`, the name from
+/// the repository holding `root` (its main checkout's folder, so every
+/// worktree of a repo shares one bank), else from `root` itself; the hex
+/// from the canonical path, so two folders of one name never share. `None`
+/// when `root` does not exist.
+pub(crate) fn root_bank(root: &Path) -> Option<String> {
+    let hashed = match common_dir(root) {
+        Some(common) => common.canonicalize().ok()?,
+        None => root.canonicalize().ok()?,
+    };
+    // `<checkout>/.git` names the checkout; a bare `<name>.git` itself.
+    let named = match hashed.file_name() {
+        Some(n) if n == ".git" => hashed.parent().unwrap_or(&hashed),
+        _ => &hashed,
+    };
+    let name = named.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name = name.strip_suffix(".git").unwrap_or(name);
+    let mut slug = String::new();
+    for c in name.chars().flat_map(char::to_lowercase) {
+        let c = if c.is_ascii_alphanumeric() || c == '_' {
+            c
+        } else {
+            '-'
+        };
+        if !(c == '-' && slug.ends_with('-')) {
+            slug.push(c);
+        }
+    }
+    let slug: String = slug.trim_matches(['-', '_']).chars().take(57).collect();
+    let slug = slug.trim_end_matches(['-', '_']);
+    let slug = if slug.is_empty() { "dir" } else { slug };
+    let hash = fnv1a64(hashed.as_os_str().as_encoded_bytes()) & 0xff_ffff;
+    Some(format!("{slug}-{hash:06x}"))
+}
+
+/// FNV-1a: stable across builds, unlike `DefaultHasher`, so a bank name
+/// never moves on an upgrade.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// The common git dir of the repository `dir` sits in, found the way git
+/// finds it: the nearest ancestor holding a `.git` directory, or a `.git`
+/// file naming one (`gitdir: <path>`, a linked worktree), with a HEAD; its
+/// `commondir` when it has one. Mirrors `ide`'s `git_events::discover`.
+fn common_dir(dir: &Path) -> Option<PathBuf> {
+    let joined = |base: &Path, rel: &str| -> PathBuf {
+        let rel = Path::new(rel);
+        if rel.is_absolute() {
+            rel.to_path_buf()
+        } else {
+            base.join(rel)
+        }
+    };
+    for top in dir.ancestors() {
+        let dot = top.join(".git");
+        let Ok(meta) = std::fs::metadata(&dot) else {
+            continue;
+        };
+        let git_dir = if meta.is_dir() {
+            dot
+        } else {
+            let Some(rel) = std::fs::read_to_string(&dot).ok().and_then(|text| {
+                text.lines()
+                    .next()
+                    .and_then(|l| l.strip_prefix("gitdir:"))
+                    .map(|r| r.trim().to_string())
+            }) else {
+                continue;
+            };
+            joined(top, &rel)
+        };
+        if !git_dir.join("HEAD").is_file() {
+            continue;
+        }
+        return Some(match std::fs::read_to_string(git_dir.join("commondir")) {
+            Ok(text) if !text.trim().is_empty() => joined(&git_dir, text.trim()),
+            _ => git_dir,
+        });
+    }
+    None
+}
+
 /// The resolver over injected lookups, so tests need no engine: `recorded`
 /// is the bank a turn was injected with ([`turn_bank`]), `lookup` a
-/// session's metadata object (`None`: no such session).
+/// session's metadata object (`None`: no such session), `from_root` the
+/// bank a working directory selects ([`root_bank`]).
 pub(crate) async fn resolve_with<L, Fut>(
     turn_metadata: Option<&Value>,
     session_id: &str,
     default_bank: &str,
     deleted: impl Fn(&str) -> bool,
     recorded: impl Fn(&str) -> Option<Option<String>>,
+    from_root: impl Fn(&str) -> Option<String>,
     lookup: L,
 ) -> Result<Option<String>, String>
 where
@@ -52,10 +150,18 @@ where
 {
     let chosen = match bank_field(turn_metadata) {
         Some(bank) => bank,
-        None => match walk(session_id, default_bank, recorded, lookup).await? {
-            Some(bank) => bank,
-            None => return Ok(None),
-        },
+        None => {
+            // Only a chain that names no bank reaches the directory's.
+            let top = || {
+                root_field(turn_metadata)
+                    .and_then(&from_root)
+                    .unwrap_or_else(|| default_bank.to_string())
+            };
+            match walk(session_id, top, recorded, lookup).await? {
+                Some(bank) => bank,
+                None => return Ok(None),
+            }
+        }
     };
     if validate_name(&chosen).is_err() {
         tracing::warn!(session_id, bank = %chosen, "invalid memory_bank; no memory for this session");
@@ -70,12 +176,12 @@ where
 
 /// The session's own bank, else a sub-agent's parent turn's (the bank that
 /// turn was injected with, an override included) or the parent session's,
-/// walked up; the default at the top. `None` — no memory — for a session
+/// walked up; `top` at the top. `None` — no memory — for a session
 /// that no longer exists, or a chain that cycles or runs past
-/// [`MAX_PARENT_DEPTH`]: never the default in their place.
+/// [`MAX_PARENT_DEPTH`]: never `top` in their place.
 async fn walk<L, Fut>(
     session_id: &str,
-    default_bank: &str,
+    top: impl FnOnce() -> String,
     recorded: impl Fn(&str) -> Option<Option<String>>,
     mut lookup: L,
 ) -> Result<Option<String>, String>
@@ -101,7 +207,7 @@ where
         }
         match field("parent_session_id") {
             Some(parent) => id = parent.to_string(),
-            None => return Ok(Some(default_bank.to_string())),
+            None => return Ok(Some(top())),
         }
     }
     Ok(None)
@@ -121,6 +227,7 @@ pub async fn resolve(
         &cfg.default_bank,
         |bank| store.is_deleted(bank),
         turn_bank,
+        |root| root_bank(Path::new(root)),
         |id| session_metadata(&deps.iii, id),
     )
     .await
@@ -160,7 +267,9 @@ type TurnBanks = HashMap<String, (Option<String>, u64)>;
 /// turn's extraction job and its agent's calls use exactly that bank, a
 /// turn-only `memory_bank` override included.
 // ponytail: in-process — after a restart the job and the calls re-resolve
-// from session metadata, which only misses a turn-only override.
+// from session metadata without the turn's, which misses a turn-only
+// override and the `fs_scope.root` bank (they land in `default_bank`).
+// Persist the bank on the session if that ever matters.
 static TURN_BANKS: LazyLock<Mutex<TurnBanks>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn remember_in(turns: &mut TurnBanks, turn_id: &str, bank: Option<String>, now_ms: u64) {
@@ -399,6 +508,11 @@ mod tests {
         resolve_recorded(turn, session, store, deleted, &[]).await
     }
 
+    /// A turn working in `root` (no filesystem: `w` selects `w-bank`).
+    fn in_root(root: &str) -> Option<Value> {
+        Some(json!({ "fs_scope": { "root": root } }))
+    }
+
     /// [`resolve`] with turn banks the hook recorded (`turn id → bank`).
     async fn resolve_recorded(
         turn: Option<Value>,
@@ -418,6 +532,7 @@ mod tests {
                     .find(|(id, _)| *id == t)
                     .map(|(_, bank)| bank.map(str::to_string))
             },
+            |root| (root != "gone").then(|| format!("{root}-bank")),
             // An unknown session reads as `null`, like session::get.
             |id| {
                 let found = store.get(&id).cloned();
@@ -558,6 +673,7 @@ mod tests {
                 "main",
                 |_| false,
                 |_| None,
+                |_| None,
                 |id| async move { Err::<Option<Value>, _>(format!("session::get {id}: timeout")) },
             )
             .await
@@ -566,5 +682,92 @@ mod tests {
         // A turn override needs no lookup.
         let turn = Some(json!({ "memory_bank": "blog" }));
         assert_eq!(failing(turn).await, Ok(Some("blog".into())));
+    }
+
+    #[tokio::test]
+    async fn a_session_naming_no_bank_works_in_its_directorys() {
+        let store = sessions(&[
+            ("bare", json!({})),
+            ("blog", json!({ "memory_bank": "blog" })),
+            ("root", json!({ "memory_bank": "notes" })),
+            ("child", json!({ "parent_session_id": "root" })),
+        ]);
+        assert_eq!(
+            resolve(in_root("w"), "bare", &store, &[]).await,
+            Ok(Some("w-bank".into()))
+        );
+        assert_eq!(
+            resolve(in_root("gone"), "bare", &store, &[]).await,
+            Ok(Some("main".into())),
+            "a root that selects nothing: the default"
+        );
+        let mut turn = in_root("w").unwrap();
+        turn["memory_bank"] = json!("coding");
+        assert_eq!(
+            resolve(Some(turn), "bare", &store, &[]).await,
+            Ok(Some("coding".into()))
+        );
+        assert_eq!(
+            resolve(in_root("w"), "blog", &store, &[]).await,
+            Ok(Some("blog".into())),
+            "the session's bank wins"
+        );
+        assert_eq!(
+            resolve(in_root("w"), "child", &store, &[]).await,
+            Ok(Some("notes".into())),
+            "a sub-agent stays in its parent's bank"
+        );
+        assert_eq!(
+            resolve(in_root("w"), "bare", &store, &["w-bank"]).await,
+            Ok(None),
+            "a deleted directory bank is no memory, not the default"
+        );
+    }
+
+    fn git_init(dir: &Path) {
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    #[test]
+    fn a_repo_and_its_worktrees_share_one_bank_per_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("a/workers");
+        git_init(&repo);
+        std::fs::create_dir_all(repo.join("src/deep")).unwrap();
+        let bank = root_bank(&repo).unwrap();
+        assert!(bank.starts_with("workers-"), "{bank}");
+        assert_eq!(root_bank(&repo.join("src/deep")), Some(bank.clone()));
+
+        // A linked worktree elsewhere: `.git` file → its git dir → commondir.
+        let wt_git = repo.join(".git/worktrees/feat");
+        std::fs::create_dir_all(&wt_git).unwrap();
+        std::fs::write(wt_git.join("HEAD"), "ref: refs/heads/feat\n").unwrap();
+        std::fs::write(wt_git.join("commondir"), "../..\n").unwrap();
+        let wt = tmp.path().join("elsewhere/feat");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wt_git.display())).unwrap();
+        assert_eq!(root_bank(&wt), Some(bank.clone()), "same repo, same bank");
+
+        let other = tmp.path().join("b/workers");
+        git_init(&other);
+        let other = root_bank(&other).unwrap();
+        assert!(other.starts_with("workers-") && other != bank, "{other}");
+
+        let plain = tmp.path().join("Notes Dir");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(root_bank(&plain).unwrap().starts_with("notes-dir-"));
+        assert_eq!(root_bank(&tmp.path().join("missing")), None);
+    }
+
+    #[test]
+    fn a_directory_bank_is_always_a_valid_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["My.Repo", "--__--", "ünï", &"x".repeat(100), "a_b-c"] {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let bank = root_bank(&dir).unwrap();
+            assert!(validate_name(&bank).is_ok(), "{name:?} → {bank:?}");
+        }
     }
 }
