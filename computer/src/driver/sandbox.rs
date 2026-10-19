@@ -27,6 +27,10 @@ use iii_sdk::IIIClient;
 
 use super::{Driver, Screen, Shot};
 
+/// iii-sandbox is engine-owned: its functions exist only in `default`,
+/// whatever namespace this worker runs in (a Compose project's, say).
+const SANDBOX_NAMESPACE: &str = "default";
+
 /// Longest a `sandbox::create` (incl. a cold OCI pull) may take before we give
 /// up. The daemon recommends 300s for a cold pull.
 const BOOT_TIMEOUT_MS: u64 = 300_000;
@@ -44,6 +48,29 @@ pub struct IiiSandboxHost {
     command_timeout_ms: u64,
 }
 
+/// The `sandbox::create` request. A zero size leaves it to iii-sandbox's own
+/// default (`default_memory_mb` / `default_cpus`), which may cap it per image.
+fn create_payload(
+    image: &str,
+    network: bool,
+    idle_timeout_secs: u64,
+    memory_mb: u64,
+    cpus: u64,
+) -> Value {
+    let mut payload = json!({
+        "image": image,
+        "network": network,
+        "idle_timeout_secs": idle_timeout_secs,
+    });
+    if memory_mb > 0 {
+        payload["memory_mb"] = memory_mb.into();
+    }
+    if cpus > 0 {
+        payload["cpus"] = cpus.into();
+    }
+    payload
+}
+
 impl IiiSandboxHost {
     /// Boot a sandbox from `image`, bring up Xvfb at `width`x`height`, and
     /// return a ready host. On any bootstrap failure the sandbox is stopped so
@@ -57,19 +84,20 @@ impl IiiSandboxHost {
         jpeg_quality: u8,
         network: bool,
         idle_timeout_secs: u64,
+        memory_mb: u64,
+        cpus: u64,
         command_timeout_ms: u64,
     ) -> Result<Self, String> {
         let created = iii
-            .trigger(TriggerRequest {
-                function_id: "sandbox::create".to_string(),
-                payload: json!({
-                    "image": image,
-                    "network": network,
-                    "idle_timeout_secs": idle_timeout_secs,
-                }),
-                action: None,
-                timeout_ms: Some(BOOT_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "sandbox::create".to_string(),
+                    payload: create_payload(image, network, idle_timeout_secs, memory_mb, cpus),
+                    action: None,
+                    timeout_ms: Some(BOOT_TIMEOUT_MS),
+                }
+                .namespace(SANDBOX_NAMESPACE),
+            )
             .await
             .map_err(|e| format!("sandbox::create({image}) failed: {e}"))?;
         let sandbox_id = created
@@ -119,7 +147,11 @@ impl IiiSandboxHost {
         &self.sandbox_id
     }
 
-    /// Start Xvfb + a window manager and block until the display answers.
+    /// Start Xvfb + the image's desktop and block until the display answers.
+    /// The desktop is whichever the image ships, first found: XFCE, mutter
+    /// with a tint2 panel (the Anthropic computer-use image, whose panel config
+    /// with its launchers lives in its user's home), openbox; with
+    /// none the screen is a bare (black) root window and windows have no frame.
     /// Detach with `setsid` (a new session, not just `nohup`): the daemon
     /// SIGKILLs the exec child's process group on host disconnect, and only a
     /// fresh session escapes that, so the display keeps running between exec
@@ -136,7 +168,16 @@ impl IiiSandboxHost {
                 if [ $n -gt 100 ]; then echo xvfb-timeout >&2; tail -n 20 /tmp/xvfb.log >&2; exit 1; fi; \
                 sleep 0.1; \
              done; \
-             if ! pgrep -x openbox >/dev/null 2>&1; then setsid openbox >/tmp/openbox.log 2>&1 & fi; \
+             if ! pgrep -x xfce4-session >/dev/null 2>&1 && ! pgrep -x mutter >/dev/null 2>&1 \
+                && ! pgrep -x openbox >/dev/null 2>&1; then \
+                if command -v startxfce4 >/dev/null 2>&1; then setsid startxfce4 >/tmp/desktop.log 2>&1 & \
+                elif command -v mutter >/dev/null 2>&1; then \
+                    XDG_SESSION_TYPE=x11 setsid mutter --replace --sm-disable >/tmp/desktop.log 2>&1 & \
+                    rc=$(ls /home/*/.config/tint2/tint2rc 2>/dev/null | head -n 1); \
+                    if command -v tint2 >/dev/null 2>&1; then setsid tint2 ${{rc:+-c \"$rc\"}} >/tmp/tint2.log 2>&1 & fi; \
+                elif command -v openbox >/dev/null 2>&1; then setsid openbox >/tmp/desktop.log 2>&1 & \
+                fi; \
+             fi; \
              echo ready",
             w = self.screen.width,
             h = self.screen.height,
@@ -177,13 +218,16 @@ impl IiiSandboxHost {
     async fn exec(&self, payload: Value) -> Result<ExecOut, String> {
         let v = self
             .iii
-            .trigger(TriggerRequest {
-                function_id: "sandbox::exec".to_string(),
-                payload,
-                action: None,
-                // Give the bus a margin over the daemon's own exec deadline.
-                timeout_ms: Some(self.command_timeout_ms + 5_000),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "sandbox::exec".to_string(),
+                    payload,
+                    action: None,
+                    // Give the bus a margin over the daemon's own exec deadline.
+                    timeout_ms: Some(self.command_timeout_ms + 5_000),
+                }
+                .namespace(SANDBOX_NAMESPACE),
+            )
             .await
             .map_err(|e| format!("sandbox::exec failed: {e}"))?;
         ExecOut::from_reply(&v)
@@ -191,12 +235,15 @@ impl IiiSandboxHost {
 
     async fn stop_sandbox(&self) -> Result<(), String> {
         self.iii
-            .trigger(TriggerRequest {
-                function_id: "sandbox::stop".to_string(),
-                payload: json!({ "sandbox_id": self.sandbox_id }),
-                action: None,
-                timeout_ms: Some(self.command_timeout_ms),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: "sandbox::stop".to_string(),
+                    payload: json!({ "sandbox_id": self.sandbox_id }),
+                    action: None,
+                    timeout_ms: Some(self.command_timeout_ms),
+                }
+                .namespace(SANDBOX_NAMESPACE),
+            )
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -450,6 +497,18 @@ fn map_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_create_request_sizes_the_vm_and_zero_takes_the_sandbox_default() {
+        let sized = create_payload("desktop", true, 60, 2048, 2);
+        assert_eq!(
+            sized,
+            json!({"image": "desktop", "network": true, "idle_timeout_secs": 60,
+                   "memory_mb": 2048, "cpus": 2})
+        );
+        let default = create_payload("desktop", false, 60, 0, 0);
+        assert!(default.get("memory_mb").is_none() && default.get("cpus").is_none());
+    }
 
     #[test]
     fn clamp_floors_negatives() {

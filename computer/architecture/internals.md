@@ -13,6 +13,9 @@ For changing the worker. Consumers want [`integration.md`](integration.md).
    to the desktop's guest executor. Endpoint label: the normalized url.
 3. **neither** — the native driver, this machine. Endpoint label: `native`.
 
+`native: true` skips 1 and 2's configured defaults and goes straight to 3 (the
+console's "this machine"); it is refused with an `image` or `endpoint`.
+
 An image beats an endpoint deliberately: a caller who names an image wants a
 fresh desktop, not whatever the operator configured as a default target.
 
@@ -23,8 +26,15 @@ back an id that breaks on first use.
 ## Capture pipeline
 
 `Shot` carries encoded bytes plus the mime **detected from the magic bytes**,
-never assumed: a driver returns whatever its guest encodes, and the content
-block advertises the truth to the model.
+never assumed: a driver returns whatever it encodes, and the content block
+advertises the truth to the model.
+
+The remote driver fits the guest's frame the way the native driver fits its
+own (the wire's `screenshot` takes no parameters): decode, downscale to
+`max_screenshot_dimension`, JPEG at `screenshot_quality`, and scale every
+pointer coordinate back to the guest's pixels. The sandbox driver encodes at
+`screenshot_quality` in the guest (`import`) and never downscales: its frame is
+the Xvfb display, sized by `sandbox_width`/`sandbox_height`, 1:1 with input.
 
 The native driver does the work no guest does for it:
 
@@ -155,6 +165,10 @@ capture, input or accessibility call.
   a filled password field never reads `(set)` (its text is never read), so a
   run may type it again until the repeat rule stops it. A modal
   printed past the 32 KiB cap does not narrow the targets.
+- **computer::run and other people's dialogs.** A dialog open before the run
+  starts stops it as `blocked` without a judge call: on BambuStudio the judge,
+  narrowed to an open "Send print job" dialog, clicked its Cancel. A dialog
+  the app opens by itself mid-run is still driven like one the run opened.
 - **computer::run's settle.** After an act it reads until the tree changes,
   for at most 2 s, comparing exactly: a ticking clock reads as change, so
   such an app never stalls and stops at `max_steps`. There is no hardware

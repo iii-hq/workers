@@ -33,22 +33,25 @@ pub struct WorkerConfig {
     /// Live-view frame rate cap for the screencast (frames/sec). Clamped to
     /// at least 1. The pump polls the driver screenshot at most this often.
     pub screencast_fps: u64,
-    /// Longest edge (px) a native screenshot/frame is downscaled to before
-    /// JPEG encoding. Full-resolution Retina captures are huge; this caps the
-    /// image the model sees and the coordinate space it acts in.
+    /// Longest edge (px) a native or remote screenshot/frame is downscaled to
+    /// before JPEG encoding. Full-resolution Retina captures are huge; this
+    /// caps the image the model sees and the coordinate space it acts in. A
+    /// sandbox's frames are its display size (`sandbox_width`/`height`).
     #[schemars(range(min = 320, max = 4096))]
     pub max_screenshot_dimension: u64,
-    /// JPEG quality (1-100) for native screenshots and frames.
+    /// JPEG quality (1-100) for native, sandbox and remote screenshots and frames.
     #[schemars(range(min = 1, max = 100))]
     pub screenshot_quality: u64,
     /// Timeout for each driver action (ms). Fixed when a session connects.
     pub command_timeout_ms: u64,
     /// Timeout for establishing the driver connection at session start (ms).
     pub connect_timeout_ms: u64,
-    /// OCI image (an iii-sandbox preset name or `custom_images` key) booted for
-    /// a sandbox-backed session when `sessions::start` omits `image`. Empty
-    /// means a sandbox session must name its own image. The image must ship
-    /// Xvfb, xdotool, imagemagick, and openbox (see images/desktop).
+    /// Image booted for a sandbox-backed session when `sessions::start` omits
+    /// `image`: a `custom_images` key in iii-sandbox's catalog
+    /// (`sandbox::catalog::list`); the OCI ref behind it is set in
+    /// iii-sandbox's own configuration. Empty means a sandbox session must name
+    /// its own image. The image must ship the tools the README's Sandbox
+    /// desktop image section lists.
     pub sandbox_image: String,
     /// Virtual display width (px) for a sandbox-backed session. Fixed
     /// resolution keeps coordinates 1:1 with the screenshot.
@@ -60,6 +63,12 @@ pub struct WorkerConfig {
     /// that should be able to click around a sandbox without reaching anything
     /// outside it, since `computer::act` is unrestricted once a session exists.
     pub sandbox_network: bool,
+    /// RAM (MB) of a sandbox-backed desktop's VM. 0 takes iii-sandbox's
+    /// `default_memory_mb` (512 unless set). A browser needs about 2048.
+    pub sandbox_memory_mb: u64,
+    /// vCPUs of a sandbox-backed desktop's VM. 0 takes iii-sandbox's
+    /// `default_cpus` (1 unless set).
+    pub sandbox_cpus: u64,
     /// Idle timeout (seconds) passed to `sandbox::create`. Set well above the
     /// worker's own `idle_stop_ms` so the sandbox reaper never kills a live
     /// desktop out from under a session; the worker owns teardown.
@@ -70,6 +79,11 @@ pub struct WorkerConfig {
     /// setup but the TCC API under-reports (e.g. the worker runs as a child of
     /// an already-granted app). Ignored off macOS and for non-native drivers.
     pub screen_capture_preflight: bool,
+    /// The `judge-<provider>` worker `computer::run` asks (`clef`, `decider`,
+    /// `typesafe`, ...), whatever the calling session picked. Empty follows the
+    /// session's pick, then the judge hub's default.
+    #[schemars(regex(pattern = r"^([a-z0-9-]{1,64})?$"))]
+    pub judge_provider: String,
 }
 
 impl Default for WorkerConfig {
@@ -88,8 +102,11 @@ impl Default for WorkerConfig {
             sandbox_width: 1280,
             sandbox_height: 800,
             sandbox_network: true,
+            sandbox_memory_mb: 2048,
+            sandbox_cpus: 2,
             sandbox_idle_timeout_secs: 86_400,
             screen_capture_preflight: true,
+            judge_provider: String::new(),
         }
     }
 }
@@ -143,8 +160,11 @@ mod tests {
         assert_eq!(c.sandbox_width, 1280);
         assert_eq!(c.sandbox_height, 800);
         assert!(c.sandbox_network);
+        assert_eq!(c.sandbox_memory_mb, 2048);
+        assert_eq!(c.sandbox_cpus, 2);
         assert_eq!(c.sandbox_idle_timeout_secs, 86_400);
         assert!(c.screen_capture_preflight);
+        assert_eq!(c.judge_provider, "");
     }
 
     #[test]

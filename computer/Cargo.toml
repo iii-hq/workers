@@ -18,6 +18,8 @@ name = "computer"
 path = "src/lib.rs"
 
 [dependencies]
+# Screenshot downscale + JPEG re-encode (native capture, remote guest frames).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 iii-sdk = "=0.24.6"
 iii-console-ui = { path = "../crates/console-ui" }
 # Typed judge::evaluate messages for computer::run; the judge worker itself is
@@ -68,7 +70,6 @@ xa11y-windows = "=0.15.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.14", default-features = false, features = ["xtest", "randr"] }
 xkeysym = "0.2"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # AT-SPI semantic backend: xa11y-linux 0.15.2 vendored with our patches and
 # without its Wayland/uinput/portal code (vendor/xa11y-linux/PATCHES.md).
 xa11y-linux = { path = "vendor/xa11y-linux" }

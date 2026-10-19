@@ -39,6 +39,41 @@ pub struct Screen {
     pub height: u32,
 }
 
+/// Downscale target: longest edge capped at `max_dim`, aspect preserved.
+pub(crate) fn target_dims(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
+    let longest = w.max(h);
+    if longest <= max_dim || longest == 0 {
+        return (w, h);
+    }
+    let s = max_dim as f64 / longest as f64;
+    (
+        ((w as f64 * s).round() as u32).max(1),
+        ((h as f64 * s).round() as u32).max(1),
+    )
+}
+
+/// Downscale to `(tw, th)` and JPEG-encode.
+pub(crate) fn encode_jpeg(
+    img: image::DynamicImage,
+    tw: u32,
+    th: u32,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
+    let img = if (tw, th) == (img.width(), img.height()) {
+        img
+    } else {
+        img.resize_exact(tw, th, image::imageops::FilterType::Triangle)
+    };
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut std::io::Cursor::new(&mut out),
+        quality,
+    )
+    .encode_image(&img.to_rgb8())
+    .map_err(|e| format!("jpeg encode failed: {e}"))?;
+    Ok(out)
+}
+
 /// One display available to the native host (from `computer::displays`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DisplayInfo {
@@ -124,6 +159,22 @@ pub trait Driver: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_dims_caps_longest_edge() {
+        assert_eq!(target_dims(3024, 1964, 1280), (1280, 831));
+        assert_eq!(target_dims(800, 600, 1280), (800, 600));
+        assert_eq!(target_dims(0, 0, 1280), (0, 0));
+    }
+
+    #[test]
+    fn encode_downscales_to_a_jpeg() {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::new(64, 32));
+        let jpeg = encode_jpeg(img, 32, 16, 80).unwrap();
+        assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF]);
+        let back = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((back.width(), back.height()), (32, 16));
+    }
 
     #[test]
     fn detects_png_and_jpeg() {

@@ -27,7 +27,8 @@ function collectField(field: FormFieldSpec, prefix: string): string[] {
     field.kind === 'password' ||
     field.kind === 'number' ||
     field.kind === 'select' ||
-    field.kind === 'switch'
+    field.kind === 'switch' ||
+    field.kind === 'judge-provider'
   ) {
     return [path]
   }

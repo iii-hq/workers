@@ -9,7 +9,7 @@ returned; `sessions::list` and `displays` are the two that do not.
 
 | Function | In | Out |
 |---|---|---|
-| `computer::sessions::start` | `image?`, `endpoint?`, `os?`, `monitor?` | `session_id`, `endpoint`, `os`, `screen`, `semantic` |
+| `computer::sessions::start` | `image?`, `endpoint?`, `os?`, `monitor?`, `native?` (this machine despite configured defaults) | `session_id`, `endpoint`, `os`, `screen`, `semantic` |
 | `computer::sessions::list` | — | `sessions[]` with endpoint, os, screen, timestamps, screencast state, `semantic` |
 | `computer::sessions::stop` | `session_id` | `ok`, `was_running` (idempotent) |
 | `computer::displays` | — | local `displays[]`; empty off a desktop host |
@@ -70,8 +70,9 @@ plumbing (flagged internal, denied in `iii-permissions.yaml`). Agents use
 |---|---|---|
 | `computer::session-started` | A session connected and probed | `session_id`, `endpoint`, `os`, `screen`, `timestamp` |
 | `computer::session-stopped` | A session ended | `session_id`, `reason` (`stopped` \| `idle`), `timestamp` |
+| `computer::activity` | A `computer::act` call reached a session, or a `computer::run` started on it | `session_id`, `function`, `timestamp` |
 
-Both accept an optional `{ "session_id": "..." }` equality filter. Bind them
+All accept an optional `{ "session_id": "..." }` equality filter. Bind them
 instead of polling `sessions::list`.
 
 | Trigger type | Fires when | Payload |
@@ -97,6 +98,10 @@ limits live in the worker, action-level policy lives above it.
 |---|---|---|
 | Device limits | this worker | permission preflight, `max_sessions`, capture downscale, command timeouts |
 | Action policy | engine + harness | dispatch policy (`options.functions`), the approval gate on `computer::act` and `computer::run`, permission profiles |
+
+`computer::run` asks the judge named by `judge_provider` in this worker's
+configuration, else the calling session's (`iii.judge.provider` baggage), else
+the hub's default; a desktop tree is large, so pin a judge that holds one.
 
 A raw `act` does what it is told, on a real machine. `computer::run` acts
 in-process, so approving one run approves every accessibility action it

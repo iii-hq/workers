@@ -22,7 +22,8 @@ pub const SESSIONS_START_ID: &str = "computer::sessions::start";
 pub const SESSIONS_START_DESC: &str =
     "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop \
      in an iii-sandbox microVM, `endpoint` to drive a remote desktop's guest executor, or neither \
-     to drive the local machine. Stop it with computer::sessions::stop.";
+     for the worker's configured default (else the local machine); `native: true` always drives \
+     the local machine. Stop it with computer::sessions::stop.";
 pub const SESSIONS_LIST_ID: &str = "computer::sessions::list";
 pub const SESSIONS_LIST_DESC: &str =
     "List live computer sessions with their endpoint, guest OS, and screen size.";
@@ -68,13 +69,14 @@ pub const RUN_DESC: &str =
      judge worker it returns judge_unavailable; drive with computer::find + computer::act.";
 pub const SCREENCAST_START_ID: &str = "computer::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
-    "Internal: start capturing live desktop frames for the console viewport; each new frame \
-     fires computer::frame-changed and is read with computer::frame. Console-UI plumbing; agents \
-     use computer::screenshot. Not an agent function.";
+    "Internal: join the live desktop capture for a console viewer (the page or a corner \
+     preview); the first viewer starts it. Each new frame fires computer::frame-changed and is \
+     read with computer::frame. Console-UI plumbing; agents use computer::screenshot. Not an \
+     agent function.";
 pub const SCREENCAST_STOP_ID: &str = "computer::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
-    "Internal: stop the live frame capture and clear the stored frame. Idempotent. Not an agent \
-     function.";
+    "Internal: leave the live frame capture; the last viewer out stops it and clears the stored \
+     frame, and a capture nobody follows stops by itself. Idempotent. Not an agent function.";
 pub const FRAME_ID: &str = "computer::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No capture \
@@ -248,7 +250,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sessions = sessions.clone();
             async move {
                 let session = sessions
-                    .start(req.image, req.endpoint, req.os, req.monitor)
+                    .start(req.image, req.endpoint, req.os, req.monitor, req.native)
                     .await
                     .map_err(Error::Handler)?;
                 let bus = sessions::linux_bus(std::slice::from_ref(&session)).await;
@@ -384,6 +386,7 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sessions = sessions.clone();
             async move {
                 let session = get_session(&sessions, &req.session_id).await?;
+                sessions.activity(&session.id, ACT_ID).await;
                 act::handle(&session, req).await
             }
         })
@@ -401,17 +404,19 @@ fn register_run(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let bus = bus.clone();
             async move {
                 let session = get_session(&sessions, &req.session_id).await?;
-                // The caller session's judge provider, read here in the
-                // handler's context and sent on every judge call of the run.
-                let provider = crate::judge::session_provider();
-                run::handle(&session, req, |evaluation, timeout_ms| {
+                // This worker's judge, else the caller session's: read here in
+                // the handler's context and sent on every judge call of the run.
+                let provider = crate::judge::run_provider(&session.config().judge_provider);
+                let judge = |evaluation, timeout_ms| {
                     let (bus, provider) = (bus.clone(), provider.clone());
                     async move {
                         crate::judge::evaluate(&bus, evaluation, timeout_ms, provider.as_deref())
                             .await
                     }
-                })
-                .await
+                };
+                // The live preview hears of a run only once it holds the session.
+                let started = sessions.activity(&session.id, RUN_ID);
+                run::announced(&session, req, judge, started).await
             }
         })
         .description(RUN_DESC),
@@ -434,7 +439,7 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 /// A screencast is a stream of screenshots: refused where they are.
 async fn start_screencast(session: &Arc<Session>) -> Result<frame::AckOutput, Error> {
     require_coordinates(session)?;
-    session.start_screencast().await;
+    session.acquire_screencast().await;
     Ok(frame::AckOutput { ok: true })
 }
 
@@ -446,7 +451,7 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sessions = sessions.clone();
             async move {
                 if let Some(session) = sessions.get(&req.session_id).await {
-                    session.stop_screencast().await;
+                    session.release_screencast().await;
                 }
                 Ok::<_, Error>(frame::AckOutput { ok: true })
             }

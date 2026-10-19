@@ -40,6 +40,17 @@ pub fn session_provider() -> Option<String> {
     judge_contract::is_valid_provider(&provider).then_some(provider)
 }
 
+/// The provider `computer::run` asks: this worker's `judge_provider` when
+/// set (and well-formed), else the calling session's, else the hub's default
+/// (`None`). Read it in the handler task, like `session_provider`.
+pub fn run_provider(configured: &str) -> Option<String> {
+    let configured = configured.trim();
+    if judge_contract::is_valid_provider(configured) {
+        return Some(configured.to_string());
+    }
+    session_provider()
+}
+
 fn paused(provider: &str, now: i64) -> bool {
     PAUSED_UNTIL
         .lock()
@@ -238,6 +249,21 @@ mod tests {
         }
         let _guard = with("Not Valid").attach();
         assert_eq!(session_provider(), None);
+    }
+
+    #[test]
+    fn the_configured_provider_wins_over_the_sessions_and_empty_follows_it() {
+        use opentelemetry::baggage::BaggageExt;
+        let _guard =
+            opentelemetry::Context::current_with_baggage(vec![opentelemetry::KeyValue::new(
+                judge_contract::PROVIDER_BAGGAGE_KEY,
+                "semif",
+            )])
+            .attach();
+        assert_eq!(run_provider("clef").as_deref(), Some("clef"));
+        assert_eq!(run_provider("").as_deref(), Some("semif"));
+        // A malformed value never reaches the hub: the session's pick stands.
+        assert_eq!(run_provider("Not Valid").as_deref(), Some("semif"));
     }
 
     #[test]

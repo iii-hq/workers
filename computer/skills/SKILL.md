@@ -13,7 +13,7 @@ description: >-
 The computer worker turns a live desktop into iii functions. Start a session
 with neither `image` nor `endpoint` to drive the local machine this worker runs
 on (unless the operator configured a default image or endpoint, which is
-resolved first), pass an `image` to boot a sandboxed desktop, or an `endpoint`
+resolved first; `native: true` skips those defaults), pass an `image` to boot a sandboxed desktop, or an `endpoint`
 to drive a remote one. Take a
 screenshot to see the screen, then act on it by pixel coordinate: the screenshot
 is the source of truth for where things are, and `computer::act` clicks and
@@ -101,7 +101,7 @@ after every action.
    out: an image next to the tree can push the result past the harness size
    cap, and then the new refs never reach you while the old ones are already
    replaced.
-   A control with no name shows the head of its tooltip as `description="…"`
+   A control with no name shows its tooltip's first sentence as `description="…"`
    (wxWidgets apps such as BambuStudio); select it with
    `[description^='…']`.
 2. `computer::act` with the ref. The reply says "dispatched" — it does not
@@ -157,6 +157,10 @@ step is one cheap classification, not a model turn.
   not use it for destructive actions.
 - Input on the desktop (a click in the console viewport) or
   `computer::sessions::stop` ends a run as `interrupted`.
+- A dialog already open when the run starts (a print being sent, a save in
+  progress) ends it at once as `blocked`: finish or close it first. The run
+  acts only in dialogs its own actions opened, and never on a control that
+  nothing names (no name, tooltip or label beside it).
 
 | status | next |
 |---|---|
@@ -177,8 +181,10 @@ not reflexively after each action; a `computer::act` returns a short confirming
 
 Bind a `computer::*` trigger when another function should react to session
 activity instead of polling. The types: `computer::session-started` (payload
-carries `endpoint`, `os`, `screen`) and `computer::session-stopped` (payload
-carries `reason`). Both accept an optional `session_id` equality filter.
+carries `endpoint`, `os`, `screen`), `computer::session-stopped` (payload
+carries `reason`) and `computer::activity` (a `computer::act` call reached the
+session, or a `computer::run` started on it; payload carries `function`). All accept an
+optional `session_id` equality filter.
 
 ### How to bind
 
