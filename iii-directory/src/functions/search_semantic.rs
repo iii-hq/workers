@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
@@ -27,6 +28,13 @@ const MINILM_MODEL_SIZE: u64 = 90_405_214;
 const MINILM_TOKENIZER_SIZE: u64 = 466_247;
 const MINILM_INTRA_THREADS: usize = 2;
 const MINILM_MAX_LENGTH: usize = 512;
+/// Texts encoded per hold of the model lock, so a query waiting on a
+/// catalog rebuild or an embed batch waits for one chunk, not the whole
+/// call. Catalog documents and queries are short (~220 ms per 32);
+/// `router::embed` callers send memories of up to ~2000 B, so the embed
+/// surface takes 8 (~370 ms), well inside memory's 2 s recall budget.
+const ENCODE_CHUNK: usize = 32;
+const EMBED_CHUNK: usize = 8;
 
 pub(crate) const RERANKER_REPOSITORY: &str = "cross-encoder/ms-marco-MiniLM-L6-v2";
 pub(crate) const RERANKER_REVISION: &str = "233902d25c440f23af6f7d6e94d2946bac0bee0a";
@@ -85,27 +93,24 @@ const RERANKER_FILES: [(&str, u64, &str); 5] = [
 #[error("semantic search unavailable: {0}")]
 pub(crate) struct SemanticUnavailable(String);
 
+/// FIFO-fair, so a caller looping over chunks cannot barge ahead of a
+/// waiting query. Locked with `blocking_lock`: every encode runs on a
+/// blocking thread.
 #[cfg(minilm)]
-struct LoadedModel(Mutex<TextEmbedding>);
+struct LoadedModel(tokio::sync::Mutex<TextEmbedding>);
 #[cfg(not(minilm))]
 struct LoadedModel;
 
 impl LoadedModel {
+    /// One vector per text, in order, `chunk` texts per model lock (and
+    /// per ONNX batch).
     #[cfg(minilm)]
-    fn encode(
-        &self,
-        texts: &[String],
-        batch_size: Option<usize>,
-    ) -> Result<Vec<Vec<f32>>, SemanticUnavailable> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut model = self
-            .0
-            .lock()
-            .map_err(|_| unavailable("MiniLM model lock poisoned"))?;
-        let mut vectors = catch_encoding(|| model.embed(texts, batch_size))?
-            .map_err(|error| unavailable(format!("MiniLM embedding failed: {error}")))?;
+    fn encode(&self, texts: &[String], chunk: usize) -> Result<Vec<Vec<f32>>, SemanticUnavailable> {
+        let mut vectors = encode_chunked(texts, chunk, |batch| {
+            let mut model = self.0.blocking_lock();
+            catch_encoding(|| model.embed(batch, Some(chunk)))?
+                .map_err(|error| unavailable(format!("MiniLM embedding failed: {error}")))
+        })?;
         for vector in &mut vectors {
             normalize_minilm_embedding(vector)?;
         }
@@ -116,10 +121,23 @@ impl LoadedModel {
     fn encode(
         &self,
         _texts: &[String],
-        _batch_size: Option<usize>,
+        _chunk: usize,
     ) -> Result<Vec<Vec<f32>>, SemanticUnavailable> {
         Err(unavailable("MiniLM is not compiled for this target"))
     }
+}
+
+/// `encode` over `texts` `chunk` at a time, the results concatenated in order.
+fn encode_chunked(
+    texts: &[String],
+    chunk: usize,
+    mut encode: impl FnMut(&[String]) -> Result<Vec<Vec<f32>>, SemanticUnavailable>,
+) -> Result<Vec<Vec<f32>>, SemanticUnavailable> {
+    let mut vectors = Vec::with_capacity(texts.len());
+    for batch in texts.chunks(chunk) {
+        vectors.extend(encode(batch)?);
+    }
+    Ok(vectors)
 }
 
 #[derive(Clone, Default)]
@@ -139,6 +157,10 @@ struct Inner {
     rebuild: tokio::sync::Mutex<()>,
     /// One model load at a time (a catalog rebuild and the embed surface).
     load: tokio::sync::Mutex<()>,
+    /// The last failed load and the bundle's [`bundle_stamp`] it saw: the
+    /// failure stands, without re-hashing 90 MB per call, until a file's
+    /// length or mtime changes (someone re-provisioned the bundle).
+    failed_load: Mutex<Option<(BundleStamp, String)>>,
 }
 
 struct DenseIndex {
@@ -223,7 +245,7 @@ impl SemanticSearch {
             let searchable_texts = documents.clone();
             let encode_model = model.clone();
             let encoded =
-                tokio::task::spawn_blocking(move || encode_model.encode(&documents, Some(32)))
+                tokio::task::spawn_blocking(move || encode_model.encode(&documents, ENCODE_CHUNK))
                     .await;
             let vectors = match encoded {
                 Ok(Ok(vectors))
@@ -321,7 +343,7 @@ impl SemanticSearch {
             .await
             .map_err(|error| EmbedError::Unconfigured(error.to_string()))?;
         let count = texts.len();
-        let vectors = tokio::task::spawn_blocking(move || model.encode(&texts, Some(32)))
+        let vectors = tokio::task::spawn_blocking(move || model.encode(&texts, EMBED_CHUNK))
             .await
             .map_err(|error| EmbedError::Failed(format!("embed task failed: {error}")))?
             .map_err(|error| EmbedError::Failed(error.to_string()))?;
@@ -357,7 +379,7 @@ impl SemanticSearch {
             .ok_or_else(|| unavailable("model absent"))?;
         let queries = queries.to_vec();
         let query_count = queries.len();
-        let encoded = tokio::task::spawn_blocking(move || model.encode(&queries, None))
+        let encoded = tokio::task::spawn_blocking(move || model.encode(&queries, ENCODE_CHUNK))
             .await
             .map_err(|error| unavailable(format!("query task failed: {error}")))??;
         validate_vectors(&encoded, query_count, MINILM_DIMENSIONS)?;
@@ -403,8 +425,8 @@ impl SemanticSearch {
         let (query_count, document_count) = (queries.len(), ids.len());
         let dimensions = MINILM_DIMENSIONS;
         let (query_vectors, document_vectors) = tokio::task::spawn_blocking(move || {
-            let documents = model.encode(&texts, Some(32))?;
-            let queries = model.encode(&queries, None)?;
+            let documents = model.encode(&texts, ENCODE_CHUNK)?;
+            let queries = model.encode(&queries, ENCODE_CHUNK)?;
             Ok::<_, SemanticUnavailable>((queries, documents))
         })
         .await
@@ -575,12 +597,39 @@ async fn ensure_model(inner: &Inner) -> Result<Arc<LoadedModel>, SemanticUnavail
         .model_dir
         .clone()
         .ok_or_else(|| unavailable("no model directory configured"))?;
+    let stamp = bundle_stamp(&dir);
+    if let Some((failed, error)) = &*inner.failed_load.lock().expect("failed load") {
+        if *failed == stamp {
+            return Err(unavailable(error.clone()));
+        }
+    }
     let model = tokio::task::spawn_blocking(move || load_verified_minilm(&dir))
         .await
-        .map_err(|error| unavailable(format!("semantic model load task failed: {error}")))??;
+        .unwrap_or_else(|error| {
+            Err(unavailable(format!(
+                "semantic model load task failed: {error}"
+            )))
+        })
+        .inspect_err(|error| {
+            *inner.failed_load.lock().expect("failed load") = Some((stamp, error.0.clone()));
+        })?;
     let model = Arc::new(model);
     *inner.model.write().expect("semantic model") = Some(model.clone());
     Ok(model)
+}
+
+/// `(length, mtime)` of every MiniLM file under a bundle root, `None` for
+/// one that cannot be read.
+type BundleStamp = Vec<Option<(u64, SystemTime)>>;
+
+fn bundle_stamp(root: &Path) -> BundleStamp {
+    MINILM_FILES
+        .iter()
+        .map(|(name, _, _)| {
+            let metadata = root.join(name).symlink_metadata().ok()?;
+            Some((metadata.len(), metadata.modified().ok()?))
+        })
+        .collect()
 }
 
 fn unavailable(message: impl Into<String>) -> SemanticUnavailable {
@@ -966,8 +1015,8 @@ fn load_verified_minilm(path: &Path) -> Result<LoadedModel, SemanticUnavailable>
             .with_intra_threads(MINILM_INTRA_THREADS),
     )
     .map_err(|error| unavailable(format!("initialize MiniLM: {error}")))?;
-    let loaded = LoadedModel(Mutex::new(model));
-    let probe = loaded.encode(&["model verification".into()], None)?;
+    let loaded = LoadedModel(tokio::sync::Mutex::new(model));
+    let probe = loaded.encode(&["model verification".into()], ENCODE_CHUNK)?;
     validate_vectors(&probe, 1, MINILM_DIMENSIONS)?;
     Ok(loaded)
 }
@@ -1160,6 +1209,62 @@ mod tests {
     }
 
     #[test]
+    fn chunked_encoding_keeps_order_and_length() {
+        let texts: Vec<String> = (0..20).map(|i| i.to_string()).collect();
+        let mut batches = Vec::new();
+        let mut fake = |batch: &[String]| {
+            batches.push(batch.len());
+            Ok(batch
+                .iter()
+                .map(|t| vec![t.parse::<f32>().unwrap()])
+                .collect())
+        };
+        let chunked = encode_chunked(&texts, EMBED_CHUNK, &mut fake).unwrap();
+        let whole = encode_chunked(&texts, texts.len(), &mut fake).unwrap();
+        assert_eq!(chunked, whole);
+        assert_eq!(chunked.len(), texts.len());
+        assert!(encode_chunked(&[], EMBED_CHUNK, &mut fake)
+            .unwrap()
+            .is_empty());
+        assert_eq!(batches, [8, 8, 4, 20]);
+        assert!(encode_chunked(&texts, EMBED_CHUNK, |_| Err(unavailable("boom"))).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_load_stands_until_the_bundle_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, _, _) in MINILM_FILES {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        let semantic = SemanticSearch::new(Some(dir.path().into()));
+        assert!(ensure_model(&semantic.inner).await.is_err());
+        // Swap in a marker: only the cache can answer with it.
+        semantic
+            .inner
+            .failed_load
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .1 = "cached".into();
+        let cached = ensure_model(&semantic.inner).await.err().unwrap();
+        assert_eq!(cached.0, "cached", "unchanged bundle: no reload");
+
+        let tokenizer = std::fs::File::options()
+            .write(true)
+            .open(dir.path().join("tokenizer.json"))
+            .unwrap();
+        let mtime = tokenizer.metadata().unwrap().modified().unwrap();
+        tokenizer
+            .set_modified(mtime + std::time::Duration::from_secs(1))
+            .unwrap();
+        let reloaded = ensure_model(&semantic.inner).await.err().unwrap();
+        assert_ne!(reloaded.0, "cached", "a touched file reloads");
+    }
+
+    #[test]
     fn encoding_panics_are_contained() {
         assert!(catch_encoding(|| -> Vec<Vec<f32>> { panic!("tokenizer") }).is_err());
     }
@@ -1235,5 +1340,17 @@ mod tests {
         assert_eq!(reranked.len(), 1);
         assert_eq!(reranked[0].len(), 3);
         assert_eq!(reranked[0][0].0, "web::fetch");
+
+        // The embed surface's chunks give exactly the vectors of one batch.
+        let texts: Vec<String> = (0..20)
+            .map(|i| format!("memory {i}: {}", "the user brews coffee ".repeat(i)))
+            .collect();
+        let chunked = semantic.embed(texts.clone()).await.unwrap();
+        let model = ensure_model(&semantic.inner).await.unwrap();
+        let whole = tokio::task::spawn_blocking(move || model.encode(&texts, texts.len()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(chunked, whole);
     }
 }
