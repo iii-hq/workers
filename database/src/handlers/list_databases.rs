@@ -1,9 +1,11 @@
 //! `database::listDatabases` — config details for every registered database.
 //! Config-only: no health checks, no live pool stats. Credentials are
-//! scrubbed from the connection URL before it leaves the process.
+//! scrubbed from the connection URL before it leaves the process; secret
+//! values, passwords and key material are never part of the reply.
 
 use super::AppState;
-use crate::config::{redact_url, TlsMode};
+use crate::config::{DisplayConfig, TlsMode};
+use crate::connector::Stage;
 use crate::transaction::driver_system;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -19,13 +21,25 @@ pub struct PoolInfo {
     pub acquire_timeout_ms: u64,
 }
 
-/// TLS settings. `ca_cert` is reported as a presence boolean only — never
-/// the path, which would leak filesystem layout.
+/// TLS settings. Certificates and keys are reported as presence booleans
+/// only — never the path, which would leak filesystem layout.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TlsInfo {
     pub mode: TlsMode,
     pub ca_cert_present: bool,
+    /// `client_cert` + `client_key` set (mutual TLS).
+    pub client_cert_present: bool,
     pub trust_native: bool,
+}
+
+/// The SSH tunnel's server (no credentials).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SshInfo {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    /// Whether `host_key` pins the server's key.
+    pub host_key_pinned: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -34,10 +48,38 @@ pub struct DatabaseInfo {
     pub name: String,
     /// "postgres" | "mysql" | "sqlite".
     pub driver: String,
-    /// Connection URL with credentials redacted.
+    /// Connection URL with credentials redacted (assembled from the fields
+    /// for the structured form).
     pub url: String,
+    /// Server host (postgres/mysql), from either form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// User name (postgres/mysql), when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Database (schema) name; the file path for sqlite.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<DisplayConfig>,
+    /// Folder of `.sql` query files on the engine host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshInfo>,
     pub pool: PoolInfo,
     pub tls: TlsInfo,
+    /// Whether any value is a `secret://` / `env://` reference.
+    pub uses_secrets: bool,
+    /// Why the connection has no pool (an unresolvable reference, an SSH
+    /// failure, an unreadable certificate…). Absent when it is usable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The step `error` happened at: `config`, `secrets`, `ssh`, `tcp`, `tls`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stage: Option<Stage>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -48,23 +90,61 @@ pub struct ListDatabasesResp {
 
 pub async fn handle(state: &AppState, _req: ListDatabasesReq) -> Result<ListDatabasesResp, String> {
     let cfg = state.config.read().await;
+    let errors = state.runtime.errors();
     let mut databases: Vec<DatabaseInfo> = cfg
         .databases
         .iter()
-        .map(|(name, db)| DatabaseInfo {
-            name: name.clone(),
-            driver: driver_system(db.driver).to_string(),
-            url: redact_url(&db.url),
-            pool: PoolInfo {
-                max: db.pool.max,
-                idle_timeout_ms: db.pool.idle_timeout_ms,
-                acquire_timeout_ms: db.pool.acquire_timeout_ms,
-            },
-            tls: TlsInfo {
-                mode: db.tls.mode,
-                ca_cert_present: db.tls.ca_cert.is_some(),
-                trust_native: db.tls.trust_native,
-            },
+        .map(|(name, db)| {
+            let endpoint = db.server_endpoint();
+            let user = match &db.url {
+                Some(url) => url::Url::parse(url)
+                    .ok()
+                    .map(|u| u.username().to_string())
+                    .filter(|u| !u.is_empty()),
+                None => db.user.clone(),
+            };
+            let error = errors.get(name);
+            DatabaseInfo {
+                name: name.clone(),
+                driver: driver_system(db.driver).to_string(),
+                url: db.display_url(),
+                host: endpoint.as_ref().map(|(h, _)| h.clone()),
+                port: endpoint.map(|(_, p)| p),
+                user,
+                database: db.database_name().or_else(|| {
+                    (db.driver == crate::config::DriverKind::Sqlite)
+                        .then(|| {
+                            db.url
+                                .as_deref()
+                                .and_then(|u| u.strip_prefix("sqlite:"))
+                                .map(str::to_string)
+                        })
+                        .flatten()
+                }),
+                display: db.display.clone(),
+                folder: db.folder.clone(),
+                ssh: db.ssh.as_ref().map(|ssh| SshInfo {
+                    host: ssh.host.clone(),
+                    port: ssh.port,
+                    user: ssh.user.clone(),
+                    host_key_pinned: ssh.host_key.is_some(),
+                }),
+                pool: PoolInfo {
+                    max: db.pool.max,
+                    idle_timeout_ms: db.pool.idle_timeout_ms,
+                    acquire_timeout_ms: db.pool.acquire_timeout_ms,
+                },
+                tls: TlsInfo {
+                    mode: db.tls.mode,
+                    ca_cert_present: db.tls.ca_cert.is_some(),
+                    client_cert_present: db.tls.client_cert.is_some()
+                        && db.tls.client_key.is_some(),
+                    trust_native: db.tls.trust_native,
+                },
+                uses_secrets: db.uses_secrets(),
+                error: error.map(|e| e.message.clone()),
+                error_stage: error.map(|e| e.stage),
+            }
         })
         .collect();
     // HashMap iteration order is nondeterministic; sort so output is stable.
@@ -92,6 +172,7 @@ mod tests {
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         }
     }
 

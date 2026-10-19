@@ -72,17 +72,63 @@ fn databases_schema(gen: &mut schemars::gen::SchemaGenerator) -> Schema {
     schema
 }
 
-/// Per-database connection settings. The URL scheme selects the driver;
-/// `pool` and `tls` are optional and default when omitted.
+/// The value a client sends back in place of a stored sensitive literal it
+/// was never shown (`database::getConnection` returns it, and
+/// `saveConnection` / `testConnection` swap the stored value back in). Never
+/// valid in the stored configuration itself.
+pub const REDACTED: &str = "__redacted__";
+
+/// Per-database connection settings: either a connection `url` (whose scheme
+/// selects the driver) or the structured form (`driver`, `host`, `port`,
+/// `user`, `password`, `database`) — never both. `pool` and `tls` are
+/// optional and default when omitted.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[schemars(example = "structured_example")]
 pub struct DatabaseConfig {
     /// Connection URL. Driver is inferred from the scheme: `sqlite:`,
-    /// `postgres://` or `postgresql://`, or `mysql://`.
-    pub url: String,
+    /// `postgres://` or `postgresql://`, or `mysql://`. Mutually exclusive
+    /// with the structured form (`driver` and its fields).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Structured form: the driver. Mutually exclusive with `url`.
+    #[serde(default, rename = "driver", skip_serializing_if = "Option::is_none")]
+    #[schemars(rename = "driver")]
+    pub declared_driver: Option<DriverKind>,
+    /// Structured form (postgres/mysql): server host name or IP. Through an
+    /// `ssh` tunnel, the host as the SSH server resolves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Structured form (postgres/mysql): server port. Default 5432 / 3306.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Structured form (postgres/mysql): user name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Structured form (postgres/mysql): password — a literal,
+    /// `secret://NAME` (the secrets worker's vault) or `env://NAME` (an
+    /// environment variable the secrets worker reads). Resolved through
+    /// `secrets::resolve`; never echoed back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// Structured form: database name (postgres/mysql), or the database file
+    /// path on the engine host (sqlite; `:memory:` for an in-memory one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
     #[serde(default)]
     pub pool: PoolConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Reach the server through an SSH tunnel (postgres/mysql).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshConfig>,
+    /// How clients draw this connection (icon, color). Metadata only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<DisplayConfig>,
+    /// Absolute path of a folder on the engine host that holds this
+    /// connection's `.sql` query files. Metadata only: the worker never
+    /// reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
     /// How `database::row-changed` events are captured for this database.
     /// `statements` (default) classifies the SQL this worker executes;
     /// `native` makes writes from ANY client — psql, other processes — fire
@@ -91,23 +137,457 @@ pub struct DatabaseConfig {
     /// binlog replication stream (needs REPLICATION SLAVE + CLIENT).
     #[serde(default, skip_serializing_if = "CaptureMode::is_statements")]
     pub capture: CaptureMode,
-    /// Populated by [`WorkerConfig::finalize`] from the URL scheme.
-    /// Do not construct `DatabaseConfig` directly without calling
-    /// `finalize` — the default `Sqlite` value will silently mismatch
-    /// the URL.
+    /// Populated by [`WorkerConfig::finalize`] from the URL scheme or the
+    /// structured `driver`. Do not construct `DatabaseConfig` directly
+    /// without calling `finalize` — the default `Sqlite` value will silently
+    /// mismatch the URL.
     #[serde(skip)]
     #[schemars(skip)]
     pub driver: DriverKind,
 }
 
+fn structured_example() -> Value {
+    json!({
+        "driver": "postgres",
+        "host": "db.example.com",
+        "port": 5432,
+        "user": "app",
+        "password": "secret://DATABASE_SHOP_PASSWORD",
+        "database": "shop",
+        "tls": { "mode": "verify-full" },
+        "display": { "icon": "database", "color": "#22C55E" }
+    })
+}
+
 impl DatabaseConfig {
-    /// Resolves file-backed SQLite URLs when the database is opened.
-    pub(crate) fn resolved_url(&self) -> String {
-        match self.driver {
-            DriverKind::Sqlite => resolve_sqlite_url(&self.url),
-            DriverKind::Postgres | DriverKind::Mysql => self.url.clone(),
+    /// A minimal url-form entry (driver detected by [`WorkerConfig::finalize`]).
+    pub fn from_url(url: impl Into<String>) -> Self {
+        Self {
+            url: Some(url.into()),
+            declared_driver: None,
+            host: None,
+            port: None,
+            user: None,
+            password: None,
+            database: None,
+            pool: PoolConfig::default(),
+            tls: TlsConfig::default(),
+            ssh: None,
+            display: None,
+            folder: None,
+            capture: CaptureMode::default(),
+            driver: DriverKind::default(),
         }
     }
+
+    /// The sqlite url this entry opens (file-backed paths resolved against
+    /// the project), for either form. `None` for postgres/mysql.
+    pub(crate) fn sqlite_url(&self) -> Option<String> {
+        if self.driver != DriverKind::Sqlite {
+            return None;
+        }
+        Some(match (&self.url, &self.database) {
+            (Some(url), _) => resolve_sqlite_url(url),
+            (None, Some(path)) => resolve_sqlite_url(&format!("sqlite:{path}")),
+            (None, None) => resolve_sqlite_url(DEFAULT_SQLITE_URL),
+        })
+    }
+
+    /// The server's host and port (postgres/mysql), from either form. A url
+    /// that names several hosts reports the first.
+    pub fn server_endpoint(&self) -> Option<(String, u16)> {
+        let default_port = match self.driver {
+            DriverKind::Postgres => 5432,
+            DriverKind::Mysql => 3306,
+            DriverKind::Sqlite => return None,
+        };
+        match &self.url {
+            Some(url) => {
+                let parsed = url::Url::parse(url).ok()?;
+                let host = parsed.host_str()?.trim_matches(['[', ']']).to_string();
+                Some((host, parsed.port().unwrap_or(default_port)))
+            }
+            None => Some((self.host.clone()?, self.port.unwrap_or(default_port))),
+        }
+    }
+
+    /// The url to show a reader: credentials removed. For the structured
+    /// form, a url assembled from its fields (no password).
+    pub fn display_url(&self) -> String {
+        if let Some(url) = &self.url {
+            return redact_url(url);
+        }
+        match self.driver {
+            DriverKind::Sqlite => format!(
+                "sqlite:{}",
+                self.database.as_deref().unwrap_or(DEFAULT_SQLITE_URL)
+            ),
+            DriverKind::Postgres | DriverKind::Mysql => {
+                let scheme = if self.driver == DriverKind::Postgres {
+                    "postgres"
+                } else {
+                    "mysql"
+                };
+                let (host, port) = self.server_endpoint().unwrap_or_default();
+                let host = if host.contains(':') {
+                    format!("[{host}]")
+                } else {
+                    host
+                };
+                let user = if self.user.as_deref().is_some_and(|u| !u.is_empty()) {
+                    "***@"
+                } else {
+                    ""
+                };
+                let db = self.database.as_deref().unwrap_or("");
+                format!("{scheme}://{user}{host}:{port}/{db}")
+            }
+        }
+    }
+
+    /// The database (schema, on mysql) the entry names, from either form.
+    pub fn database_name(&self) -> Option<String> {
+        match &self.url {
+            Some(url) if self.driver != DriverKind::Sqlite => url::Url::parse(url)
+                .ok()
+                .map(|u| u.path().trim_start_matches('/').to_string())
+                .filter(|db| !db.is_empty()),
+            _ => self.database.clone().filter(|db| !db.is_empty()),
+        }
+    }
+
+    /// Every field whose value may be a `secret://` / `env://` reference,
+    /// as `(field path, value)`.
+    pub fn sensitive_fields(&self) -> Vec<(&'static str, &str)> {
+        let ssh = self.ssh.as_ref();
+        [
+            ("password", self.password.as_deref()),
+            ("tls.ca_cert", self.tls.ca_cert.as_deref()),
+            ("tls.client_cert", self.tls.client_cert.as_deref()),
+            ("tls.client_key", self.tls.client_key.as_deref()),
+            ("ssh.password", ssh.and_then(|s| s.password.as_deref())),
+            (
+                "ssh.private_key",
+                ssh.and_then(|s| s.private_key.as_deref()),
+            ),
+            ("ssh.passphrase", ssh.and_then(|s| s.passphrase.as_deref())),
+        ]
+        .into_iter()
+        .filter_map(|(field, value)| value.map(|v| (field, v)))
+        .collect()
+    }
+
+    /// Whether any value is a `secret://` / `env://` reference.
+    pub fn uses_secrets(&self) -> bool {
+        self.sensitive_fields()
+            .iter()
+            .any(|(_, v)| crate::secrets::parse_ref(v).is_some())
+    }
+
+    /// Check one entry and detect its driver. Every message names the entry
+    /// and the field, never a value: a misplaced value may be a password.
+    pub fn validate(&mut self, name: &str) -> Result<(), String> {
+        let structured_fields = [
+            ("host", self.host.is_some()),
+            ("port", self.port.is_some()),
+            ("user", self.user.is_some()),
+            ("password", self.password.is_some()),
+            ("database", self.database.is_some()),
+        ];
+        match (&self.url, self.declared_driver) {
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "db `{name}`: `url` and `driver` are mutually exclusive — use either the \
+                     url or the structured form (driver, host, port, user, password, database)"
+                ))
+            }
+            (None, None) => {
+                return Err(format!(
+                    "db `{name}`: set either `url` or `driver` (structured form: driver, host, \
+                     port, user, password, database)"
+                ))
+            }
+            (Some(url), None) => {
+                if let Some((field, _)) = structured_fields.iter().find(|(_, set)| *set) {
+                    return Err(format!(
+                        "db `{name}`: `{field}` belongs to the structured form and cannot be \
+                         combined with `url` — put it in the url, or replace the url with \
+                         `driver` and its fields"
+                    ));
+                }
+                self.driver = detect_driver(url).ok_or_else(|| {
+                    format!("unknown url scheme for db `{name}`: {}", redact_url(url))
+                })?;
+                if url.contains(REDACTED) {
+                    return Err(format!(
+                        "db `{name}`: `url` holds the redaction placeholder `{REDACTED}`; send \
+                         the real password or keep the stored url"
+                    ));
+                }
+            }
+            (None, Some(driver)) => {
+                self.driver = driver;
+                match driver {
+                    DriverKind::Postgres | DriverKind::Mysql => {
+                        if self.host.as_deref().is_none_or(|h| h.trim().is_empty()) {
+                            return Err(format!("db `{name}`: `host` is required for {driver}"));
+                        }
+                        if self.user.as_deref().is_none_or(|u| u.trim().is_empty()) {
+                            return Err(format!("db `{name}`: `user` is required for {driver}"));
+                        }
+                        if self.port == Some(0) {
+                            return Err(format!("db `{name}`: `port` must be 1-65535"));
+                        }
+                    }
+                    DriverKind::Sqlite => {
+                        if self.database.as_deref().is_none_or(|d| d.trim().is_empty()) {
+                            return Err(format!(
+                                "db `{name}`: `database` (the file path) is required for sqlite"
+                            ));
+                        }
+                        for (field, set) in structured_fields.iter().take(4) {
+                            if *set {
+                                return Err(format!(
+                                    "db `{name}`: `{field}` does not apply to sqlite (a local \
+                                     file); only `database` (its path) does"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (field, value) in self.sensitive_fields() {
+            if value == REDACTED {
+                return Err(format!(
+                    "db `{name}`: `{field}` holds the redaction placeholder `{REDACTED}`; send \
+                     the real value or keep the stored one"
+                ));
+            }
+            if let Some(Err(e)) = crate::secrets::parse_ref(value) {
+                return Err(format!("db `{name}`: `{field}` {}", e.describe_malformed()));
+            }
+        }
+        let tls = &self.tls;
+        if tls.client_cert.is_some() != tls.client_key.is_some() {
+            return Err(format!(
+                "db `{name}`: mutual TLS needs both `tls.client_cert` and `tls.client_key`"
+            ));
+        }
+
+        if let Some(ssh) = &self.ssh {
+            if self.driver == DriverKind::Sqlite {
+                return Err(format!(
+                    "db `{name}`: `ssh` does not apply to sqlite (a local file)"
+                ));
+            }
+            ssh.validate(name)?;
+            if let Some(url) = &self.url {
+                // One tunnel forwards to one host; a multi-host url has no
+                // single target.
+                if self.driver == DriverKind::Postgres
+                    && url.split('@').nth(1).is_some_and(|rest| {
+                        rest.split(['/', '?'])
+                            .next()
+                            .is_some_and(|hosts| hosts.contains(','))
+                    })
+                {
+                    return Err(format!(
+                        "db `{name}`: `ssh` needs a single host; the url names several"
+                    ));
+                }
+                if self.server_endpoint().is_none() {
+                    return Err(format!(
+                        "db `{name}`: `ssh` needs the url to name the server host"
+                    ));
+                }
+            }
+        }
+
+        if let Some(display) = &self.display {
+            if let Some(color) = &display.color {
+                let hex = color.strip_prefix('#').unwrap_or("");
+                if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(format!(
+                        "db `{name}`: `display.color` must be #RRGGBB (got {color:?})"
+                    ));
+                }
+            }
+            if let Some(icon) = &display.icon {
+                if icon.is_empty()
+                    || icon.len() > 64
+                    || !icon
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    return Err(format!(
+                        "db `{name}`: `display.icon` must be a Lucide icon name (lowercase \
+                         letters, digits and `-`)"
+                    ));
+                }
+            }
+        }
+        if let Some(folder) = &self.folder {
+            let windows_abs = folder.len() > 2
+                && folder.as_bytes()[0].is_ascii_alphabetic()
+                && &folder[1..2] == ":"
+                && matches!(&folder[2..3], "\\" | "/");
+            if !(folder.starts_with('/') || windows_abs) || folder.contains('\0') {
+                return Err(format!(
+                    "db `{name}`: `folder` must be an absolute path on the engine host"
+                ));
+            }
+        }
+
+        if self.capture == CaptureMode::Native {
+            match self.driver {
+                // Postgres captures via LISTEN/NOTIFY; server-side
+                // prerequisites are checked at binding registration,
+                // where failures are actionable.
+                DriverKind::Postgres => {}
+                DriverKind::Mysql => {
+                    // Binlog events are filtered to the entry's schema; one
+                    // without a schema would capture every database on the
+                    // server — table names and change volumes from schemas
+                    // this handle was never meant to see.
+                    if self.database_name().is_none() {
+                        return Err(format!(
+                            "db `{name}`: `capture: native` on mysql requires the \
+                             url to name a database (mysql://host/dbname) — binlog \
+                             events are filtered to that schema"
+                        ));
+                    }
+                }
+                DriverKind::Sqlite => {
+                    // A `:memory:` database exists per connection — a
+                    // watcher connection would open a different database
+                    // and hear nothing, ever.
+                    let target = self.url.as_deref().or(self.database.as_deref());
+                    if target.is_some_and(|t| t.contains(":memory:")) {
+                        return Err(format!(
+                            "db `{name}`: `capture: native` requires a file-backed \
+                             sqlite database; `:memory:` is per-connection and \
+                             cannot be observed"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Connection names are passed in every call (`db`), stored as keys and
+/// written into mention tokens: letters, digits, `_`, `-` and `.`, starting
+/// with a letter, digit or `_`, at most 64 characters.
+pub fn validate_connection_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let ok = name.len() <= 64
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "connection name {name:?} must be 1-64 letters, digits, `_`, `-` or `.`, starting \
+             with a letter, digit or `_`"
+        ))
+    }
+}
+
+/// SSH tunnel to the database server (postgres/mysql): the worker connects
+/// to `host:port` as `user` and forwards each database connection through a
+/// `direct-tcpip` channel to the entry's host/port as the SSH server sees
+/// them. TLS to the database still verifies the database host name.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct SshConfig {
+    /// SSH server host name or IP.
+    pub host: String,
+    /// SSH server port. Default 22.
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    /// SSH user name.
+    pub user: String,
+    /// Password authentication — a literal, `secret://NAME` or `env://NAME`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// Private key authentication: the key itself (OpenSSH or PEM; RSA,
+    /// ECDSA or Ed25519), a path to it on the engine host, `secret://NAME`
+    /// or `env://NAME`. Tried before the password when both are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+    /// Passphrase of an encrypted `private_key` — a literal, `secret://NAME`
+    /// or `env://NAME`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
+    /// Pin the server's host key by its OpenSSH SHA-256 fingerprint
+    /// (`SHA256:…`, as `ssh-keygen -lf` prints it). A different key is
+    /// refused. When absent, any key is accepted and `testConnection`
+    /// reports the one it saw so a client can pin it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key: Option<String>,
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+impl SshConfig {
+    fn validate(&self, name: &str) -> Result<(), String> {
+        if self.host.trim().is_empty() {
+            return Err(format!("db `{name}`: `ssh.host` is required"));
+        }
+        if self.user.trim().is_empty() {
+            return Err(format!("db `{name}`: `ssh.user` is required"));
+        }
+        if self.port == 0 {
+            return Err(format!("db `{name}`: `ssh.port` must be 1-65535"));
+        }
+        if self.password.is_none() && self.private_key.is_none() {
+            return Err(format!(
+                "db `{name}`: `ssh` needs `password` or `private_key` (or both)"
+            ));
+        }
+        if self.passphrase.is_some() && self.private_key.is_none() {
+            return Err(format!(
+                "db `{name}`: `ssh.passphrase` is set without `ssh.private_key`"
+            ));
+        }
+        if let Some(pin) = &self.host_key {
+            if !valid_host_key_pin(pin) {
+                return Err(format!(
+                    "db `{name}`: `ssh.host_key` must be an OpenSSH SHA-256 fingerprint \
+                     (`SHA256:` followed by base64, as `ssh-keygen -lf` prints it)"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `SHA256:` + unpadded base64 of a 32-byte digest (43 characters).
+pub fn valid_host_key_pin(pin: &str) -> bool {
+    pin.strip_prefix("SHA256:").is_some_and(|b64| {
+        let b64 = b64.trim_end_matches('=');
+        b64.len() == 43
+            && b64
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/')
+    })
+}
+
+/// How a client draws a connection. The worker only stores it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct DisplayConfig {
+    /// A Lucide icon name (`database`, `server`, `cloud`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// `#RRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// TLS settings for a single database. Applies to postgres and mysql.
@@ -116,19 +596,29 @@ impl DatabaseConfig {
 /// Default is `mode: require` — TLS handshake required, certificate chain
 /// validated against the system trust store, hostname verification skipped
 /// (matching libpq's `sslmode=require` semantics). Use `mode: verify-full`
-/// to additionally verify the certificate hostname matches the URL host,
+/// to additionally verify the certificate hostname matches the server host,
 /// and `mode: disable` to opt out of TLS entirely (local-dev only).
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct TlsConfig {
-    /// TLS mode: `disable` (plaintext), `require` (default), or `verify-full`.
+    /// TLS mode: `disable` (plaintext), `prefer` (TLS when the server offers
+    /// it), `require` (default), `verify-ca`, or `verify-full`.
     #[serde(default)]
     pub mode: TlsMode,
-    /// Optional path to a PEM file containing one or more CA certificates.
-    /// Additive by default — these certs **extend** the system trust store
-    /// rather than replace it. Set `trust_native: false` for strict-isolation
-    /// deployments that must only trust the operator-supplied bundle.
+    /// Optional CA certificate(s): a path to a PEM file, the PEM itself,
+    /// `secret://NAME` or `env://NAME`. Additive by default — these certs
+    /// **extend** the system trust store rather than replace it. Set
+    /// `trust_native: false` for strict-isolation deployments that must only
+    /// trust the operator-supplied bundle.
     #[serde(default)]
     pub ca_cert: Option<String>,
+    /// Client certificate (chain) for mutual TLS: a path, the PEM itself,
+    /// `secret://NAME` or `env://NAME`. Requires `client_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert: Option<String>,
+    /// Private key of `client_cert` (PEM: PKCS#8, PKCS#1 or SEC1): a path,
+    /// the PEM itself, `secret://NAME` or `env://NAME`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key: Option<String>,
     /// When true (default), the system/native trust store is loaded in
     /// addition to any `ca_cert` bundle. Set to `false` to trust only the
     /// `ca_cert` certificates — useful when an operator wants to pin trust
@@ -151,6 +641,8 @@ impl Default for TlsConfig {
         Self {
             mode: TlsMode::default(),
             ca_cert: None,
+            client_cert: None,
+            client_key: None,
             trust_native: default_trust_native(),
         }
     }
@@ -165,22 +657,53 @@ fn default_trust_native() -> bool {
 pub enum TlsMode {
     /// No TLS. Plaintext connection. Local-dev only.
     Disable,
+    /// TLS when the server offers it (chain validated like `require`);
+    /// plaintext only when the server does not offer TLS at all. A failed
+    /// certificate check is an error, never a fallback.
+    Prefer,
     /// TLS handshake required; certificate chain validated; hostname NOT
     /// verified. Matches libpq's `sslmode=require`. The default.
     #[default]
     Require,
+    /// Same checks as `require` (chain validated against the trust roots,
+    /// hostname not checked), named after libpq's `sslmode=verify-ca`.
+    #[serde(rename = "verify-ca")]
+    VerifyCa,
     /// TLS handshake required; certificate chain validated; certificate
-    /// hostname must match the URL host. Matches libpq's `sslmode=verify-full`.
+    /// hostname must match the server host. Matches libpq's `sslmode=verify-full`.
     #[serde(rename = "verify-full")]
     VerifyFull,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+impl TlsMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TlsMode::Disable => "disable",
+            TlsMode::Prefer => "prefer",
+            TlsMode::Require => "require",
+            TlsMode::VerifyCa => "verify-ca",
+            TlsMode::VerifyFull => "verify-full",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum DriverKind {
     Postgres,
     Mysql,
     #[default]
     Sqlite,
+}
+
+impl std::fmt::Display for DriverKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DriverKind::Postgres => "postgres",
+            DriverKind::Mysql => "mysql",
+            DriverKind::Sqlite => "sqlite",
+        })
+    }
 }
 
 /// How row-change events are captured for one database.
@@ -255,13 +778,7 @@ impl WorkerConfig {
         Self::finalize(WorkerConfig {
             databases: HashMap::from([(
                 DEFAULT_DB_NAME.to_string(),
-                DatabaseConfig {
-                    url: default_sqlite_url(),
-                    pool: PoolConfig::default(),
-                    tls: TlsConfig::default(),
-                    capture: CaptureMode::default(),
-                    driver: DriverKind::default(),
-                },
+                DatabaseConfig::from_url(default_sqlite_url()),
             )]),
             history_max_entries: default_history_max_entries(),
             history_max_bytes: default_history_max_bytes(),
@@ -327,48 +844,12 @@ impl WorkerConfig {
         if cfg.databases.is_empty() {
             return Err("config must declare at least one database".into());
         }
-        for (name, db) in cfg.databases.iter_mut() {
-            db.driver = detect_driver(&db.url).ok_or_else(|| {
-                format!(
-                    "unknown url scheme for db `{name}`: {}",
-                    redact_url(&db.url)
-                )
-            })?;
-            if db.capture == CaptureMode::Native {
-                match db.driver {
-                    // Postgres captures via LISTEN/NOTIFY; server-side
-                    // prerequisites are checked at binding registration,
-                    // where failures are actionable.
-                    DriverKind::Postgres => {}
-                    DriverKind::Mysql => {
-                        // Binlog events are filtered to the url's schema; a
-                        // url without one would capture every database on
-                        // the server — table names and change volumes from
-                        // schemas this handle was never meant to see.
-                        let has_schema = url::Url::parse(&db.url)
-                            .map(|u| !u.path().trim_start_matches('/').is_empty())
-                            .unwrap_or(false);
-                        if !has_schema {
-                            return Err(format!(
-                                "db `{name}`: `capture: native` on mysql requires the \
-                                 url to name a database (mysql://host/dbname) — binlog \
-                                 events are filtered to that schema"
-                            ));
-                        }
-                    }
-                    DriverKind::Sqlite => {
-                        // A `:memory:` database exists per connection — a
-                        // watcher connection would open a different database
-                        // and hear nothing, ever.
-                        if db.url.contains(":memory:") {
-                            return Err(format!(
-                                "db `{name}`: `capture: native` requires a file-backed \
-                                 sqlite database; `:memory:` is per-connection and \
-                                 cannot be observed"
-                            ));
-                        }
-                    }
-                }
+        // Sorted so the first error reported is deterministic.
+        let mut names: Vec<String> = cfg.databases.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            if let Some(db) = cfg.databases.get_mut(&name) {
+                db.validate(&name)?;
             }
         }
         Ok(cfg)
@@ -518,7 +999,10 @@ mod tests {
         });
         let c = WorkerConfig::from_json(&json).unwrap();
         assert!(matches!(c.databases["primary"].driver, DriverKind::Sqlite));
-        assert_eq!(c.databases["primary"].url, DEFAULT_SQLITE_URL);
+        assert_eq!(
+            c.databases["primary"].url.as_deref(),
+            Some(DEFAULT_SQLITE_URL)
+        );
     }
 
     #[test]
@@ -590,7 +1074,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         assert_eq!(cfg.databases.len(), 1);
         let db = &cfg.databases[DEFAULT_DB_NAME];
-        assert_eq!(db.url, default_sqlite_url());
+        assert_eq!(db.url.as_deref(), Some(default_sqlite_url().as_str()));
         assert!(matches!(db.driver, DriverKind::Sqlite));
         assert_eq!(db.pool.max, 10);
         assert_eq!(db.pool.idle_timeout_ms, 30_000);
@@ -603,7 +1087,10 @@ mod tests {
         let json = cfg.to_json();
         assert!(json["databases"][DEFAULT_DB_NAME].get("driver").is_none());
         let back = WorkerConfig::from_json(&json).unwrap();
-        assert_eq!(back.databases[DEFAULT_DB_NAME].url, default_sqlite_url());
+        assert_eq!(
+            back.databases[DEFAULT_DB_NAME].url.as_deref(),
+            Some(default_sqlite_url().as_str())
+        );
         assert!(matches!(
             back.databases[DEFAULT_DB_NAME].driver,
             DriverKind::Sqlite
@@ -689,7 +1176,7 @@ databases:
         assert_eq!(c.databases.len(), 1);
         let db = &c.databases["primary"];
         assert!(matches!(db.driver, DriverKind::Sqlite));
-        assert_eq!(db.url, default_sqlite_url());
+        assert_eq!(db.url.as_deref(), Some(default_sqlite_url().as_str()));
         assert_eq!(db.pool.max, 10);
         assert_eq!(db.pool.idle_timeout_ms, 30_000);
         assert_eq!(db.pool.acquire_timeout_ms, 5_000);
@@ -703,7 +1190,7 @@ databases:
             iii_worker_paths::project_path("data/case.db").display()
         );
 
-        assert_eq!(c.databases["primary"].resolved_url(), expected);
+        assert_eq!(c.databases["primary"].sqlite_url().unwrap(), expected);
     }
 
     #[test]
@@ -758,7 +1245,7 @@ databases:
         // a colon) is unambiguously a YAML scalar.
         let yaml = "databases:\n  p:\n    url: \"${DATABASE_WORKER_TEST_URL}\"\n";
         let c = cfg(yaml);
-        assert_eq!(c.databases["p"].url, "sqlite::memory:");
+        assert_eq!(c.databases["p"].url.as_deref(), Some("sqlite::memory:"));
         std::env::remove_var("DATABASE_WORKER_TEST_URL");
     }
 
@@ -775,7 +1262,10 @@ databases:
         std::env::set_var("DBW_TEST_DB", "shop");
         let yaml = "databases:\n  p:\n    url: \"postgres://${DBW_TEST_USER}@${DBW_TEST_HOST}/${DBW_TEST_DB}\"\n";
         let c = cfg(yaml);
-        assert_eq!(c.databases["p"].url, "postgres://alice@host.example/shop");
+        assert_eq!(
+            c.databases["p"].url.as_deref(),
+            Some("postgres://alice@host.example/shop")
+        );
         std::env::remove_var("DBW_TEST_USER");
         std::env::remove_var("DBW_TEST_HOST");
         std::env::remove_var("DBW_TEST_DB");

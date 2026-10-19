@@ -95,7 +95,45 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     }
 }
 
-/// Build connection pools for every configured database.
+/// The stored value as written (`raw: true`): `${VAR}` templates and
+/// `secret://` references unexpanded. `Value::Null` when nothing is stored.
+pub async fn get_raw_value(iii: &IIIClient) -> Result<Value, String> {
+    match trigger_configuration_with_retry(
+        iii,
+        "configuration::get",
+        json!({ "id": config_id(), "raw": true }),
+    )
+    .await
+    {
+        Ok(resp) => Ok(resp.get("value").cloned().unwrap_or(Value::Null)),
+        Err(e) if is_not_found(&e) => Ok(Value::Null),
+        Err(e) => Err(e),
+    }
+}
+
+/// Replace the stored value (validated against the registered schema by the
+/// configuration worker, which then notifies every consumer).
+pub async fn set_value(iii: &IIIClient, value: Value) -> Result<(), String> {
+    // One attempt: a rejected value (schema) must surface at once, and the
+    // caller reports a transport failure as such.
+    iii.trigger(
+        TriggerRequest {
+            function_id: "configuration::set".to_string(),
+            payload: json!({ "id": config_id(), "value": value }),
+            action: None,
+            timeout_ms: Some(CONFIG_TIMEOUT_MS),
+        }
+        .namespace("default"),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Build connection pools for every configured database from literal values
+/// (references fail), all-or-nothing. Tests and tools; the worker goes
+/// through [`apply_config`], which resolves references and isolates a
+/// failing connection from the rest.
 pub async fn build_pools(cfg: &WorkerConfig) -> Result<HashMap<String, Pool>, String> {
     let mut pools = HashMap::new();
     for (name, db) in &cfg.databases {
@@ -108,24 +146,97 @@ pub async fn build_pools(cfg: &WorkerConfig) -> Result<HashMap<String, Pool>, St
     Ok(pools)
 }
 
+/// Make `cfg` live: resolve its references, (re)build the pools whose entry
+/// or resolved secrets changed, keep the others as they are, and swap the
+/// snapshot. A connection that cannot be built (unresolvable reference, SSH
+/// failure, unreadable certificate) gets no pool and an error that
+/// `listDatabases` reports and its calls return; every other connection
+/// keeps working. Never fails as a whole: `cfg` was validated when parsed.
 pub async fn apply_config(
     state: &AppState,
     cfg: WorkerConfig,
     listeners: Option<&crate::triggers::NativeListeners>,
 ) -> Result<(), String> {
-    let new_pools = build_pools(&cfg).await?;
-    // A failed pool build leaves everything untouched, listeners included.
-    if let Some(listeners) = listeners {
-        listeners.sync(&cfg);
+    use crate::connector::{self, Connector, Material, Stage};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    let runtime = state.runtime.clone();
+    let _reload = runtime.reload.lock().await;
+
+    let references: BTreeSet<String> = cfg
+        .databases
+        .values()
+        .flat_map(connector::references)
+        .collect();
+    runtime.secrets.ensure(references.iter().cloned()).await;
+    runtime.secrets.retain(&references);
+
+    let current_pools = state.pools.read().await.clone();
+    let previous_errors = runtime.errors();
+    let builds = cfg.databases.iter().map(|(name, db)| {
+        let runtime = runtime.clone();
+        let current = current_pools
+            .get(name)
+            .cloned()
+            .zip(runtime.connector(name));
+        async move {
+            let material = Material::resolve(db, |key| runtime.secrets.lookup(key))?;
+            let fingerprint = connector::fingerprint(db, &material);
+            if let Some((pool, built_from)) = current {
+                if built_from.fingerprint == fingerprint {
+                    return Ok((pool, built_from));
+                }
+            }
+            let connector = Connector::build(name, db, &material)?;
+            connector.check_tunnel().await?;
+            let connector = Arc::new(connector);
+            let pool = pool::from_connector(name, connector.clone(), &db.pool).map_err(|e| {
+                let message = match e {
+                    crate::error::DbError::ConfigError { message } => message,
+                    other => other.to_string(),
+                };
+                connector::ConnectError::new(Stage::Config, message)
+            })?;
+            tracing::info!(db = %name, driver = ?pool.driver(), "pool ready");
+            Ok::<_, connector::ConnectError>((pool, connector))
+        }
+    });
+    let names: Vec<String> = cfg.databases.keys().cloned().collect();
+    let results = futures_util::future::join_all(builds).await;
+
+    let mut new_pools = HashMap::new();
+    let mut connectors = HashMap::new();
+    let mut errors = HashMap::new();
+    for (name, result) in names.into_iter().zip(results) {
+        match result {
+            Ok((pool, connector)) => {
+                new_pools.insert(name.clone(), pool);
+                connectors.insert(name, connector);
+            }
+            Err(e) => {
+                // Only a new or changed failure is worth a log line: the
+                // maintenance tick retries failed connections.
+                if previous_errors.get(&name).map(|p| &p.message) != Some(&e.message) {
+                    tracing::warn!(db = %name, stage = ?e.stage, error = %e.message, "connection unavailable");
+                }
+                errors.insert(name, e);
+            }
+        }
+    }
+
+    let registered = runtime.listeners();
+    if let Some(listeners) = listeners.or(registered.as_deref()) {
+        listeners.sync_with(&cfg, &connectors);
     }
     // Swap pools and the config snapshot inside one critical section (pools
     // lock first, then config) so a concurrent reader never observes new
-    // pools paired with the old config or vice-versa. A failed build above
-    // leaves both untouched.
+    // pools paired with the old config or vice-versa.
     let mut pools_guard = state.pools.write().await;
     let mut config_guard = state.config.write().await;
     *pools_guard = new_pools;
     *config_guard = cfg;
+    runtime.replace(errors, connectors);
     drop(config_guard);
     drop(pools_guard);
     // Observers the new config no longer supports (their database is gone)
@@ -134,6 +245,103 @@ pub async fn apply_config(
         bus.capture().revalidate().await;
     }
     Ok(())
+}
+
+/// How often the maintenance tick looks for failed connections to retry and
+/// secret values past their TTL.
+pub const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Retry failed connections (a secrets worker that came up late, a bastion
+/// back online) and re-read secrets past their TTL; a value that changed
+/// rebuilds only its connection's pool.
+pub fn spawn_maintenance(
+    state: AppState,
+    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(MAINTENANCE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if !(state.runtime.has_errors() || state.runtime.secrets.any_stale()) {
+                continue;
+            }
+            let cfg = state.config.read().await.clone();
+            let _ = apply_config(&state, cfg, listeners.as_deref()).await;
+        }
+    })
+}
+
+const SECRET_FN_ID: &str = "database::on-secret-change";
+
+/// Register the internal `secrets::changed` handler and bind it. A rotated,
+/// deleted or re-shared secret that a connection references is re-read, and
+/// only the connections whose resolved values changed are rebuilt. The
+/// payload is advisory (it never carries a value) and anything unrelated is
+/// ignored, so a direct call can at most cause a re-read.
+pub fn register_secret_trigger(
+    iii: &IIIClient,
+    state: AppState,
+    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
+) {
+    let st = state.clone();
+    iii.register_function(
+        SECRET_FN_ID,
+        RegisterFunction::new_async(move |event: OnSecretChangeEvent| {
+            let st = st.clone();
+            let listeners = listeners.clone();
+            async move {
+                let payload = json!({ "name": event.name, "ref": event.reference });
+                let Some(reference) = crate::secrets::event_reference(&payload) else {
+                    return Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse {
+                        ok: false,
+                    });
+                };
+                let cfg = st.config.read().await.clone();
+                let referenced = cfg
+                    .databases
+                    .values()
+                    .any(|db| crate::connector::references(db).contains(&reference));
+                if referenced {
+                    st.runtime
+                        .secrets
+                        .refresh([reference], crate::secrets::Refetch::Invalidate)
+                        .await;
+                    let _ = apply_config(&st, cfg, listeners.as_deref()).await;
+                }
+                Ok(OnConfigChangeResponse { ok: true })
+            }
+        })
+        .description(
+            "Internal: re-read a rotated or revoked secret:// / env:// value and rebuild the \
+             connections that reference it.",
+        )
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+    // `secrets::changed` belongs to the secrets worker: when it is absent the
+    // engine parks this binding and activates it once the type registers.
+    #[allow(deprecated)]
+    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+        crate::secrets::CHANGED_TRIGGER_TYPE.to_string(),
+        SECRET_FN_ID.to_string(),
+        json!({}),
+    )) {
+        tracing::warn!(error = %e, "binding secrets::changed failed; secret references refresh on their TTL only");
+    }
+}
+
+/// Advisory `secrets::changed` delivery (never carries a value).
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnSecretChangeEvent {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, rename = "ref")]
+    pub reference: Option<String>,
+    /// `created` | `rotated` | `deleted` | `access_changed` (advisory).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub action: Option<String>,
 }
 
 /// Event delivered to the internal `database::on-config-change` handler. A struct

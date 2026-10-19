@@ -1,34 +1,54 @@
 //! `database::testConnection` — probe a CANDIDATE database config.
 //!
-//! Exists for the console's configuration form: the operator edits a url,
-//! presses "test connection", and learns whether it works *before* saving.
-//! The probe therefore takes the url/tls straight from the request instead
-//! of a configured handle, opens one throwaway connection outside every
-//! pool, runs the smallest possible query, and reports the outcome as data
-//! (`ok: false` is a normal response, not a handler error).
+//! Exists for connection editors: the operator fills in an entry, presses
+//! "test connection", and learns whether it works *before* saving. The probe
+//! takes the entry straight from the request (the same url or structured
+//! form `saveConnection` takes; the legacy `{url, tls}` still works), opens
+//! one throwaway connection outside every pool — through a throwaway SSH
+//! tunnel when the entry has one — runs the smallest possible query, and
+//! reports the outcome as data (`ok: false` is a normal response, not a
+//! handler error) with the `stage` that failed.
 //!
-//! Error texts are returned verbatim except that the url's credentials are
-//! scrubbed. That is safe here where it would not be elsewhere: everything
-//! echoed back originates from the caller's own request, so nothing
-//! cross-tenant can leak — but a driver error that quotes the url must not
-//! turn a stored password into log/UI text.
+//! `"__redacted__"` values (what `getConnection` shows for stored literals)
+//! are taken from the stored entry `name`. `secret://` / `env://` values are
+//! resolved through the secrets worker like a configured connection's.
+//!
+//! Error texts are returned verbatim except that every credential the probe
+//! used is scrubbed. That is safe here where it would not be elsewhere:
+//! everything echoed back originates from the caller's own request (or the
+//! entry it named), so nothing cross-tenant can leak — but a driver error
+//! that quotes a password must not turn it into log/UI text.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::{Duration, Instant};
 
-use crate::config::{detect_driver, DriverKind, TlsConfig};
-use crate::pool::tls::make_pg_connector;
+use super::AppState;
+use crate::config::{detect_driver, TlsConfig};
+use crate::connector::{self, ConnectError, Connector, Material, Stage};
+use crate::ssh::HostKeyInfo;
 use crate::transaction::driver_system;
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const MAX_TIMEOUT_MS: u64 = 30_000;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TestConnectionReq {
-    /// Connection url to probe (`postgres://…`, `mysql://…`, `sqlite:…`).
-    pub url: String,
-    /// TLS settings to probe with. Defaults like a configured database
+    /// The candidate entry: `{url, tls?, ssh?}` or the structured form
+    /// (`driver`, `host`, `port`, `user`, `password`, `database`, `tls`,
+    /// `ssh`). `"__redacted__"` takes that value from the stored entry
+    /// `name`.
+    #[serde(default)]
+    pub connection: Option<Value>,
+    /// The stored connection `"__redacted__"` values come from.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Legacy: a connection url to probe (`postgres://…`, `mysql://…`,
+    /// `sqlite:…`) when `connection` is absent.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Legacy: TLS settings for `url`. Defaults like a configured database
     /// (mode `require`) when omitted.
     #[serde(default)]
     pub tls: Option<TlsConfig>,
@@ -51,79 +71,244 @@ pub struct TestConnectionResp {
     /// Why the probe failed (credentials scrubbed). Absent on success.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The step that failed: `config`, `secrets`, `ssh`, `tcp`, `tls`,
+    /// `auth`, `database`. Absent on success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<Stage>,
+    /// The SSH server's host key as the tunnel saw it (also on a mismatch),
+    /// for a client to pin as `ssh.host_key`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh_host_key: Option<HostKeyInfo>,
 }
 
-pub async fn handle(req: TestConnectionReq) -> Result<TestConnectionResp, crate::error::DbError> {
-    let started = Instant::now();
-    let Some(driver) = detect_driver(&req.url) else {
-        return Ok(TestConnectionResp {
+impl TestConnectionResp {
+    fn failed(driver: &str, stage: Stage, message: impl Into<String>) -> Self {
+        Self {
             ok: false,
-            driver: "unknown".into(),
+            driver: driver.to_string(),
             latency_ms: 0,
             server_version: None,
-            message: Some(
-                "unknown url scheme — expected sqlite:, postgres:// / postgresql://, or mysql://"
-                    .into(),
-            ),
-        });
+            message: Some(message.into()),
+            stage: Some(stage),
+            ssh_host_key: None,
+        }
+    }
+}
+
+/// The candidate entry as JSON, from either request shape.
+fn candidate(req: &TestConnectionReq) -> Result<Value, TestConnectionResp> {
+    if let Some(connection) = &req.connection {
+        return Ok(connection.clone());
+    }
+    let Some(url) = &req.url else {
+        return Err(TestConnectionResp::failed(
+            "unknown",
+            Stage::Config,
+            "send `connection` (the entry to test) or `url`",
+        ));
     };
-    let tls = req.tls.clone().unwrap_or_default();
+    if detect_driver(url).is_none() {
+        return Err(TestConnectionResp::failed(
+            "unknown",
+            Stage::Config,
+            "unknown url scheme — expected sqlite:, postgres:// / postgresql://, or mysql://",
+        ));
+    }
+    let mut entry = serde_json::json!({ "url": url });
+    if let Some(tls) = &req.tls {
+        entry["tls"] = serde_json::to_value(tls).unwrap_or(Value::Null);
+    }
+    Ok(entry)
+}
+
+pub async fn handle(
+    state: &AppState,
+    req: TestConnectionReq,
+) -> Result<TestConnectionResp, crate::error::DbError> {
+    let started = Instant::now();
     let budget = Duration::from_millis(
         req.timeout_ms
             .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .min(MAX_TIMEOUT_MS),
+            .clamp(1, MAX_TIMEOUT_MS),
     );
-
-    let outcome = tokio::time::timeout(budget, probe(driver, &req.url, &tls)).await;
-    let latency_ms = started.elapsed().as_millis() as u64;
-    let (ok, server_version, message) = match outcome {
-        Ok(Ok(version)) => (true, Some(version), None),
-        Ok(Err(e)) => (false, None, Some(scrub_credentials(&e, &req.url))),
-        Err(_) => (
-            false,
-            None,
-            Some(format!("timed out after {}ms", budget.as_millis())),
-        ),
+    let mut entry = match candidate(&req) {
+        Ok(entry) => entry,
+        Err(resp) => return Ok(resp),
     };
-    Ok(TestConnectionResp {
-        ok,
-        driver: driver_system(driver).to_string(),
-        latency_ms,
-        server_version,
-        message,
+    let label = req.name.clone().unwrap_or_else(|| "candidate".into());
+    let driver_hint = entry
+        .get("driver")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            entry
+                .get("url")
+                .and_then(Value::as_str)
+                .and_then(detect_driver)
+                .map(|d| driver_system(d).to_string())
+        })
+        .unwrap_or_else(|| "unknown".into());
+
+    if crate::redaction::contains_redacted(&entry) {
+        let stored = match &req.name {
+            Some(name) => match super::connections::stored_entry(state, name).await {
+                Ok(stored) => stored,
+                Err(_) => None,
+            },
+            None => None,
+        };
+        if let Err(e) = crate::redaction::restore_entry(&mut entry, stored.as_ref()) {
+            let hint = if req.name.is_none() {
+                " (pass `name` to use the stored connection's values)"
+            } else {
+                ""
+            };
+            return Ok(TestConnectionResp::failed(
+                &driver_hint,
+                Stage::Config,
+                format!("{e}{hint}"),
+            ));
+        }
+    }
+
+    let db = match super::connections::parse_entry(&label, &entry) {
+        Ok(db) => db,
+        Err(e) => return Ok(TestConnectionResp::failed(&driver_hint, Stage::Config, e)),
+    };
+    let driver = driver_system(db.driver).to_string();
+
+    let outcome = tokio::time::timeout(budget, run_probe(state, &label, &db)).await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let url = db.url.clone().unwrap_or_default();
+    Ok(match outcome {
+        Ok(Ok((version, ssh_host_key))) => TestConnectionResp {
+            ok: true,
+            driver,
+            latency_ms,
+            server_version: Some(version),
+            message: None,
+            stage: None,
+            ssh_host_key,
+        },
+        Ok(Err(failure)) => TestConnectionResp {
+            ok: false,
+            driver,
+            latency_ms,
+            server_version: None,
+            message: Some(scrub(&failure.error.message, &url, &failure.credentials)),
+            stage: Some(failure.error.stage),
+            ssh_host_key: failure.host_key,
+        },
+        Err(_) => TestConnectionResp {
+            ok: false,
+            driver,
+            latency_ms,
+            server_version: None,
+            message: Some(format!("timed out after {}ms", budget.as_millis())),
+            stage: Some(if db.ssh.is_some() {
+                Stage::Ssh
+            } else {
+                Stage::Tcp
+            }),
+            ssh_host_key: None,
+        },
     })
 }
 
-async fn probe(driver: DriverKind, url: &str, tls: &TlsConfig) -> Result<String, String> {
-    match driver {
-        DriverKind::Postgres => probe_postgres(url, tls).await,
-        DriverKind::Mysql => probe_mysql(url, tls).await,
-        DriverKind::Sqlite => probe_sqlite(url).await,
+struct ProbeFailure {
+    error: ConnectError,
+    host_key: Option<HostKeyInfo>,
+    /// Values to scrub from the message.
+    credentials: Vec<String>,
+}
+
+async fn run_probe(
+    state: &AppState,
+    label: &str,
+    db: &crate::config::DatabaseConfig,
+) -> Result<(String, Option<HostKeyInfo>), ProbeFailure> {
+    let fail = |error, host_key, credentials| ProbeFailure {
+        error,
+        host_key,
+        credentials,
+    };
+    state
+        .runtime
+        .secrets
+        .ensure(connector::references(db))
+        .await;
+    let material = Material::resolve(db, |key| state.runtime.secrets.lookup(key))
+        .map_err(|e| fail(e, None, Vec::new()))?;
+    let credentials = material.credentials();
+    let connector =
+        Connector::build(label, db, &material).map_err(|e| fail(e, None, credentials.clone()))?;
+    let host_key = || connector.tunnel().and_then(|t| t.host_key());
+    if let Err(e) = connector.check_tunnel().await {
+        return Err(fail(e, host_key(), credentials));
+    }
+    let probe_started = tokio::time::Instant::now();
+    match probe(&connector).await {
+        Ok(version) => Ok((version, host_key())),
+        Err(mut e) => {
+            // Through a tunnel the driver only sees a closed socket; the
+            // tunnel knows whether the far end was unreachable.
+            if let Some(tunnel_error) = connector
+                .tunnel()
+                .and_then(|t| t.error_since(probe_started))
+            {
+                e = ConnectError::new(
+                    match tunnel_error.kind {
+                        crate::ssh::TunnelErrorKind::Forward => Stage::Tcp,
+                        _ => Stage::Ssh,
+                    },
+                    tunnel_error.message,
+                );
+            }
+            Err(fail(e, host_key(), credentials))
+        }
     }
 }
 
-async fn probe_postgres(url: &str, tls: &TlsConfig) -> Result<String, String> {
-    async fn ping(client: tokio_postgres::Client) -> Result<String, String> {
+async fn probe(connector: &Connector) -> Result<String, ConnectError> {
+    if let Some((config, tls)) = connector.pg() {
+        return probe_postgres(config, tls).await;
+    }
+    if connector.mysql().is_some() {
+        return probe_mysql(connector).await;
+    }
+    let url = connector.sqlite_url().unwrap_or_default().to_string();
+    probe_sqlite(&url)
+        .await
+        .map_err(|e| ConnectError::new(Stage::Database, e))
+}
+
+async fn probe_postgres(
+    config: &tokio_postgres::Config,
+    tls: Option<&tokio_postgres_rustls::MakeRustlsConnect>,
+) -> Result<String, ConnectError> {
+    async fn ping(client: tokio_postgres::Client) -> Result<String, ConnectError> {
         let row = client
             .query_one("SELECT version()", &[])
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| pg_error(&e))?;
         Ok(row.get::<_, String>(0))
     }
-    match make_pg_connector(tls).map_err(|e| format!("{e:?}"))? {
+    match tls {
         Some(connector) => {
-            let (client, conn) = tokio_postgres::connect(url, connector)
+            let (client, conn) = config
+                .connect(connector.clone())
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| pg_error(&e))?;
             tokio::spawn(async move {
                 let _ = conn.await;
             });
             ping(client).await
         }
         None => {
-            let (client, conn) = tokio_postgres::connect(url, tokio_postgres::NoTls)
+            let (client, conn) = config
+                .connect(tokio_postgres::NoTls)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| pg_error(&e))?;
             tokio::spawn(async move {
                 let _ = conn.await;
             });
@@ -132,18 +317,65 @@ async fn probe_postgres(url: &str, tls: &TlsConfig) -> Result<String, String> {
     }
 }
 
-async fn probe_mysql(url: &str, tls: &TlsConfig) -> Result<String, String> {
+fn pg_error(e: &tokio_postgres::Error) -> ConnectError {
+    let stage = match e.code().map(|c| c.code()) {
+        Some(code) if code == "3D000" => Stage::Database,
+        _ => match crate::pool::postgres::classify_pg_error(e) {
+            "tls" => Stage::Tls,
+            "auth" => Stage::Auth,
+            "network" => Stage::Tcp,
+            _ => Stage::Database,
+        },
+    };
+    // The Display of a connect error is terse ("error connecting to
+    // server: …"); keep its source chain, which says why.
+    let mut message = e.to_string();
+    let mut source = std::error::Error::source(e);
+    while let Some(s) = source {
+        let text = s.to_string();
+        if !message.contains(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        source = s.source();
+    }
+    if message.contains("server does not support TLS") {
+        message.push_str(" (tls.mode prefer or disable connects without it)");
+    }
+    ConnectError::new(stage, message)
+}
+
+async fn probe_mysql(connector: &Connector) -> Result<String, ConnectError> {
     use mysql_async::prelude::Queryable as _;
-    let opts = crate::triggers::mysql_binlog::build_opts(url, tls)?;
-    let mut conn = mysql_async::Conn::new(opts)
+    let mut conn = connector
+        .mysql_connect()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| mysql_error(&e))?;
     let version: Option<String> = conn
         .query_first("SELECT VERSION()")
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| mysql_error(&e))?;
     let _ = conn.disconnect().await;
-    version.ok_or_else(|| "server returned no version row".into())
+    version.ok_or_else(|| ConnectError::new(Stage::Database, "server returned no version row"))
+}
+
+fn mysql_error(e: &mysql_async::Error) -> ConnectError {
+    use mysql_async::{DriverError, Error, IoError};
+    let (stage, extra) = match e {
+        Error::Io(IoError::Tls(_)) => (Stage::Tls, ""),
+        Error::Io(IoError::Io(_)) => (Stage::Tcp, ""),
+        Error::Driver(DriverError::NoClientSslFlagFromServer) => (
+            Stage::Tls,
+            " (the server offers no TLS; tls.mode prefer or disable connects without it)",
+        ),
+        Error::Driver(DriverError::ConnectionClosed) => (Stage::Tcp, ""),
+        Error::Server(s) if matches!(s.code, 1045 | 1129 | 1130 | 1156 | 1251 | 1698) => {
+            (Stage::Auth, "")
+        }
+        Error::Server(s) if s.code == 1049 => (Stage::Database, ""),
+        _ => (Stage::Database, ""),
+    };
+    ConnectError::new(stage, format!("{e}{extra}"))
 }
 
 async fn probe_sqlite(url: &str) -> Result<String, String> {
@@ -182,8 +414,19 @@ async fn probe_sqlite(url: &str) -> Result<String, String> {
     .map_err(|e| format!("probe task failed: {e}"))?
 }
 
-/// Strip the url's username/password out of an error text — drivers quote
-/// the connection string in some failure modes.
+/// Strip every credential the probe used out of an error text — drivers
+/// quote the connection string (and so its password) in some failure modes.
+fn scrub(message: &str, url: &str, credentials: &[String]) -> String {
+    let mut out = scrub_credentials(message, url);
+    for secret in credentials {
+        if secret.len() >= 3 {
+            out = out.replace(secret.as_str(), "***");
+        }
+    }
+    out
+}
+
+/// Strip the url's username/password out of an error text.
 fn scrub_credentials(message: &str, url: &str) -> String {
     let mut out = message.to_string();
     if let Ok(parsed) = url::Url::parse(url) {
@@ -205,10 +448,27 @@ mod tests {
 
     fn req(url: &str) -> TestConnectionReq {
         TestConnectionReq {
-            url: url.into(),
-            tls: None,
-            timeout_ms: None,
+            url: Some(url.into()),
+            ..Default::default()
         }
+    }
+
+    fn st() -> AppState {
+        AppState {
+            pools: Default::default(),
+            config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::config::WorkerConfig::default(),
+            )),
+            handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
+            transactions: crate::transaction::TxRegistry::new(),
+            log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
+            runtime: Default::default(),
+        }
+    }
+
+    async fn handle(req: TestConnectionReq) -> Result<TestConnectionResp, crate::error::DbError> {
+        super::handle(&st(), req).await
     }
 
     #[tokio::test(flavor = "multi_thread")]

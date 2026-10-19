@@ -8,6 +8,7 @@ use database::handlers::{
     browse::{self, BrowseTableReq},
     column_stats::{self, ColumnStatsReq},
     commit_transaction::{self, CommitTxReq},
+    connections::{self, DeleteConnectionReq, GetConnectionReq, SaveConnectionReq},
     diagram::{self, SchemaDiagramReq},
     execute::{self, ExecuteReq},
     execute_batch::{self, ExecuteBatchReq},
@@ -58,7 +59,9 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                // russh logs protocol detail at debug; keep it out of the
+                // default output (credentials are never logged either way).
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,russh=warn")),
         )
         .init();
 
@@ -124,15 +127,18 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading database configuration")?;
 
-    let pools = configuration::build_pools(&cfg)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("building initial connection pools")?;
+    // `secret://` / `env://` values resolve through the secrets worker; the
+    // cache is filled when the configuration is applied below.
+    let runtime = Arc::new(database::runtime::Runtime::new(Arc::new(
+        database::secrets::SecretCache::new(database::secrets::bus_fetch(iii.clone())),
+    )));
 
     let handles = Arc::new(HandleRegistry::new());
     let transactions = TxRegistry::new();
     let log = Logger::new();
-    let pools = Arc::new(RwLock::new(pools));
+    // Filled by `apply_config` below: a connection whose pool cannot be built
+    // (unresolvable secret, SSH failure) is reported, not fatal.
+    let pools = Arc::new(RwLock::new(std::collections::HashMap::new()));
     let live_config = Arc::new(RwLock::new(cfg.clone()));
     // Native capture and the routing index of `database::on-row-changed`,
     // driven by its observers (and, against a pre-0.25 engine, by the old
@@ -152,7 +158,7 @@ async fn main() -> Result<()> {
     let native_listeners = Arc::new(database::triggers::NativeListeners::new(
         row_changes.clone(),
     ));
-    native_listeners.sync(&cfg);
+    runtime.set_listeners(native_listeners.clone());
     let state = AppState {
         pools,
         config: live_config,
@@ -160,7 +166,12 @@ async fn main() -> Result<()> {
         transactions: transactions.clone(),
         log: log.clone(),
         row_changes: Some(row_changes.clone()),
+        runtime,
     };
+    configuration::apply_config(&state, cfg, Some(&native_listeners))
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("building initial connection pools")?;
 
     let _evictor = handles.spawn_evictor();
     let _tx_watcher = transactions.spawn_timeout_watcher(log.clone(), Some(row_changes.clone()));
@@ -347,17 +358,77 @@ async fn main() -> Result<()> {
         );
     }
     {
+        let st = state.clone();
         iii.register_function(
             "database::testConnection",
-            RegisterFunction::new_async(move |req: TestConnectionReq| async move {
-                test_connection::handle(req)
-                    .await
-                    .map_err(iii_sdk::errors::Error::from)
+            RegisterFunction::new_async(move |req: TestConnectionReq| {
+                let st = st.clone();
+                async move {
+                    test_connection::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
             })
             .description(
-                "Test a candidate database URL (plus optional TLS) with one throwaway \
-                 connection. Configured pools are untouched; reports \
-                 ok/driver/latency/server version; failures are data, not errors.",
+                "Test a candidate connection entry (url or structured form, TLS, SSH tunnel, \
+                 secret:// values) with one throwaway connection. Configured pools are \
+                 untouched; reports ok/driver/latency/server version, the failing stage and \
+                 the SSH host key; failures are data, not errors.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::getConnection",
+            RegisterFunction::new_async(move |req: GetConnectionReq| {
+                let st = st.clone();
+                async move {
+                    connections::get(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Read one stored connection entry for editing: references and templates \
+                 intact, literal passwords, passphrases and keys as \"__redacted__\".",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::saveConnection",
+            RegisterFunction::new_async(move |req: SaveConnectionReq| {
+                let st = st.clone();
+                async move {
+                    connections::save(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Create, update (previous_name = name) or rename (previous_name = old) a \
+                 connection in the database configuration; \"__redacted__\" keeps a stored \
+                 value. Returns after the pools reloaded, with the connection's error if any.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::deleteConnection",
+            RegisterFunction::new_async(move |req: DeleteConnectionReq| {
+                let st = st.clone();
+                async move {
+                    connections::delete(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Remove a connection from the database configuration and close its pool. \
+                 The last connection cannot be removed.",
             ),
         );
     }
@@ -719,6 +790,9 @@ async fn main() -> Result<()> {
         engine_observes,
     )
     .context("registering configuration change observer")?;
+    configuration::register_secret_trigger(&iii, state.clone(), Some(native_listeners.clone()));
+    let _maintenance =
+        configuration::spawn_maintenance(state.clone(), Some(native_listeners.clone()));
 
     // Injectable console UI (function-trigger renderer) — after the
     // database::* functions so the console can attribute the assets.

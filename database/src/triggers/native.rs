@@ -24,8 +24,8 @@ use tokio_postgres::{AsyncMessage, Client, Connection, NoTls, Socket};
 
 use super::bus::{now_ms, RowChangeBus, RowChangedEvent, KEY_CAP};
 use super::sql::Op;
-use crate::config::{CaptureMode, TlsConfig, WorkerConfig};
-use crate::pool::tls::make_pg_connector;
+use crate::config::{CaptureMode, WorkerConfig};
+use crate::connector::Connector;
 
 /// The NOTIFY channel every iii trigger function raises on.
 pub(crate) const CHANNEL: &str = "iii_row_changed";
@@ -244,16 +244,40 @@ impl NativeListeners {
         }
     }
 
-    /// Start missing listeners, stop removed ones, restart changed ones.
-    /// Must run inside a tokio runtime.
+    /// Start missing listeners, stop removed ones, restart changed ones,
+    /// connecting with literal values only. Tests; the worker uses
+    /// [`NativeListeners::sync_with`] and its resolved connectors.
     pub fn sync(&self, cfg: &WorkerConfig) {
-        let desired: HashMap<String, (crate::config::DatabaseConfig, String)> = cfg
+        let connectors: HashMap<String, Arc<Connector>> = cfg
             .databases
             .iter()
             .filter(|(_, db)| db.capture == CaptureMode::Native)
-            .map(|(name, db)| {
-                let fingerprint = serde_json::to_string(db).unwrap_or_default();
-                (name.clone(), (db.clone(), fingerprint))
+            .filter_map(|(name, db)| match Connector::literal(name, db) {
+                Ok(c) => Some((name.clone(), Arc::new(c))),
+                Err(e) => {
+                    tracing::warn!(db = %name, error = %e, "native capture listener not started");
+                    None
+                }
+            })
+            .collect();
+        self.sync_with(cfg, &connectors);
+    }
+
+    /// Start missing listeners, stop removed ones, restart changed ones.
+    /// A native database without a connector (its pool failed to build) has
+    /// no listener until a later reload provides one. Must run inside a
+    /// tokio runtime.
+    pub fn sync_with(&self, cfg: &WorkerConfig, connectors: &HashMap<String, Arc<Connector>>) {
+        let desired: HashMap<String, (Arc<Connector>, String)> = cfg
+            .databases
+            .iter()
+            .filter(|(_, db)| db.capture == CaptureMode::Native)
+            .filter_map(|(name, _)| {
+                let connector = connectors.get(name)?;
+                // The connector's fingerprint covers the entry AND its
+                // resolved secrets: a rotated password restarts the listener.
+                let fingerprint = connector.fingerprint.to_string();
+                Some((name.clone(), (connector.clone(), fingerprint)))
             })
             .collect();
 
@@ -268,11 +292,11 @@ impl NativeListeners {
             }
             keep
         });
-        for (name, (db, fingerprint)) in desired {
+        for (name, (connector, fingerprint)) in desired {
             if tasks.contains_key(&name) {
                 continue;
             }
-            let Some(handle) = self.spawn(&name, &db) else {
+            let Some(handle) = self.spawn(&name, connector) else {
                 continue;
             };
             tasks.insert(
@@ -285,18 +309,13 @@ impl NativeListeners {
         }
     }
 
-    fn spawn(&self, name: &str, db: &crate::config::DatabaseConfig) -> Option<TaskHandle> {
-        match db.driver {
-            crate::config::DriverKind::Postgres => {
-                Some(TaskHandle::Async(tokio::spawn(run_listener(
-                    name.to_string(),
-                    db.url.clone(),
-                    db.tls.clone(),
-                    Arc::clone(&self.bus),
-                ))))
-            }
+    fn spawn(&self, name: &str, connector: Arc<Connector>) -> Option<TaskHandle> {
+        match connector.driver {
+            crate::config::DriverKind::Postgres => Some(TaskHandle::Async(tokio::spawn(
+                run_listener(name.to_string(), connector, Arc::clone(&self.bus)),
+            ))),
             crate::config::DriverKind::Sqlite => {
-                let url = db.resolved_url();
+                let url = connector.sqlite_url().unwrap_or_default().to_string();
                 let Some(path) = super::sqlite_watch::sqlite_file_path(&url) else {
                     // Config validation rejects `:memory:`; reaching this
                     // means drift — fail visible, not silent.
@@ -339,12 +358,7 @@ impl NativeListeners {
                 })
             }
             crate::config::DriverKind::Mysql => Some(TaskHandle::Async(tokio::spawn(
-                super::mysql_binlog::run_binlog(
-                    name.to_string(),
-                    db.url.clone(),
-                    db.tls.clone(),
-                    Arc::clone(&self.bus),
-                ),
+                super::mysql_binlog::run_binlog(name.to_string(), connector, Arc::clone(&self.bus)),
             ))),
         }
     }
@@ -357,10 +371,10 @@ impl NativeListeners {
 
 /// Hold a LISTEN connection open forever, reconnecting with capped backoff.
 /// Events raised while disconnected are lost — see the module doc.
-async fn run_listener(db: String, url: String, tls: TlsConfig, bus: Arc<RowChangeBus>) {
+async fn run_listener(db: String, connector: Arc<Connector>, bus: Arc<RowChangeBus>) {
     let mut delay = Duration::from_secs(1);
     loop {
-        match listen_once(&db, &url, &tls, &bus).await {
+        match listen_once(&db, &connector, &bus).await {
             Ok(()) => {
                 tracing::warn!(db = %db, "native capture connection closed; reconnecting");
                 delay = Duration::from_secs(1);
@@ -374,25 +388,23 @@ async fn run_listener(db: String, url: String, tls: TlsConfig, bus: Arc<RowChang
     }
 }
 
-async fn listen_once(
-    db: &str,
-    url: &str,
-    tls: &TlsConfig,
-    bus: &RowChangeBus,
-) -> Result<(), String> {
+async fn listen_once(db: &str, connector: &Connector, bus: &RowChangeBus) -> Result<(), String> {
+    let Some((config, tls)) = connector.pg() else {
+        return Err("internal: postgres listener without postgres settings".into());
+    };
     // Dedicated connection, never the pool: LISTEN state is per-session, and
     // a pooled session's notifications would go to whoever holds the object.
-    match make_pg_connector(tls).map_err(|e| format!("{e:?}"))? {
-        Some(connector) => {
-            let (client, conn) = tokio_postgres::connect(url, connector)
+    // Through an SSH tunnel this is one more channel on the pool's session.
+    match tls {
+        Some(tls) => {
+            let (client, conn) = config
+                .connect(tls.clone())
                 .await
                 .map_err(|e| e.to_string())?;
             session(db, client, conn, bus).await
         }
         None => {
-            let (client, conn) = tokio_postgres::connect(url, NoTls)
-                .await
-                .map_err(|e| e.to_string())?;
+            let (client, conn) = config.connect(NoTls).await.map_err(|e| e.to_string())?;
             session(db, client, conn, bus).await
         }
     }

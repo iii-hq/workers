@@ -34,6 +34,7 @@ pub mod browse;
 pub mod catalog;
 pub mod column_stats;
 pub mod commit_transaction;
+pub mod connections;
 pub mod diagram;
 pub mod execute;
 pub mod execute_batch;
@@ -92,6 +93,9 @@ pub struct AppState {
     /// `database::row-changed` bindings and their fan-out. Absent when the
     /// worker runs without an engine connection (tests).
     pub row_changes: Option<Arc<crate::triggers::RowChangeBus>>,
+    /// Secret cache, per-connection build errors and what each pool was
+    /// built from (see `configuration::apply_config`).
+    pub runtime: Arc<crate::runtime::Runtime>,
 }
 
 impl AppState {
@@ -172,29 +176,56 @@ impl AppState {
         if let Some(name) = db {
             return Ok(name);
         }
-        let pools = self.pools.read().await;
-        if pools.len() == 1 {
-            return Ok(pools.keys().next().expect("len checked above").clone());
+        // Configured connections, failed ones included: a connection whose
+        // pool could not be built is still the caller's target, and its
+        // call should say why rather than pick another.
+        let mut names: Vec<String> = self.pools.read().await.keys().cloned().collect();
+        for name in self.runtime.errors().into_keys() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
         }
-        if pools.contains_key(crate::config::DEFAULT_DB_NAME) {
+        if names.len() == 1 {
+            return Ok(names.remove(0));
+        }
+        if names.iter().any(|n| n == crate::config::DEFAULT_DB_NAME) {
             return Ok(crate::config::DEFAULT_DB_NAME.to_string());
         }
-        let mut available: Vec<String> = pools.keys().cloned().collect();
-        available.sort();
-        Err(DbError::MissingDb { available })
+        names.sort();
+        Err(DbError::MissingDb { available: names })
     }
 
     pub async fn pool(&self, db: &str) -> Result<Pool, DbError> {
         let pools = self.pools.read().await;
-        pools.get(db).cloned().ok_or_else(|| {
-            // Enumerate the registered handles so a caller that guessed wrong
-            // learns the right name from one failure instead of trial-and-error.
-            let mut available: Vec<String> = pools.keys().cloned().collect();
-            available.sort();
-            DbError::UnknownDb {
-                db: db.to_string(),
-                available,
+        if let Some(pool) = pools.get(db) {
+            return Ok(pool.clone());
+        }
+        // Configured but unbuildable: say why (the message names the field
+        // or reference, never a value).
+        if let Some(e) = self.runtime.error(db) {
+            return Err(DbError::ConfigError {
+                message: format!(
+                    "connection `{db}` is unavailable ({}): {}",
+                    serde_json::to_value(e.stage)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default(),
+                    e.message
+                ),
+            });
+        }
+        // Enumerate the registered handles so a caller that guessed wrong
+        // learns the right name from one failure instead of trial-and-error.
+        let mut available: Vec<String> = pools.keys().cloned().collect();
+        for name in self.runtime.errors().into_keys() {
+            if !available.contains(&name) {
+                available.push(name);
             }
+        }
+        available.sort();
+        Err(DbError::UnknownDb {
+            db: db.to_string(),
+            available,
         })
     }
 }
