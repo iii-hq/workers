@@ -198,11 +198,15 @@ fn near_twin<'a>(
 }
 
 /// The content words of the user's own lines in a span; our injected
-/// `<memory …>` blocks are user-role but not the user's.
+/// `<memory …>` blocks and the harness's `[notification]` wakes (event
+/// payloads, a child's final reply) are user-role but not the user's.
 fn user_words(entries: &[Entry]) -> BTreeSet<String> {
     entries
         .iter()
-        .filter(|(_, role, text, _)| role == "user" && !text.trim().starts_with("<memory "))
+        .filter(|(_, role, text, _)| {
+            let text = text.trim();
+            role == "user" && !text.starts_with("<memory ") && !text.starts_with("[notification]")
+        })
         .flat_map(|(_, _, text, _)| content_words(text))
         .collect()
 }
@@ -1038,6 +1042,10 @@ mod tests {
                 "user",
                 "<memory bank=\"b\">\n- Always deploy from the release branch. (2026-10-15)\n</memory>",
             ),
+            line(
+                "user",
+                "[notification] child-end: {\"result\":\"Done. Always sign every commit with the bot key.\"}",
+            ),
         ]);
         assert!(stated_by_user("Never use emojis in replies.", &words));
         // Only the assistant said it: never learned.
@@ -1048,6 +1056,11 @@ mod tests {
         // An injected memory block is user-role, but not the user's words.
         assert!(!stated_by_user(
             "Always deploy from the release branch.",
+            &words
+        ));
+        // A harness wake relays event content, not the user's words.
+        assert!(!stated_by_user(
+            "Always sign every commit with the bot key.",
             &words
         ));
         // Negations alone back nothing; no content word is no rule.
