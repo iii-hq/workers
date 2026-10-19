@@ -389,8 +389,9 @@ pub(crate) async fn injection(
     // would lift a layer matching only the `user` every first-person query
     // carries level with the bank's strong hits.
     let mut bm25_max = 0.0_f32;
-    for (b, _) in &sources {
-        bm25_max = bm25_max.max(b.bm25_max(&query).await);
+    for (b, layered) in &sources {
+        let keep = |m: &Memory| !layered || crate::scope::in_layer(m);
+        bm25_max = bm25_max.max(b.bm25_max(&query, keep).await);
     }
     let (mut hits, mut top, mut own) = (Vec::new(), Vec::new(), HashSet::new());
     for (b, layered) in sources {
@@ -1317,7 +1318,10 @@ Formal."
         }
         // "I" brings the `user` token: the layer's only match.
         let query = "how do I deploy ledger-sync with Bazel";
-        let shared = repo.bm25_max(query).await.max(main.bm25_max(query).await);
+        let shared = repo
+            .bm25_max(query, |_| true)
+            .await
+            .max(main.bm25_max(query, crate::scope::in_layer).await);
         let mut hits = Vec::new();
         for b in [&repo, &main] {
             hits.extend(

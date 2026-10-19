@@ -737,16 +737,24 @@ impl Bank {
         .await
     }
 
-    /// The best raw BM25 any live memory scores for `query`: what a caller
+    /// The best raw BM25 any live memory `keep` accepts scores for `query`
+    /// (only what the caller can rank sets the scale): what a caller
     /// merging several banks into one ranking passes to
     /// [`Bank::recall_scaled`] (the maximum over all of them), so every bank's
     /// lexical arm divides by the same number.
-    pub async fn bm25_max(&self, query: &str) -> f32 {
+    pub async fn bm25_max(&self, query: &str, keep: impl Fn(&Memory) -> bool) -> f32 {
         let inner = self.inner.read().await;
         inner
             .index
             .score(&query_tokens(query))
-            .into_values()
+            .into_iter()
+            .filter(|(id, _)| {
+                inner
+                    .memories
+                    .get(id)
+                    .is_some_and(|m| m.is_live() && keep(m))
+            })
+            .map(|(_, s)| s)
             .fold(0.0, f32::max)
     }
 

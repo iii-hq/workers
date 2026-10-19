@@ -92,8 +92,11 @@ pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallRespons
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
     // One BM25 scale for the bank and its layer, as the hook ranks them.
     let mut bm25_max = 0.0_f32;
-    for b in bank.iter().chain(layer.as_ref().map(|(_, b)| b)) {
-        bm25_max = bm25_max.max(b.bm25_max(&req.query).await);
+    if let Some(b) = &bank {
+        bm25_max = b.bm25_max(&req.query, |_| true).await;
+    }
+    if let Some((_, b)) = &layer {
+        bm25_max = bm25_max.max(b.bm25_max(&req.query, crate::scope::in_layer).await);
     }
     let mut hits = match &bank {
         Some(bank) => rank(bank, &req, qv, query_model, &cfg, false, bm25_max).await,

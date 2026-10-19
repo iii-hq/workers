@@ -124,6 +124,12 @@ impl ExtractedItem {
 /// paraphrased duplicate) and may correct one by its number.
 const MAX_KNOWN: usize = 12;
 
+/// Lines past the lexical cap that only meaning finds (a paraphrase, a
+/// correction sharing no words with the excerpt). Their own quota: lexical
+/// recall fills its whole cap on most real excerpts ("I" alone matches every
+/// memory about the user).
+const KNOWN_BY_MEANING: usize = 3;
+
 /// What the bank already holds about an excerpt: its lexical recall over
 /// the message text, then (when `query_vec` is given) what only the vector
 /// finds in the slots left, so a paraphrase or a correction sharing no words
@@ -143,7 +149,10 @@ async fn known_memories(
 ) -> (Vec<Memory>, HashSet<String>) {
     let (qv, model) = crate::embed_client::QueryVector::split(query_vec);
     let mut known: Vec<Memory> = match store.bank(bank_name).await {
-        Ok(bank) => listed(&bank, query, qv, model, half_life_days, MAX_KNOWN, |_| true).await,
+        Ok(bank) => {
+            let caps = (MAX_KNOWN, KNOWN_BY_MEANING);
+            listed(&bank, query, qv, model, half_life_days, caps, |_| true).await
+        }
         Err(_) => Vec::new(),
     };
     let layer = match layer {
@@ -164,7 +173,7 @@ async fn known_memories(
         qv,
         model,
         half_life_days,
-        MAX_KNOWN / 2,
+        (MAX_KNOWN / 2, KNOWN_BY_MEANING - 1),
         keep,
     )
     .await;
@@ -173,32 +182,39 @@ async fn known_memories(
     (known, layered)
 }
 
-/// Up to `cap` of `bank`'s live memories that `keep` accepts: lexical
-/// recall for `query` first, then semantic hits for `qv` not listed yet.
+/// `bank`'s live memories that `keep` accepts: up to `lexical` of lexical
+/// recall for `query`, then up to `by_meaning` semantic hits for `qv` not
+/// listed yet, so a vector never displaces a lexical line nor waits for one
+/// to leave room.
 async fn listed(
     bank: &Bank,
     query: &str,
     qv: Option<&[f32]>,
     model: &str,
     half_life_days: u64,
-    cap: usize,
+    (lexical, by_meaning): (usize, usize),
     keep: impl Fn(&Memory) -> bool,
 ) -> Vec<Memory> {
-    let lexical = bank
-        .recall(query, None, "", usize::MAX, half_life_days, false)
-        .await;
-    let semantic = match qv {
-        Some(qv) => bank.semantic(qv, model, usize::MAX, false).await,
-        None => Vec::new(),
-    };
     let mut seen = HashSet::new();
-    lexical
+    let mut out: Vec<Memory> = bank
+        .recall(query, None, "", usize::MAX, half_life_days, false)
+        .await
         .into_iter()
-        .chain(semantic)
         .map(|(m, _)| m)
         .filter(|m| keep(m) && seen.insert(m.id.clone()))
-        .take(cap)
-        .collect()
+        .take(lexical)
+        .collect();
+    if let Some(qv) = qv {
+        let semantic = bank.semantic(qv, model, usize::MAX, false).await;
+        out.extend(
+            semantic
+                .into_iter()
+                .map(|(m, _)| m)
+                .filter(|m| keep(m) && seen.insert(m.id.clone()))
+                .take(by_meaning),
+        );
+    }
+    out
 }
 
 /// The extraction model's input: the numbered known memories, then the
@@ -1840,7 +1856,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_vector_only_fills_the_slots_lexical_recall_left() {
+    async fn the_vector_finds_past_a_full_lexical_list_never_in_place_of_it() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
         let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
@@ -1882,10 +1898,11 @@ mod tests {
         );
         assert_eq!(
             ms[MAX_KNOWN..].iter().map(|m| &m.id).collect::<Vec<_>>(),
-            [&habit.id, &ships.id],
-            "the layer's slots left take the vector's find, after its lexical hit"
+            [&shipping.id, &habit.id, &ships.id],
+            "past the full lexical list, the vector's find; then the layer's \
+             lexical hit and its vector's find"
         );
-        assert_eq!(layered.len(), 2);
+        assert_eq!(layered, HashSet::from([habit.id.clone(), ships.id.clone()]));
     }
 
     #[tokio::test]
