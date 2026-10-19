@@ -117,10 +117,13 @@ explicit release call — let them expire or stop using them when done.
 One shape across all three drivers — prefer these over hand-writing
 `sqlite_master` / `information_schema` / `PRAGMA`.
 
-- `database::listTables` — tables and views, with kind and (postgres) schema.
+- `database::listTables` — tables and views, with kind, (postgres) schema and
+  a `row_count_estimate` where the catalog has one (postgres, mysql).
 - `database::describeTable` — columns with type, nullability, default, primary
-  key and a structured `foreign_key` of `{ schema, table, column }`; plus
-  indexes and a planner row estimate.
+  key, a structured `foreign_key` of `{ schema, table, column }`,
+  `auto_increment` (identity / serial / AUTO_INCREMENT / sqlite rowid — leave it
+  out of `insertRow`) and `generated` (computed, never written); plus indexes
+  and a planner row estimate.
 - `database::describeSchema` — the same for every table in one pass. Use this
   rather than looping `describeTable`.
 - `database::schemaDiagram` — positioned nodes, routed foreign-key edges, hub
@@ -130,7 +133,9 @@ One shape across all three drivers — prefer these over hand-writing
 ### Reading data
 
 - `database::browseTable` — paged, sorted, filtered reads with no SQL. Filters
-  are `{ column, op, value }` and `total` honours them. Follow a foreign key
+  are `{ column, op, value }` and `total` honours them; values compare as the
+  column's type (on postgres `{column: "total", op: "gt", value: "100"}` is a
+  numeric comparison; dates, uuids, enums and int8 as strings work too). Follow a foreign key
   with an equality filter at `page_size: 1`. A filter may be
   `{ raw: "price > 10 AND name LIKE 'a%'" }` — one boolean expression (no `;`,
   comments or placeholders), run read-only.
@@ -149,7 +154,7 @@ One shape across all three drivers — prefer these over hand-writing
   `{column: value}` map; values are cast to each column's type (numbers and
   dates may be strings, bytea/blob take base64) and the inserted row comes
   back. Prefer it over hand-built INSERTs when you have a record in hand.
-- `database::formatSql {sql, db?}` — pretty-print SQL for the connection's
+- `database::formatSql {sql, db}` (or `driver`) — pretty-print SQL for the connection's
   dialect, comments kept. Use it before writing a `.sql` file into a
   connection's `folder`.
 
