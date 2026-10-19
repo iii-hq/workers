@@ -34,6 +34,13 @@ export const DB = {
   history: 'database::history',
   getTableView: 'database::getTableView',
   saveTableView: 'database::saveTableView',
+  testConnection: 'database::testConnection',
+  getConnection: 'database::getConnection',
+  saveConnection: 'database::saveConnection',
+  deleteConnection: 'database::deleteConnection',
+  distinctValues: 'database::distinctValues',
+  insertRow: 'database::insertRow',
+  formatSql: 'database::formatSql',
 } as const
 
 export type DbFunction = (typeof DB)[keyof typeof DB]
@@ -54,6 +61,12 @@ export const OPTIONAL_FNS: readonly DbFunction[] = [
   DB.history,
   DB.getTableView,
   DB.saveTableView,
+  DB.getConnection,
+  DB.saveConnection,
+  DB.deleteConnection,
+  DB.distinctValues,
+  DB.insertRow,
+  DB.formatSql,
 ]
 
 async function call<T>(
@@ -82,6 +95,10 @@ export const queryResponseSchema = z.object({
   rows: z.array(z.record(z.string(), z.unknown())),
   row_count: z.number(),
   columns: z.array(columnMetaSchema),
+  /** The result stopped at `max_rows`. Absent from older workers. */
+  truncated: z.boolean().optional(),
+  /** Server-side execution time. Absent from older workers. */
+  elapsed_ms: z.number().optional(),
 })
 export type QueryResponse = z.infer<typeof queryResponseSchema>
 
@@ -160,6 +177,37 @@ export interface FilterSpec {
   case_sensitive?: boolean
   /** Kept in the bar but not applied. */
   disabled?: boolean
+  /**
+   * A raw SQL boolean expression. Present (even empty) marks a raw chip: the
+   * worker ANDs it in parentheses and ignores `column`/`op`, inside a
+   * read-only transaction so it can never write.
+   */
+  raw?: string
+}
+
+/** A chip holding a raw SQL condition rather than column/operator/value. */
+export function isRawFilter(f: FilterSpec): boolean {
+  return typeof f.raw === 'string'
+}
+
+/** A new, empty raw SQL chip. */
+export function rawFilter(raw = ''): FilterSpec {
+  return { column: '', op: 'equals', raw }
+}
+
+/**
+ * The chip as the worker takes it. A raw chip sends only its expression
+ * (`column`/`op` are required by the wire shape and ignored when `raw` is
+ * set); a column chip never carries a stray `raw`.
+ */
+export function toWireFilter(f: FilterSpec): FilterSpec {
+  if (isRawFilter(f)) {
+    const wire: FilterSpec = { column: '', op: 'equals', raw: (f.raw ?? '').trim() }
+    if (f.disabled) wire.disabled = true
+    return wire
+  }
+  const { raw: _raw, ...rest } = f
+  return rest
 }
 
 /** Human labels, grouped the way a picker should present them. */
@@ -257,6 +305,7 @@ const NULLARY: ReadonlySet<FilterOp> = new Set([
  * learn that would make typing feel broken.
  */
 export function isComplete(f: FilterSpec): boolean {
+  if (isRawFilter(f)) return (f.raw ?? '').trim() !== ''
   if (!f.column) return false
   if (NULLARY.has(f.op)) return true
   if (f.op === 'between') return hasValue(f.value) && hasValue(f.value2)
@@ -297,15 +346,46 @@ export function typeCategory(type: string | undefined): TypeCategory {
 export const PAGE_SIZE = 50
 export type DbDriver = 'sqlite' | 'postgres' | 'mysql' | 'unknown'
 
+/**
+ * One `database::listDatabases` entry. Everything past `name`/`driver` is
+ * optional: older workers send only those (and `url`), and a newer field
+ * must never make the whole list unreadable.
+ */
+export const databaseEntrySchema = z.object({
+  name: z.string(),
+  driver: z.string(),
+  url: z.string().nullish(),
+  host: z.string().nullish(),
+  port: z.number().nullish(),
+  user: z.string().nullish(),
+  database: z.string().nullish(),
+  display: z
+    .object({ icon: z.string().nullish(), color: z.string().nullish() })
+    .nullish(),
+  folder: z.string().nullish(),
+  ssh: z
+    .object({
+      host: z.string().nullish(),
+      port: z.number().nullish(),
+      user: z.string().nullish(),
+    })
+    .nullish(),
+  tls: z
+    .object({
+      mode: z.string().nullish(),
+      ca_cert_present: z.boolean().nullish(),
+      client_cert_present: z.boolean().nullish(),
+      trust_native: z.boolean().nullish(),
+    })
+    .nullish(),
+  uses_secrets: z.boolean().nullish(),
+  pool: z.object({ max: z.number().nullish() }).nullish(),
+  /** Why the pool could not be built (an unresolvable secret, say). */
+  error: z.string().nullish(),
+})
+
 const listDatabasesSchema = z.object({
-  databases: z.array(
-    z.object({
-      name: z.string(),
-      driver: z.string(),
-      url: z.string().optional(),
-      pool: z.object({ max: z.number().optional() }).optional(),
-    }),
-  ),
+  databases: z.array(databaseEntrySchema),
   count: z.number(),
 })
 
@@ -314,6 +394,19 @@ export interface DbInfo {
   driver: DbDriver
   url?: string
   poolMax?: number
+  host?: string
+  port?: number
+  user?: string
+  database?: string
+  /** `display.icon`, a Lucide name. */
+  icon?: string
+  /** `display.color`, `#RRGGBB`. */
+  color?: string
+  folder?: string
+  ssh?: { host?: string; port?: number; user?: string }
+  usesSecrets?: boolean
+  /** The pool could not be built; every read against it will fail. */
+  error?: string
 }
 
 function parseDriver(raw: string | undefined): DbDriver {
@@ -322,14 +415,47 @@ function parseDriver(raw: string | undefined): DbDriver {
     : 'unknown'
 }
 
-export async function listDbs(host: Host): Promise<DbInfo[]> {
-  const res = await call(host, DB.listDatabases, {}, listDatabasesSchema)
-  return res.databases.map((d) => ({
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
+
+export function toDbInfo(d: z.infer<typeof databaseEntrySchema>): DbInfo {
+  const color = d.display?.color ?? undefined
+  return {
     name: d.name,
     driver: parseDriver(d.driver),
-    url: d.url,
-    poolMax: d.pool?.max,
-  }))
+    url: d.url ?? undefined,
+    poolMax: d.pool?.max ?? undefined,
+    host: d.host ?? undefined,
+    port: d.port ?? undefined,
+    user: d.user ?? undefined,
+    database: d.database ?? undefined,
+    icon: d.display?.icon ?? undefined,
+    color: color && HEX_COLOR.test(color) ? color : undefined,
+    folder: d.folder ?? undefined,
+    ssh: d.ssh
+      ? {
+          host: d.ssh.host ?? undefined,
+          port: d.ssh.port ?? undefined,
+          user: d.ssh.user ?? undefined,
+        }
+      : undefined,
+    usesSecrets: d.uses_secrets ?? undefined,
+    error: d.error || undefined,
+  }
+}
+
+/** Where a connection points, for a subtitle: `host:port/db`, the file, or the url. */
+export function dbEndpoint(db: DbInfo): string {
+  if (db.host) {
+    const endpoint = db.port ? `${db.host}:${db.port}` : db.host
+    return db.database ? `${endpoint}/${db.database}` : endpoint
+  }
+  if (db.driver === 'sqlite' && db.database) return db.database
+  return db.url ?? db.name
+}
+
+export async function listDbs(host: Host): Promise<DbInfo[]> {
+  const res = await call(host, DB.listDatabases, {}, listDatabasesSchema)
+  return res.databases.map(toDbInfo)
 }
 
 export async function listTables(host: Host, db: string): Promise<TableRef[]> {
@@ -381,6 +507,7 @@ const browseSchema = z.object({
   page_size: z.number(),
   has_more: z.boolean(),
   total: z.number().nullish(),
+  elapsed_ms: z.number().optional(),
 })
 export type BrowseResult = z.infer<typeof browseSchema>
 
@@ -411,20 +538,27 @@ export async function browseTable(
       page_size: Math.max(1, Math.trunc(opts.pageSize ?? PAGE_SIZE)),
       sort: opts.sort ?? [],
       // Draft chips never leave the browser.
-      filters: (opts.filters ?? []).filter(isComplete),
+      filters: (opts.filters ?? []).filter(isComplete).map(toWireFilter),
       include_total: opts.includeTotal ?? true,
     },
     browseSchema,
   )
 }
 
-/** Ad-hoc read SQL from the editor. Goes through `database::query`. */
+/**
+ * Ad-hoc read SQL from the editor. Goes through `database::query`.
+ * `maxRows` caps the result server-side (`truncated` says it did); left
+ * out, the worker returns everything, as it always has.
+ */
 export async function runSql(
   host: Host,
   db: string,
   sql: string,
+  opts: { maxRows?: number | null } = {},
 ): Promise<QueryResponse> {
-  return call(host, DB.query, { db, sql }, queryResponseSchema)
+  const payload: Record<string, unknown> = { db, sql }
+  if (opts.maxRows != null && opts.maxRows > 0) payload.max_rows = Math.trunc(opts.maxRows)
+  return call(host, DB.query, payload, queryResponseSchema)
 }
 
 const executeResponseSchema = z.object({
@@ -433,6 +567,7 @@ const executeResponseSchema = z.object({
   // JS number holds exactly.
   last_insert_id: z.string().nullish(),
   returned_rows: z.array(z.record(z.string(), z.unknown())).nullish(),
+  elapsed_ms: z.number().optional(),
 })
 export type ExecuteResponse = z.infer<typeof executeResponseSchema>
 
@@ -800,4 +935,92 @@ export async function history(
 ): Promise<HistoryEntry[]> {
   const res = await call(host, DB.history, { db, limit }, historySchema)
   return res.entries
+}
+
+/* ---------------- value suggestions, inserts, formatting ---------------- */
+
+export const distinctValuesSchema = z.object({
+  values: z.array(z.object({ value: z.unknown(), count: z.number() })),
+  truncated: z.boolean(),
+})
+export type DistinctValues = z.infer<typeof distinctValuesSchema>
+
+/**
+ * A column's most frequent values, optionally narrowed by `search` (matched
+ * case-insensitively against the text form) — what the filter bar offers as
+ * you type a value.
+ */
+export async function distinctValues(
+  host: Host,
+  db: string,
+  table: string,
+  schema: string | null | undefined,
+  column: string,
+  opts: { search?: string; limit?: number } = {},
+): Promise<DistinctValues> {
+  const payload: Record<string, unknown> = { db, table, column }
+  if (schema) payload.schema = schema
+  if (opts.search) payload.search = opts.search
+  if (opts.limit) payload.limit = opts.limit
+  return call(host, DB.distinctValues, payload, distinctValuesSchema)
+}
+
+export const insertRowSchema = z.object({
+  row: z.record(z.string(), z.unknown()).nullish(),
+  affected_rows: z.number(),
+  elapsed_ms: z.number().optional(),
+})
+export type InsertRowResult = z.infer<typeof insertRowSchema>
+
+/**
+ * Insert one row. Columns left out of `values` take their default; the
+ * worker quotes identifiers and casts each value to the column's type, so
+ * the page sends plain JSON.
+ */
+export async function insertRow(
+  host: Host,
+  db: string,
+  table: string,
+  schema: string | null | undefined,
+  values: Record<string, unknown>,
+): Promise<InsertRowResult> {
+  const payload: Record<string, unknown> = { db, table, values }
+  if (schema) payload.schema = schema
+  return call(host, DB.insertRow, payload, insertRowSchema)
+}
+
+/** Reformat SQL in the database's dialect; statements and comments kept. */
+export async function formatSql(host: Host, db: string, sql: string): Promise<string> {
+  const res = await call(host, DB.formatSql, { db, sql }, z.object({ sql: z.string() }))
+  return res.sql
+}
+
+export const testConnectionSchema = z.object({
+  ok: z.boolean(),
+  driver: z.string().optional(),
+  latency_ms: z.number().optional(),
+  server_version: z.string().nullish(),
+  message: z.string().nullish(),
+  /** Where a failed probe stopped. */
+  stage: z.string().nullish(),
+  /** The SSH server's key, offered for pinning as `ssh.host_key`. */
+  ssh_host_key: z
+    .object({ algorithm: z.string(), fingerprint: z.string() })
+    .nullish(),
+})
+export type TestConnectionResult = z.infer<typeof testConnectionSchema>
+
+/** Probe a draft connection before it is saved. `ok: false` is data, not an error. */
+export async function testConnection(
+  host: Host,
+  payload: Record<string, unknown>,
+): Promise<TestConnectionResult> {
+  const raw = await host.iii.trigger<unknown>(DB.testConnection, payload, {
+    timeoutMs: 40_000,
+  })
+  const parsed = testConnectionSchema.safeParse(raw)
+  if (!parsed.success) {
+    throw new Error(`unexpected response shape from ${DB.testConnection}`)
+  }
+  return parsed.data
 }

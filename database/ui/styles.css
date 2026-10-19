@@ -1857,6 +1857,153 @@
 [data-iii-ui="database"] .db-cfg-danger-action {
   color: var(--color-alert-strong);
 }
+[data-iii-ui="database"] .db-cfg-conn-tile {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-cfg-secret,
+[data-iii-ui="database"] .db-cfg-secret-edit {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="database"] .db-cfg-secret-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[data-iii-ui="database"] .db-cfg-secret-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+[data-iii-ui="database"] .db-cfg-secret-ref {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-cfg-secret-status,
+[data-iii-ui="database"] .db-cfg-secret-dest {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.4;
+}
+[data-iii-ui="database"] .db-cfg-secret-dest {
+  margin-right: auto;
+  font-family: var(--font-mono);
+}
+[data-iii-ui="database"] .db-cfg-secret-buttons,
+[data-iii-ui="database"] .db-cfg-secret-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+[data-iii-ui="database"] .db-cfg-pem {
+  width: 100%;
+  min-height: 96px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+[data-iii-ui="database"] .db-cfg-pem:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 0;
+}
+[data-iii-ui="database"] .db-cfg-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+[data-iii-ui="database"] .db-cfg-icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-icon:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="database"] .db-cfg-icon[aria-checked="true"] {
+  border-color: var(--color-rule-strong);
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+[data-iii-ui="database"] .db-cfg-swatches {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[data-iii-ui="database"] .db-cfg-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--color-edge);
+  border-radius: 50%;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-swatch[aria-checked="true"] {
+  box-shadow: 0 0 0 2px var(--color-ink);
+}
+[data-iii-ui="database"] .db-cfg-swatch-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-swatch-custom input {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-hostkey {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
 @container db-config (max-width: 620px) {
   [data-iii-ui="database"] .db-cfg-overview,
   [data-iii-ui="database"] .db-cfg-detail {
