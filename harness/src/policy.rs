@@ -356,16 +356,25 @@ fn recover_stringified_payload(s: &str) -> Value {
     let rest = &s[end..];
     let after = end + (rest.len() - rest.trim_start_matches([' ', '\t', '\n', '\r']).len());
     if after < s.len() {
-        // A window from shortly before the end of the object, as the router's
-        // `_invalid.context` shows where the text stopped being JSON.
-        let from = s[..end].char_indices().rev().nth(39).map_or(0, |(i, _)| i);
+        // A window around the first byte that is not JSON, like the router's
+        // `_invalid.context`: the object's tail and the text that follows it.
+        let from = s[..after]
+            .char_indices()
+            .rev()
+            .nth(39)
+            .map_or(0, |(i, _)| i);
+        let to = s[after..]
+            .char_indices()
+            .nth(60)
+            .map_or(s.len(), |(i, _)| after + i);
         map.insert("_partial".into(), Value::Bool(true));
         map.insert(
             "_invalid".into(),
             json!({
-                "error": "unexpected data after the root value",
+                "error": "unexpected data after the root value of the payload string \
+                          (send payload as an object)",
                 "offset": after,
-                "context": &s[from..],
+                "context": &s[from..to],
             }),
         );
     }
@@ -680,10 +689,10 @@ mod tests {
         let args = &calls[0].arguments;
         assert_eq!(args["key"], "a");
         assert_eq!(args["_partial"], true);
-        assert_eq!(
-            args["_invalid"]["error"],
-            "unexpected data after the root value"
-        );
+        assert!(args["_invalid"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("after the root value"));
         assert_eq!(
             args["_invalid"]["offset"],
             payload.find("},\"loose").unwrap() + 1
@@ -693,6 +702,22 @@ mod tests {
             .unwrap()
             .ends_with("\"loose_ends\":[\"l\"]}"));
         assert!(crate::trigger::arguments_degraded(args));
+
+        // Whitespace between the object and the text: the offset and the
+        // window point at the text, not at the end of the object.
+        let gap = " ".repeat(300);
+        let payload = format!("{{\"key\":\"a\"}}{gap}}}");
+        let msg = assistant_with(vec![ContentBlock::FunctionCall {
+            id: "fc_1".into(),
+            function_id: AGENT_TRIGGER_NAME.into(),
+            arguments: json!({ "function": "state::set", "payload": payload }),
+        }]);
+        let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
+        let invalid = &calls[0].arguments["_invalid"];
+        assert_eq!(invalid["offset"], payload.len() - 1);
+        let context = invalid["context"].as_str().unwrap();
+        assert!(context.ends_with(" }"), "{context:?}");
+        assert!(context.chars().count() <= 41, "{context:?}");
 
         // A single stray closer is refused the same way: from the text alone
         // it cannot be told apart from an object closed too soon.
