@@ -15,6 +15,10 @@ rules:
   - '!database::saveConnection'
   - '!database::deleteConnection'
   - '!database::getConnection'
+  # testConnection connects to whatever server the candidate names, with
+  # the credentials the candidate references: an agent could aim a stored
+  # connection's secret at a host it controls.
+  - '!database::testConnection'
   # The chat mention provider is console plumbing; agents read a mentioned
   # connection through database::listTables (the provider's declared details).
   - '!database::mention::search'

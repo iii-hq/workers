@@ -38,7 +38,7 @@ A chat may mention a connection as `@database(id="shop")`: that is the
 connection named `shop`; use `db: "shop"`.
 
 Connections are managed by people (the console, the iii app): agents cannot
-read a stored entry (`getConnection`), save or delete one. Never ask for or
+read a stored entry (`getConnection`), save, delete or test one. Never ask for or
 handle database passwords; connections reference them as `secret://NAME`.
 
 ## When to Use
@@ -105,7 +105,8 @@ handle database passwords; connections reference them as `secret://NAME`.
   host, database, folder, credential-redacted URL, pool settings, TLS mode and
   `error` when unavailable. Config only; use `database::health` for live state.
 - `database::testConnection` — probe a candidate connection entry without
-  saving it; reports `ok`, the failing `stage` and a message.
+  saving it (people only: agents are denied it, like the connection editor
+  functions).
 
 Interactive transactions auto-roll back when `timeout_ms` elapses (default
 30 s, max 5 min). Prepared handles default to a 1 h TTL (max 24 h) with no

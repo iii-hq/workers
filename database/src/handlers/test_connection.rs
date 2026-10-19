@@ -142,6 +142,16 @@ pub async fn handle(
         Ok(entry) => entry,
         Err(resp) => return Ok(*resp),
     };
+    // Literal credentials inside `connection` would be recorded by traces
+    // (their redaction misses `passphrase`, `client_key` and url passwords):
+    // they must come as references or in `credentials`.
+    if let Some(field) = crate::redaction::literal_sensitive_fields(&entry).first() {
+        return Ok(TestConnectionResp::failed(
+            "unknown",
+            Stage::Config,
+            literal_refusal(field),
+        ));
+    }
     if let Err(e) = super::connections::merge_credentials(&mut entry, req.credentials.clone()) {
         return Ok(TestConnectionResp::failed("unknown", Stage::Config, e));
     }
@@ -159,6 +169,7 @@ pub async fn handle(
         })
         .unwrap_or_else(|| "unknown".into());
 
+    let mut restored_from: Option<(String, Value, Vec<String>)> = None;
     if crate::redaction::contains_redacted(&entry) {
         let stored = match &req.name {
             Some(name) => super::connections::stored_entry(state, name)
@@ -166,17 +177,24 @@ pub async fn handle(
                 .unwrap_or_default(),
             None => None,
         };
-        if let Err(e) = crate::redaction::restore_entry(&mut entry, stored.as_ref()) {
-            let hint = if req.name.is_none() {
-                " (pass `name` to use the stored connection's values)"
-            } else {
-                ""
-            };
-            return Ok(TestConnectionResp::failed(
-                &driver_hint,
-                Stage::Config,
-                format!("{e}{hint}"),
-            ));
+        match crate::redaction::restore_entry(&mut entry, stored.as_ref()) {
+            Ok(restored) => {
+                if let (Some(name), Some(stored)) = (&req.name, stored) {
+                    restored_from = Some((name.clone(), stored, restored));
+                }
+            }
+            Err(e) => {
+                let hint = if req.name.is_none() {
+                    " (pass `name` to use the stored connection's values)"
+                } else {
+                    ""
+                };
+                return Ok(TestConnectionResp::failed(
+                    &driver_hint,
+                    Stage::Config,
+                    format!("{e}{hint}"),
+                ));
+            }
         }
     }
 
@@ -184,6 +202,30 @@ pub async fn handle(
         Ok(db) => db,
         Err(e) => return Ok(TestConnectionResp::failed(&driver_hint, Stage::Config, e)),
     };
+
+    // A stored value only ever goes where its connection goes.
+    if let Some((name, stored, restored)) = &restored_from {
+        let stored_db = match super::connections::parse_entry(name, stored) {
+            Ok(stored_db) => stored_db,
+            Err(_) => {
+                return Ok(TestConnectionResp::failed(
+                    &driver_hint,
+                    Stage::Config,
+                    format!(
+                        "the stored connection `{name}` could not be read to compare servers; \
+                         re-enter the redacted values"
+                    ),
+                ))
+            }
+        };
+        if let Err(e) = restored_targets_match(&db, &stored_db, name, restored) {
+            return Ok(TestConnectionResp::failed(&driver_hint, Stage::Config, e));
+        }
+    }
+    let snapshot = state.config.read().await.clone();
+    if let Err(e) = references_stay_bound(&db, &snapshot) {
+        return Ok(TestConnectionResp::failed(&driver_hint, Stage::Config, e));
+    }
     let driver = driver_system(db.driver).to_string();
 
     let outcome = tokio::time::timeout(budget, run_probe(state, &label, &db)).await;
@@ -276,6 +318,147 @@ async fn run_probe(
             Err(fail(e, host_key(), credentials))
         }
     }
+}
+
+/// The refusal for a literal credential inside `connection`.
+pub(crate) fn literal_refusal(field: &str) -> String {
+    let example = if field == "url" {
+        "\"credentials\": {\"url\": \"…\"}".to_string()
+    } else {
+        format!("\"credentials\": {{ \"{field}\": \"…\" }}")
+    };
+    format!(
+        "`connection.{field}` holds a literal credential; send it as a secret:// or env:// \
+         reference, or in the request's `credentials` ({example}) so traces do not record it"
+    )
+}
+
+/// Credential fields bound to where they are sent.
+const BOUND_FIELDS: [&str; 6] = [
+    "password",
+    "url",
+    "tls.client_key",
+    "ssh.password",
+    "ssh.private_key",
+    "ssh.passphrase",
+];
+
+/// Where a credential field's value is sent: the SSH server for `ssh.*`, the
+/// database (as reached, through its tunnel if any) for the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Destination {
+    Database {
+        driver: crate::config::DriverKind,
+        host: String,
+        port: u16,
+        ssh: Option<(String, u16, String)>,
+    },
+    Ssh {
+        host: String,
+        port: u16,
+        user: String,
+    },
+}
+
+fn tls_rank(mode: crate::config::TlsMode) -> u8 {
+    use crate::config::TlsMode::*;
+    match mode {
+        Disable => 0,
+        Prefer => 1,
+        Require | VerifyCa => 2,
+        VerifyFull => 3,
+    }
+}
+
+fn destination(db: &crate::config::DatabaseConfig, field: &str) -> (Destination, u8) {
+    let ssh_endpoint = db
+        .ssh
+        .as_ref()
+        .map(|s| (s.host.to_ascii_lowercase(), s.port, s.user.clone()));
+    if field.starts_with("ssh.") {
+        let (host, port, user) = ssh_endpoint.unwrap_or_default();
+        return (Destination::Ssh { host, port, user }, 0);
+    }
+    let (host, port) = db.server_endpoint().unwrap_or_default();
+    (
+        Destination::Database {
+            driver: db.driver,
+            host: host.to_ascii_lowercase(),
+            port,
+            ssh: ssh_endpoint,
+        },
+        tls_rank(db.tls.mode),
+    )
+}
+
+/// A value bound to `stored` may go to `candidate`: the same server (and
+/// tunnel), over TLS no weaker than the stored connection's.
+fn may_send(candidate: &(Destination, u8), stored: &(Destination, u8)) -> bool {
+    candidate.0 == stored.0 && candidate.1 >= stored.1
+}
+
+/// `"__redacted__"` values restored from connection `name` may only be sent
+/// to that connection's server.
+fn restored_targets_match(
+    candidate: &crate::config::DatabaseConfig,
+    stored: &crate::config::DatabaseConfig,
+    name: &str,
+    restored: &[String],
+) -> Result<(), String> {
+    for field in restored {
+        if !may_send(&destination(candidate, field), &destination(stored, field)) {
+            return Err(format!(
+                "`{field}` is \"__redacted__\", but this test targets a different server, \
+                 tunnel or a weaker TLS mode than connection `{name}`; re-enter the value to \
+                 test against a different server"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A `secret://` / `env://` reference a stored connection already uses may
+/// only be sent to that connection's server. References no stored
+/// connection uses (a new connection's fresh secret) are free.
+fn references_stay_bound(
+    candidate: &crate::config::DatabaseConfig,
+    stored: &crate::config::WorkerConfig,
+) -> Result<(), String> {
+    for (field, value) in candidate.sensitive_fields() {
+        if !BOUND_FIELDS.contains(&field) {
+            continue;
+        }
+        let Some(Ok(reference)) = crate::secrets::parse_ref(value) else {
+            continue;
+        };
+        let key = reference.key();
+        let mut users: Vec<(&str, (Destination, u8))> = Vec::new();
+        for (name, db) in &stored.databases {
+            for (stored_field, stored_value) in db.sensitive_fields() {
+                if crate::secrets::parse_ref(stored_value)
+                    .and_then(Result::ok)
+                    .is_some_and(|r| r.key() == key)
+                {
+                    users.push((name, destination(db, stored_field)));
+                }
+            }
+        }
+        if users.is_empty() {
+            continue;
+        }
+        let target = destination(candidate, field);
+        if !users.iter().any(|(_, d)| may_send(&target, d)) {
+            let mut names: Vec<&str> = users.iter().map(|(n, _)| *n).collect();
+            names.sort_unstable();
+            names.dedup();
+            return Err(format!(
+                "`{field}`: {key} belongs to connection `{}` and is only sent to that \
+                 connection's server; enter the value itself to test against a different server",
+                names.join("`, `")
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn probe(connector: &Connector) -> Result<String, ConnectError> {
@@ -466,6 +649,15 @@ mod tests {
         }
     }
 
+    /// A url with a password goes in `credentials`, never in the entry.
+    fn with_credential_url(url: &str) -> TestConnectionReq {
+        TestConnectionReq {
+            connection: Some(serde_json::json!({ "tls": { "mode": "disable" } })),
+            credentials: Some(serde_json::json!({ "url": url })),
+            ..Default::default()
+        }
+    }
+
     fn st() -> AppState {
         AppState {
             pools: Default::default(),
@@ -525,12 +717,11 @@ mod tests {
     async fn refused_postgres_fails_fast_and_scrubs_credentials() {
         // Port 1 refuses instantly; the error must carry neither the
         // password nor the username from the probed url.
-        let mut r = req("postgres://leaky_user:leaky_pass@127.0.0.1:1/db");
-        r.tls = Some(TlsConfig {
-            mode: crate::config::TlsMode::Disable,
-            ..Default::default()
-        });
-        let resp = handle(r).await.unwrap();
+        let resp = handle(with_credential_url(
+            "postgres://leaky_user:leaky_pass@127.0.0.1:1/db",
+        ))
+        .await
+        .unwrap();
         assert!(!resp.ok);
         assert_eq!(resp.driver, "postgres");
         let message = resp.message.unwrap();
@@ -558,15 +749,220 @@ mod tests {
                 eprintln!("skipping: {env} not set");
                 continue;
             };
-            let mut r = req(&url);
-            r.tls = Some(TlsConfig {
-                mode: crate::config::TlsMode::Disable,
-                ..Default::default()
-            });
-            let resp = handle(r).await.unwrap();
+            let resp = handle(with_credential_url(&url)).await.unwrap();
             assert!(resp.ok, "{env}: {:?}", resp.message);
             assert_eq!(resp.driver, prefix);
             assert!(resp.server_version.is_some());
         }
+    }
+
+    /// A postgres server that asks for a cleartext password and records
+    /// every password it receives — where a stolen credential would land.
+    async fn fake_pg() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = got.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let record = record.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let mut len = [0u8; 4];
+                        if sock.read_exact(&mut len).await.is_err() {
+                            return;
+                        }
+                        let mut body =
+                            vec![0u8; (u32::from_be_bytes(len) as usize).saturating_sub(4)];
+                        if sock.read_exact(&mut body).await.is_err() || body.len() < 4 {
+                            return;
+                        }
+                        if u32::from_be_bytes(body[..4].try_into().unwrap()) == 80_877_103 {
+                            let _ = sock.write_all(b"N").await; // SSLRequest: no
+                            continue;
+                        }
+                        break;
+                    }
+                    let _ = sock.write_all(&[b'R', 0, 0, 0, 8, 0, 0, 0, 3]).await;
+                    let mut head = [0u8; 5];
+                    if sock.read_exact(&mut head).await.is_err() {
+                        return;
+                    }
+                    let len = u32::from_be_bytes(head[1..5].try_into().unwrap()) as usize;
+                    let mut body = vec![0u8; len.saturating_sub(4)];
+                    if sock.read_exact(&mut body).await.is_ok() {
+                        record.lock().unwrap().push(
+                            String::from_utf8_lossy(&body)
+                                .trim_end_matches('\0')
+                                .to_string(),
+                        );
+                    }
+                });
+            }
+        });
+        (port, got)
+    }
+
+    fn state_with_stored(yaml: &str, secrets: &[(&str, &str)]) -> AppState {
+        let fake = crate::secrets::testing::FakeSecrets::default();
+        for (k, v) in secrets {
+            fake.set(k, Ok(v));
+        }
+        AppState {
+            config: std::sync::Arc::new(tokio::sync::RwLock::new(
+                crate::config::WorkerConfig::from_yaml(yaml).unwrap(),
+            )),
+            runtime: std::sync::Arc::new(crate::runtime::Runtime::new(std::sync::Arc::new(
+                fake.cache(),
+            ))),
+            ..st()
+        }
+    }
+
+    const STORED: &str = "databases:\n  prod:\n    driver: postgres\n    host: db.internal\n    user: app\n    password: secret://PROD_PW\n    tls: { mode: require }\n    ssh: { host: bastion.internal, user: ops, passphrase: secret://BASTION_PP, private_key: /keys/id }\n";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stored_connections_secret_is_never_sent_to_another_server() {
+        let (port, got) = fake_pg().await;
+        let st = state_with_stored(
+            STORED,
+            &[
+                ("secret://PROD_PW", "prod-secret"),
+                ("secret://FRESH", "fresh-secret"),
+            ],
+        );
+        let probe = |password: &str| TestConnectionReq {
+            connection: Some(serde_json::json!({
+                "driver": "postgres", "host": "127.0.0.1", "port": port, "user": "app",
+                "password": password, "tls": { "mode": "disable" }
+            })),
+            timeout_ms: Some(3000),
+            ..Default::default()
+        };
+        let resp = super::handle(&st, probe("secret://PROD_PW")).await.unwrap();
+        assert!(!resp.ok);
+        assert_eq!(resp.stage, Some(Stage::Config));
+        assert!(
+            resp.message
+                .as_deref()
+                .unwrap()
+                .contains("belongs to connection `prod`"),
+            "{:?}",
+            resp.message
+        );
+        // A fresh secret no stored connection uses (a new connection) is fine.
+        super::handle(&st, probe("secret://FRESH")).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            *got.lock().unwrap(),
+            vec!["fresh-secret".to_string()],
+            "only the fresh secret reached the fake server"
+        );
+
+        // The SSH passphrase of a stored bastion cannot be aimed at another one.
+        let resp = super::handle(
+            &st,
+            TestConnectionReq {
+                connection: Some(serde_json::json!({
+                    "driver": "postgres", "host": "db.internal", "user": "app",
+                    "ssh": { "host": "127.0.0.1", "port": port, "user": "ops",
+                             "private_key": "/keys/id", "passphrase": "secret://BASTION_PP" }
+                })),
+                timeout_ms: Some(3000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config), "{:?}", resp.message);
+        assert!(resp.message.unwrap().contains("secret://BASTION_PP"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn literal_credentials_inside_connection_are_refused_and_credentials_work() {
+        let (port, got) = fake_pg().await;
+        let st = st();
+        let entry = serde_json::json!({
+            "driver": "postgres", "host": "127.0.0.1", "port": port, "user": "app",
+            "password": "typed-pw", "tls": { "mode": "disable" }
+        });
+        let resp = super::handle(
+            &st,
+            TestConnectionReq {
+                connection: Some(entry.clone()),
+                timeout_ms: Some(3000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config));
+        assert!(resp
+            .message
+            .unwrap()
+            .contains("`connection.password` holds a literal credential"));
+        let mut without = entry;
+        without.as_object_mut().unwrap().remove("password");
+        super::handle(
+            &st,
+            TestConnectionReq {
+                connection: Some(without),
+                credentials: Some(serde_json::json!({ "password": "typed-pw" })),
+                timeout_ms: Some(3000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(*got.lock().unwrap(), vec!["typed-pw".to_string()]);
+        // The legacy form with a password in the url is refused the same way.
+        let resp = handle(req("postgres://u:pw@127.0.0.1:1/db")).await.unwrap();
+        assert!(resp
+            .message
+            .unwrap()
+            .contains("`connection.url` holds a literal credential"));
+    }
+
+    fn entry(yaml: &str) -> crate::config::DatabaseConfig {
+        crate::config::WorkerConfig::from_yaml(&format!("databases:\n  x:\n{yaml}"))
+            .unwrap()
+            .databases
+            .remove("x")
+            .unwrap()
+    }
+
+    #[test]
+    fn restored_values_only_go_to_their_connections_server() {
+        let stored = entry(STORED.trim_start_matches("databases:\n  prod:\n"));
+        let same = entry("    driver: postgres\n    host: DB.internal\n    user: other\n    database: x\n    tls: { mode: verify-full }\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n");
+        restored_targets_match(
+            &same,
+            &stored,
+            "prod",
+            &["password".into(), "ssh.passphrase".into()],
+        )
+        .unwrap();
+        let elsewhere = entry("    driver: postgres\n    host: evil.example\n    user: app\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n");
+        let err =
+            restored_targets_match(&elsewhere, &stored, "prod", &["password".into()]).unwrap_err();
+        assert!(err.contains("re-enter the value"), "{err}");
+        // The SSH secret stays with its bastion even when the database host
+        // is unchanged; the database password stays behind its tunnel.
+        let other_bastion = entry("    driver: postgres\n    host: db.internal\n    user: app\n    ssh: { host: evil.example, user: ops, private_key: /keys/id }\n");
+        assert!(restored_targets_match(
+            &other_bastion,
+            &stored,
+            "prod",
+            &["ssh.passphrase".into()]
+        )
+        .is_err());
+        assert!(
+            restored_targets_match(&other_bastion, &stored, "prod", &["password".into()]).is_err()
+        );
+        // A weaker TLS mode toward the same server is refused too.
+        let plaintext = entry("    driver: postgres\n    host: db.internal\n    user: app\n    tls: { mode: disable }\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n");
+        assert!(restored_targets_match(&plaintext, &stored, "prod", &["password".into()]).is_err());
     }
 }

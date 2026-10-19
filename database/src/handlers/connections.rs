@@ -90,25 +90,8 @@ fn config_error(message: impl Into<String>) -> String {
     })
 }
 
-/// serde's messages quote offending values (`invalid type: string "…"`),
-/// and a misplaced value may be a password: drop every quoted span.
 pub(crate) fn sanitize_serde_error(e: &serde_json::Error) -> String {
-    let text = e.to_string();
-    let mut out = String::with_capacity(text.len());
-    let mut in_quote = false;
-    for c in text.chars() {
-        if c == '"' {
-            if !in_quote {
-                out.push_str("\"…");
-            } else {
-                out.push('"');
-            }
-            in_quote = !in_quote;
-        } else if !in_quote {
-            out.push(c);
-        }
-    }
-    out
+    crate::config::sanitize_serde_error(&e.to_string())
 }
 
 /// Credential paths `credentials` may carry.
@@ -295,6 +278,9 @@ pub async fn save(state: &AppState, req: SaveConnectionReq) -> Result<SaveConnec
     };
 
     let mut entry = req.connection;
+    if let Some(field) = redaction::literal_sensitive_fields(&entry).first() {
+        return Err(config_error(super::test_connection::literal_refusal(field)));
+    }
     merge_credentials(&mut entry, req.credentials).map_err(config_error)?;
     redaction::restore_entry(&mut entry, stored.as_ref()).map_err(config_error)?;
     parse_entry(&req.name, &entry).map_err(config_error)?;

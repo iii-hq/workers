@@ -108,9 +108,45 @@ pub fn contains_redacted(value: &Value) -> bool {
     }
 }
 
-/// Put the stored values back wherever `candidate` holds the placeholder.
+/// Sensitive fields of a request entry that hold a literal (not a
+/// reference, a template, the placeholder, or — for key fields — a path),
+/// including a password inside `url`. Such values must not travel inside a
+/// request's `connection`: trace payloads redact `password` by key name but
+/// not `passphrase`, `client_key` or a url's password.
+pub fn literal_sensitive_fields(entry: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for path in SECRET_FIELDS {
+        if get(entry, path)
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty() && s != REDACTED && !names_a_value(s))
+        {
+            out.push(path.join("."));
+        }
+    }
+    for path in KEY_FIELDS {
+        if get(entry, path).and_then(Value::as_str).is_some_and(|s| {
+            !s.is_empty() && s != REDACTED && !names_a_value(s) && !looks_like_path(s)
+        }) {
+            out.push(path.join("."));
+        }
+    }
+    if let Some(url) = entry.get("url").and_then(Value::as_str) {
+        if url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.password().map(percent_decode))
+            .is_some_and(|p| p != REDACTED && !names_a_value(&p))
+        {
+            out.push("url".into());
+        }
+    }
+    out
+}
+
+/// Put the stored values back wherever `candidate` holds the placeholder,
+/// returning the fields restored (`password`, `ssh.passphrase`, `url`, …).
 /// Fails, naming the field, when there is no stored value to restore.
-pub fn restore_entry(candidate: &mut Value, stored: Option<&Value>) -> Result<(), String> {
+pub fn restore_entry(candidate: &mut Value, stored: Option<&Value>) -> Result<Vec<String>, String> {
+    let mut restored = Vec::new();
     for path in SECRET_FIELDS.iter().chain(KEY_FIELDS.iter()) {
         let Some(v) = get_mut(candidate, path) else {
             continue;
@@ -129,6 +165,7 @@ pub fn restore_entry(candidate: &mut Value, stored: Option<&Value>) -> Result<()
                 )
             })?;
         *v = original;
+        restored.push(path.join("."));
     }
     if let Some(url_value) = candidate.get_mut("url") {
         if let Some(raw) = url_value.as_str() {
@@ -155,6 +192,7 @@ pub fn restore_entry(candidate: &mut Value, stored: Option<&Value>) -> Result<()
                 url.set_password(Some(&percent_decode(&stored_password)))
                     .map_err(|_| "`url`: cannot restore the stored password".to_string())?;
                 *url_value = Value::String(url.to_string());
+                restored.push("url".into());
             }
         }
     }
@@ -164,7 +202,7 @@ pub fn restore_entry(candidate: &mut Value, stored: Option<&Value>) -> Result<()
              and the url's password"
         ));
     }
-    Ok(())
+    Ok(restored)
 }
 
 #[cfg(test)]
@@ -233,6 +271,30 @@ mod tests {
         assert_eq!(shown["ssh"]["passphrase"], "new-pp");
         assert_eq!(shown["host"], "db2");
         assert!(!contains_redacted(&shown));
+    }
+
+    #[test]
+    fn literals_are_listed_references_paths_templates_and_placeholders_are_not() {
+        let entry = json!({
+            "url": "postgres://u:pw@h/db",
+            "password": "secret://P",
+            "tls": { "client_key": "-----BEGIN PRIVATE KEY-----\nK\n-----END PRIVATE KEY-----" },
+            "ssh": { "password": "${SSH_PW}", "private_key": "/home/me/.ssh/id", "passphrase": "pp" }
+        });
+        assert_eq!(
+            literal_sensitive_fields(&entry),
+            vec!["ssh.passphrase", "tls.client_key", "url"]
+        );
+        let clean = json!({ "url": format!("postgres://u:{REDACTED}@h/db"), "password": REDACTED });
+        assert!(literal_sensitive_fields(&clean).is_empty());
+    }
+
+    #[test]
+    fn restore_reports_what_it_restored() {
+        let stored = json!({ "url": "postgres://u:pw@h/db", "ssh": { "passphrase": "pp" } });
+        let mut candidate = json!({ "url": format!("postgres://u:{REDACTED}@h2/db"), "ssh": { "passphrase": REDACTED } });
+        let restored = restore_entry(&mut candidate, Some(&stored)).unwrap();
+        assert_eq!(restored, vec!["ssh.passphrase", "url"]);
     }
 
     #[test]
