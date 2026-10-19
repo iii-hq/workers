@@ -10,6 +10,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import analyze
 import common
 import extract
 import label
@@ -379,3 +380,166 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(call.call_count, 10)
         self.assertIn("5 calls in a row", str(stop.exception))
         self.assertEqual(common.read_jsonl(path), [{"id": "r0", "arm": "typesafe", "level": "low"}])
+
+
+def verdict_row(rid: str, arm: str, level: str, ms: int = 0, tokens: int = 0) -> dict:
+    """A verdicts.jsonl row that was not kept."""
+    return dict(id=rid, arm=arm, level=level, confidence=None, kept=False, error=None, ms=ms, tokens=tokens)
+
+
+def keyed(verdicts: list[dict]) -> dict:
+    """Verdicts as analyze reads them: one per (id, arm), the last row winning."""
+    return {(v["id"], v["arm"]): v for v in verdicts}
+
+
+class AnalyzeTest(unittest.TestCase):
+    def test_grade(self):
+        self.assertEqual(analyze.grade("low", ["medium", "high"]), "low")
+        self.assertEqual(analyze.grade("xhigh", ["medium", "high"]), "high")
+        self.assertEqual(analyze.grade("high", ["medium", "high"]), "right")
+
+    def test_grade_counts_kept_errors(self):
+        right = verdict_row("r1", "haiku", "medium", ms=800, tokens=900)
+        error = dict(verdict_row("r2", "haiku", "medium", ms=6000), kept=True, error="transport")
+        got = analyze.stats([right, error], {"r1": ["medium"], "r2": ["high"]})
+        fields = ("rows", "labelled", "right", "low", "high", "kept", "p50", "p95", "tokens")
+        self.assertEqual([got[k] for k in fields], [2, 2, 0.5, 0.5, 0.0, 0.5, 800, 6000, 900])
+
+    def test_p95(self):
+        self.assertEqual(analyze.p95(list(range(1, 101))), 95)
+
+    def test_flip_penalty_warm_only(self):
+        row = {"cost_units": 100, "level": "medium", "first_read": 1000, "model": "m"}
+        ratios = {"m": {"low": 0.7, "medium": 1.0}}
+        self.assertEqual(analyze.modeled_cost(row, "low", ratios, flip_safe=set(), flipped_warm=False), 70.0)
+        self.assertEqual(analyze.modeled_cost(row, "low", ratios, flip_safe=set(), flipped_warm=True), 70.0 + 1150.0)
+        self.assertEqual(analyze.modeled_cost(row, "low", ratios, flip_safe={"m"}, flipped_warm=True), 70.0)
+        prefixed = dict(row, model="claude-code/m")  # looked up by the last path segment, in ratios and in flip_safe
+        self.assertEqual(analyze.modeled_cost(prefixed, "low", ratios, flip_safe={"m"}, flipped_warm=True), 70.0)
+        ran_low = dict(row, level="low")  # relative to the level the session ran at
+        self.assertEqual(analyze.modeled_cost(ran_low, "medium", ratios, set(), False), 100 / 0.7)
+
+    def test_flips_warm_flag(self):
+        levels = [("medium", None), ("low", 120_000), ("high", 400_000)]
+        turns = [
+            {"id": f"t{i}", "session_id": "s1", "seq": i, "level": lv, "gap_ms": gap}
+            for i, (lv, gap) in enumerate(levels)
+        ]
+        other = {"id": "u0", "session_id": "s2", "seq": 0, "level": "xhigh", "gap_ms": 1_000}  # never compared with s1
+        got = analyze.flips([other, *reversed(turns)])
+        self.assertEqual([f["warm"] for f in got], [True, False])
+        self.assertEqual([(f["id"], f["from"], f["to"]) for f in got], [("t1", "medium", "low"), ("t2", "low", "high")])
+
+    def test_g1_wants_a_judge_arm_on_labelled_rows(self):
+        rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["medium"]} for i in range(20)]
+        rows += [{"id": "t0", "slice": "top"}, {"id": "c0", "slice": "child", "ok": ["low"]}]
+        haiku = [verdict_row("h0", "haiku", "high", ms=3000)]  # one pick too high, and the one slow call of 20
+        haiku += [verdict_row(f"h{i}", "haiku", "medium", ms=700) for i in range(1, 20)]
+        typesafe = [verdict_row(f"h{i}", "typesafe", "medium", ms=1600) for i in range(20)]
+        baseline = [verdict_row(f"h{i}", "always-medium", "medium") for i in range(20)]
+
+        def g1(verdicts: list[dict]) -> tuple[bool, str]:
+            return analyze.gates(rows, keyed(verdicts), None, None, None)["G1"]
+
+        passed, text = g1(typesafe + baseline + haiku)
+        self.assertTrue(passed)
+        self.assertTrue(text.startswith("PASS: winner haiku. "), text)
+        self.assertIn("haiku PASS right 95.0% low 0.0% p95 700 ms on 20 labelled of 20 rows", text)
+        self.assertIn("typesafe FAIL right 100.0% low 0.0% p95 1600 ms", text)
+        self.assertFalse(g1(haiku + [verdict_row("h0", "haiku", "low", ms=3000)])[0])  # 5% too low
+        fast = [dict(v, ms=1400) for v in typesafe]
+        self.assertTrue(g1(haiku + fast)[1].startswith("PASS: winner typesafe. "))  # the most right of those that pass
+        passed, text = g1(baseline)  # a baseline that clears the bars is shown, but never wins G1
+        self.assertFalse(passed)
+        self.assertIn("always-medium (baseline) PASS right 100.0%", text)
+        unlabelled = [verdict_row("t0", "haiku", "medium"), verdict_row("c0", "haiku", "low")]  # child is no G1 slice
+        want = (False, "FAIL: no judge arm passes. typesafe: no verdicts; haiku FAIL: no labelled rows")
+        self.assertEqual(g1(unlabelled), want)
+
+    def test_g2_counts_valid_pairs_only(self):
+        def pair(model: str, retention: float | None, invalid: str | None = None) -> dict:
+            return {"model": model, "pair": 0, "retention": retention, "invalid": invalid}
+
+        cache = [pair("a", r) for r in (0.95, 0.92, 0.99)]
+        cache += [pair("b", 0.95), pair("b", 0.97), pair("b", None, "turn failed")]  # 2 valid pairs are too few
+        cache += [pair("c", r) for r in (0.95, 0.99, 0.85)]
+        self.assertEqual(analyze.safe_models(cache), {"a"})
+        want = "PASS: a flip-safe (retention 0.95 0.92 0.99); b not flip-safe (retention 0.95 0.97 invalid);"
+        want += " c not flip-safe (retention 0.95 0.99 0.85)"
+        self.assertEqual(analyze.gates([], {}, cache, None, None)["G2"], (True, want))
+        self.assertFalse(analyze.gates([], {}, cache[3:], None, None)["G2"][0])
+        want = (False, "INCOMPLETE: no cache.jsonl yet, so no model is flip-safe")
+        self.assertEqual(analyze.gates([], {}, None, None, None)["G2"], want)
+
+    def test_g3_value_needs_every_input(self):
+        rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["low"]} for i in range(20)]
+        turn = {"slice": "top", "session_id": "s1", "model": "claude-code/m", "level": None, "cost_units": 1000.0}
+        rows.append(dict(turn, id="c0", seq=0, gap_ms=None, first_read=0))
+        rows.append(dict(turn, id="c1", seq=1, gap_ms=60_000, first_read=500))
+        rows.append(dict(turn, id="g0", seq=2, gap_ms=60_000, first_read=500, model="gpt-x"))  # no ratios: left out
+        picks = {"c0": "low", "c1": "low", "g0": "high", "ab-m-a": "low", "ab-m-c": "high"}
+        picks |= {f"h{i}": "low" for i in range(20)}
+        verdicts = [verdict_row(rid, "haiku", level, ms=500, tokens=10) for rid, level in picks.items()]
+        ratios = {"m": {"low": 0.7, "medium": 1.0, "high": 1.3}}
+
+        def runs(low_a: int = 3, high_c: int = 3, medium_c: int = 1) -> list[dict]:
+            """3 A/B runs per (level, task), of which the arguments say how many pass; c is a hard task."""
+            plan = (("low", "a", low_a), ("medium", "a", 3), ("high", "c", high_c), ("medium", "c", medium_c))
+            return [
+                {"model": "m", "level": lv, "task": t, "run": k, "pass": k < n} for lv, t, n in plan for k in range(3)
+            ]
+
+        ab = runs()
+
+        def g3(vs=verdicts, cache=None, ratios=ratios, ab=ab) -> tuple[bool, str]:
+            return analyze.gates(rows, keyed(vs), cache, ratios, ab)["G3"]
+
+        passed, text = g3()  # 2 × (1000 × 0.7 + 10 judge tokens) against 2 × 1000
+        self.assertTrue(passed)
+        want = "PASS: haiku: modeled cost -29.0% on 2 rows (left out, no ratios: gpt-x 1); "
+        self.assertTrue(text.startswith(want), text)
+        self.assertIn("A/B passes 6/6 at the picked levels vs 4/6 at medium; hard tasks +2 of 3", text)
+        self.assertFalse(g3(ab=runs(low_a=2, medium_c=3))[0])  # cheaper, but 5/6 passes against 6/6 at medium
+        warm_flip = verdicts + [verdict_row("c1", "haiku", "medium", tokens=10)]  # c0 low, then c1 medium 60 s later
+        self.assertFalse(g3(warm_flip)[0])  # 710 + 1000 + 500 × 1.15 + 10 against 2000: +14.75%, over the cost cap
+        safe = [{"model": "m", "pair": k, "retention": 0.95, "invalid": None} for k in range(3)]
+        self.assertTrue(g3(warm_flip, cache=safe)[0])  # no cache rewrite on a flip-safe model: -14.0%
+        small_saving = {"m": dict(ratios["m"], low=0.95)}  # -4%
+        self.assertTrue(g3(ratios=small_saving)[0])  # 2 more hard-task passes, within +10%
+        self.assertFalse(g3(ratios=small_saving, ab=runs(high_c=2))[0])  # 1 more is not enough
+        self.assertEqual(g3(ab=None), (False, "INCOMPLETE: no ab.jsonl"))
+        no_pick = [v for v in verdicts if v["id"] != "ab-m-c"]
+        self.assertTrue(g3(no_pick)[1].startswith("INCOMPLETE: no haiku verdict for ab-m-c. "))
+        xhigh = verdicts + [verdict_row("c1", "haiku", "xhigh")]  # the A/B measured no xhigh cost
+        self.assertTrue(g3(xhigh)[1].startswith("INCOMPLETE: m: 1 rows at a level without a ratio. "))
+
+    def test_report_skips_missing_inputs(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out = Path(tmp.name)
+
+        def report() -> str:
+            with redirect_stdout(io.StringIO()):
+                analyze.main([str(out)])
+            return (out / "report.md").read_text(encoding="utf-8")
+
+        self.assertIn("Skipped: no verdicts.jsonl yet", report())
+        turn = {"slice": "top", "session_id": "s1", "model": "m", "level": None, "cost_units": 1.0, "first_read": 0}
+        prompts = [dict(turn, id="t0", seq=0, gap_ms=None), dict(turn, id="t1", seq=1, gap_ms=1_000)]
+        common.write_jsonl(out / "prompts.jsonl", prompts)
+        stale = verdict_row("t0", "always-medium", "low")  # R5: the later row for (t0, always-medium) wins
+        verdicts = [stale, *(verdict_row(rid, "always-medium", "medium") for rid in ("t0", "t1", "eff-h15"))]
+        common.write_jsonl(out / "verdicts.jsonl", verdicts)
+        text = report()
+        self.assertIn("No labels for: top.", text)
+        self.assertIn("| always-medium | top | 2 | 0 | – | – | – | 0.0% | 0 | 0 | 0 |", text)
+        self.assertIn("- G1 FAIL: no judge arm passes. ", text)
+        self.assertIn("always-medium (baseline) FAIL right 0.0% low 100.0%", text)  # eff-h15 wants high
+        self.assertIn("- G2 INCOMPLETE: ", text)
+        self.assertIn("- G3 INCOMPLETE: no judge arm passes G1; no ratios.json; no ab.jsonl", text)
+        self.assertIn("| always-medium | 0 | 0 |", text)  # no flips: the stale low row for t0 is gone
+        self.assertIn("Skipped: no ratios.json yet", text)
+        common.write_jsonl(out / "labels.jsonl", [{"id": "t0", "ok": ["low"], "agreed": True}])
+        text = report()
+        self.assertNotIn("No labels for", text)
+        self.assertIn("| always-medium | top | 2 | 1 | 0.0% | 0.0% | 100.0% |", text)
