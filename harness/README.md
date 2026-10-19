@@ -222,16 +222,18 @@ engine subscribes to that topic and sends one anonymous product event for each
 message. Three moments report:
 
 - `harness_user_turns`, when the user turns (root turns: one user message
-  through its final reply) counted across every session on the machine reach
+  through its final reply) counted across every session in the state store
+  reach
   1, 2, 5, 10, 25 and 50, then every 50 after that (100, 150, ...). It carries
   `user_turns_total`, `user_turns_delta` (user turns since the previous
   report, so the deltas sum to the total) and `sessions_total`.
 - `harness_model_calls`, on the same milestones of the model calls (assistant
-  messages, sub-agents included) counted across every session on the machine.
+  messages, sub-agents included) counted across every session in the state
+  store.
   Model calls move several at a time, so a report goes out at the highest
   milestone passed. It carries `model_calls_total`, `model_calls_delta`, tool
-  call and tool call error totals, token totals and `cost_usd`, all
-  machine-wide.
+  call and tool call error totals, token totals and `cost_usd`, all across
+  the state store.
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
   and `max_turns` outcomes. This keeps the reason a run stopped exact.
 
@@ -251,12 +253,15 @@ counted through their root session when its turn ends.
   baseline on its first turn after the upgrade. That usage is not counted again.
 
 The reporting keeps its own bookkeeping and only reads the harness's
-accounting (`harness::metrics`). The `harness_usage/_machine` state row holds
-the machine-wide counters, updated by compare-and-set; each
+accounting (`harness::metrics`). The counters live in the `state` worker's
+store, so each project counts on its own with the default file-backed `state`
+(and an `in_memory` store starts again from zero). The `harness_usage/_machine`
+row holds the store-wide counters, updated by compare-and-set. Each
 `harness_usage/<session_id>` row records the outcomes a session announced and
-the model usage already folded into the machine row, so a restart neither
-announces nor counts anything twice. Each step is best effort: a failed read or
-publish is logged at debug level and the turn continues.
+the model usage already folded in, so a turn after a restart does not count
+that usage again. A crash after the `_machine` update and before the session
+row is saved folds that turn's model usage twice. Each step is best effort: a
+failed read or publish is logged at debug level and the turn continues.
 
 To stop the reports, set `III_TELEMETRY_ENABLED=false` on the engine. The engine
 then takes the messages from the topic and discards them, so an opted-out

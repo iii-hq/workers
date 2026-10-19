@@ -9,10 +9,11 @@
 //! Three reported moments:
 //!
 //! * `harness_user_turns`: user turns (root turns, one user message through
-//!   its final reply) counted across EVERY session on this machine, reported
+//!   its final reply) counted across EVERY session in this state store (the
+//!   project, with the default file-backed `state`), reported
 //!   when the count reaches 1, 2, 5, 10, 25 and 50, then every 50.
 //! * `harness_model_calls`: model calls (assistant messages, sub-agents
-//!   included) counted across every session on this machine, with the tool
+//!   included) counted across every session in the same state store, with the tool
 //!   call, token and cost totals that go with them, reported on the same
 //!   milestones of the model-call count.
 //! * `harness_turn_failed` once per session per outcome (`failed`,
@@ -361,6 +362,11 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
         Err(e) => {
             // The session row keeps its old `folded`, so the next turn folds
             // this turn's model usage in; this user turn is not counted.
+            if first_turn {
+                // Not counted as a session yet: the next fold that lands
+                // counts it.
+                row.first_at = 0;
+            }
             tracing::debug!(error = %e, "machine usage row not updated");
         }
     }
