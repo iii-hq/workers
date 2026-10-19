@@ -7,8 +7,10 @@
 //! only what is new, and a known memory re-observed — the same text, or a
 //! rewording [`near_duplicate`] catches — is reinforced (`corroboration +=
 //! 1`), never duplicated. A correction ("moved from Lisbon to Porto")
-//! supersedes the memory it corrects: a recoverable tombstone pointing at
-//! the corrected one. Pinned memories are never touched.
+//! supersedes the memory it corrects in the bank it lands in ([`placement`]):
+//! a recoverable tombstone pointing at the corrected one; a project-scope
+//! correction of a `default_bank` memory leaves that memory live. Pinned
+//! memories are never touched.
 //! Memory's own function calls never reach this path: the transcript is
 //! fetched with `roles: [user, assistant]`, and only text parts are read.
 //!
@@ -250,6 +252,62 @@ fn near_twin<'a>(
     candidates.find(|m| m.is_live() && near_duplicate(text, &m.text))
 }
 
+/// Where an extracted memory lands (`own`, or `layer` when it goes `up`)
+/// and the record it re-observes there, if any. The exact fact first:
+/// gone up, a copy this bank holds (live, pinned or deleted here) keeps it
+/// here. Then a rewording, unless the item `retires` its target (it differs
+/// on purpose), never the target itself (a narrowing does not reinforce
+/// what it narrows): gone up, the layer's own neighbourhood first, where a
+/// hit stays; else `known` and this bank's, each in the bank that holds it.
+#[allow(clippy::too_many_arguments)]
+async fn re_observed<'a>(
+    text: &str,
+    up: bool,
+    retires: bool,
+    target: Option<&Memory>,
+    known: &[Memory],
+    layered: &HashSet<String>,
+    own: (&'a str, &'a Bank),
+    layer: Option<(&'a str, &'a Bank)>,
+) -> (&'a str, &'a Bank, Option<Memory>) {
+    let id = fingerprint(text);
+    let (mut at_name, mut at) = match layer {
+        Some(l) if up => l,
+        _ => own,
+    };
+    let mut existing = at.get(&id).await;
+    if existing.is_none() && up {
+        if let Some(m) = own.1.get(&id).await {
+            (at_name, at) = own;
+            existing = Some(m);
+        }
+    }
+    if existing.is_none() && !retires {
+        let not_target = |m: &&Memory| target.is_none_or(|t| t.id != m.id);
+        let above = match up {
+            true => at.lexical(text, 5, false).await,
+            false => Vec::new(),
+        };
+        let nearby = own.1.lexical(text, 5, false).await;
+        if let Some(twin) = near_twin(text, above.iter().map(|(m, _)| m).filter(not_target)) {
+            existing = at.get(&twin.id).await;
+        } else if let Some(twin) = near_twin(
+            text,
+            known
+                .iter()
+                .chain(nearby.iter().map(|(m, _)| m))
+                .filter(not_target),
+        ) {
+            (at_name, at) = match layer {
+                Some(l) if layered.contains(&twin.id) => l,
+                _ => own,
+            };
+            existing = at.get(&twin.id).await;
+        }
+    }
+    (at_name, at, existing)
+}
+
 /// The content words of the user's own lines in a span; our injected
 /// `<memory …>` blocks and the harness's `[notification]` wakes (event
 /// payloads, a child's final reply) are user-role but not the user's.
@@ -463,11 +521,6 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         }
         None => None,
     };
-    // The bank a known memory lives in: the layer's, or this one.
-    let home = |id: &str| match &layer {
-        Some((name, b)) if layered.contains(id) => (*name, b),
-        _ => (bank_name, &bank),
-    };
     let mut touched = BTreeSet::new();
 
     // Standing instructions graduate straight into the always-injected
@@ -551,7 +604,6 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         if text.len() < 3 || text.len() > 500 {
             continue;
         }
-        let id = fingerprint(text);
         let now = now_ms();
         let target = correction_target(&known, item.replaces).cloned();
         let item_user = item.is_user();
@@ -562,28 +614,17 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         // A memory about the user wherever they work goes up into the layer
         // ([`placement`]); a correction retires its target only where it
         // lands.
-        let (mut at_name, mut at) = match &layer {
-            Some((n, b)) if up => (*n, b),
-            _ => (bank_name, &bank),
-        };
-        let existing = match at.get(&id).await {
-            Some(m) => Some(m),
-            // A rewording of a fact the bank holds is that fact observed
-            // again. Not for a correction retiring its target: it differs
-            // from it on purpose.
-            None if !retires => {
-                let nearby = bank.lexical(text, 5, false).await;
-                let candidates = known.iter().chain(nearby.iter().map(|(m, _)| m));
-                match near_twin(text, candidates).map(|m| m.id.clone()) {
-                    Some(twin) => {
-                        (at_name, at) = home(&twin);
-                        at.get(&twin).await
-                    }
-                    None => None,
-                }
-            }
-            None => None,
-        };
+        let (at_name, at, existing) = re_observed(
+            text,
+            up,
+            retires,
+            target.as_ref(),
+            &known,
+            &layered,
+            (bank_name, &bank),
+            layer.as_ref().map(|(n, b)| (*n, &**b)),
+        )
+        .await;
         let (mut memory, event) = match existing {
             // Known memory re-observed: reinforce, never duplicate. A pinned
             // or tombstoned record is left exactly as it is.
@@ -1726,6 +1767,65 @@ mod tests {
             "a bank not created yet still knows its layer's"
         );
         assert_eq!(layered.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_memory_going_up_re_observes_where_its_fact_already_lives() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (own, layer) = (("w-abc123", &*repo), Some(("main", &*main)));
+        let none = HashSet::new();
+
+        // Deleted in this repository: the exact fact stays deleted here.
+        let gone = Memory {
+            invalid_at: Some(2),
+            ..known("The user is vegetarian.")
+        };
+        repo.commit(gone.clone()).await.unwrap();
+        let (at, _, found) =
+            re_observed(&gone.text, true, false, None, &[], &none, own, layer).await;
+        assert_eq!(at, "w-abc123");
+        assert!(found.is_some_and(|m| !m.is_live()), "never written up anew");
+
+        // A rewording the layer holds, outside the known list.
+        let neovim = known("The user uses Neovim as the editor on every machine.");
+        main.commit(neovim.clone()).await.unwrap();
+        let (at, _, found) = re_observed(
+            "The user uses Neovim as their editor on every machine.",
+            true,
+            false,
+            None,
+            &[],
+            &none,
+            own,
+            layer,
+        )
+        .await;
+        assert_eq!(at, "main");
+        assert_eq!(found.map(|m| m.id), Some(neovim.id));
+
+        // A project exception never reinforces the user's fact it narrows.
+        let npm = known("The user prefers npm for JavaScript projects.");
+        main.commit(npm.clone()).await.unwrap();
+        let layered = HashSet::from([npm.id.clone()]);
+        let (at, _, found) = re_observed(
+            "Here the user prefers pnpm over npm for JavaScript projects.",
+            false,
+            false,
+            Some(&npm),
+            std::slice::from_ref(&npm),
+            &layered,
+            own,
+            layer,
+        )
+        .await;
+        assert_eq!(
+            (at, found),
+            ("w-abc123", None),
+            "a new memory in the repository"
+        );
     }
 
     #[tokio::test]
