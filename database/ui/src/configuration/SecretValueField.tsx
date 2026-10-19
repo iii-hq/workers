@@ -196,7 +196,7 @@ function SecretValueControl({
             aria-invalid={ariaInvalid}
             aria-describedby={ariaDescribedBy}
             aria-label={label}
-            className="db-cfg-technical db-cfg-grow"
+            className="db-cfg-technical"
             type="password"
             value={draft}
             placeholder={placeholder ?? (kind === 'empty' ? 'Not set' : 'New value')}

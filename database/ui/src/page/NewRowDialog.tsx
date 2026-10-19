@@ -276,7 +276,7 @@ function FieldRow({
         inputMode={kind === 'integer' ? 'numeric' : kind === 'number' || kind === 'decimal' ? 'decimal' : undefined}
         step={kind === 'datetime' || kind === 'time' ? 1 : undefined}
         value={state.text}
-        placeholder={kind === 'binary' ? 'hex or text' : ''}
+        placeholder={kind === 'binary' ? 'base64' : ''}
         spellCheck={false}
         autoComplete="off"
         disabled={disabled}

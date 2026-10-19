@@ -1032,6 +1032,13 @@
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+[data-iii-ui="database"] .db-sql-step.skipped {
+  color: var(--color-ink-ghost);
+  cursor: default;
+}
+[data-iii-ui="database"] .db-sql-step.skipped .meta {
+  color: var(--color-ink-ghost);
+}
 [data-iii-ui="database"] .db-sql-step.failed .idx,
 [data-iii-ui="database"] .db-sql-step.failed .sql,
 [data-iii-ui="database"] .db-sql-step.failed .meta {

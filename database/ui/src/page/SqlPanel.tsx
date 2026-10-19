@@ -123,6 +123,8 @@ interface RunStep {
   sql: string
   result?: AdhocResult
   error?: string
+  /** Not run: an earlier statement failed. */
+  skipped?: boolean
 }
 
 
@@ -306,13 +308,16 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
         let wrote = false
         const maxRows = canLimit && limit > 0 ? limit : null
         for (const statement of queue) {
+          if (done.some((d) => d.error !== undefined)) {
+            done.push({ sql: statement, skipped: true })
+            continue
+          }
           try {
             const result = await runAdhocSql(host, db, statement, { maxRows })
             if (result.write) wrote = true
             done.push({ sql: statement, result })
           } catch (err) {
             done.push({ sql: statement, error: errText(err) })
-            break
           }
         }
         const failed = done.findIndex((d) => d.error !== undefined)
@@ -386,8 +391,22 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
       }
     }, [host, db, sql, running])
 
-    const isWrite = sql.trim() !== '' && !isReadOnlySql(sql)
-    const ddl = useMemo(() => (isWrite ? ddlInfo(sql) : null), [isWrite, sql])
+    // Judged per statement: a buffer of reads is not a write because it
+    // holds several of them.
+    const firstWrite = useMemo(
+      () =>
+        statements.length > 1
+          ? statements.find((st) => !isReadOnlySql(st.text))?.text
+          : sql.trim() !== '' && !isReadOnlySql(sql)
+            ? sql
+            : undefined,
+      [statements, sql],
+    )
+    const isWrite = firstWrite !== undefined
+    const ddl = useMemo(
+      () => (firstWrite ? ddlInfo(firstWrite) : null),
+      [firstWrite],
+    )
     const stale = outcome !== null && ranSql !== null && sql.trim() !== ranSql
 
     return (
@@ -577,15 +596,20 @@ export const SqlPanel = forwardRef<SqlPanelHandle, SqlPanelProps>(
                 <li key={`${i}:${s.sql}`}>
                   <button
                     type="button"
-                    className={`db-sql-step${s.error ? ' failed' : ''}`}
+                    className={`db-sql-step${s.error ? ' failed' : ''}${s.skipped ? ' skipped' : ''}`}
                     aria-current={i === stepIndex ? 'step' : undefined}
+                    disabled={s.skipped}
                     onClick={() => setStepIndex(i)}
                     title={s.sql}
                   >
                     <span className="idx">{i + 1}</span>
                     <span className="sql">{s.sql}</span>
                     <span className="meta">
-                      {s.result ? resultSummary(s.result) : 'failed'}
+                      {s.result
+                        ? resultSummary(s.result)
+                        : s.skipped
+                          ? 'not run'
+                          : 'failed'}
                     </span>
                   </button>
                 </li>
