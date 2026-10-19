@@ -321,6 +321,69 @@ export function valueKind(value: JsonValue | undefined): ValueKind {
   return 'literal'
 }
 
+/**
+ * Why a handle cannot name a connection, or `undefined`. The worker's own
+ * rule (`validate_connection_name`): names travel in every call, in mention
+ * tokens and in secret names, so they stay to 1–64 letters, digits, `_`,
+ * `-` and `.`, starting with a letter, digit or `_`.
+ */
+export function connectionNameError(name: string): string | undefined {
+  if (/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(name)) return undefined
+  return 'Use 1–64 letters, digits, “_”, “-” or “.”, starting with a letter, digit or “_”.'
+}
+
+/** An OpenSSH SHA-256 fingerprint, as `ssh-keygen -lf` prints it. */
+export function isHostKeyPin(value: string): boolean {
+  const b64 = value.startsWith('SHA256:') ? value.slice('SHA256:'.length).replace(/=+$/, '') : ''
+  return b64.length === 43 && /^[A-Za-z0-9+/]+$/.test(b64)
+}
+
+/** An absolute path on the engine host (POSIX, or a Windows drive path). */
+export function isAbsolutePath(value: string): boolean {
+  return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)
+}
+
+/**
+ * A key field's value that names a file on the engine host rather than
+ * holding the key: one line, no PEM armour, path-shaped. The worker reads
+ * the file; a path is not a secret, so it is kept as typed.
+ */
+export function looksLikeKeyPath(value: string): boolean {
+  const v = value.trim()
+  return v !== '' && !v.includes('\n') && !isPem(v) && (isAbsolutePath(v) || v.startsWith('~/'))
+}
+
+/**
+ * What an entry still needs before the worker will accept it — the checks
+ * its `validate` makes that a form can see coming. Field paths are relative
+ * to the entry.
+ */
+export function connectionProblems(db: JsonObject): { field: string; message: string }[] {
+  const out: { field: string; message: string }[] = []
+  const tls = isObject(db.tls) ? db.tls : {}
+  if ((tls.client_cert !== undefined) !== (tls.client_key !== undefined)) {
+    out.push({ field: 'tls', message: 'Mutual TLS needs both the client certificate and its key.' })
+  }
+  if (isObject(db.ssh)) {
+    const ssh = db.ssh
+    if (ssh.password === undefined && ssh.private_key === undefined) {
+      out.push({ field: 'ssh', message: 'The tunnel needs a password or a private key.' })
+    }
+    if (ssh.passphrase !== undefined && ssh.private_key === undefined) {
+      out.push({ field: 'ssh.passphrase', message: 'A passphrase only applies to a private key.' })
+    }
+    const pin = str(ssh.host_key)
+    if (pin && !isEnvironmentValue(pin) && !isHostKeyPin(pin)) {
+      out.push({ field: 'ssh.host_key', message: 'Expected SHA256: followed by 43 base64 characters.' })
+    }
+  }
+  const folder = str(db.folder)
+  if (folder && !folder.includes('${') && !isAbsolutePath(folder)) {
+    out.push({ field: 'folder', message: 'Use an absolute path on the engine host.' })
+  }
+  return out
+}
+
 /* ---------------- certificates ---------------- */
 
 const PEM_RE = /-----BEGIN ([A-Z0-9 ]+)-----[\s\S]*?-----END \1-----/
@@ -408,6 +471,7 @@ export function testConnectionPayload(
 }
 
 export const TEST_STAGE_LABELS: Readonly<Record<string, string>> = {
+  config: 'Configuration',
   secrets: 'Resolving secrets',
   ssh: 'SSH tunnel',
   tcp: 'Network',

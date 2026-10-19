@@ -23,7 +23,7 @@ import { Upload } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { errText } from '../lib/errors'
 import { getSecret, type SecretMeta, secretRefName, storeSecret } from '../lib/secrets'
-import { isPem, valueKind } from './connection'
+import { isPem, looksLikeKeyPath, valueKind } from './connection'
 
 export interface SecretValueFieldProps {
   host: Host
@@ -167,7 +167,10 @@ function SecretValueControl({
   let body: ReactNode
   if (editing || kind === 'empty') {
     const draftReady = draft.trim() !== ''
-    const notPem = multiline && draftReady && !isPem(draft)
+    // A key file on the engine host is named, not pasted: a path is not a
+    // secret, so it stays in configuration as typed.
+    const draftIsPath = multiline === true && looksLikeKeyPath(draft)
+    const notPem = multiline && draftReady && !draftIsPath && !isPem(draft)
     body = (
       <div className="db-cfg-secret-edit">
         {multiline ? (
@@ -182,7 +185,7 @@ function SecretValueControl({
             rows={5}
             spellCheck={false}
             autoComplete="off"
-            placeholder={placeholder ?? '-----BEGIN PRIVATE KEY-----'}
+            placeholder={placeholder ?? '-----BEGIN PRIVATE KEY----- … or a path on the engine host'}
             disabled={locked}
             onChange={(event) => setDraft(event.target.value)}
           />
@@ -210,7 +213,7 @@ function SecretValueControl({
           />
         )}
         {notPem ? <span className="db-cfg-warn">This does not look like a PEM or OpenSSH key.</span> : null}
-        {secretsUp === false ? (
+        {secretsUp === false && !draftIsPath ? (
           <div className="db-cfg-notice" role="alert">
             The secrets worker is not running, so this value cannot be kept out of configuration. Start it, or keep the
             value as plain text in the configuration file.
@@ -218,7 +221,11 @@ function SecretValueControl({
         ) : null}
         <div className="db-cfg-secret-actions">
           <span className="db-cfg-secret-dest">
-            {secretsUp === false ? 'Plain text in configuration' : `Stored as secret://${target}`}
+            {draftIsPath
+              ? 'A path on the engine host, kept in configuration'
+              : secretsUp === false
+                ? 'Plain text in configuration'
+                : `Stored as secret://${target}`}
           </span>
           {multiline ? (
             <>
@@ -253,7 +260,20 @@ function SecretValueControl({
               Cancel
             </Button>
           ) : null}
-          {secretsUp === false ? (
+          {draftIsPath ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={locked}
+              onClick={() => {
+                onChange(draft.trim())
+                setEditing(false)
+                setDraft('')
+              }}
+            >
+              Use path
+            </Button>
+          ) : secretsUp === false ? (
             <Button
               type="button"
               variant="ghost"
@@ -329,6 +349,19 @@ function SecretValueControl({
         <span className="db-cfg-secret-copy">
           <span className="db-cfg-secret-ref">{text}</span>
           <span className="db-cfg-secret-status">Expanded from the engine’s environment</span>
+        </span>
+        <span className="db-cfg-secret-buttons">
+          {replace}
+          {remove}
+        </span>
+      </div>
+    )
+  } else if (kind === 'literal' && multiline && looksLikeKeyPath(text)) {
+    body = (
+      <div className="db-cfg-secret-row">
+        <span className="db-cfg-secret-copy">
+          <span className="db-cfg-secret-ref">{text}</span>
+          <span className="db-cfg-secret-status">A file on the engine host; the worker reads the key from it</span>
         </span>
         <span className="db-cfg-secret-buttons">
           {replace}

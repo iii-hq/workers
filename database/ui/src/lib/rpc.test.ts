@@ -84,6 +84,7 @@ describe('listDatabases', () => {
           uses_secrets: true,
           pool: { max: 10 },
           error: 'secret://DATABASE_SHOP_PASSWORD could not be resolved',
+          error_stage: 'secrets',
         },
         { name: 'bad-colour', driver: 'sqlite', database: './a.db', display: { color: 'green' } },
       ],
@@ -100,6 +101,7 @@ describe('listDatabases', () => {
       usesSecrets: true,
       poolMax: 10,
       error: 'secret://DATABASE_SHOP_PASSWORD could not be resolved',
+      errorStage: 'secrets',
     })
     expect(dbEndpoint(shop)).toBe('db:5432/shop')
     expect(sqlite.color).toBeUndefined()

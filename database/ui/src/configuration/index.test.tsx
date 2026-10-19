@@ -459,5 +459,27 @@ describe('DatabaseConfigForm', () => {
       expect(html).toContain('role="menuitem">PostgreSQL<')
       expect(html).toContain('role="menuitem">SQLite<')
     })
+  
+    it('keeps a key file path as a path, not a secret', () => {
+      const html = renderDatabaseValue(
+        shop({ ssh: { host: 'bastion', user: 'ubuntu', private_key: '/home/me/.ssh/id_ed25519' } }),
+        SHOP_FOCUS,
+      )
+
+      expect(html).toContain('/home/me/.ssh/id_ed25519')
+      expect(html).toContain('A file on the engine host')
+      expect(html).not.toContain('Move to secrets')
+    })
+
+    it('says what the worker would refuse before saving', () => {
+      const html = renderDatabaseValue(
+        shop({ tls: { client_cert: '/etc/ssl/c.crt' }, ssh: { host: 'b', user: 'u' }, folder: 'queries' }),
+        SHOP_FOCUS,
+      )
+
+      expect(html).toContain('Mutual TLS needs both the client certificate and its key.')
+      expect(html).toContain('The tunnel needs a password or a private key.')
+      expect(html).toContain('Use an absolute path on the engine host.')
+    })
   })
 })

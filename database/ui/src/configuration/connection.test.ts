@@ -3,9 +3,14 @@ import { describe, expect, it } from 'vitest'
 import {
   connectionDisplay,
   connectionDriver,
+  connectionNameError,
+  connectionProblems,
   connectionShape,
   connectionSummary,
+  isAbsolutePath,
+  isHostKeyPin,
   isPem,
+  looksLikeKeyPath,
   newConnectionEntry,
   parseConnectionUrl,
   pemSummary,
@@ -264,5 +269,49 @@ describe('display and summaries', () => {
     expect(pemSummary(CERT)).toBe('PEM · CERTIFICATE')
     expect(pemSummary(CERT + CERT)).toBe('2 PEM blocks · CERTIFICATE')
     expect(isPem('-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----')).toBe(true)
+  })
+})
+
+describe('what the worker will refuse', () => {
+  it('holds handles to the worker’s connection-name rule', () => {
+    for (const ok of ['shop', 'shop-prod.eu', '_x', '9lives', 'a'.repeat(64)]) {
+      expect(connectionNameError(ok), ok).toBeUndefined()
+    }
+    for (const bad of ['', 'my db', '-x', '.x', 'café', 'a'.repeat(65)]) {
+      expect(connectionNameError(bad), bad).toBeDefined()
+    }
+  })
+
+  it('recognises host-key pins, absolute paths and key files', () => {
+    expect(isHostKeyPin(`SHA256:${'A'.repeat(43)}`)).toBe(true)
+    expect(isHostKeyPin(`SHA256:${'A'.repeat(43)}=`)).toBe(true)
+    expect(isHostKeyPin('SHA256:short')).toBe(false)
+    expect(isHostKeyPin(`MD5:${'A'.repeat(43)}`)).toBe(false)
+    expect(isAbsolutePath('/srv/q')).toBe(true)
+    expect(isAbsolutePath('C:\\q')).toBe(true)
+    expect(isAbsolutePath('queries')).toBe(false)
+    expect(looksLikeKeyPath('/home/me/.ssh/id_ed25519')).toBe(true)
+    expect(looksLikeKeyPath('~/.ssh/id_rsa')).toBe(true)
+    expect(looksLikeKeyPath('-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----')).toBe(false)
+    expect(looksLikeKeyPath('hunter2')).toBe(false)
+  })
+
+  it('names the fields an entry still needs', () => {
+    expect(
+      connectionProblems({
+        driver: 'postgres',
+        tls: { client_cert: '/c.crt' },
+        ssh: { host: 'b', user: 'u', passphrase: 'secret://P', host_key: 'SHA256:nope' },
+        folder: 'relative/queries',
+      }).map((p) => p.field),
+    ).toEqual(['tls', 'ssh', 'ssh.passphrase', 'ssh.host_key', 'folder'])
+    expect(
+      connectionProblems({
+        driver: 'postgres',
+        tls: { client_cert: '/c.crt', client_key: 'secret://K' },
+        ssh: { host: 'b', user: 'u', private_key: 'secret://K2', host_key: `SHA256:${'b'.repeat(43)}` },
+        folder: '/srv/q',
+      }),
+    ).toEqual([])
   })
 })

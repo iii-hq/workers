@@ -58,6 +58,7 @@ import {
   RefreshCw,
   Table2,
 } from 'lucide-react'
+import { TEST_STAGE_LABELS } from '../configuration/connection'
 import { ConnectionIcon } from '../lib/connection-icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -458,7 +459,11 @@ export function DatabasePage({
               <StatusPanel
                 variant="alert"
                 icon={<CircleAlert size={18} />}
-                headline={`${activeDb.name} is unavailable`}
+                headline={
+                  activeDb.errorStage
+                    ? `${activeDb.name} is unavailable · ${TEST_STAGE_LABELS[activeDb.errorStage] ?? activeDb.errorStage}`
+                    : `${activeDb.name} is unavailable`
+                }
                 detail={activeDb.error}
               />
             </div>

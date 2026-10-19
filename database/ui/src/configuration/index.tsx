@@ -47,6 +47,8 @@ import {
   type ConnectionDriver,
   connectionDisplay,
   connectionDriver,
+  connectionNameError,
+  connectionProblems,
   connectionShape,
   connectionSummary,
   DEFAULT_PORTS,
@@ -927,11 +929,19 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
   const sshStash = useRef<JsonObject | null>(null)
   const latest = useRef(db)
   latest.current = db
-  const errorAt = (...parts: string[]) => fieldError(card.errors, ['databases', name, ...parts])
+  // What the worker's validation will refuse, said where it can be fixed:
+  // host-reported errors first, then the checks this form can make itself.
+  const problems = card.structured ? connectionProblems(db) : []
+  const problemAt = (field: string) => problems.find((p) => p.field === field)?.message
+  const errorAt = (...parts: string[]) =>
+    fieldError(card.errors, ['databases', name, ...parts]) ?? problemAt(parts.join('.'))
+  const handleErrorFor = (draft: string) =>
+    databaseHandleError(name, card.names, draft) ??
+    (card.structured && draft.trim() !== name ? connectionNameError(draft.trim()) : undefined)
   const urlError = errorAt('url')
   const captureError = errorAt('capture')
-  const tlsBlockError = errorAt('tls')
-  const sshBlockError = errorAt('ssh')
+  const tlsBlockError = fieldError(card.errors, ['databases', name, 'tls'])
+  const sshBlockError = fieldError(card.errors, ['databases', name, 'ssh'])
   const poolBlockError = errorAt('pool')
   const tlsModeError = errorAt('tls', 'mode')
   const tlsTrustError = errorAt('tls', 'trust_native')
@@ -984,7 +994,7 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
 
   const commitHandle = () => {
     const nextName = handleDraft.trim()
-    const nextError = databaseHandleError(name, card.names, nextName)
+    const nextError = handleErrorFor(nextName)
     if (nextError) {
       setHandleError(nextError)
       return false
@@ -1169,7 +1179,7 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
                   autoComplete="off"
                   onChange={(next) => {
                     setHandleDraft(next)
-                    setHandleError(databaseHandleError(name, card.names, next))
+                    setHandleError(handleErrorFor(next))
                   }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
@@ -1568,6 +1578,11 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
               </>
             )}
           </SettingsList>
+          {!tlsOpaque && problemAt('tls') ? (
+            <div className="db-cfg-notice" role="alert">
+              {problemAt('tls')}
+            </div>
+          ) : null}
           {!tlsOpaque &&
           driver === 'postgres' &&
           !asBoolean(tls.trust_native, true) &&
@@ -1692,6 +1707,11 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
               </>
             )}
           </SettingsList>
+          {sshOn && !sshOpaque && problemAt('ssh') ? (
+            <div className="db-cfg-notice" role="alert">
+              {problemAt('ssh')}
+            </div>
+          ) : null}
         </SettingsSection>
       ) : null}
 

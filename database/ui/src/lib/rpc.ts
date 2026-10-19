@@ -382,6 +382,8 @@ export const databaseEntrySchema = z.object({
   pool: z.object({ max: z.number().nullish() }).nullish(),
   /** Why the pool could not be built (an unresolvable secret, say). */
   error: z.string().nullish(),
+  /** Where that happened: `config`, `secrets`, `ssh`, `tcp`, `tls`, … */
+  error_stage: z.string().nullish(),
 })
 
 const listDatabasesSchema = z.object({
@@ -407,6 +409,7 @@ export interface DbInfo {
   usesSecrets?: boolean
   /** The pool could not be built; every read against it will fail. */
   error?: string
+  errorStage?: string
 }
 
 function parseDriver(raw: string | undefined): DbDriver {
@@ -440,6 +443,7 @@ export function toDbInfo(d: z.infer<typeof databaseEntrySchema>): DbInfo {
       : undefined,
     usesSecrets: d.uses_secrets ?? undefined,
     error: d.error || undefined,
+    errorStage: d.error_stage || undefined,
   }
 }
 
