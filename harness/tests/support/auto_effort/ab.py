@@ -7,7 +7,7 @@ answer is the session's last assistant text and its cost the summed units of all
 session file under --data. --pilot runs task a on claude-opus-5-5 once per level. Every call writes
 out_dir/ab_prompts.jsonl, the A/B prompts for judge.py --rows (R4); without --run it prints the run count and an
 estimated cost. A --run rewrites ab.jsonl after each run and ratios.json at the end. It skips the runs ab.jsonl holds
-without an error, so a --run after --pilot adds the rest and an errored run goes again.
+without an error, so a --run after --pilot adds the rest and an errored run goes again; 3 errored runs in a row stop it.
 """
 
 import argparse
@@ -135,13 +135,15 @@ def converse(payload: dict, sessions: Path) -> tuple[list[dict], str | None]:
     except common.TriggerError as err:
         return [], str(err)
     sid, tid = sent["session_id"], sent["turn_id"]
+    why = "interrupted"  # a Ctrl-C lands in the wait, where a run spends its time: the turn is stopped all the same
     try:
         why = cache_probe.wait(sid, tid, within=TURN_S)
     except common.TriggerError as err:
         why = str(err)
-    if why:  # a turn still running keeps spending; stopping one that ended changes nothing
-        with contextlib.suppress(common.TriggerError):
-            common.trigger("harness::stop", {"session_id": sid, "turn_id": tid}, timeout_s=10)
+    finally:
+        if why:  # a turn still running keeps spending; stopping one that ended changes nothing
+            with contextlib.suppress(common.TriggerError):
+                common.trigger("harness::stop", {"session_id": sid, "turn_id": tid}, timeout_s=10)
     path = sessions / f"{sid}.jsonl"
     steps = cache_probe.poll(partial(settled, path), 0.5, 10)
     if steps is None:
@@ -230,12 +232,16 @@ def main(argv: list[str]) -> None:
         return
     trees = args.out_dir.resolve() / "worktrees"  # absolute: git runs in REPO and fs_scope wants a root
     trees.mkdir(parents=True, exist_ok=True)
+    errored = 0  # runs in a row with an error: a broken setup (a wrong --data, a down stack) must not pay for all
     for item in todo:
         row = measure(item, sha, trees, args.data / "session-manager")
         rows = [old for old in rows if run_key(old) != item] + [row]  # a retry replaces the errored row
         common.write_jsonl(path, rows)  # after each run, so a stopped --run keeps what it paid for
         outcome = f"{'pass' if row['pass'] else 'fail'}, {row['cost_units']:,.0f} units, {row['steps']} steps"
         print(f"{' '.join(map(str, item))}: {outcome}" + (f"; {row['error']}" if row["error"] else ""), flush=True)
+        errored = errored + 1 if row["error"] else 0
+        if errored == 3:
+            sys.exit(f"stopped: 3 runs in a row errored ({row['error']}); {path} keeps the runs so far")
     measured = ratios(rows)
     (args.out_dir / "ratios.json").write_text(json.dumps(measured, indent=2) + "\n", encoding="utf-8")
     for model, levels in measured.items():

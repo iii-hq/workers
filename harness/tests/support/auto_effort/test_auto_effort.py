@@ -39,8 +39,12 @@ def entry(type_: str, eid: str, rev: int, ts: int, message: dict) -> dict:
     }
 
 
-def user(eid: str, text: str, ts: int) -> dict:
-    return entry("append", eid, 0, ts, {"role": "user", "content": [{"type": "text", "text": text}], "timestamp": ts})
+def user(eid: str, text: str, ts: int, origin: dict | None = None) -> dict:
+    """A user message; `origin` marks one the harness injected, as the real entries do."""
+    d = entry("append", eid, 0, ts, {"role": "user", "content": [{"type": "text", "text": text}], "timestamp": ts})
+    if origin:
+        d["entry"]["origin"] = origin
+    return d
 
 
 def assistant(eid: str, ts: int, text: str = "", usage: dict | None = None) -> list[dict]:
@@ -149,20 +153,52 @@ class ExtractTest(unittest.TestCase):
         replies = [m for m in extract.messages([meta("s1"), *lines]) if m["role"] == "assistant"]
         self.assertEqual([(m["id"], m["content"]) for m in replies], [("a1", final["content"])])
 
-    def test_notification_ends_cost_window(self):
-        u1 = {"input": 100, "output": 10, "cache_read": 0, "cache_write": 0}
-        u2 = {"input": 7, "output": 1, "cache_read": 0, "cache_write": 0}
+    def test_wake_cost_counts_for_the_prompt_before(self):
+        """A wake runs at the level picked for the prompt before it, so its steps join that row's cost up to the next
+        prompt; steps and first_read stay the prompt's own."""
+        u1, u2, u3 = ({"input": n, "output": 1, "cache_read": 10 * n, "cache_write": 0} for n in (100, 7, 50))
         lines = [
             user("u1", "do X", 0),
             *assistant("a1", 10, "done", u1),
             user("u2", "[notification] wake", 20),
             *assistant("a2", 30, "woke", u2),
+            user("u3", "do Y", 40),
+            *assistant("a3", 50, "ok", u3),
         ]
         self.write("s1", lines)
-        self.assertEqual([(r["message"], r["cost_units"]) for r in self.rows()], [("do X", common.units(u1))])
+        got = [(r["message"], r["cost_units"], r["steps"], r["first_read"]) for r in self.rows()]
+        want = [("do X", common.units(u1) + common.units(u2), 1, 1000), ("do Y", common.units(u3), 1, 500)]
+        self.assertEqual(got, want)
+
+    def test_injected_turns_are_no_prompt_rows(self):
+        """A top row is a person's prompt, with no origin, and a child row its spawned task; a skill notice, a steer
+        or a spawn into a top session is no row, and its steps count for the prompt before it."""
+        u = {"input": 10, "output": 0, "cache_read": 0, "cache_write": 0}
+        top = [
+            user("u1", "do X", 0),
+            *assistant("a1", 10, "done", u),
+            user("u2", "skills changed", 20, origin={"skill_update": True}),
+            *assistant("a2", 30, "noted", u),
+            user("u3", "also Y", 40, origin={"turn_id": "t1"}),
+            user("u4", "a scripted task", 50, origin={"spawn": True}),
+        ]
+        self.write("s1", top)
+        task = [user("u1", "build it", 0, origin={"spawn": True}), *assistant("a1", 10, "done", u)]
+        self.write("c1", task, parent_session_id="s1")
+        got = [(r["slice"], r["message"], r["cost_units"]) for r in self.rows()]
+        self.assertEqual(got, [("child", "build it", 10.0), ("top", "do X", 20.0)])
 
 
-class TriggerTest(unittest.TestCase):
+class CommonTest(unittest.TestCase):
+    def test_write_jsonl_keeps_the_old_file_when_stopped_mid_write(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "ab.jsonl"
+        common.write_jsonl(path, [{"run": 1}])
+        with self.assertRaises(TypeError):  # the second row fails after the first is written
+            common.write_jsonl(path, [{"run": 1}, {"run": object()}])
+        self.assertEqual(common.read_jsonl(path), [{"run": 1}])
+
     def test_trigger_outcomes(self):
         with fake_run(0, '{\n  "status": "ok"\n}\n') as run:
             self.assertEqual(common.trigger("judge::evaluate", {"a": 1}, 3), {"status": "ok"})
@@ -230,26 +266,36 @@ class LabelTest(unittest.TestCase):
         third = json.loads(call.call_args.args[1]["messages"][0]["content"][0]["text"])
         self.assertEqual(third["answers"], [["low"], ["medium", "high"]])
 
-    def test_run_logs_misses_and_stops_after_five_in_a_row(self):
+    def test_dry_run_resume_then_stop_after_five_misses_in_a_row(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         out = Path(tmp.name)
         rows = [{"id": f"p{i}", "model": "m", "context": "", "message": "x"} for i in range(8)]
         common.write_jsonl(out / "prompts.jsonl", rows)
+        seeded = {"id": "p0", "ok": ["medium"], "agreed": True}  # labelled by an earlier run
+        printed = io.StringIO()
+        with mock.patch.object(common, "trigger") as call, redirect_stdout(printed):
+            label.main([str(out)])
+            common.write_jsonl(out / "labels.jsonl", [seeded])
+            label.main([str(out)])
+        call.assert_not_called()  # no --run, no call
+        counts = [p.split(", about")[0] for p in printed.getvalue().splitlines()]
+        self.assertEqual(counts, ["8 prompts × 2–3 calls (16–24 calls)", "7 prompts × 2–3 calls (14–21 calls)"])
         timeout, ok, prose = common.TriggerError("timeout", "too slow"), reply('{"ok":["low"]}'), reply("y" * 300)
         failed = {"message": {"content": [], "stop_reason": "error", "error_message": "rate limited"}}
-        # p0 throws, p1 is labelled; then p2 throws and p3..p6 get no usable reply: five misses in a row
+        # p0 is skipped; p1 throws, p2 is labelled; then p3 throws and p4..p7 get no usable reply: five misses in a row
         replies = [timeout, ok, ok, timeout, failed, *[prose] * 11]
         log = io.StringIO()
         with mock.patch.object(common, "trigger", side_effect=replies) as call, redirect_stderr(log):
             with self.assertRaises(SystemExit) as stop:
                 label.main([str(out), "--run"])
-        self.assertEqual(call.call_count, len(replies))  # p7 is never asked
-        self.assertEqual(common.read_jsonl(out / "labels.jsonl"), [{"id": "p1", "ok": ["low"], "agreed": True}])
+        self.assertEqual(call.call_count, len(replies))
+        labels = [seeded, {"id": "p2", "ok": ["low"], "agreed": True}]
+        self.assertEqual(common.read_jsonl(out / "labels.jsonl"), labels)
         self.assertIn("5 prompts in a row", str(stop.exception))
         lines = log.getvalue().splitlines()
-        self.assertIn("p0: timeout: too slow", lines)
-        self.assertIn("p6: no label", lines)
+        self.assertIn("p1: timeout: too slow", lines)
+        self.assertIn("p7: no label", lines)
         self.assertIn("no label in reply (rate limited): ''", lines)
         self.assertIn(f"no label in reply (end): {'y' * 200!r}", lines)
 
@@ -365,25 +411,34 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual((len(verdicts), len(high), high[0], "eff-h12" in high), (81, 76, "p1", True))
         self.assertEqual({(v["ms"], v["tokens"]) for v in verdicts[:1] + verdicts[2:]}, {(0, 0)})
 
-    def test_dry_run_then_stop_after_five_failed_calls_in_a_row(self):
-        rows = [dict(self.row, id=f"r{i}") for i in range(12)]
+    def test_dry_run_resume_then_stop_after_five_unreached_calls_in_a_row(self):
+        rows = [dict(self.row, id=f"r{i}") for i in range(13)]
         rows[7]["message"] = "ok"  # a follow-up makes no call, so it neither counts nor resets
         common.write_jsonl(self.out / "rows.jsonl", rows)
         path = self.out / "verdicts.jsonl"
-        common.write_jsonl(path, [{"id": "r0", "arm": "typesafe", "level": "low"}])
+        earlier = {"arm": "typesafe", "level": "medium", "kept": True}
+        errors = (None, "deadline", "transport")  # r0 answered, r1 a judge error, r2 never reached the judge
+        common.write_jsonl(path, [dict(earlier, id=f"r{i}", error=e) for i, e in enumerate(errors)])
         down = common.TriggerError("transport", "no engine")
-        replies = [down] * 4 + [judge_reply("r4", "low", 0.9)] + [down] * 5
+        deadline = {"status": "error", "code": "deadline"}  # the judge answered late: a kept row, and the stack is up
+        replies = [judge_reply("r2", "low", 0.9), down, down, deadline, *[down] * 5]
+        args = ("--rows", str(self.out / "rows.jsonl"))
         with mock.patch.object(common, "trigger", side_effect=replies) as call:
-            printed = self.judge_main("--arm", "typesafe", "keep", "--rows", str(self.out / "rows.jsonl"))
+            before = self.judge_main("--arm", "typesafe", "keep", *args)
             self.assertEqual(call.call_count, 0)
             with self.assertRaises(SystemExit) as stop:
-                self.judge_main("--arm", "typesafe", "--rows", str(self.out / "rows.jsonl"), "--run")
-        counts = [p.split(", about")[0] for p in printed]
-        self.assertEqual(counts, ["typesafe: 12 rows, 11 calls", "keep: 12 rows, 0 calls"])
-        # r0-r3 fail, r4 answers, then r5, r6, r8, r9 and r10 fail; r11 is never asked
-        self.assertEqual(call.call_count, 10)
-        self.assertIn("5 calls in a row", str(stop.exception))
-        self.assertEqual(common.read_jsonl(path), [{"id": "r0", "arm": "typesafe", "level": "low"}])
+                self.judge_main("--arm", "typesafe", *args, "--run")
+            after = self.judge_main("--arm", "typesafe", *args)
+        counts = [p.split(", about")[0] for p in before + after]
+        # only a transport error is asked again: r0's answer and r1's judge error stand, as r2's and r5's do after
+        want = ["typesafe: 13 rows, 10 calls", "keep: 13 rows, 0 calls", "typesafe: 13 rows, 8 calls"]
+        self.assertEqual(counts, want)
+        # r2 answers; r3 and r4 fail, r5's deadline starts the count again, then r6, r8, r9, r10 and r11 fail; not r12
+        self.assertEqual(call.call_count, 9)
+        self.assertIn("could not reach the stack 5 times in a row", str(stop.exception))
+        want = [("r0", None), ("r1", "deadline"), ("r2", None), ("r3", "transport"), ("r4", "transport")]
+        want += [("r5", "deadline"), ("r6", "transport"), ("r7", None), *((f"r{i}", "transport") for i in range(8, 12))]
+        self.assertEqual([(v["id"], v["error"]) for v in common.read_jsonl(path)], want)  # written through the stop
 
 
 def verdict_row(rid: str, arm: str, level: str, ms: int = 0, tokens: int = 0) -> dict:
@@ -451,6 +506,19 @@ class AnalyzeTest(unittest.TestCase):
         c = analyze.costs("haiku", s1, keyed(verdicts), {"m": {"low": 0.7, "medium": 1.0}}, set())["m"]
         self.assertEqual((c["actual"], c["modeled"]), (30_000, 21_000))  # 0.7 × actual and no warm-flip penalty
 
+    def test_judge_tokens_at_the_judge_price(self):
+        """Judge tokens join the modeled cost in units of the row's model: Haiku's at $0.10 against Opus's $4 per
+        million input tokens; Jev has no published price, so its tokens count 1:1."""
+        row = {"id": "t0", "session_id": "s1", "seq": 0, "model": "claude-code/claude-opus-5-5", "level": None}
+        row |= {"cost_units": 1000.0, "first_read": 0, "gap_ms": None}
+        picks = [verdict_row("t0", "haiku", "medium", tokens=4000), verdict_row("t0", "typesafe", "medium", tokens=40)]
+        ratios = {"claude-opus-5-5": {"medium": 1.0}}
+
+        def modeled(arm: str) -> float:
+            return analyze.costs(arm, [row], keyed(picks), ratios, set())["claude-opus-5-5"]["modeled"]
+
+        self.assertEqual((modeled("haiku"), modeled("typesafe")), (1000.0 + 100.0, 1000.0 + 40.0))
+
     def test_g1_wants_a_judge_arm_on_labelled_rows(self):
         rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["medium"]} for i in range(20)]
         rows += [{"id": "t0", "slice": "top", "ok": ["medium"]}, {"id": "t1", "slice": "top"}]
@@ -469,6 +537,12 @@ class AnalyzeTest(unittest.TestCase):
         self.assertIn("haiku PASS right 95.0% low 0.0% p95 700 ms on 20 labelled of 20 rows", text)
         self.assertIn("typesafe FAIL right 100.0% low 0.0% p95 1600 ms", text)
         self.assertFalse(g1(haiku + [verdict_row("h0", "haiku", "low", ms=3000)])[0])  # 5% too low
+
+        def too_high(n: int) -> list[dict]:
+            return [verdict_row(f"h{i}", "haiku", "high" if i < n else "medium", ms=700) for i in range(20)]
+
+        self.assertTrue(g1(too_high(2))[0])  # right 90%: the bar holds at equality
+        self.assertFalse(g1(too_high(3))[0])  # right 85%, with nothing too low and a fast p95
         fast = [dict(v, ms=1400) for v in typesafe]
         self.assertTrue(g1(haiku + fast)[1].startswith("PASS: winner typesafe. "))  # the most right of those that pass
         passed, text = g1(baseline)  # a baseline that clears the bars is shown, but never wins G1
@@ -532,6 +606,10 @@ class AnalyzeTest(unittest.TestCase):
         self.assertFalse(g3(warm_flip)[0])  # 710 + 1000 + 500 × 1.15 + 10 against 2000: +14.75%, over the cost cap
         safe = [{"model": "m", "pair": k, "retention": 0.95, "invalid": None} for k in range(3)]
         self.assertTrue(g3(warm_flip, cache=safe)[0])  # no cache rewrite on a flip-safe model: -14.0%
+        cold = [dict(r, gap_ms=400_000) if r["id"] == "c1" else r for r in rows]  # c1 400 s after c0's last step
+        passed, text = analyze.gates(cold, keyed(warm_flip), None, ratios, ab)["G3"]
+        self.assertTrue(passed)
+        self.assertIn("modeled cost -14.0%", text)  # a cold flip rewrites nothing either
         small_saving = {"m": dict(ratios["m"], low=0.95)}  # -4%
         self.assertTrue(g3(ratios=small_saving)[0])  # 2 more hard-task passes, within +10%
         self.assertFalse(g3(ratios=small_saving, ab=runs(high_c=2))[0])  # 1 more is not enough
@@ -595,14 +673,34 @@ class CacheProbeTest(unittest.TestCase):
     def test_retention_ratio(self):
         self.assertEqual(cache_probe.retention(20000, 19000), 0.95)
         self.assertEqual(cache_probe.retention(0, 5), 0.0)
+        self.assertEqual(cache_probe.retention(4_000 + 16_000, 4_000), 0.2)  # a flip that reads the system prefix only
+
+    def test_wait_rides_out_two_status_failures_in_a_row(self):
+        down = common.TriggerError("transport", "no engine")
+        done = {"session_id": "s1", "turn_id": "t1", "status": "completed"}
+        running = dict(done, status="running")
+        with mock.patch.object(cache_probe.time, "sleep"):
+            with mock.patch.object(common, "trigger", side_effect=[down, down, done]):
+                self.assertIsNone(cache_probe.wait("s1", "t1"))
+            with mock.patch.object(common, "trigger", side_effect=[down, running, down, down, down]) as call:
+                with self.assertRaises(common.TriggerError):
+                    cache_probe.wait("s1", "t1")
+        self.assertEqual(call.call_count, 5)  # a reply in between starts the count again
 
     def test_dry_run_then_a_row_per_pair(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         out, data = Path(tmp.name) / "out", Path(tmp.name) / "data"
         (data / "session-manager").mkdir(parents=True)
-        reads = {1: 0, 2: 20_000, 3: 19_000, 4: 19_600}  # the cache read of each turn's first step
-        sends, turns, polls = [], {}, {}
+        # each turn's first step: the history caches the system prefix only, so the control reads that and writes the
+        # history, which a flip that keeps the cache then reads
+        usages = {
+            1: {"cache_write": 4_000},
+            2: {"cache_read": 4_000, "cache_write": 16_000},
+            3: {"cache_read": 19_000, "cache_write": 1_000},
+            4: {"cache_read": 19_600, "cache_write": 500},
+        }
+        sends, turns, polls, failing = [], {}, {}, {"m-fail"}  # m-fail's first flip fails
 
         def stack(fn: str, payload: dict, timeout_s: float) -> dict:
             """A send writes its turn to the session file; status shows the turn before, then running, then the end."""
@@ -613,7 +711,7 @@ class CacheProbeTest(unittest.TestCase):
                 sid = payload.get("session_id") or f"s{len(turns)}"
                 n = turns[sid] = turns.get(sid, 0) + 1
                 polls[sid] = 0
-                written = [user(f"u{n}", "msg", n), *assistant(f"a{n}", n, "ok", {"cache_read": reads[n]})]
+                written = [user(f"u{n}", "msg", n), *assistant(f"a{n}", n, "ok", usages[n])]
                 with open(data / "session-manager" / f"{sid}.jsonl", "a", encoding="utf-8") as f:
                     f.writelines(line(d) + "\n" for d in written)
                 return {"accepted": True, "session_id": sid, "turn_id": f"t{n}"}
@@ -624,7 +722,8 @@ class CacheProbeTest(unittest.TestCase):
                 return {"session_id": sid, "turn_id": f"t{n - 1}", "status": "completed"}
             if polls[sid] == 2:
                 return {"session_id": sid, "turn_id": f"t{n}", "status": "running"}
-            if sends[-1]["model"] == "m-fail" and n == 3:
+            if sends[-1]["model"] in failing and n == 3:
+                failing.clear()
                 return {"session_id": sid, "turn_id": "t3", "status": "failed", "result_error": "overloaded"}
             return {"session_id": sid, "turn_id": f"t{n}", "status": "completed"}
 
@@ -637,13 +736,15 @@ class CacheProbeTest(unittest.TestCase):
         with mock.patch.object(common, "trigger", side_effect=stack) as call:
             dry, dry_openai = probe_main(), probe_main("--with-openai")
             self.assertEqual(call.call_count, 0)
-            models = {"m-ok": "anthropic", "m-fail": "anthropic", "m-down": "anthropic"}
+            models = {"m-ok": "anthropic", "m-fail": "anthropic", "m-down": "anthropic", "m-late": "anthropic"}
             with (
                 mock.patch.dict(cache_probe.MODELS, models, clear=True),
                 mock.patch.object(cache_probe.time, "sleep") as sleep,
             ):
-                probe_main("--run")
-        self.assertTrue(dry[0].startswith("4 turns × 3 pairs × 3 models = 36 turns"), dry[0])
+                with self.assertRaises(SystemExit) as stop:
+                    probe_main("--run")
+                resume = probe_main()
+        self.assertTrue(dry[0].startswith("4 turns × 3 pairs × 3 models = 36 turns, 9 pairs still to run"), dry[0])
         self.assertTrue(dry_openai[0].startswith("4 turns × 3 pairs × 4 models = 48 turns"), dry_openai[0])
         self.assertEqual([p.split(":")[0] for p in dry_openai[1:]], ["anthropic", "openai"])  # never summed
         history, *follow_ups = sends[:4]
@@ -665,17 +766,24 @@ class CacheProbeTest(unittest.TestCase):
             ("s0", "medium", "Which of those functions touch thinking_level?"),
         ]
         self.assertEqual(got, want)
-        self.assertEqual((len(sends), "session_id" in sends[4]), (3 * 4 + 3 * 3, False))  # m-fail stops at the flip
+        # m-fail's first pair stops at the flip; m-down's three invalid pairs in a row stop the run before m-late
+        self.assertEqual((len(sends), "session_id" in sends[4]), (3 * 4 + 3 + 2 * 4, False))
+        self.assertIn("stopped: 3 pairs in a row invalid (turn 1: transport: no engine)", str(stop.exception))
         self.assertEqual({c.args for c in sleep.call_args_list}, {(2,)})  # status every 2 s; usage was there at once
         rows = common.read_jsonl(out / "cache.jsonl")
-        keys = ["model", "pair", "control_read", "flip_read", "back_read", "retention", "retention_back", "invalid"]
-        self.assertEqual(list(rows[0]), keys)
-        valid = {"model": "m-ok", "control_read": 20_000, "flip_read": 19_000, "back_read": 19_600}
-        valid |= {"retention": 0.95, "retention_back": 0.98, "invalid": None}
-        failed = {"model": "m-fail", "control_read": 20_000, "flip_read": None, "back_read": None}
-        failed |= {"retention": None, "retention_back": None, "invalid": "turn 3: failed (overloaded)"}
-        down = dict(failed, model="m-down", control_read=None, invalid="turn 1: transport: no engine")
-        self.assertEqual(rows, [dict(row, pair=k) for row in (valid, failed, down) for k in range(3)])
+        keys = ["model", "pair", "control_read", "control_write", "flip_read", "back_read", "retention"]
+        self.assertEqual(list(rows[0]), [*keys, "retention_back", "invalid"])
+        valid = {"model": "m-ok", "control_read": 4_000, "control_write": 16_000, "flip_read": 19_000}
+        valid |= {"back_read": 19_600, "retention": 0.95, "retention_back": 0.98, "invalid": None}  # over 20,000
+        failed = dict(valid, model="m-fail", flip_read=None, back_read=None, retention=None, retention_back=None)
+        failed["invalid"] = "turn 3: failed (overloaded)"
+        down = dict(failed, model="m-down", control_read=None, control_write=None)
+        down["invalid"] = "turn 1: transport: no engine"
+        want = [dict(valid, pair=k) for k in range(3)] + [dict(failed, pair=0)]
+        want += [dict(valid, model="m-fail", pair=k) for k in (1, 2)] + [dict(down, pair=k) for k in range(3)]
+        self.assertEqual(rows, want)
+        # the next --run skips the valid pairs: m-fail's first, m-down's and m-late's are left
+        self.assertIn("48 turns, 7 pairs still to run", resume[0])
 
 
 class AbTest(unittest.TestCase):
@@ -733,6 +841,19 @@ class AbTest(unittest.TestCase):
         self.assertEqual(why, "not ended after 0 s")
         self.assertEqual(call.call_args.args[:2], ("harness::stop", {"session_id": "s1", "turn_id": "t1"}))
         self.assertEqual([m["usage"] for m in steps], [usage])  # what it ran up still counts
+
+        def interrupted(fn: str, payload: dict, timeout_s: float) -> dict:
+            """A Ctrl-C while the runner waits on the turn."""
+            if fn == "harness::status":
+                raise KeyboardInterrupt
+            return replies[fn]
+
+        with (
+            mock.patch.object(common, "trigger", side_effect=interrupted) as call,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            ab.converse({"message": "do X"}, sessions)
+        self.assertEqual(call.call_args.args[:2], ("harness::stop", {"session_id": "s1", "turn_id": "t1"}))
         down = common.TriggerError("transport", "no engine")
         with mock.patch.object(common, "trigger", side_effect=down) as call:
             self.assertEqual(ab.converse({"message": "do X"}, sessions), ([], "transport: no engine"))
@@ -881,3 +1002,14 @@ class AbTest(unittest.TestCase):
         self.assertEqual([p["id"] for p in prompts], [f"ab-{m}-{t}" for m in ab.MODELS for t in "abcd"])
         want = {"id": "ab-claude-opus-5-5-a", "slice": "ab", "model": "claude-opus-5-5", "level": "medium"}
         self.assertEqual(prompts[0], dict(want, context="", message=ab.TASKS["a"]))
+        down = common.TriggerError("transport", "no engine")
+        with (
+            mock.patch.object(common, "trigger", side_effect=down) as call,
+            mock.patch.object(ab, "git", side_effect=git),
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(SystemExit) as stop,
+        ):
+            ab.main([str(out), "--sha", "HEAD", "--run", *data])  # the full run on a stack that is down
+        self.assertIn("stopped: 3 runs in a row errored (transport: no engine)", str(stop.exception))
+        self.assertEqual(call.call_count, 3)  # one send a run, and no turn to stop
+        self.assertEqual(len(common.read_jsonl(out / "ab.jsonl")), 3 + 3)  # the pilot's runs, then the errored ones

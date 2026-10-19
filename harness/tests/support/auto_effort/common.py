@@ -1,6 +1,7 @@
 """Shared constants and helpers for the auto-effort phase 0 scripts."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -43,6 +44,10 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    """Rewrites path whole, through a temporary file that replaces it: a stop mid-write leaves the old file intact."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         f.writelines(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+    os.replace(tmp, path)

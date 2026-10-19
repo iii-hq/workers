@@ -26,6 +26,9 @@ G3_COST_CAP = 0.10
 G3_HARD_GAIN = 2  # more hard-task A/B passes than at medium, out of the 12 hard runs
 WARM_MS = 300_000
 JUDGES = ("typesafe", "haiku")  # the other arms are baselines: graded, but never the G1 winner
+# USD per million input tokens (provider-anthropic/src/curated.rs), which price a judge's tokens in a row model's units
+INPUT_USD = {"claude-opus-5-5": 4.0, "claude-sonnet-5-5": 2.0, "claude-fable-5-1": 10.0, "claude-haiku-5-5": 0.10}
+JUDGE_MODELS = {"haiku": "claude-haiku-5-5"}  # Jev (typesafe) has no published price
 SLICES = ("top", "child", "effortless", "effortless-holdout")
 G1_SLICES = ("top", "effortless-holdout")
 HARD_TASKS = ("c", "d")
@@ -85,8 +88,17 @@ def modeled_cost(row: dict, picked: str, ratios: dict, flip_safe: set[str], flip
     return cost
 
 
+def judge_units(arm: str, tokens: int, model: str) -> float:
+    """A verdict's judge tokens in units of the row's model: tokens × the judge's input price over the model's.
+
+    Without both prices (Jev, a model off the catalog) they count 1:1, which overstates a judge cheaper than the model.
+    """
+    judge, row = INPUT_USD.get(JUDGE_MODELS.get(arm)), INPUT_USD.get(model)
+    return tokens * judge / row if judge and row else float(tokens)
+
+
 def safe_models(cache: list[dict]) -> set[str]:
-    """Models with 3 or more valid pairs, all keeping G2_RETENTION of the control's cache reads (R3)."""
+    """Models with 3 or more valid pairs (R3), each flip reading G2_RETENTION of what the control left in the cache."""
     valid = defaultdict(list)
     for pair in cache:
         if not pair.get("invalid"):
@@ -128,8 +140,7 @@ def costs(arm: str, corpus: list[dict], verdicts: dict, ratios: dict, safe: set[
             c["priced"] += 1
             c["actual"] += row["cost_units"]
             cost = modeled_cost(row, pick, ratios, safe, row["id"] in warm)
-            # ponytail: judge tokens count 1:1 as the session model's input; a price table if it decides G3
-            c["modeled"] += cost + verdicts[row["id"], arm]["tokens"]
+            c["modeled"] += cost + judge_units(arm, verdicts[row["id"], arm]["tokens"], model)
     return out
 
 
@@ -310,8 +321,10 @@ def report(
     else:
         safe = safe_models(cache or [])
         out += [
-            "Corpus cost units per model under each arm, against the levels the sessions ran. Judge tokens count 1:1,"
-            " and a warm flip pays its cache rewrite unless the model is flip-safe"
+            "Corpus cost units per model under each arm, against the levels the sessions ran. A row's cost runs to the"
+            " next prompt row of its session, so it holds the wakes and notices its pick governs. Judge tokens are"
+            " priced at the judge's input price over the model's (Haiku from the provider catalog; Jev, with no"
+            " published price, 1:1), and a warm flip pays its cache rewrite unless the model is flip-safe"
             f" ({', '.join(sorted(safe)) or 'none'}). Rows whose model or level has no ratio are not priced.",
             "",
             "| arm | model | rows | priced | actual | modeled | delta |",

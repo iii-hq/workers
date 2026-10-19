@@ -2,9 +2,11 @@
 
 Arms: typesafe (judge::evaluate), haiku (router::complete) and the baselines always-low, always-medium, always-high and
 keep. Without --run it prints each arm's call count and estimated input tokens. Rows default to prompts.jsonl in
-out_dir plus the effortless cases. A --run upserts verdicts.jsonl by (id, arm); an arm whose calls fail 5 times in a
-row stops the run, and nothing is written for it. effort_question.json and haiku_system.md adapt effortless's
-JEV_TASK, JEV_EFFORTS and JUDGE_SYSTEM (MIT, see cases/LICENSE-effortless).
+out_dir plus the effortless cases. A --run upserts verdicts.jsonl by (id, arm), and writes it even when stopped. It
+does not ask a judge again for a row verdicts.jsonl answers, judge-side errors included, which count as kept; a
+transport error, a call that never reached the judge, is asked again, and 5 of them in a row stop the run.
+effort_question.json and haiku_system.md adapt effortless's JEV_TASK, JEV_EFFORTS and JUDGE_SYSTEM (MIT, see
+cases/LICENSE-effortless).
 """
 
 import argparse
@@ -132,9 +134,18 @@ def main(argv: list[str]) -> None:
         rows = common.read_jsonl(args.out_dir / "prompts.jsonl") + label.effortless_rows()
     question = json.loads(QUESTION.read_text(encoding="utf-8"))
     system = HAIKU_SYSTEM.read_text(encoding="utf-8")
+    path = args.out_dir / "verdicts.jsonl"
+    verdicts = {(v["id"], v["arm"]): v for v in common.read_jsonl(path)} if path.exists() else {}  # R5: by (id, arm)
+
+    def answered(arm: str, row: dict) -> bool:
+        """A paid verdict to keep: an answer, or a judge-side error, which counts as kept (Review Focus 2). Only a
+        transport error, a stack that never answered, is asked again."""
+        old = verdicts.get((row["id"], arm))
+        return calls(arm, row) and old is not None and old.get("error") != "transport"
+
     if not args.run:
         for arm in args.arm:
-            asked = [evaluation(row, question) for row in rows if calls(arm, row)]
+            asked = [evaluation(row, question) for row in rows if calls(arm, row) and not answered(arm, row)]
             # ponytail: chars/4 estimate, as in label.py; router::count_tokens when it must be exact
             sizes = [
                 len(system) + len(e["state"]) if arm == "haiku" else len(json.dumps(e, ensure_ascii=False))
@@ -142,20 +153,22 @@ def main(argv: list[str]) -> None:
             ]
             print(f"{arm}: {len(rows)} rows, {len(asked)} calls, about {sum(sizes) // 4:,} input tokens")
         return
-    path = args.out_dir / "verdicts.jsonl"
     for arm in args.arm:
-        out, failed = [], 0  # calls in a row that failed: a down stack must not overwrite earlier verdicts
-        for row in rows:
-            out.append(judged(arm, row, question, system))
-            if out[-1]["error"]:
-                failed += 1
-                if failed == 5:
-                    sys.exit(f"stopped: {arm} failed 5 calls in a row ({out[-1]['error']}); nothing written for it")
-            elif calls(arm, row):
-                failed = 0
-        old = common.read_jsonl(path) if path.exists() else []
-        verdicts = {(v["id"], v["arm"]): v for v in old + out}  # upsert by (id, arm)
-        common.write_jsonl(path, list(verdicts.values()))
+        out, failed = [], 0  # calls in a row that never reached the judge: a down stack stops the run
+        try:
+            for row in rows:
+                if answered(arm, row):
+                    continue
+                v = verdicts[row["id"], arm] = judged(arm, row, question, system)
+                out.append(v)
+                if v["error"] == "transport":
+                    failed += 1
+                    if failed == 5:
+                        sys.exit(f"stopped: {arm} could not reach the stack 5 times in a row")
+                elif calls(arm, row):
+                    failed = 0
+        finally:  # an upsert (R5) of every verdict so far, through a stop, a Ctrl-C or a crash
+            common.write_jsonl(path, list(verdicts.values()))
         kept, errors = sum(v["kept"] for v in out), sum(v["error"] is not None for v in out)
         print(f"{arm}: {len(out)} verdicts, {kept} kept, {errors} errors")
 

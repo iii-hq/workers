@@ -16,14 +16,21 @@ def text(message: dict) -> str:
 
 
 def messages(lines: list[dict]) -> list[dict]:
-    """The session's final messages in first-append order: the highest revision of each entry wins."""
+    """The session's final messages in first-append order: the highest revision of each entry wins.
+
+    Each item is the message plus the entry's id, timestamp and origin: None for a person's prompt, a dict on what
+    the harness injects, keyed spawn (a child's task), binding and notification (a wake), skill_update or turn_id
+    (a steer).
+    """
     latest = {}
     for line in lines:
         e = line.get("entry")
         if e and (e["id"] not in latest or e["revision"] > latest[e["id"]]["revision"]):
             latest[e["id"]] = e
     return [
-        {**e["message"], "id": e["id"], "timestamp": e["timestamp"]} for e in latest.values() if e["kind"] == "message"
+        {**e["message"], "id": e["id"], "timestamp": e["timestamp"], "origin": e.get("origin")}
+        for e in latest.values()
+        if e["kind"] == "message"
     ]
 
 
@@ -53,9 +60,17 @@ def session_rows(path: Path, source: str) -> list[dict]:
             prev_ts = m["timestamp"]
             if text(m).strip():
                 prev_reply = text(m)
-    human = [turn for turn in turns if not text(turn[0]).startswith(NOTIFICATION)]
+    # A top prompt is a person's, with no origin; a child's task comes from a spawn. Wakes, notices and steers carry
+    # another origin: they are no prompt rows, and their steps run at the level picked for the prompt before them.
+    asked = {"spawn"} if child else set()
+    human = []  # (start message, its own assistant messages, those up to the next prompt, context, gap_ms)
+    for m, steps, context, gap_ms in turns:
+        if set(m.get("origin") or {}) <= asked and not text(m).startswith(NOTIFICATION):
+            human.append((m, steps, list(steps), context, gap_ms))
+        elif human:
+            human[-1][2].extend(steps)
     rows = []
-    for seq, (m, steps, context, gap_ms) in enumerate(human[:1] if child else human):
+    for seq, (m, steps, window, context, gap_ms) in enumerate(human[:1] if child else human):
         first = (steps[0].get("usage") or {}) if steps else {}
         rows.append(
             {
@@ -69,7 +84,7 @@ def session_rows(path: Path, source: str) -> list[dict]:
                 "model": (steps[0].get("model") if steps else None) or metadata.get("model"),
                 "level": metadata.get("thinking_level"),
                 "gap_ms": gap_ms,
-                "cost_units": sum((common.units(step.get("usage")) for step in steps), 0.0),
+                "cost_units": sum((common.units(step.get("usage")) for step in window), 0.0),
                 "steps": len(steps),
                 "first_read": first.get("cache_read") or 0,
             }

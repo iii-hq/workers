@@ -49,10 +49,11 @@ models are never added together.
   2. One `harness::send` on a new `e2e` session, which keeps it out of the user corpus:
      `{"message", "model", "provider": "anthropic", "session": {"kind": "e2e"}, "options": {"thinking_level", "functions": {"allow": […]}, "metadata": {"fs_scope": {"root": <worktree>}}}}`.
   3. Wait as the cache probe does.
-     - Poll `harness::status` every 2 s until the turn ends, for at most 1,800 s.
+     - Poll `harness::status` every 2 s until the turn ends, for at most 1,800 s. A status call that fails is retried;
+       the third failure in a row ends the wait with that error.
      - Then re-read the session file under `--data` until the last assistant message carries its usage, for at most
        10 s.
-     - A turn that did not complete gets `harness::stop`, so it stops spending.
+     - A turn that did not complete, or whose wait a Ctrl-C interrupted, gets `harness::stop`, so it stops spending.
   4. Run `check`, write the row to `ab.jsonl`, and remove the worktree with `git worktree remove --force`.
 - Some runs carry an `error`: the turn failed, was cancelled or was stopped, or a send or status call failed.
   - Such a run is no cost sample for `ratios`.
@@ -183,10 +184,12 @@ A decoy that passes proves that the check accepts an outcome that did not do the
   - If the pilot's mean cost is over 200,000 units a run (twice the estimate), re-estimate the full run and ask again.
   - Otherwise, show the user the spend table and wait for approval before the full run.
 - The full run is paid and needs the user's OK. It is the same command without `--pilot`.
-  - Stop it when either model's summed `cost_units` passes twice its approved estimate. Ctrl-C keeps the rows of
-    finished runs.
+  - Stop it when either model's summed `cost_units` passes twice its approved estimate. Ctrl-C stops the running turn
+    and keeps the rows of finished runs.
   - Runs with an error go again on the next `--run`, once. If an arm still has runs with an error after that, report
     instead of retrying.
+- Any `--run`, pilot or full, stops by itself after 3 runs in a row with an error, so a broken setup does not pay for
+  every run. Fix the setup before the next `--run`.
 - A turn that has not ended after 1,800 s is stopped, and its run is recorded with the error.
 
 ## Held-out exposure
