@@ -5,6 +5,7 @@
 # CLI's S3 protocol; no `mc` install required.
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENDPOINT="${MINIO_ENDPOINT:-http://127.0.0.1:9000}"
 AK="${MINIO_ACCESS_KEY:-minioadmin}"
 SK="${MINIO_SECRET_KEY:-minioadmin}"
@@ -35,10 +36,10 @@ done
 # `mc event add` is idempotent in spirit but errors if the rule already
 # exists — we tolerate that by checking `mc event list` first.
 mc() {
-  docker run --rm --network host \
+  # Reuse the pinned client built with the server; no separate image pull.
+  (cd "$ROOT_DIR" && docker compose --profile cloud exec -T \
     -e MC_HOST_local="http://${AK}:${SK}@127.0.0.1:9000" \
-    quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z \
-    "$@"
+    minio mc "$@")
 }
 
 WEBHOOK_ARN="arn:minio:sqs::BRIDGE:webhook"
