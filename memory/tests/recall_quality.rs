@@ -19,8 +19,9 @@
 //!   `tests/golden/recall_quality.json` diff.
 //! - Re-embed after editing `tests/recall_quality/golden.json` (needs a live
 //!   engine with an embed provider): `III_NAMESPACE=<ns> cargo test --test
-//!   recall_quality -- --ignored embed_golden_set`, and against an engine
-//!   running iii-directory, `-- --ignored embed_golden_set_minilm`.
+//!   recall_quality -- --ignored --exact embed_golden_set`, and against an
+//!   engine running iii-directory, `-- --ignored --exact
+//!   embed_golden_set_minilm`.
 //!
 //! The gate runs once per embedder: text-embedding-3-small, and the local
 //! MiniLM that serves stacks without an embedding API. Semantic floors are
@@ -416,8 +417,16 @@ async fn build_bank(
 }
 
 fn load_vectors(golden: &Golden, file: &str) -> (Vectors, String) {
+    // `--exact`: `embed_golden_set` alone would also match the MiniLM one.
+    let regen = match file {
+        "vectors-minilm.json" => "embed_golden_set_minilm",
+        _ => "embed_golden_set",
+    };
     let raw = std::fs::read_to_string(eval_dir().join(file)).unwrap_or_else(|_| {
-        panic!("tests/recall_quality/{file} missing: run `cargo test --test recall_quality -- --ignored embed_golden_set`")
+        panic!(
+            "tests/recall_quality/{file} missing: run `cargo test --test recall_quality -- \
+             --ignored --exact {regen}`"
+        )
     });
     let vectors: Vectors = serde_json::from_str(&raw).expect("vectors.json parses");
     let texts = golden
@@ -429,8 +438,8 @@ fn load_vectors(golden: &Golden, file: &str) -> (Vectors, String) {
         let e = vectors.items.get(key.as_str());
         assert!(
             e.is_some_and(|e| &e.text == text),
-            "cached vector for {key} is missing or embeds an older text: run \
-             `cargo test --test recall_quality -- --ignored embed_golden_set`"
+            "cached vector for {key} in {file} is missing or embeds an older text: run \
+             `cargo test --test recall_quality -- --ignored --exact {regen}`"
         );
     }
     (vectors, fingerprint(&raw))
