@@ -180,11 +180,19 @@ pub async fn get(state: &AppState, req: MentionGetRequest) -> Option<MentionView
         Some(e) => MentionField::new("Status", e.message.clone()).tone(tone::DANGER),
         None => MentionField::new("Status", "available").tone(tone::SUCCESS),
     });
-    let folder_hint = db
-        .folder
-        .as_deref()
-        .map(|f| format!(" Its saved .sql queries live in {f}."))
-        .unwrap_or_default();
+    // "Save a query" means a .sql file in the connection's folder (what the
+    // apps list), never the console's snippet store.
+    let folder_hint = match db.folder.as_deref() {
+        Some(f) => format!(
+            " Queries for this connection are .sql files in {f}; to save a query, write a \
+             .sql file there with the file tools. database::saveQuery only stores a snippet \
+             in the web console's list, not a file."
+        ),
+        None => " This connection has no queries folder, so there is nowhere to save a .sql \
+                 file for it; database::saveQuery only stores a snippet in the web console's \
+                 list, not a file."
+            .to_string(),
+    };
     let status = match &error {
         Some(e) => format!(" It is currently unavailable: {}.", e.message),
         None => String::new(),
@@ -308,7 +316,33 @@ mod tests {
         let summary = view.summary.clone().unwrap();
         assert!(summary.contains("db: \"shop_pg\""), "{summary}");
         assert!(summary.contains("database::listTables"), "{summary}");
-        assert!(summary.contains("/srv/q"), "{summary}");
+        assert!(
+            summary.contains(
+                "Queries for this connection are .sql files in /srv/q; to save a query, \
+                 write a .sql file there with the file tools."
+            ),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("database::saveQuery only stores a snippet"),
+            "{summary}"
+        );
+        // Without a folder it says so.
+        let other = get(
+            &st,
+            MentionGetRequest {
+                id: "shop_mysql".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .summary
+        .unwrap();
+        assert!(other.contains("has no queries folder"), "{other}");
+        assert!(
+            other.contains("database::saveQuery only stores a snippet"),
+            "{other}"
+        );
         assert!(!serde_json::to_string(&view).unwrap().contains("hunter2"));
         assert!(get(&st, MentionGetRequest { id: "nope".into() })
             .await

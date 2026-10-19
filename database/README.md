@@ -316,18 +316,18 @@ const { rows } = await iii.trigger({
 
 ### Saved queries and history
 
-Stored in the [`state`](https://github.com/iii-hq/workers/tree/main/state) worker, scoped per database, so they survive restarts and any agent can read them.
+The web console's snippet list, stored in the [`state`](https://github.com/iii-hq/workers/tree/main/state) worker, scoped per database, so they survive restarts and any agent can read them. These are **not files**: a connection's queries as the apps show them are the `.sql` files in its `folder`, which agents write with the file tools (the mention summary and the skill say so).
 
 | Function | Description |
 |---|---|
-| `database::saveQuery` | Save a named query. Saving under an existing name replaces it. |
+| `database::saveQuery` | Save a named snippet to the console's list (not a file). Saving under an existing name replaces it. |
 | `database::listSavedQueries` | Saved queries for a database, sorted by name. |
 | `database::deleteSavedQuery` | Delete by id or by name. |
 | `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail bind `database::row-changed`. Stored history is capped per database (`history_max_entries` / `history_max_bytes`, defaults 200 entries / 256KB — oldest dropped first, `0` disables) and holds metadata only: SQL text (truncated to 4000 chars), verb, timing, row count — never result rows. An oversized or unreadable stored value is replaced wholesale on the next write. |
 
 ### Chat mentions
 
-The worker is a [mention provider](../crates/mention-contract) named `database`: `@database(id="<connection>")` in a chat renders as a pill reading `@<connection>` (the item's `hint` is the connection name; `description` is `<driver> · host:port/db`) with a preview card (driver, server, SSH, folder, status) and reaches the agent as a summary saying which `db` to pass (`database::query {db: "<connection>", sql}`, `database::listTables {db: "<connection>"}`). `database::mention::search` / `database::mention::get` are internal; agents read the connection through `database::listTables` (the provider's `details`).
+The worker is a [mention provider](../crates/mention-contract) named `database`: `@database(id="<connection>")` in a chat renders as a pill reading `@<connection>` (the item's `hint` is the connection name; `description` is `<driver> · host:port/db`) with a preview card (driver, server, SSH, folder, status) and reaches the agent as a summary saying which `db` to pass (`database::query {db: "<connection>", sql}`, `database::listTables {db: "<connection>"}`) and where queries go: a `.sql` file in the connection's queries folder, written with the file tools (or that it has no folder) — `database::saveQuery` being only the console's snippet list. `database::mention::search` / `database::mention::get` are internal; agents read the connection through `database::listTables` (the provider's `details`).
 
 ## Cell values
 

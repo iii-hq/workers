@@ -529,9 +529,11 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Save a named query against a database. Stored in the state worker, so \
-                 it survives restarts and an agent can save one for a human to find in \
-                 the console. Saving under an existing name replaces it.",
+                "Save a named snippet to the web console's saved-query list (state \
+                 worker): console-only, not a file. To save a query as a .sql file, write \
+                 it into the connection's queries folder (listDatabases `folder`) with the \
+                 file tools — that is what the apps list. Saving under an existing name \
+                 replaces it.",
             ),
         );
     }

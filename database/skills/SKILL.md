@@ -37,6 +37,16 @@ Each configured connection has a name; pass it as `db` on every call.
 A chat may mention a connection as `@database(id="shop")`: that is the
 connection named `shop`; use `db: "shop"`.
 
+### Saving a query
+
+"Save a query" means a `.sql` file in the connection's queries folder — the
+`folder` from `database::listDatabases` (or the mention's summary). Write the
+file there with the file tools (format it first with `database::formatSql`);
+that folder is what the apps list as the connection's queries. A connection
+without a `folder` has nowhere to save one: say so. `database::saveQuery` is
+something else — a console-only snippet list in the `state` worker, not a
+file — so never answer "saved as t3_status.sql" after calling it.
+
 Connections are managed by people (the console, the iii app): agents cannot
 read a stored entry (`getConnection`), save, delete or test one. Never ask for or
 handle database passwords; connections reference them as `secret://NAME`.
@@ -173,8 +183,10 @@ arrays as JSON arrays. When writing them back, pass the same forms.
 - `database::terminateQuery` — end a session, or cancel its statement with
   `cancel_only`. Takes an id from `database::health`.
 - `database::saveQuery`, `database::listSavedQueries`,
-  `database::deleteSavedQuery` — named queries per database, kept in the
-  `state` worker.
+  `database::deleteSavedQuery` — the web console's snippet list per database,
+  kept in the `state` worker: console-only, not files. To save a query for
+  the person, write a `.sql` file into the connection's `folder` (see
+  "Saving a query").
 - `database::history` — recent queries, newest first. Best effort, not an audit
   log; bind `database::row-changed` for that.
 
