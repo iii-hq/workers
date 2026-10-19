@@ -7,8 +7,8 @@ is the session's last assistant text and its cost the summed units of all its as
 file under --data. --pilot runs each task once on claude-opus-5-5 at medium (R13). Every call writes
 out_dir/ab_prompts.jsonl, the A/B prompts for judge.py --rows (R4); without --run it prints the run count and an
 estimated cost. A --run rewrites ab.jsonl after each run and ratios.json at the end. It skips the runs ab.jsonl holds,
-except those that errored before spending (spent()), so a --run after --pilot adds the rest and only those go again;
-3 errored runs in a row stop it. An errored run is a fail.
+except those that errored before spending or whose usage never landed (spent()), so a --run after --pilot adds the
+rest and only those go again; 3 errored runs in a row stop it. An errored run is a fail.
 """
 
 import argparse
@@ -56,13 +56,15 @@ TEST_CMD = (sys.executable, "-I", "-B", "-m", "unittest", "discover", "-s", PKG,
 BUG = ("// 100) - 1]", "// 100) - 2]")  # analyze.p95, one rank low
 TURN_S = 1800  # a turn still running after this is stopped, so it stops spending
 RUN_UNITS = 100_000  # ponytail: between the corpus's child tasks and opus top turns; the pilot measures it
+NO_USAGE = "no usage after 10 s"  # converse: the turn completed, but its last message's usage never landed
 
 
 def spent(row: dict) -> bool:
     """Whether a run is a cost sample, kept and never re-run: no error, or an error after it spent (R17). Timeouts
     cluster at high effort, so dropping or replacing them would bias the ratios low. One that spent nothing, a turn
-    that never started, is no sample and goes again."""
-    return not row.get("error") or row["cost_units"] > 0
+    that never started, is no sample and goes again, as does a NO_USAGE one: its turn completed, but its cost is
+    short of its last message and its fail is the session file's, not the turn's."""
+    return not row.get("error") or (row["cost_units"] > 0 and row["error"] != NO_USAGE)
 
 
 def ratios(rows: list[dict]) -> dict[str, dict[str, float]]:
@@ -168,7 +170,7 @@ def converse(payload: dict, sessions: Path) -> tuple[list[dict], str | None]:
     path = sessions / f"{sid}.jsonl"
     steps = cache_probe.poll(partial(settled, path), 0.5, 10)
     if steps is None:
-        return replies(path), why or "no usage after 10 s"
+        return replies(path), why or NO_USAGE
     return steps, why
 
 

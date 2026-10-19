@@ -63,11 +63,15 @@ models are never added together.
 - Isolation (R15): each run's git dir is its tree's own `.git`, so no other branch or stash is reachable from the
   session, and no hook of the user's repository runs. A linked worktree would share the user's `.git` (stash, refs,
   hooks) and reach every branch, the checks included.
-- Some runs carry an `error`: the turn failed, was cancelled or was stopped, or a send or status call failed.
-  - Such a run is a fail (`pass` is false), whatever its tree or answer holds: the turn did not finish the task.
+- Some runs carry an `error`: the turn failed, was cancelled or was stopped, a send or status call failed, or the
+  turn completed but its last assistant message had no usage after 10 s (`no usage after 10 s`).
+  - Such a run is a fail (`pass` is false), whatever its tree or answer holds. Except for `no usage after 10 s`, the
+    turn did not finish the task.
   - When it spent (`cost_units > 0`), it stays in `ab.jsonl` as a cost sample for `ratios` and is never re-run:
     timeouts cluster at high effort, so dropping or replacing them would bias the ratios low (R17).
   - When it spent nothing, it is no cost sample. The next `--run` runs it again and replaces its row.
+  - A `no usage after 10 s` run is no cost sample either, whatever it spent: its cost lacks the last message, and its
+    fail is the session file's, not the turn's. The next `--run` runs it again and replaces its row.
   - Rows without an error are never re-run. Delete `ab.jsonl` to start over.
 - The stack is the template stack (`iii trigger -n my-project`) with `harness`, `llm-router`, `provider-anthropic`,
   `session-manager` and `ide`.
@@ -201,9 +205,9 @@ A decoy that passes proves that the check accepts an outcome that did not do the
 - The full run is paid and needs the user's OK. It is the same command without `--pilot`.
   - Stop it when either model's summed `cost_units` passes twice its approved estimate. Ctrl-C stops the running turn
     and keeps the rows of finished runs.
-  - Runs that errored before spending (`cost_units == 0`) go again on the next `--run`, once. If an arm still has such
-    runs after that, report instead of retrying. A run that errored after spending is kept as a cost sample and a fail,
-    and never goes again.
+  - Runs that errored before spending (`cost_units == 0`) or with `no usage after 10 s` go again on the next `--run`,
+    once. If an arm still has such runs after that, report instead of retrying. Any other run that errored after
+    spending is kept as a cost sample and a fail, and never goes again.
 - Any `--run`, pilot or full, stops by itself after 3 runs in a row with an error, so a broken setup does not pay for
   every run. Fix the setup, and delete the errored rows it wrote (the last rows of `ab.jsonl`), before the next
   `--run`: a spent one would otherwise stay as a sample.

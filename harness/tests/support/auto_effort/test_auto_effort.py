@@ -919,6 +919,13 @@ class AbTest(unittest.TestCase):
         rows = [{"model": "m", "level": lv, "cost_units": c, "pass": False, "error": e} for lv, c, e in runs]
         self.assertEqual(ab.ratios(rows), {"m": {"medium": 1.0, "high": 1.5}})
 
+    def test_no_usage_run_goes_again(self):
+        """A completed turn whose last message had no usage in time is undercounted, not a fail: no sample, it goes
+        again."""
+        row = {"model": "m", "level": "high", "cost_units": 40, "pass": False, "error": ab.NO_USAGE}
+        self.assertFalse(ab.spent(row))
+        self.assertTrue(ab.spent(dict(row, error="not ended after 1800 s")))
+
     def test_check_lookup(self):
         self.assertTrue(ab.check("a", "it returns None", Path()))
         self.assertFalse(ab.check("a", "it returns the key", Path()))
@@ -947,8 +954,8 @@ class AbTest(unittest.TestCase):
         self.assertFalse(ab.check("c", "", repo))  # the tests pass, but the test file changed
 
     def test_check_b(self):
-        """Task b's check runs the whole suite in the tree: it fails on the untouched package, and passes once units is
-        renamed in common.py and its callers."""
+        """Task b's check runs the whole suite in the tree: it fails on the untouched package and on a rename in
+        common.py alone, and passes once the callers are renamed too."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         tree = Path(tmp.name) / "tree"
@@ -963,10 +970,12 @@ class AbTest(unittest.TestCase):
             (tree / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(cache_probe.REPO / path, tree / path)
         self.assertFalse(ab.check("b", "", tree))
+        source = pkg / "common.py"
+        text = source.read_text(encoding="utf-8")
+        source.write_text(text.replace("def units(", "def cost_units_of("), encoding="utf-8")
+        self.assertFalse(ab.check("b", "", tree))  # the callers still call common.units, so the copied suite fails
         for source in pkg.glob("*.py"):
             text = source.read_text(encoding="utf-8").replace("common.units(", "common.cost_units_of(")
-            if source.name == "common.py":
-                text = text.replace("def units(", "def cost_units_of(")
             source.write_text(text, encoding="utf-8")
         self.assertTrue(ab.check("b", "", tree))
 
