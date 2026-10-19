@@ -385,6 +385,13 @@ pub(crate) async fn injection(
         "bm25-entity"
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
+    // One BM25 scale for every bank merged below: each bank's own best
+    // would lift a layer matching only the `user` every first-person query
+    // carries level with the bank's strong hits.
+    let mut bm25_max = 0.0_f32;
+    for (b, _) in &sources {
+        bm25_max = bm25_max.max(b.bm25_max(&query).await);
+    }
     let (mut hits, mut top, mut own) = (Vec::new(), Vec::new(), HashSet::new());
     for (b, layered) in sources {
         let keep = |m: &Memory| !layered || crate::scope::in_layer(m);
@@ -395,13 +402,14 @@ pub(crate) async fn injection(
             cfg.recall_limit
         };
         let found = b
-            .recall(
+            .recall_scaled(
                 &query,
                 qv,
                 query_model,
                 fetch,
                 cfg.decay_half_life_days,
                 false,
+                bm25_max,
             )
             .await;
         let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
@@ -466,10 +474,12 @@ fn turn_rules(
 }
 
 /// Hits from a turn's bank, then from its layer, as one ranking: deduped
-/// by id (the first copy wins), by score, capped at `limit`.
-// ponytail: raw scores across banks — BM25 idf is per bank, so a small
-// bank's hits can outrank a big one's; normalize per bank if layered
-// recall ranks badly.
+/// by id (the first copy wins), by score, capped at `limit`. Hybrid scores
+/// compare across banks recalled with one shared `bm25_max`
+/// ([`Bank::recall_scaled`]); cosine is absolute already.
+// ponytail: idf stays per bank, so a word rare in a small bank still
+// scores above the same word in a big one; pool document frequencies if
+// layered recall ranks badly.
 pub(crate) fn merge_ranked(mut hits: Vec<(Memory, f32)>, limit: usize) -> Vec<(Memory, f32)> {
     let mut seen = HashSet::new();
     hits.retain(|(m, _)| seen.insert(m.id.clone()));
@@ -1285,6 +1295,39 @@ Formal."
             "by score, the first copy of a memory both hold, capped"
         );
         assert!(merge_ranked(Vec::new(), 3).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_layer_matching_only_on_the_user_never_outranks_a_strong_repo_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path().to_path_buf()).unwrap();
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        let deploy = memory("fp-deploy", "ledger-sync deploy runs Bazel from ops.");
+        repo.commit(deploy.clone()).await.unwrap();
+        repo.commit(memory("fp-lint", "The linter runs before every commit."))
+            .await
+            .unwrap();
+        for n in 0..3 {
+            let m = Memory {
+                entities: vec!["user".into()],
+                ..memory(&format!("fp-u{n}"), &format!("The user drinks tea {n}."))
+            };
+            main.commit(m).await.unwrap();
+        }
+        // "I" brings the `user` token: the layer's only match.
+        let query = "how do I deploy ledger-sync with Bazel";
+        let shared = repo.bm25_max(query).await.max(main.bm25_max(query).await);
+        let mut hits = Vec::new();
+        for b in [&repo, &main] {
+            hits.extend(
+                b.recall_scaled(query, None, "", 10, 30, false, shared)
+                    .await,
+            );
+        }
+        let merged = merge_ranked(hits, 10);
+        assert_eq!(merged[0].0.id, deploy.id, "{merged:?}");
+        assert_eq!(merged.len(), 4);
     }
 
     #[test]

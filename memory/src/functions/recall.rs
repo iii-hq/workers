@@ -90,13 +90,18 @@ pub async fn recall(deps: &Deps, mut req: RecallRequest) -> Result<RecallRespons
         _ => crate::embed_client::query_vector(deps, &req.query).await,
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
+    // One BM25 scale for the bank and its layer, as the hook ranks them.
+    let mut bm25_max = 0.0_f32;
+    for b in bank.iter().chain(layer.as_ref().map(|(_, b)| b)) {
+        bm25_max = bm25_max.max(b.bm25_max(&req.query).await);
+    }
     let mut hits = match &bank {
-        Some(bank) => rank(bank, &req, qv, query_model, &cfg, false).await,
+        Some(bank) => rank(bank, &req, qv, query_model, &cfg, false, bm25_max).await,
         None => Vec::new(),
     };
     let own: HashSet<String> = hits.iter().map(|(m, _)| m.id.clone()).collect();
     if let Some((_, layer)) = &layer {
-        hits.extend(rank(layer, &req, qv, query_model, &cfg, true).await);
+        hits.extend(rank(layer, &req, qv, query_model, &cfg, true, bm25_max).await);
     }
     let limit = req.limit.unwrap_or(cfg.recall_limit).min(100);
     let memories = crate::hooks::merge_ranked(hits, limit)
@@ -131,7 +136,8 @@ fn retrieval_label(mode: RecallMode, embedded: bool) -> &'static str {
 /// that order: capping first would drop hits ranked past `limit` before
 /// the filter ever saw them. `query_model` is the model the provider
 /// reported for `query_vec`: only vectors stored under exactly that model
-/// are comparable with it.
+/// are comparable with it. `bm25_max` is the hybrid lexical scale shared
+/// with the other bank in the ranking ([`Bank::recall_scaled`]).
 async fn rank(
     bank: &Bank,
     req: &RecallRequest,
@@ -139,6 +145,7 @@ async fn rank(
     query_model: &str,
     cfg: &WorkerConfig,
     layered: bool,
+    bm25_max: f32,
 ) -> Vec<(Memory, f32)> {
     let limit = req.limit.unwrap_or(cfg.recall_limit).min(100);
     let fetch = if req.tag.is_some() || layered {
@@ -149,13 +156,14 @@ async fn rank(
     let include = req.include_superseded.unwrap_or(false);
     let hits = match req.mode {
         RecallMode::Hybrid => {
-            bank.recall(
+            bank.recall_scaled(
                 &req.query,
                 query_vec,
                 query_model,
                 fetch,
                 cfg.decay_half_life_days,
                 include,
+                bm25_max,
             )
             .await
         }
@@ -221,20 +229,20 @@ mod tests {
         let cfg = WorkerConfig::default();
 
         let req = request(serde_json::json!({"query": "coffee", "limit": 1, "tag": "x"}));
-        let hits = rank(&bank, &req, None, "", &cfg, false).await;
+        let hits = rank(&bank, &req, None, "", &cfg, false, 0.0).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.text, "coffee three");
 
         // Untagged: `limit` still caps.
         let req = request(serde_json::json!({"query": "coffee", "limit": 2}));
-        assert_eq!(rank(&bank, &req, None, "", &cfg, false).await.len(), 2);
+        assert_eq!(rank(&bank, &req, None, "", &cfg, false, 0.0).await.len(), 2);
 
         // As a layer: only memories about the user, reached past `limit`.
         let mut about = memory("coffee for the user", &[], 300);
         about.entities = vec!["user".into()];
         bank.commit(about.clone()).await.unwrap();
         let req = request(serde_json::json!({"query": "coffee", "limit": 1}));
-        let hits = rank(&bank, &req, None, "", &cfg, true).await;
+        let hits = rank(&bank, &req, None, "", &cfg, true, 0.0).await;
         let ids: Vec<&str> = hits.iter().map(|(m, _)| m.id.as_str()).collect();
         assert_eq!(ids, vec![about.id.as_str()]);
     }
@@ -255,7 +263,7 @@ mod tests {
 
         let lexical =
             request(serde_json::json!({"query": "kiwi mango smoothie recipe", "mode": "lexical"}));
-        let hits = rank(&bank, &lexical, None, "", &cfg, false).await;
+        let hits = rank(&bank, &lexical, None, "", &cfg, false, 0.0).await;
         assert_eq!(
             hits[0].0.id, old_twin.id,
             "raw BM25: age does not sink the twin"
@@ -264,7 +272,7 @@ mod tests {
         // 400-day-old twin's score by the recency factor (x0.8).
         let hybrid =
             request(serde_json::json!({"query": "kiwi mango smoothie recipe", "mode": "hybrid"}));
-        let fused = rank(&bank, &hybrid, None, "", &cfg, false).await;
+        let fused = rank(&bank, &hybrid, None, "", &cfg, false, 0.0).await;
         let fused_twin = fused.iter().find(|h| h.0.id == old_twin.id).unwrap();
         assert!(
             hits[0].1 > 1.2 * fused_twin.1,
@@ -273,12 +281,12 @@ mod tests {
 
         let semantic = request(serde_json::json!({"query": "anything", "mode": "semantic"}));
         assert!(
-            rank(&bank, &semantic, None, "", &cfg, false)
+            rank(&bank, &semantic, None, "", &cfg, false, 0.0)
                 .await
                 .is_empty(),
             "no vector, no semantic arm"
         );
-        let hits = rank(&bank, &semantic, Some(&[1.0, 0.0]), "", &cfg, false).await;
+        let hits = rank(&bank, &semantic, Some(&[1.0, 0.0]), "", &cfg, false, 0.0).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.id, fresh.id);
         assert!(

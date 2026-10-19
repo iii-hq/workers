@@ -124,14 +124,15 @@ impl ExtractedItem {
 /// paraphrased duplicate) and may correct one by its number.
 const MAX_KNOWN: usize = 12;
 
-/// What the bank already holds about an excerpt: recall over its message
-/// text (with the semantic arm when `query_vec` is given, so a paraphrase or
-/// a correction sharing no words still finds its target), then up to half as
-/// many of the memories about the user of the `layer` read under it, so a
-/// restated one is reinforced where it lives instead of copied into this
-/// bank, and a corrected one superseded there unless the correction holds
-/// only here ([`placement`]). A bank that does not exist yet holds nothing.
-/// Returns the ids the layer holds too.
+/// What the bank already holds about an excerpt: its lexical recall over
+/// the message text, then (when `query_vec` is given) what only the vector
+/// finds in the slots left, so a paraphrase or a correction sharing no words
+/// still finds its target without displacing a lexical hit; then, the same
+/// way, up to half as many of the memories about the user of the `layer`
+/// read under it, so a restated one is reinforced where it lives instead of
+/// copied into this bank, and a corrected one superseded there unless the
+/// correction holds only here ([`placement`]). A bank that does not exist
+/// yet holds nothing. Returns the ids the layer holds too.
 async fn known_memories(
     store: &Store,
     bank_name: &str,
@@ -142,12 +143,7 @@ async fn known_memories(
 ) -> (Vec<Memory>, HashSet<String>) {
     let (qv, model) = crate::embed_client::QueryVector::split(query_vec);
     let mut known: Vec<Memory> = match store.bank(bank_name).await {
-        Ok(bank) => bank
-            .recall(query, qv, model, MAX_KNOWN, half_life_days, false)
-            .await
-            .into_iter()
-            .map(|(m, _)| m)
-            .collect(),
+        Ok(bank) => listed(&bank, query, qv, model, half_life_days, MAX_KNOWN, |_| true).await,
         Err(_) => Vec::new(),
     };
     let layer = match layer {
@@ -161,17 +157,48 @@ async fn known_memories(
     // so a small layer's scores would push out a fact this bank must be
     // able to correct.
     let own: HashSet<String> = known.iter().map(|m| m.id.clone()).collect();
-    let extra: Vec<Memory> = layer
-        .recall(query, qv, model, usize::MAX, half_life_days, false)
-        .await
-        .into_iter()
-        .map(|(m, _)| m)
-        .filter(|m| crate::scope::in_layer(m) && !own.contains(&m.id))
-        .take(MAX_KNOWN / 2)
-        .collect();
+    let keep = |m: &Memory| crate::scope::in_layer(m) && !own.contains(&m.id);
+    let extra = listed(
+        &layer,
+        query,
+        qv,
+        model,
+        half_life_days,
+        MAX_KNOWN / 2,
+        keep,
+    )
+    .await;
     let layered = extra.iter().map(|m| m.id.clone()).collect();
     known.extend(extra);
     (known, layered)
+}
+
+/// Up to `cap` of `bank`'s live memories that `keep` accepts: lexical
+/// recall for `query` first, then semantic hits for `qv` not listed yet.
+async fn listed(
+    bank: &Bank,
+    query: &str,
+    qv: Option<&[f32]>,
+    model: &str,
+    half_life_days: u64,
+    cap: usize,
+    keep: impl Fn(&Memory) -> bool,
+) -> Vec<Memory> {
+    let lexical = bank
+        .recall(query, None, "", usize::MAX, half_life_days, false)
+        .await;
+    let semantic = match qv {
+        Some(qv) => bank.semantic(qv, model, usize::MAX, false).await,
+        None => Vec::new(),
+    };
+    let mut seen = HashSet::new();
+    lexical
+        .into_iter()
+        .chain(semantic)
+        .map(|(m, _)| m)
+        .filter(|m| keep(m) && seen.insert(m.id.clone()))
+        .take(cap)
+        .collect()
 }
 
 /// The extraction model's input: the numbered known memories, then the
@@ -1810,6 +1837,55 @@ mod tests {
             [&build.id, &city.id]
         );
         assert_eq!(layered, HashSet::from([city.id.clone()]));
+    }
+
+    #[tokio::test]
+    async fn the_vector_only_fills_the_slots_lexical_recall_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        let about = |text: &str| Memory {
+            entities: vec!["user".into()],
+            ..known(text)
+        };
+        // One lexical hit more than the bank lists.
+        let mut lexical = HashSet::new();
+        for n in 0..=MAX_KNOWN {
+            let m = known(&format!(
+                "Deploy step {n} of the release runs from the ops folder."
+            ));
+            lexical.insert(m.id.clone());
+            repo.commit(m).await.unwrap();
+        }
+        // Paraphrases only the vector finds.
+        let shipping = known("Shipping goes out through the pipeline.");
+        let ships = about("The user never ships after lunch.");
+        for (bank, m) in [(&repo, &shipping), (&main, &ships)] {
+            bank.commit(m.clone()).await.unwrap();
+            bank.set_vector(&m.id, "m", &m.text, vec![1.0, 0.0])
+                .await
+                .unwrap();
+        }
+        let habit = about("The user likes to deploy on Fridays.");
+        main.commit(habit.clone()).await.unwrap();
+
+        let qv = crate::embed_client::QueryVector {
+            model: "m".into(),
+            v: vec![1.0, 0.0],
+        };
+        let (ms, layered) =
+            known_memories(&store, "w-abc123", Some("main"), "deploy", Some(&qv), 60).await;
+        assert!(
+            ms[..MAX_KNOWN].iter().all(|m| lexical.contains(&m.id)),
+            "a full list keeps its lexical hits"
+        );
+        assert_eq!(
+            ms[MAX_KNOWN..].iter().map(|m| &m.id).collect::<Vec<_>>(),
+            [&habit.id, &ships.id],
+            "the layer's slots left take the vector's find, after its lexical hit"
+        );
+        assert_eq!(layered.len(), 2);
     }
 
     #[tokio::test]
