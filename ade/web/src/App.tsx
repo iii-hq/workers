@@ -222,9 +222,14 @@ export function App({
   const { activeTabId } = workspace
   // One report per change of what the active workspace shows: switching tabs
   // or changing a panel's screen.
-  const activeScreens = JSON.stringify(workspace.activeTab.screens)
+  // The tab id is in the key so a switch between two tabs that show the same
+  // screens still reports.
+  const activeScreens = JSON.stringify([
+    activeTabId,
+    workspace.activeTab.screens,
+  ])
   useEffect(() => {
-    trackScreens(JSON.parse(activeScreens))
+    trackScreens(JSON.parse(activeScreens)[1])
   }, [activeScreens])
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
