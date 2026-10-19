@@ -18,7 +18,7 @@
 //! mutation flows: file, map, and index update together or not at all.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -117,6 +117,19 @@ fn compact_vectors(
     rewrite().inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// Replace a small file whole: hidden temp file beside it, fsync, rename
+/// over. A crash leaves the old content or the new, never a torn file.
+fn write_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path)
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -291,12 +304,13 @@ impl Store {
         let bank_name = name.to_string();
         let bank = run_blocking(move || {
             std::fs::create_dir_all(dir.join(RULES_DIR))?;
-            std::fs::write(
-                dir.join(BANK_META),
+            write_atomic(
+                &dir.join(BANK_META),
                 format!(
                     "description: {}\n",
                     serde_yaml::to_string(&desc).unwrap_or_default().trim()
-                ),
+                )
+                .as_bytes(),
             )?;
             Bank::load(&bank_name, dir)
         })
@@ -551,10 +565,25 @@ impl Bank {
         run_blocking(move || -> Result<(), MemoryError> {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
+                .read(true)
                 .append(true)
                 .open(path)?;
-            file.write_all(line.as_bytes())?;
-            file.write_all(b"\n")?;
+            // A last line without its newline (a hand edit, a torn write)
+            // would fuse with this record: both unparseable on replay, and
+            // a lost tombstone brings its memory back. One buffer, one
+            // write: no kill between record and newline.
+            let mut buf = Vec::with_capacity(line.len() + 2);
+            if file.metadata()?.len() > 0 {
+                let mut last = [0u8];
+                file.seek(std::io::SeekFrom::End(-1))?;
+                file.read_exact(&mut last)?;
+                if last[0] != b'\n' {
+                    buf.push(b'\n');
+                }
+            }
+            buf.extend_from_slice(line.as_bytes());
+            buf.push(b'\n');
+            file.write_all(&buf)?;
             file.sync_data()?;
             Ok(())
         })
@@ -824,7 +853,7 @@ impl Bank {
         Ok(rules)
     }
 
-    /// Atomic write (tmp + rename); empty content removes the rule.
+    /// Atomic write ([`write_atomic`]); empty content removes the rule.
     pub fn set_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
         validate_name(name)?;
         // Rules are injected into every turn: no known secret shape is kept.
@@ -843,9 +872,7 @@ impl Bank {
             }
             return Ok(());
         }
-        let tmp = dir.join(format!(".{name}.md.tmp"));
-        std::fs::write(&tmp, content)?;
-        std::fs::rename(&tmp, &path)?;
+        write_atomic(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -1110,6 +1137,29 @@ mod tests {
         let bank2 = store2.bank("main").await.unwrap();
         let (_, total) = bank2.list(10, 0, false, None).await;
         assert_eq!(total, 2);
+    }
+
+    #[tokio::test]
+    async fn a_last_line_without_its_newline_is_not_fused_with_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut gone = memory("deleted by the user");
+        bank.commit(gone.clone()).await.unwrap();
+        bank.commit(memory("kept by hand")).await.unwrap();
+        // An editor saved the file without its final newline.
+        let path = bank.dir().join(MEMORIES_FILE);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, raw.trim_end()).unwrap();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone).await.unwrap();
+
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        let (live, _) = bank2.list(10, 0, false, None).await;
+        let texts: Vec<&str> = live.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["kept by hand"], "the tombstone held, the tail kept");
     }
 
     #[tokio::test]
