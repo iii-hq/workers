@@ -4,7 +4,7 @@
 
 - A lead no longer copies its ticket's result into the document it writes for the orchestrator. Copies of large results came back `null` or cut down to a pointer, so the synthesis and the final report lost them. The lead's document carries `result_from` (the scope and key of the phase document with status `done`), and the orchestrator, the synthesis card's Inputs and the report read the result there with `state::get`, which the orchestrator now preloads. The synthesis runs when at least two done tickets have a `result_from`.
 - The run's final comment opens with a summary of the synthesis report (its citations kept) and the `state::get` that reads the full report, instead of a retyped copy that came out shortened anyway.
-- A lead writes its document as a JSON object, never a string that holds one; the orchestrator reads such a string as the object it holds.
+- The orchestrator reads a lead document stored as a string that holds JSON as the object it holds. Leads that call `state::compare-and-set` as a native tool write `value` that way, because its schema gives `value` no type.
 - With `plan_only=on` the run's last line is exactly `plan on <R>: <n> tickets; start with args: resume=<R>`.
 - The README's approval rules apply only to a project that runs the `approval-gate` worker.
 
