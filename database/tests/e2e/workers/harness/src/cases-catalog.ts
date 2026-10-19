@@ -14,22 +14,32 @@
 import type { IIIClient } from 'iii-sdk'
 import type { TestCase, CaseContext } from './cases.ts'
 import { expect, expectEqual } from './cases.ts'
+import { CONNECTION_CASES } from './cases-connections.ts'
 
-/** Every `database::*` id the worker registers. Keep in step with the guard case. */
+/**
+ * Every `database::*` id the worker registers. Keep in step with the guard
+ * case. Internal functions (the reload sinks, `database::mention::*`) are not
+ * in the default listing; the mention pair still has a case.
+ */
 const DATABASE_FUNCTIONS = [
   'database::beginTransaction',
   'database::browseTable',
   'database::columnStats',
   'database::commitTransaction',
+  'database::deleteConnection',
   'database::deleteSavedQuery',
   'database::describeSchema',
   'database::describeTable',
+  'database::distinctValues',
   'database::execute',
   'database::executeBatch',
   'database::explain',
+  'database::formatSql',
+  'database::getConnection',
   'database::getTableView',
   'database::health',
   'database::history',
+  'database::insertRow',
   'database::listDatabases',
   'database::listSavedQueries',
   'database::listTables',
@@ -38,6 +48,7 @@ const DATABASE_FUNCTIONS = [
   'database::query',
   'database::rollbackTransaction',
   'database::runStatement',
+  'database::saveConnection',
   'database::saveQuery',
   'database::saveTableView',
   'database::schemaDiagram',
@@ -363,6 +374,7 @@ export const CATALOG_CASES: TestCase[] = [
       expectEqual(bad.driver, 'unknown', 'and names the driver unknown')
     },
   },
+  ...CONNECTION_CASES,
   {
     // The enforcement half: registering a new database::* function without a
     // case above (and an entry in DATABASE_FUNCTIONS) fails here, so the
@@ -377,8 +389,8 @@ export const CATALOG_CASES: TestCase[] = [
       const ids = (listed.functions ?? [])
         .map((f) => f.function_id)
         .filter((id): id is string => typeof id === 'string' && id.startsWith('database::'))
-        // The config-reload handler every worker registers; not a capability.
-        .filter((id) => !id.endsWith('::on-config-change'))
+        // The config-reload and secret-change handlers; not capabilities.
+        .filter((id) => !id.endsWith('::on-config-change') && !id.endsWith('::on-secret-change'))
         .sort()
       expectEqual(
         ids,
