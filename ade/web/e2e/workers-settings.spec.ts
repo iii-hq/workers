@@ -1053,8 +1053,10 @@ test('keeps meaningful native Monaco YAML and JSON punctuation at AA contrast in
       // loads; wait until every symbol is its own token.
       await expect
         .poll(async () => {
-          const text = (await punctuation.allTextContents()).join('')
-          return symbols.filter((symbol) => !text.includes(symbol))
+          const tokens = (await punctuation.allTextContents()).map((token) =>
+            token.trim(),
+          )
+          return symbols.filter((symbol) => !tokens.includes(symbol))
         })
         .toEqual([])
       for (let index = 0; index < (await punctuation.count()); index++) {
