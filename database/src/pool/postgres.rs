@@ -56,8 +56,14 @@ impl PostgresPool {
         let (config, tls) = connector.pg().ok_or_else(|| DbError::ConfigError {
             message: "internal: postgres pool built from a non-postgres connector".into(),
         })?;
+        // `Clean` resets session state when a connection comes back:
+        // `RESET ALL`, `UNLISTEN *`, `pg_advisory_unlock_all()`, temp tables
+        // and sequences, open cursors. Without it one caller's
+        // `set_config(…, false)` or advisory lock (both possible from a
+        // read-only `query`) leaked into whoever drew the connection next.
+        // Prepared statements survive (no `DISCARD ALL`).
         let manager_config = || ManagerConfig {
-            recycling_method: RecyclingMethod::Fast,
+            recycling_method: RecyclingMethod::Clean,
         };
         // `tls` is None for `mode: disable`; deadpool then gets `NoTls`.
         // Otherwise the rustls connector honors the configured

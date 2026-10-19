@@ -61,7 +61,8 @@ rustls-pki-types = "1"
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "aws-lc-rs"] }
 
 # SQLite (sync; wrapped in spawn_blocking)
-rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype"] }
+# `limits`: every pooled connection runs with SQLITE_LIMIT_ATTACHED = 0.
+rusqlite = { version = "0.31", features = ["bundled", "chrono", "column_decltype", "limits"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 # Filesystem watch for sqlite native capture (inotify wake-up; the changelog

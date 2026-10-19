@@ -70,17 +70,25 @@ pub fn from_connector(
     connector: std::sync::Arc<crate::connector::Connector>,
     pool_cfg: &crate::config::PoolConfig,
 ) -> Result<Pool, DbError> {
-    match connector.driver {
+    // The pool crates assert on some settings (r2d2 panics on a zero size).
+    // Validation keeps those values out, but a pool that cannot be built
+    // must cost its connection, never the worker.
+    let build = || match connector.driver {
         DriverKind::Sqlite => {
             // Sqlite is local-file; the `tls` block has no meaning for it.
             let url = connector.sqlite_url().unwrap_or_default().to_string();
             SqlitePool::new(&url, pool_cfg).map(|p| Pool::Sqlite(p.with_db_name(db_name)))
         }
-        DriverKind::Postgres => PostgresPool::from_connector(connector, pool_cfg)
+        DriverKind::Postgres => PostgresPool::from_connector(connector.clone(), pool_cfg)
             .map(|p| Pool::Postgres(p.with_db_name(db_name))),
-        DriverKind::Mysql => MysqlPool::from_connector(connector, pool_cfg)
+        DriverKind::Mysql => MysqlPool::from_connector(connector.clone(), pool_cfg)
             .map(|p| Pool::Mysql(p.with_db_name(db_name))),
-    }
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)).unwrap_or_else(|_| {
+        Err(DbError::ConfigError {
+            message: format!("db `{db_name}`: the pool could not be built from its settings"),
+        })
+    })
 }
 
 /// `Some("ssh")` when a pool connection just failed because its SSH tunnel
@@ -95,4 +103,57 @@ pub(crate) fn tunnel_class(connector: &crate::connector::Connector) -> Option<&'
         crate::ssh::TunnelErrorKind::Forward => "network",
         _ => "ssh",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pool_that_cannot_be_built_is_an_error_not_a_panic() {
+        // Validation refuses `max: 0`; a pool built past it (a future code
+        // path, a dependency change) must still not take the worker down.
+        let mut db = crate::config::DatabaseConfig::from_url("sqlite::memory:");
+        db.validate("x").unwrap();
+        let connector =
+            std::sync::Arc::new(crate::connector::Connector::literal("x", &db).unwrap());
+        let zero = crate::config::PoolConfig {
+            max: 0,
+            ..Default::default()
+        };
+        let err = from_connector("x", connector, &zero)
+            .err()
+            .expect("an error, not a panic");
+        assert!(format!("{err}").contains("could not be built"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_connections_refuse_attach() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = dir.path().join("main.db");
+        let other = dir.path().join("other.db");
+        let pool = SqlitePool::new(
+            &format!("sqlite:{}", main.display()),
+            &crate::config::PoolConfig::default(),
+        )
+        .unwrap();
+        let conn = pool.acquire().await.unwrap();
+        let other_path = other.display().to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            conn.with(|c| {
+                (
+                    c.execute_batch(&format!("ATTACH DATABASE '{other_path}' AS o")),
+                    c.execute_batch(&format!("VACUUM INTO '{other_path}'")),
+                )
+            })
+        })
+        .await
+        .unwrap();
+        assert!(result.0.is_err(), "ATTACH must be refused");
+        assert!(
+            result.1.is_err(),
+            "VACUUM INTO (an attach underneath) must be refused"
+        );
+        assert!(!other.exists(), "no file may be created");
+    }
 }

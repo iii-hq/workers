@@ -65,22 +65,59 @@ pub async fn handle(state: &AppState, req: FormatSqlReq) -> Result<FormatSqlResp
         }),
         (None, None) => None,
     };
-    Ok(FormatSqlResp {
-        sql: format(
-            &req.sql,
-            driver,
-            req.uppercase.unwrap_or(true),
-            req.indent.unwrap_or(2).clamp(1, 8),
-        ),
-    })
+    let sql = format(
+        &req.sql,
+        driver,
+        req.uppercase.unwrap_or(true),
+        req.indent.unwrap_or(2).clamp(1, 8),
+    )
+    .map_err(|reason| err_to_str(DbError::InvalidParam { index: 0, reason }))?;
+    Ok(FormatSqlResp { sql })
 }
 
-/// Format `sql` for `driver` (generic SQL when `None`).
-pub fn format(sql: &str, driver: Option<DriverKind>, uppercase: bool, indent: u8) -> String {
-    if sql.trim().is_empty() {
-        return sql.to_string();
+/// Deepest parenthesis nesting formatted. Each level indents every line
+/// under it, so output grows with depth × lines; past this the input is
+/// almost certainly generated, not written.
+const MAX_DEPTH: usize = 100;
+/// Ceiling on the formatted size, checked against an upper bound BEFORE
+/// formatting so a hostile input never gets to allocate it.
+const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Format `sql` for `driver` (generic SQL when `None`). Literal bytes —
+/// strings, quoted identifiers, dollar-quoted bodies, sqlite brackets — are
+/// never changed. Refused: NUL bytes, nesting deeper than [`MAX_DEPTH`], and
+/// input whose formatted size could exceed [`MAX_OUTPUT_BYTES`].
+pub fn format(
+    sql: &str,
+    driver: Option<DriverKind>,
+    uppercase: bool,
+    indent: u8,
+) -> Result<String, String> {
+    if sql.contains('\0') {
+        return Err("sql contains a NUL byte".into());
     }
-    let (protected, kept) = protect(sql, driver);
+    if sql.trim().is_empty() {
+        return Ok(sql.to_string());
+    }
+    let protected = protect(sql, driver);
+    if protected.max_depth > MAX_DEPTH {
+        return Err(format!(
+            "parentheses nest {} deep; formatSql formats up to {MAX_DEPTH} levels",
+            protected.max_depth
+        ));
+    }
+    // Every token can land on its own line, indented once per level, and
+    // operators gain a space on each side: an upper bound on the output.
+    let bound = protected
+        .text
+        .len()
+        .saturating_mul(3 + protected.max_depth * usize::from(indent));
+    if bound > MAX_OUTPUT_BYTES {
+        return Err(format!(
+            "this statement could format to more than {} MB; format a smaller piece",
+            MAX_OUTPUT_BYTES / (1024 * 1024)
+        ));
+    }
     let options = FormatOptions {
         indent: Indent::Spaces(indent),
         // Case is ours to apply (see the module doc): keep everything as
@@ -94,8 +131,184 @@ pub fn format(sql: &str, driver: Option<DriverKind>, uppercase: bool, indent: u8
         },
         ..Default::default()
     };
-    let formatted = sqlformat::format(&protected, &QueryParams::None, &options);
-    restore(&recase(&formatted, driver, uppercase), &kept)
+    let formatted = sqlformat::format(&protected.text, &QueryParams::None, &options);
+    Ok(restore(
+        &recase(&formatted, driver, uppercase),
+        &protected.kept,
+    ))
+}
+
+const MARK: &str = "__iii_fmt_";
+
+fn placeholder(n: usize) -> String {
+    format!("'{MARK}{n}__'")
+}
+
+struct Protected {
+    /// The input with every literal replaced by a placeholder.
+    text: String,
+    /// The literals, by placeholder number.
+    kept: Vec<String>,
+    /// Deepest parenthesis nesting outside literals and comments.
+    max_depth: usize,
+}
+
+/// Replace every literal — string (with its `E`/`N`/`X`/`B`/`U&` prefix),
+/// quoted identifier, dollar-quoted body, sqlite bracket — with a
+/// string-literal placeholder the formatter keeps verbatim, lexing quotes the
+/// way the driver does (`E'…'` and mysql strings take backslash escapes). An
+/// unterminated literal runs to the end and is kept as it is.
+fn protect(sql: &str, driver: Option<DriverKind>) -> Protected {
+    let b = sql.as_bytes();
+    if sql.contains(MARK) {
+        return Protected {
+            text: sql.to_string(),
+            kept: Vec::new(),
+            max_depth: paren_depth(sql),
+        };
+    }
+    let mut out = String::with_capacity(sql.len());
+    let mut kept = Vec::new();
+    let mut copied = 0usize;
+    let mut i = 0usize;
+    let (mut depth, mut max_depth) = (0usize, 0usize);
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c >= 0x80;
+    // End (exclusive) of a quoted span starting at `start`, closed by
+    // `close`; doubling escapes it, and so does a backslash when `backslash`.
+    let span_end = |start: usize, close: u8, backslash: bool| -> usize {
+        let mut j = start + 1;
+        while j < b.len() {
+            if backslash && b[j] == b'\\' {
+                j += 2;
+                continue;
+            }
+            if b[j] == close {
+                if j + 1 < b.len() && b[j + 1] == close {
+                    j += 2;
+                    continue;
+                }
+                return j + 1;
+            }
+            j += 1;
+        }
+        b.len()
+    };
+    let mut keep = |from: usize, to: usize, out: &mut String, copied: &mut usize| {
+        out.push_str(&sql[*copied..from]);
+        out.push_str(&placeholder(kept.len()));
+        kept.push(sql[from..to].to_string());
+        *copied = to;
+    };
+    while i < b.len() {
+        match b[i] {
+            b'\'' => {
+                // A one-letter prefix (E, N, X, B) or `U&` belongs to the
+                // literal, unless it ends a longer identifier.
+                let mut from = i;
+                if i >= 1
+                    && matches!(
+                        b[i - 1],
+                        b'e' | b'E' | b'n' | b'N' | b'x' | b'X' | b'b' | b'B'
+                    )
+                    && (i < 2 || !ident(b[i - 2]))
+                {
+                    from = i - 1;
+                } else if i >= 2
+                    && b[i - 1] == b'&'
+                    && matches!(b[i - 2], b'u' | b'U')
+                    && (i < 3 || !ident(b[i - 3]))
+                {
+                    from = i - 2;
+                }
+                let e_string = driver == Some(DriverKind::Postgres)
+                    && from + 1 == i
+                    && matches!(b[from], b'e' | b'E');
+                let backslash = e_string || driver == Some(DriverKind::Mysql);
+                let end = span_end(i, b'\'', backslash);
+                // The prefix was already copied as code: take it back.
+                if from < i && copied <= from {
+                    keep(from, end, &mut out, &mut copied);
+                } else {
+                    keep(i, end, &mut out, &mut copied);
+                }
+                i = end;
+            }
+            b'"' => {
+                let end = span_end(i, b'"', driver == Some(DriverKind::Mysql));
+                keep(i, end, &mut out, &mut copied);
+                i = end;
+            }
+            b'`' => {
+                let end = span_end(i, b'`', false);
+                keep(i, end, &mut out, &mut copied);
+                i = end;
+            }
+            b'[' if driver == Some(DriverKind::Sqlite) => {
+                let end = sql[i..].find(']').map_or(b.len(), |p| i + p + 1);
+                keep(i, end, &mut out, &mut copied);
+                i = end;
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                i = sql[i..].find('\n').map_or(b.len(), |p| i + p);
+            }
+            b'#' if driver == Some(DriverKind::Mysql) => {
+                i = sql[i..].find('\n').map_or(b.len(), |p| i + p);
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i = sql[i + 2..].find("*/").map_or(b.len(), |p| i + 2 + p + 2);
+            }
+            b'(' => {
+                depth += 1;
+                max_depth = max_depth.max(depth);
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b'$' if driver == Some(DriverKind::Postgres) && !(i > 0 && ident(b[i - 1])) => {
+                let tag_end = b[i + 1..]
+                    .iter()
+                    .position(|&d| !(d.is_ascii_alphanumeric() || d == b'_'))
+                    .map(|p| i + 1 + p);
+                match tag_end {
+                    Some(end)
+                        if b[end] == b'$' && !b.get(i + 1).is_some_and(|d| d.is_ascii_digit()) =>
+                    {
+                        let tag = &sql[i..=end];
+                        let close = sql[end + 1..]
+                            .find(tag)
+                            .map_or(b.len(), |c| end + 1 + c + tag.len());
+                        keep(i, close, &mut out, &mut copied);
+                        i = close;
+                    }
+                    _ => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out.push_str(&sql[copied..]);
+    Protected {
+        text: out,
+        kept,
+        max_depth,
+    }
+}
+
+fn paren_depth(sql: &str) -> usize {
+    let (mut depth, mut max) = (0usize, 0usize);
+    for c in sql.bytes() {
+        match c {
+            b'(' => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max
 }
 
 /// Words that are reserved (or structural) in SQL on every supported driver
@@ -287,98 +500,6 @@ fn recase(sql: &str, driver: Option<DriverKind>, upper: bool) -> String {
     out
 }
 
-const MARK: &str = "__iii_fmt_";
-
-fn placeholder(n: usize) -> String {
-    format!("'{MARK}{n}__'")
-}
-
-/// Replace the spans the formatter would damage with string-literal
-/// placeholders (which it keeps verbatim).
-fn protect(sql: &str, driver: Option<DriverKind>) -> (String, Vec<String>) {
-    if sql.contains(MARK) {
-        return (sql.to_string(), Vec::new());
-    }
-    let b = sql.as_bytes();
-    let mut out = String::with_capacity(sql.len());
-    let mut kept = Vec::new();
-    let mut i = 0usize;
-    let mut copied = 0usize;
-    // Skip a span closed by `close`, doubling escaping it.
-    let skip_quoted = |i: usize, close: u8| -> usize {
-        let mut j = i + 1;
-        while j < b.len() {
-            if b[j] == close {
-                if j + 1 < b.len() && b[j + 1] == close {
-                    j += 2;
-                    continue;
-                }
-                return j + 1;
-            }
-            if b[j] == b'\\' && close == b'\'' && driver == Some(DriverKind::Mysql) {
-                j += 2;
-                continue;
-            }
-            j += 1;
-        }
-        b.len()
-    };
-    while i < b.len() {
-        match b[i] {
-            b'\'' => i = skip_quoted(i, b'\''),
-            b'"' => i = skip_quoted(i, b'"'),
-            b'`' => i = skip_quoted(i, b'`'),
-            b'-' if b.get(i + 1) == Some(&b'-') => {
-                i = sql[i..].find('\n').map_or(b.len(), |p| i + p);
-            }
-            b'/' if b.get(i + 1) == Some(&b'*') => {
-                i = sql[i + 2..].find("*/").map_or(b.len(), |p| i + 2 + p + 2);
-            }
-            b'[' if driver == Some(DriverKind::Sqlite) => {
-                let end = sql[i..].find(']').map_or(b.len(), |p| i + p + 1);
-                out.push_str(&sql[copied..i]);
-                out.push_str(&placeholder(kept.len()));
-                kept.push(sql[i..end].to_string());
-                i = end;
-                copied = end;
-            }
-            b'$' if driver == Some(DriverKind::Postgres)
-                && !(i > 0
-                    && (b[i - 1].is_ascii_alphanumeric()
-                        || b[i - 1] == b'_'
-                        || b[i - 1] == b'$')) =>
-            {
-                let tag_end = b[i + 1..]
-                    .iter()
-                    .position(|&d| !(d.is_ascii_alphanumeric() || d == b'_'))
-                    .map(|p| i + 1 + p);
-                match tag_end {
-                    Some(end)
-                        if b[end] == b'$' && !b.get(i + 1).is_some_and(|d| d.is_ascii_digit()) =>
-                    {
-                        let tag = &sql[i..=end];
-                        match sql[end + 1..].find(tag) {
-                            Some(close) => {
-                                let span_end = end + 1 + close + tag.len();
-                                out.push_str(&sql[copied..i]);
-                                out.push_str(&placeholder(kept.len()));
-                                kept.push(sql[i..span_end].to_string());
-                                i = span_end;
-                                copied = span_end;
-                            }
-                            None => i = b.len(),
-                        }
-                    }
-                    _ => i += 1,
-                }
-            }
-            _ => i += 1,
-        }
-    }
-    out.push_str(&sql[copied..]);
-    (out, kept)
-}
-
 fn restore(formatted: &str, kept: &[String]) -> String {
     let mut out = formatted.to_string();
     // Highest index first so `…_1__` never matches inside `…_11__`.
@@ -399,7 +520,8 @@ mod tests {
             None,
             true,
             2,
-        );
+        )
+        .unwrap();
         assert!(out.contains("SELECT"), "{out}");
         assert!(out.contains("-- why"), "{out}");
         assert!(out.contains("/* keep */"), "{out}");
@@ -409,14 +531,14 @@ mod tests {
 
     #[test]
     fn lowercase_and_indent_are_honoured() {
-        let out = format("SELECT a FROM t", None, false, 4);
+        let out = format("SELECT a FROM t", None, false, 4).unwrap();
         assert!(out.contains("select") && out.contains("\n    a"), "{out}");
     }
 
     #[test]
     fn postgres_casts_placeholders_and_dollar_bodies_survive() {
         let sql = "select a::int, $1 from t; create function f() returns int as $body$ select  1;  select 2 $body$ language sql";
-        let out = format(sql, Some(DriverKind::Postgres), true, 2);
+        let out = format(sql, Some(DriverKind::Postgres), true, 2).unwrap();
         assert!(out.contains("a::int"), "{out}");
         assert!(out.contains("$1"), "{out}");
         assert!(out.contains("$body$ select  1;  select 2 $body$"), "{out}");
@@ -424,7 +546,7 @@ mod tests {
 
     #[test]
     fn sqlite_bracket_identifiers_are_not_padded() {
-        let out = format("select [col x] from t", Some(DriverKind::Sqlite), true, 2);
+        let out = format("select [col x] from t", Some(DriverKind::Sqlite), true, 2).unwrap();
         assert!(out.contains("[col x]"), "{out}");
     }
 
@@ -435,7 +557,8 @@ mod tests {
             Some(DriverKind::Mysql),
             true,
             2,
-        );
+        )
+        .unwrap();
         assert!(out.contains("`a b`"), "{out}");
         assert!(out.contains("# note"), "{out}");
         assert!(out.contains("'x\\'y'"), "{out}");
@@ -448,7 +571,8 @@ mod tests {
             Some(DriverKind::Postgres),
             true,
             2,
-        );
+        )
+        .unwrap();
         assert!(out.contains("  status,"), "{out}");
         assert!(out.contains("  name,"), "{out}");
         assert!(out.contains("  key,"), "{out}");
@@ -461,7 +585,8 @@ mod tests {
             None,
             true,
             2,
-        );
+        )
+        .unwrap();
         assert!(out.contains("count(*)") && out.contains("now()"), "{out}");
         assert!(out.contains("-- select from"), "{out}");
         let out = format(
@@ -469,11 +594,12 @@ mod tests {
             None,
             true,
             2,
-        );
+        )
+        .unwrap();
         assert!(out.contains("PRIMARY KEY"), "{out}");
         assert!(out.contains("key text"), "{out}");
         // Lowercase on request.
-        let out = format("SELECT Status FROM T", None, false, 2);
+        let out = format("SELECT Status FROM T", None, false, 2).unwrap();
         assert!(
             out.contains("select") && out.contains("Status") && out.contains("T"),
             "{out}"
@@ -488,7 +614,71 @@ mod tests {
     }
 
     #[test]
+    fn literal_bytes_never_change() {
+        // E-strings take backslash escapes: the quote after `\` does not
+        // close it, and nothing inside (or in later literals) is recased.
+        let sql =
+            r"select E'it\'s select from', 'select lower' from t where x = E'a\\' and y = 'from'";
+        let out = format(sql, Some(DriverKind::Postgres), true, 2).unwrap();
+        for lit in [
+            r"E'it\'s select from'",
+            "'select lower'",
+            r"E'a\\'",
+            "'from'",
+        ] {
+            assert!(out.contains(lit), "{lit} changed: {out}");
+        }
+        assert!(out.contains("SELECT") && out.contains("WHERE"), "{out}");
+        // mysql backslash escapes and double-quoted strings.
+        let out = format(
+            r#"select 'a\'b select', "c\"d from" from t"#,
+            Some(DriverKind::Mysql),
+            true,
+            2,
+        )
+        .unwrap();
+        assert!(
+            out.contains(r"'a\'b select'") && out.contains(r#""c\"d from""#),
+            "{out}"
+        );
+        // Prefixed literals stay glued to their prefix.
+        let out = format(
+            "select x'00ff', N'naïve select', U&'d\\0061ta'",
+            None,
+            true,
+            2,
+        )
+        .unwrap();
+        assert!(
+            out.contains("x'00ff'")
+                && out.contains("N'naïve select'")
+                && out.contains("U&'d\\0061ta'"),
+            "{out}"
+        );
+        // An unterminated literal is kept as typed.
+        let out = format("select 'unterminated  select  ", None, true, 2).unwrap();
+        assert!(out.ends_with("'unterminated  select  "), "{out:?}");
+    }
+
+    #[test]
+    fn hostile_inputs_are_refused_before_formatting() {
+        let err = format("select 1\0 from t", None, true, 2).unwrap_err();
+        assert!(err.contains("NUL"), "{err}");
+        let nested = format!("select {}1{}", "(".repeat(5000), ")".repeat(5000));
+        let err = format(&nested, None, true, 2).unwrap_err();
+        assert!(err.contains("nest"), "{err}");
+        // Moderate depth on a large input: refused on the size bound.
+        let term = format!("{} a + b {} + ", "(".repeat(10), ")".repeat(10));
+        let wide = format!("select {} 1", term.repeat(20_000));
+        let err = format(&wide, None, true, 8).unwrap_err();
+        assert!(err.contains("MB"), "{err}");
+        // Parentheses inside literals do not count.
+        let quoted = format!("select '{}'", "(".repeat(5000));
+        assert!(format(&quoted, None, true, 2).is_ok());
+    }
+
+    #[test]
     fn empty_input_is_returned_as_is() {
-        assert_eq!(format("  \n", None, true, 2), "  \n");
+        assert_eq!(format("  \n", None, true, 2).unwrap(), "  \n");
     }
 }

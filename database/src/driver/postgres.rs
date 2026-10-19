@@ -151,6 +151,12 @@ impl ToSql for PgBind {
                 _ => f.to_sql(ty, out),
             },
             PgBind::Text(s) => s.to_sql(ty, out),
+            // A JSON array for an array parameter (`$1::int[]`) is the array
+            // itself, not a json document.
+            PgBind::Json(v @ JsonValue::Array(_)) => match ty.kind() {
+                postgres_types::Kind::Array(member) => encode_pg_array(member, v, out),
+                _ => v.to_sql(ty, out),
+            },
             PgBind::Json(v) => v.to_sql(ty, out),
         }
     }
@@ -165,6 +171,85 @@ impl ToSql for PgBind {
 /// Decode one cell. Never fails the query: every type has a decoding (see
 /// `pg_decode`), and a cell that cannot even be read comes back NULL with a
 /// warning rather than taking the result set down.
+/// The binary array format: `ndim, has_null, element oid, (len, lower
+/// bound)*, (len, bytes)*`, each element bound like a top-level parameter of
+/// the member type. Nested JSON arrays are dimensions and must be
+/// rectangular.
+fn encode_pg_array(
+    member: &Type,
+    value: &JsonValue,
+    out: &mut bytes::BytesMut,
+) -> Result<postgres_types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+    use bytes::BufMut;
+    let mut dims = Vec::new();
+    let mut cur = value;
+    while let JsonValue::Array(items) = cur {
+        dims.push(items.len());
+        match items.first() {
+            Some(first @ JsonValue::Array(_)) => cur = first,
+            _ => break,
+        }
+    }
+    fn flatten<'a>(
+        v: &'a JsonValue,
+        depth: usize,
+        dims: &[usize],
+        out: &mut Vec<&'a JsonValue>,
+    ) -> Result<(), String> {
+        if depth == dims.len() {
+            out.push(v);
+            return Ok(());
+        }
+        match v {
+            JsonValue::Array(items) if items.len() == dims[depth] => {
+                for item in items {
+                    flatten(item, depth + 1, dims, out)?;
+                }
+                Ok(())
+            }
+            _ => Err("array parameter is not rectangular".into()),
+        }
+    }
+    if dims.contains(&0) {
+        out.put_i32(0);
+        out.put_i32(0);
+        out.put_u32(member.oid());
+        return Ok(postgres_types::IsNull::No);
+    }
+    let mut leaves = Vec::new();
+    flatten(value, 0, &dims, &mut leaves)?;
+    let text_member = matches!(
+        *member,
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME
+    );
+    out.put_i32(dims.len() as i32);
+    out.put_i32(i32::from(leaves.iter().any(|v| v.is_null())));
+    out.put_u32(member.oid());
+    for d in &dims {
+        out.put_i32(*d as i32);
+        out.put_i32(1);
+    }
+    for leaf in leaves {
+        if leaf.is_null() {
+            out.put_i32(-1);
+            continue;
+        }
+        let bind = match leaf {
+            JsonValue::Number(_) | JsonValue::Bool(_) if text_member => {
+                PgBind::Text(leaf.to_string())
+            }
+            other => PgBind::from_param(&JsonParam::from_json(other).map_err(
+                |e| -> Box<dyn std::error::Error + Sync + Send> { e.to_string().into() },
+            )?),
+        };
+        let mut buf = bytes::BytesMut::new();
+        bind.to_sql(member, &mut buf)?;
+        out.put_i32(buf.len() as i32);
+        out.extend_from_slice(&buf);
+    }
+    Ok(postgres_types::IsNull::No)
+}
+
 fn pg_cell_to_row_value(
     row: &tokio_postgres::Row,
     idx: usize,

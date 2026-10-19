@@ -151,6 +151,37 @@ pub async fn handle(state: &AppState, _req: ListDatabasesReq) -> Result<ListData
             }
         })
         .collect();
+    // Entries the stored value holds but that do not parse or validate: the
+    // connection is listed as unavailable, with why.
+    for (name, why) in &cfg.invalid {
+        let pool = crate::config::PoolConfig::default();
+        databases.push(DatabaseInfo {
+            name: name.clone(),
+            driver: "unknown".into(),
+            url: String::new(),
+            host: None,
+            port: None,
+            user: None,
+            database: None,
+            display: None,
+            folder: None,
+            ssh: None,
+            pool: PoolInfo {
+                max: pool.max,
+                idle_timeout_ms: pool.idle_timeout_ms,
+                acquire_timeout_ms: pool.acquire_timeout_ms,
+            },
+            tls: TlsInfo {
+                mode: TlsMode::default(),
+                ca_cert_present: false,
+                client_cert_present: false,
+                trust_native: true,
+            },
+            uses_secrets: false,
+            error: Some(why.clone()),
+            error_stage: Some(Stage::Config),
+        });
+    }
     // HashMap iteration order is nondeterministic; sort so output is stable.
     databases.sort_by(|a, b| a.name.cmp(&b.name));
     let count = databases.len();

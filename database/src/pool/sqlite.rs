@@ -67,6 +67,16 @@ impl SqlitePool {
             }
             SqliteConnectionManager::file(path)
         };
+        // No ATTACH, ever: an attached file is any sqlite database on the
+        // host (the engine's trace store included), `ATTACH` creates files,
+        // and the attachment would outlive the call on the pooled
+        // connection. With the limit at zero sqlite refuses every ATTACH —
+        // including the internal one VACUUM uses, so VACUUM is not available
+        // through the worker.
+        let manager = manager.with_init(|c| {
+            c.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+            Ok(())
+        });
         let inner = R2Pool::builder()
             .max_size(pool_cfg.max)
             .idle_timeout(Some(Duration::from_millis(pool_cfg.idle_timeout_ms)))

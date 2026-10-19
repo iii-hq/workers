@@ -121,7 +121,16 @@ pub async fn handle(
         Pool::Postgres(_) => DriverKind::Postgres,
         Pool::Mysql(_) => DriverKind::Mysql,
     };
-    let limit = req.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let limit = match req.limit {
+        None => DEFAULT_LIMIT,
+        Some(0) => {
+            return Err(err_to_str(DbError::InvalidParam {
+                index: 0,
+                reason: format!("limit must be 1-{MAX_LIMIT}"),
+            }))
+        }
+        Some(n) => n.min(MAX_LIMIT),
+    };
     let search = req
         .search
         .as_deref()
@@ -265,6 +274,25 @@ mod tests {
         .unwrap();
         assert_eq!(resp.values.len(), 1);
         assert_eq!(resp.values[0].value, json!("Open%"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_zero_limit_is_refused_and_a_huge_one_is_capped() {
+        let st = state().await;
+        let err = handle(
+            &st,
+            req(json!({"table": "t", "column": "status", "limit": 0})),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("limit must be 1-500"), "{err}");
+        let resp = handle(
+            &st,
+            req(json!({"table": "t", "column": "status", "limit": 100000})),
+        )
+        .await
+        .unwrap();
+        assert!(!resp.truncated);
     }
 
     #[test]

@@ -72,7 +72,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
         tracing::info!("no configuration value found; using built-in default configuration");
         return Ok(WorkerConfig::default());
     }
-    WorkerConfig::from_json(&value)
+    WorkerConfig::from_json_isolating(&value)
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
@@ -208,6 +208,15 @@ pub async fn apply_config(
     let mut new_pools = HashMap::new();
     let mut connectors = HashMap::new();
     let mut errors = HashMap::new();
+    for (name, why) in &cfg.invalid {
+        if previous_errors.get(name).map(|p| &p.message) != Some(why) {
+            tracing::warn!(db = %name, error = %why, "connection entry invalid; skipped");
+        }
+        errors.insert(
+            name.clone(),
+            connector::ConnectError::new(Stage::Config, why.clone()),
+        );
+    }
     for (name, result) in names.into_iter().zip(results) {
         match result {
             Ok((pool, connector)) => {
@@ -400,7 +409,13 @@ pub fn register_config_trigger(
                     "input.id": { "$eq": config_id() },
                     "input.event_type": { "$eq": "configuration:updated" },
                 }))
-                .deliver(Deliver::Input),
+                // The event's input carries the whole configuration value
+                // (url passwords included), and whatever an activation
+                // ships lands in this worker's trace span. The filter reads
+                // the input; the activation ships only the caller — the
+                // handler re-fetches the value anyway.
+                .capture([iii_sdk::protocol::Capture::Caller])
+                .deliver(Deliver::Envelope),
             CONFIG_FN_ID,
         );
         return Ok(());
@@ -527,5 +542,53 @@ mod tests {
     #[test]
     fn is_not_found_matches_only_the_envelope_code() {
         assert_missing_entry_contract(super::is_not_found);
+    }
+
+    /// A hand-edited entry with an absurd pool size becomes that
+    /// connection's error; the worker and the other connections carry on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bad_stored_entry_costs_only_its_connection() {
+        use crate::handlers::AppState;
+        let cfg = crate::config::WorkerConfig::from_json_isolating(&serde_json::json!({
+            "databases": {
+                "good": { "url": "sqlite::memory:" },
+                "huge": { "url": "sqlite::memory:", "pool": { "max": 1_000_000_000u64 } }
+            }
+        }))
+        .unwrap();
+        let st = AppState {
+            pools: Default::default(),
+            config: std::sync::Arc::new(tokio::sync::RwLock::new(cfg.clone())),
+            handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
+            transactions: crate::transaction::TxRegistry::new(),
+            log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
+            runtime: Default::default(),
+        };
+        super::apply_config(&st, cfg, None).await.unwrap();
+        let ok = crate::handlers::query::handle(
+            &st,
+            serde_json::from_value(serde_json::json!({ "db": "good", "sql": "SELECT 1 AS one" }))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.rows[0]["one"], 1);
+        let err = crate::handlers::query::handle(
+            &st,
+            serde_json::from_value(serde_json::json!({ "db": "huge", "sql": "SELECT 1" })).unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("CONFIG_ERROR") && err.contains("`pool.max`"),
+            "{err}"
+        );
+        let listed = crate::handlers::list_databases::handle(&st, Default::default())
+            .await
+            .unwrap();
+        let huge = listed.databases.iter().find(|d| d.name == "huge").unwrap();
+        assert!(huge.error.as_deref().unwrap().contains("`pool.max`"));
+        assert_eq!(listed.count, 2);
     }
 }

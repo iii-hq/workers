@@ -41,6 +41,13 @@ pub struct WorkerConfig {
     /// recording. Applied live.
     #[serde(default = "default_history_max_bytes")]
     pub history_max_bytes: usize,
+    /// Entries left out because they do not parse or validate, by name, with
+    /// why. Only [`WorkerConfig::from_json_isolating`] fills it: the running
+    /// worker reports them as unavailable connections instead of refusing
+    /// the whole value (or failing to start) over one hand-edited entry.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub invalid: std::collections::BTreeMap<String, String>,
 }
 
 fn worker_config_example() -> WorkerConfig {
@@ -287,6 +294,7 @@ impl DatabaseConfig {
     /// Check one entry and detect its driver. Every message names the entry
     /// and the field, never a value: a misplaced value may be a password.
     pub fn validate(&mut self, name: &str) -> Result<(), String> {
+        self.pool.validate(name)?;
         let structured_fields = [
             ("host", self.host.is_some()),
             ("port", self.port.is_some()),
@@ -343,6 +351,12 @@ impl DatabaseConfig {
                         if self.database.as_deref().is_none_or(|d| d.trim().is_empty()) {
                             return Err(format!(
                                 "db `{name}`: `database` (the file path) is required for sqlite"
+                            ));
+                        }
+                        if self.database.as_deref().is_some_and(has_parent_segment) {
+                            return Err(format!(
+                                "db `{name}`: `database` must not climb with `..` segments; \
+                                 write the path it means"
                             ));
                         }
                         for (field, set) in structured_fields.iter().take(4) {
@@ -438,6 +452,11 @@ impl DatabaseConfig {
                     "db `{name}`: `folder` must be an absolute path on the engine host"
                 ));
             }
+            if has_parent_segment(folder) {
+                return Err(format!(
+                    "db `{name}`: `folder` must not climb with `..` segments; write the path it means"
+                ));
+            }
         }
 
         if self.capture == CaptureMode::Native {
@@ -476,6 +495,31 @@ impl DatabaseConfig {
         }
         Ok(())
     }
+}
+
+/// A path with a `..` component (either separator).
+fn has_parent_segment(path: &str) -> bool {
+    path.split(['/', '\\']).any(|segment| segment == "..")
+}
+
+/// serde's messages quote offending values (`invalid type: string "…"`),
+/// and a misplaced value may be a password: drop every quoted span.
+pub fn sanitize_serde_error(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_quote = false;
+    for c in text.chars() {
+        if c == '"' {
+            if !in_quote {
+                out.push_str("\"…");
+            } else {
+                out.push('"');
+            }
+            in_quote = !in_quote;
+        } else if !in_quote {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Connection names are passed in every call (`db`), stored as keys and
@@ -730,15 +774,47 @@ impl CaptureMode {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct PoolConfig {
-    /// Maximum number of open connections in the pool.
+    /// Maximum number of open connections in the pool (1-500).
     #[serde(default = "default_pool_max")]
+    #[schemars(range(min = 1, max = 500))]
     pub max: u32,
-    /// Close idle connections after this many milliseconds.
+    /// Close idle connections after this many milliseconds (at most 24 h).
     #[serde(default = "default_idle_timeout_ms")]
+    #[schemars(range(min = 0, max = 86_400_000))]
     pub idle_timeout_ms: u64,
-    /// Fail pool acquisition when no connection is available within this many milliseconds.
+    /// Fail pool acquisition when no connection is available within this many
+    /// milliseconds (1 ms to 10 min).
     #[serde(default = "default_acquire_timeout_ms")]
+    #[schemars(range(min = 1, max = 600_000))]
     pub acquire_timeout_ms: u64,
+}
+
+/// Bounds on pool settings. A pool sized from an unchecked number can ask
+/// the allocator for gigabytes up front (a `max` of 1e9 aborted the
+/// process), and a zero `max` panics inside the pool crates.
+pub const POOL_MAX_LIMIT: u32 = 500;
+pub const IDLE_TIMEOUT_LIMIT_MS: u64 = 86_400_000;
+pub const ACQUIRE_TIMEOUT_LIMIT_MS: u64 = 600_000;
+
+impl PoolConfig {
+    fn validate(&self, name: &str) -> Result<(), String> {
+        if !(1..=POOL_MAX_LIMIT).contains(&self.max) {
+            return Err(format!(
+                "db `{name}`: `pool.max` must be 1-{POOL_MAX_LIMIT}"
+            ));
+        }
+        if self.idle_timeout_ms > IDLE_TIMEOUT_LIMIT_MS {
+            return Err(format!(
+                "db `{name}`: `pool.idle_timeout_ms` must be at most {IDLE_TIMEOUT_LIMIT_MS} (24 h)"
+            ));
+        }
+        if !(1..=ACQUIRE_TIMEOUT_LIMIT_MS).contains(&self.acquire_timeout_ms) {
+            return Err(format!(
+                "db `{name}`: `pool.acquire_timeout_ms` must be 1-{ACQUIRE_TIMEOUT_LIMIT_MS} (10 min)"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for PoolConfig {
@@ -782,6 +858,7 @@ impl WorkerConfig {
             )]),
             history_max_entries: default_history_max_entries(),
             history_max_bytes: default_history_max_bytes(),
+            invalid: Default::default(),
         })
         .expect("built-in default config is valid")
     }
@@ -797,6 +874,42 @@ impl WorkerConfig {
         let cfg: WorkerConfig =
             serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))?;
         Self::finalize(cfg)
+    }
+
+    /// Parse the stored value the way the running worker applies it: an
+    /// entry that does not parse or validate is set aside in
+    /// [`WorkerConfig::invalid`] (its connection reports the reason) while
+    /// every other entry loads. Only a value that is not an object, or that
+    /// has no entries at all, is an error.
+    pub fn from_json_isolating(value: &Value) -> Result<Self, String> {
+        let mut rest = value.clone();
+        let Some(obj) = rest.as_object_mut() else {
+            return Err("json parse: the configuration value must be an object".into());
+        };
+        let entries = match obj.remove("databases") {
+            None | Some(Value::Null) => serde_json::Map::new(),
+            Some(Value::Object(map)) => map,
+            Some(_) => return Err("json parse: `databases` must be an object".into()),
+        };
+        let mut cfg: WorkerConfig = serde_json::from_value(rest)
+            .map_err(|e| format!("json parse: {}", sanitize_serde_error(&e.to_string())))?;
+        for (name, entry) in entries {
+            let parsed = serde_json::from_value::<DatabaseConfig>(entry)
+                .map_err(|e| format!("db `{name}`: {}", sanitize_serde_error(&e.to_string())))
+                .and_then(|mut db| db.validate(&name).map(|()| db));
+            match parsed {
+                Ok(db) => {
+                    cfg.databases.insert(name, db);
+                }
+                Err(e) => {
+                    cfg.invalid.insert(name, e);
+                }
+            }
+        }
+        if cfg.databases.is_empty() && cfg.invalid.is_empty() {
+            return Err("config must declare at least one database".into());
+        }
+        Ok(cfg)
     }
 
     pub fn from_file(path: &str) -> Result<Self, String> {
@@ -1540,5 +1653,69 @@ databases:
         assert!(schema["definitions"]["TlsConfig"]["properties"]
             .get("client_key")
             .is_some());
+    }
+
+    #[test]
+    fn pool_numbers_are_bounded() {
+        let base = "    driver: sqlite\n    database: a.db\n";
+        assert!(entry_err(&format!("{base}    pool: {{ max: 0 }}\n"))
+            .contains("`pool.max` must be 1-500"));
+        assert!(
+            entry_err(&format!("{base}    pool: {{ max: 1000000000 }}\n")).contains("`pool.max`")
+        );
+        assert!(
+            entry_err(&format!("{base}    pool: {{ acquire_timeout_ms: 0 }}\n"))
+                .contains("acquire_timeout_ms")
+        );
+        assert!(entry_err(&format!(
+            "{base}    pool: {{ idle_timeout_ms: 999999999999 }}\n"
+        ))
+        .contains("idle_timeout_ms"));
+        entry_ok(&format!(
+            "{base}    pool: {{ max: 500, idle_timeout_ms: 0, acquire_timeout_ms: 600000 }}\n"
+        ));
+        let schema = WorkerConfig::json_schema();
+        assert_eq!(
+            schema["definitions"]["PoolConfig"]["properties"]["max"]["maximum"],
+            500.0
+        );
+    }
+
+    #[test]
+    fn parent_segments_are_refused_in_folder_and_sqlite_paths() {
+        assert!(entry_err("    driver: sqlite\n    database: ../../etc/x.db\n").contains("`..`"));
+        assert!(
+            entry_err("    driver: sqlite\n    database: a.db\n    folder: /srv/../etc\n")
+                .contains("`..`")
+        );
+        entry_ok("    driver: sqlite\n    database: data/x..y.db\n    folder: /srv/q..s\n");
+    }
+
+    #[test]
+    fn the_running_worker_sets_a_bad_entry_aside_instead_of_refusing_the_value() {
+        let value = serde_json::json!({
+            "databases": {
+                "good": { "url": "sqlite::memory:" },
+                "huge": { "url": "sqlite::memory:", "pool": { "max": 1000000000 } },
+                "typo": { "driver": "postgres", "host": "h", "user": "u", "port": "hunter2" },
+            },
+            "history_max_entries": 3
+        });
+        let cfg = WorkerConfig::from_json_isolating(&value).unwrap();
+        assert_eq!(cfg.databases.len(), 1);
+        assert!(cfg.invalid["huge"].contains("`pool.max`"));
+        assert!(cfg.invalid["typo"].contains("db `typo`"));
+        assert!(
+            !cfg.invalid["typo"].contains("hunter2"),
+            "{}",
+            cfg.invalid["typo"]
+        );
+        assert_eq!(cfg.history_max_entries, 3);
+        // The strict parser still refuses the whole value.
+        assert!(WorkerConfig::from_json(&value).is_err());
+        // Nothing at all is still an error.
+        assert!(
+            WorkerConfig::from_json_isolating(&serde_json::json!({ "databases": {} })).is_err()
+        );
     }
 }
