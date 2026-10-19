@@ -215,14 +215,14 @@ pub(crate) enum Kind {
         url: String,
     },
     Postgres {
-        config: tokio_postgres::Config,
+        config: Box<tokio_postgres::Config>,
         tls: Option<tokio_postgres_rustls::MakeRustlsConnect>,
     },
     Mysql {
         /// With TLS (`None` for `disable`).
-        tls: Option<mysql_async::OptsBuilder>,
+        tls: Option<Box<mysql_async::OptsBuilder>>,
         /// Plaintext (`disable`, and `prefer`'s fallback).
-        plain: Option<mysql_async::OptsBuilder>,
+        plain: Option<Box<mysql_async::OptsBuilder>>,
     },
 }
 
@@ -300,7 +300,7 @@ impl Connector {
                     .map_err(|e| ConnectError::new(Stage::Tls, db_error_message(&e)))?;
                 (
                     Kind::Postgres {
-                        config,
+                        config: Box::new(config),
                         tls: connector,
                     },
                     tunnel,
@@ -319,8 +319,9 @@ impl Connector {
                 }
                 let ssl = make_mysql_ssl_opts(&tls, tls_host.as_deref())
                     .map_err(|e| ConnectError::new(Stage::Tls, db_error_message(&e)))?;
-                let with_tls = ssl.map(|ssl| base.clone().ssl_opts(ssl));
-                let plain = matches!(tls.mode, TlsMode::Disable | TlsMode::Prefer).then_some(base);
+                let with_tls = ssl.map(|ssl| Box::new(base.clone().ssl_opts(ssl)));
+                let plain =
+                    matches!(tls.mode, TlsMode::Disable | TlsMode::Prefer).then(|| Box::new(base));
                 (
                     Kind::Mysql {
                         tls: with_tls,
@@ -384,7 +385,7 @@ impl Connector {
         Option<&mysql_async::OptsBuilder>,
     )> {
         match &self.kind {
-            Kind::Mysql { tls, plain } => Some((tls.as_ref(), plain.as_ref())),
+            Kind::Mysql { tls, plain } => Some((tls.as_deref(), plain.as_deref())),
             _ => None,
         }
     }

@@ -96,23 +96,23 @@ impl TestConnectionResp {
 }
 
 /// The candidate entry as JSON, from either request shape.
-fn candidate(req: &TestConnectionReq) -> Result<Value, TestConnectionResp> {
+fn candidate(req: &TestConnectionReq) -> Result<Value, Box<TestConnectionResp>> {
     if let Some(connection) = &req.connection {
         return Ok(connection.clone());
     }
     let Some(url) = &req.url else {
-        return Err(TestConnectionResp::failed(
+        return Err(Box::new(TestConnectionResp::failed(
             "unknown",
             Stage::Config,
             "send `connection` (the entry to test) or `url`",
-        ));
+        )));
     };
     if detect_driver(url).is_none() {
-        return Err(TestConnectionResp::failed(
+        return Err(Box::new(TestConnectionResp::failed(
             "unknown",
             Stage::Config,
             "unknown url scheme — expected sqlite:, postgres:// / postgresql://, or mysql://",
-        ));
+        )));
     }
     let mut entry = serde_json::json!({ "url": url });
     if let Some(tls) = &req.tls {
@@ -133,7 +133,7 @@ pub async fn handle(
     );
     let mut entry = match candidate(&req) {
         Ok(entry) => entry,
-        Err(resp) => return Ok(resp),
+        Err(resp) => return Ok(*resp),
     };
     let label = req.name.clone().unwrap_or_else(|| "candidate".into());
     let driver_hint = entry
@@ -151,10 +151,9 @@ pub async fn handle(
 
     if crate::redaction::contains_redacted(&entry) {
         let stored = match &req.name {
-            Some(name) => match super::connections::stored_entry(state, name).await {
-                Ok(stored) => stored,
-                Err(_) => None,
-            },
+            Some(name) => super::connections::stored_entry(state, name)
+                .await
+                .unwrap_or_default(),
             None => None,
         };
         if let Err(e) = crate::redaction::restore_entry(&mut entry, stored.as_ref()) {
@@ -319,7 +318,7 @@ async fn probe_postgres(
 
 fn pg_error(e: &tokio_postgres::Error) -> ConnectError {
     let stage = match e.code().map(|c| c.code()) {
-        Some(code) if code == "3D000" => Stage::Database,
+        Some("3D000") => Stage::Database,
         _ => match crate::pool::postgres::classify_pg_error(e) {
             "tls" => Stage::Tls,
             "auth" => Stage::Auth,

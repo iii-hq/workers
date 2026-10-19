@@ -1242,9 +1242,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Conversion failure: an int[] cell has no RowValue mapping and the
-        // text fallback rejects the OID, so decoding errors after the
-        // statement ran.
+        // Execution failure after a successful prepare (cell decoding can no
+        // longer fail — every type has a decoding — so a runtime error is
+        // what reaches the same position in the loop).
         let err = transaction(
             &p,
             vec![
@@ -1253,7 +1253,8 @@ mod tests {
                     params: vec![],
                 },
                 TxStatement {
-                    sql: "SELECT ARRAY[1, 2] AS cells".into(),
+                    sql: "SELECT 1 / (SELECT COUNT(*) FROM db_w_poison WHERE n < 0) AS cells"
+                        .into(),
                     params: vec![],
                 },
             ],
