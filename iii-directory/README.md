@@ -771,11 +771,14 @@ memory worker's semantic recall is one caller.
   The router then moves on.
 - **Not a declared provider.** It never declares itself to the router, so it
   lists no models and no model picker shows it. `router::embed` tries it only
-  when every registered provider is up and has no embed surface, so an OpenAI
-  or llama.cpp embeddings setup keeps its vectors, even while that provider
-  restarts. A registered provider whose embeddings endpoint fails (llama-server
-  started without `--embeddings`, say) returns its error instead of falling
-  back here.
+  when every registered provider either has no embed surface or is not
+  configured for good (no API key). Configuring such a provider later moves
+  callers to its vector space (memory re-embeds into the model the reply
+  reports). An OpenAI or llama.cpp embeddings setup keeps its vectors, even
+  while that provider restarts, once it has answered an embed: the router
+  remembers that and waits for it. A registered provider whose embeddings
+  endpoint fails (llama-server started without `--embeddings`, say) returns its
+  error instead of falling back here.
 - **Access.** Agents cannot call it directly: the root permissions deny
   `provider::*`.
 

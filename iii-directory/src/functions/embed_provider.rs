@@ -2,10 +2,13 @@
 //! `directory::search_functions` candidates, served as an embed-only
 //! provider for `router::embed`. It never declares itself to the router, so
 //! it lists no models and no model picker shows it; the router tries it
-//! only when every registered provider is up and has no embed surface
-//! (llm-router README, embed-only providers). Such stacks (Anthropic only,
-//! say) get semantic recall without a key or another process. Agents
-//! cannot call it: the root permissions deny `provider::*`.
+//! only when every registered provider has no embed surface or is not
+//! configured for good (no API key), and none whose embed answered before
+//! is down (llm-router README, embed-only providers). Such stacks
+//! (Anthropic only, say) get semantic recall without a key or another
+//! process; configuring a keyless provider later moves callers to its
+//! vector space (memory re-embeds). Agents cannot call it: the root
+//! permissions deny `provider::*`.
 
 use std::sync::Arc;
 
