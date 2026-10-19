@@ -19,7 +19,12 @@
 //!   `tests/golden/recall_quality.json` diff.
 //! - Re-embed after editing `tests/recall_quality/golden.json` (needs a live
 //!   engine with an embed provider): `III_NAMESPACE=<ns> cargo test --test
-//!   recall_quality -- --ignored embed_golden_set`.
+//!   recall_quality -- --ignored embed_golden_set`, and against an engine
+//!   running iii-directory, `-- --ignored embed_golden_set_minilm`.
+//!
+//! The gate runs once per embedder: text-embedding-3-small, and the local
+//! MiniLM that serves stacks without an embedding API. Semantic floors are
+//! per model, so each one needs its own baseline.
 
 mod support;
 
@@ -36,6 +41,9 @@ use serde::{Deserialize, Serialize};
 /// embedding at a fraction of the fixture size.
 const EMBED_MODEL: &str = "text-embedding-3-small";
 const EMBED_DIMS: usize = 256;
+/// iii-directory's `provider::minilm::embed`; not Matryoshka, so kept whole.
+const MINILM_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
+const MINILM_DIMS: usize = 384;
 /// Results scored per query (the cutoff of every @10 metric).
 const DEPTH: usize = 10;
 const DAY_MS: u64 = 86_400_000;
@@ -407,10 +415,10 @@ async fn build_bank(
     (dir, bank, key_of_id)
 }
 
-fn load_vectors(golden: &Golden) -> (Vectors, String) {
-    let raw = std::fs::read_to_string(eval_dir().join("vectors.json")).expect(
-        "tests/recall_quality/vectors.json missing: run `cargo test --test recall_quality -- --ignored embed_golden_set`",
-    );
+fn load_vectors(golden: &Golden, file: &str) -> (Vectors, String) {
+    let raw = std::fs::read_to_string(eval_dir().join(file)).unwrap_or_else(|_| {
+        panic!("tests/recall_quality/{file} missing: run `cargo test --test recall_quality -- --ignored embed_golden_set`")
+    });
     let vectors: Vectors = serde_json::from_str(&raw).expect("vectors.json parses");
     let texts = golden
         .memories
@@ -430,9 +438,18 @@ fn load_vectors(golden: &Golden) -> (Vectors, String) {
 
 #[tokio::test]
 async fn recall_quality_matches_baseline() {
+    gate("vectors.json", "recall_quality.json").await;
+}
+
+#[tokio::test]
+async fn minilm_recall_quality_matches_baseline() {
+    gate("vectors-minilm.json", "recall_quality-minilm.json").await;
+}
+
+async fn gate(vectors_file: &str, baseline_file: &str) {
     let golden = load_golden();
     validate(&golden);
-    let (vectors, vectors_fp) = load_vectors(&golden);
+    let (vectors, vectors_fp) = load_vectors(&golden, vectors_file);
     let consolidation = load_consolidation(&golden);
     let (_dir, bank, key_of_id) = build_bank(&golden, &vectors).await;
     // A second bank with the recorded consolidation decisions applied.
@@ -561,7 +578,7 @@ async fn recall_quality_matches_baseline() {
         "modes": snapshot,
     });
     let actual = serde_json::to_string_pretty(&baseline).unwrap() + "\n";
-    if let Err(diff) = support::check_golden("recall_quality.json", &actual) {
+    if let Err(diff) = support::check_golden(baseline_file, &actual) {
         panic!("recall quality changed vs the committed baseline:\n{report}\n{diff}");
     }
 }
@@ -571,6 +588,16 @@ async fn recall_quality_matches_baseline() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs a live engine with an embed provider; rewrites tests/recall_quality/vectors.json"]
 async fn embed_golden_set() {
+    embed_golden(EMBED_MODEL, EMBED_DIMS, "vectors.json").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a live engine running iii-directory; rewrites tests/recall_quality/vectors-minilm.json"]
+async fn embed_golden_set_minilm() {
+    embed_golden(MINILM_MODEL, MINILM_DIMS, "vectors-minilm.json").await;
+}
+
+async fn embed_golden(model: &str, dims: usize, file: &str) {
     let golden = load_golden();
     validate(&golden);
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".into());
@@ -587,23 +614,20 @@ async fn embed_golden_set() {
         )
         .collect();
     let texts: Vec<String> = items.iter().map(|(_, t)| t.clone()).collect();
-    let (reported, embedded) =
-        memory::embed_client::embed_texts(&iii, EMBED_MODEL, &texts, 120_000)
-            .await
-            .expect(
-                "router::embed failed (engine up? embed provider configured? III_NAMESPACE set?)",
-            );
+    let (reported, embedded) = memory::embed_client::embed_texts(&iii, model, &texts, 120_000)
+        .await
+        .expect("router::embed failed (engine up? embed provider configured? III_NAMESPACE set?)");
     let vectors = Vectors {
         // The model the provider reported: what recall keys vectors by.
         model: reported,
-        dims: EMBED_DIMS,
+        dims,
         items: items
             .into_iter()
             .zip(embedded)
             .map(|((key, text), v)| {
                 let v = v
                     .into_iter()
-                    .take(EMBED_DIMS)
+                    .take(dims)
                     .map(|x| (x * 1e4).round() / 1e4)
                     .collect();
                 (key, Embedded { text, v })
@@ -611,7 +635,7 @@ async fn embed_golden_set() {
             .collect(),
     };
     let out = serde_json::to_string(&vectors).unwrap() + "\n";
-    std::fs::write(eval_dir().join("vectors.json"), out).unwrap();
+    std::fs::write(eval_dir().join(file), out).unwrap();
 }
 
 #[cfg(test)]
