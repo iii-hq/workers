@@ -134,13 +134,7 @@ fn mysql_temporal(ty: &str, value: &Value) -> Value {
 /// A catalog type spelling safe to splice after `::` (format_type output:
 /// letters, digits, spaces, `_ . " [ ] ( ) ,`).
 fn safe_pg_type(ty: &str) -> Result<&str, DbError> {
-    let ok = !ty.is_empty()
-        && ty.len() <= 200
-        && ty
-            .chars()
-            .all(|c| c.is_alphanumeric() || " _.\"[](),".contains(c))
-        && !ty.contains("--");
-    if ok {
+    if super::filter::castable_pg_type(ty) {
         Ok(ty)
     } else {
         Err(invalid(format!(
@@ -231,8 +225,78 @@ fn truthy(column: &str, value: &Value) -> Result<Value, DbError> {
     })
 }
 
+fn is_integer(driver: DriverKind, ty: &str) -> bool {
+    let t = ty.to_ascii_lowercase();
+    if is_bool(driver, ty) {
+        return false;
+    }
+    match driver {
+        DriverKind::Sqlite => t.contains("int"),
+        _ => {
+            let base = t.split(['(', ' ']).next().unwrap_or("");
+            matches!(
+                base,
+                "smallint"
+                    | "integer"
+                    | "int"
+                    | "bigint"
+                    | "int2"
+                    | "int4"
+                    | "int8"
+                    | "tinyint"
+                    | "mediumint"
+                    | "serial"
+                    | "bigserial"
+                    | "smallserial"
+            )
+        }
+    }
+}
+
+fn is_decimal(ty: &str) -> bool {
+    let t = ty.to_ascii_lowercase();
+    t.starts_with("numeric") || t.starts_with("decimal")
+}
+
+/// Numbers that cannot be trusted as typed: a JSON number that only fit an
+/// f64 (beyond ±2^53, or beyond 64-bit integers) already lost digits before
+/// it reached the worker; an integer column given text that is not a plain
+/// decimal integer (`0x10`, `1_000`, `1e3`) would be read differently by
+/// each server.
+fn check_number(driver: DriverKind, col: &ColumnDesc, value: &Value) -> Result<(), DbError> {
+    let integer = is_integer(driver, &col.ty);
+    match value {
+        Value::Number(n)
+            if (integer || is_decimal(&col.ty)) && n.as_i64().is_none() && n.as_u64().is_none() =>
+        {
+            if n.as_f64()
+                .is_some_and(|f| f.abs() >= 9_007_199_254_740_992.0)
+            {
+                return Err(invalid(format!(
+                    "column `{}`: {n} is too large to be exact as a JSON number; send it as a \
+                     string (\"…\")",
+                    col.name
+                )));
+            }
+            Ok(())
+        }
+        Value::String(s) if integer => {
+            let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(invalid(format!(
+                    "column `{}` takes a decimal integer (digits, optional sign)",
+                    col.name
+                )));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Bind one value for its column. `n` is the postgres placeholder number.
 fn bind(driver: DriverKind, col: &ColumnDesc, value: &Value, n: usize) -> Result<Bound, DbError> {
+    check_number(driver, col, value)?;
     let blob = is_blob(driver, &col.ty);
     match driver {
         DriverKind::Postgres => {
@@ -468,6 +532,8 @@ mod tests {
             primary_key: pk,
             position: 1,
             foreign_key: None,
+            auto_increment: false,
+            generated: false,
         }
     }
 
@@ -585,6 +651,74 @@ mod tests {
             mysql_temporal("varchar(20)", &json!("2026-01-02T03:04:05Z")),
             json!("2026-01-02T03:04:05Z")
         );
+    }
+
+    #[test]
+    fn imprecise_numbers_and_non_decimal_integers_are_refused() {
+        let cols = [
+            col("id", "bigint", true),
+            col("n", "numeric(30,0)", false),
+            col("x", "double precision", false),
+        ];
+        let huge: Value = serde_json::from_str("18446744073709551617").unwrap();
+        for c in ["id", "n"] {
+            let err = build_insert(
+                DriverKind::Postgres,
+                None,
+                "t",
+                &cols,
+                &values(json!({ c: huge.clone() })),
+            )
+            .unwrap_err();
+            assert!(format!("{err}").contains("send it as a string"), "{err}");
+        }
+        // A double column takes any double; exact integers and strings pass.
+        build_insert(
+            DriverKind::Postgres,
+            None,
+            "t",
+            &cols,
+            &values(json!({ "x": huge })),
+        )
+        .unwrap();
+        build_insert(
+            DriverKind::Postgres,
+            None,
+            "t",
+            &cols,
+            &values(json!({ "id": 9007199254740993i64, "n": "18446744073709551617" })),
+        )
+        .unwrap();
+        for bad in ["0x10", "1_000", "1e3", " 7", ""] {
+            assert!(
+                build_insert(
+                    DriverKind::Mysql,
+                    None,
+                    "t",
+                    &[col("id", "bigint", true)],
+                    &values(json!({ "id": bad }))
+                )
+                .is_err(),
+                "{bad:?}"
+            );
+        }
+        build_insert(
+            DriverKind::Sqlite,
+            None,
+            "t",
+            &[col("id", "INTEGER", true)],
+            &values(json!({ "id": "-42" })),
+        )
+        .unwrap();
+        // tinyint(1) is a boolean on mysql, not an integer.
+        build_insert(
+            DriverKind::Mysql,
+            None,
+            "t",
+            &[col("f", "tinyint(1)", false)],
+            &values(json!({ "f": "true" })),
+        )
+        .unwrap();
     }
 
     #[test]

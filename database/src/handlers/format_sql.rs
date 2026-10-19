@@ -63,7 +63,14 @@ pub async fn handle(state: &AppState, req: FormatSqlReq) -> Result<FormatSqlResp
             Pool::Postgres(_) => DriverKind::Postgres,
             Pool::Mysql(_) => DriverKind::Mysql,
         }),
-        (None, None) => None,
+        // Without a dialect a backslash or a quote cannot be lexed the way
+        // the server will, and literal bytes could change.
+        (None, None) => {
+            return Err(err_to_str(DbError::InvalidParam {
+                index: 0,
+                reason: "formatSql needs `db` or `driver` to know the dialect".into(),
+            }))
+        }
     };
     let sql = format(
         &req.sql,
