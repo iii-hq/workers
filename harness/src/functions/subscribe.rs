@@ -496,9 +496,29 @@ fn resolve_timer_request(req: &mut SubscribeRequest) -> Result<(), HarnessError>
 /// with NO lifecycle bound fires forever, and every live run that registered
 /// one meant it as a deadline or a bounded sweep (rctest7's 69 fires; both
 /// discovery runs left one firing past their own teardown claim).
+///
+/// A wake is one-shot by default, so a standing one was asked for with
+/// `once: false`: it has no call to re-run, and the cost is a new paid turn
+/// in the registering session per event (MOT-5449).
 fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
     if once {
         return None;
+    }
+    if is_wake_shape(req) && req.trigger_type != "cron" {
+        let bounded = req
+            .lifecycle
+            .as_ref()
+            .is_some_and(|l| l.max_fires.is_some() || l.expires_in_ms.is_some());
+        if bounded {
+            return None;
+        }
+        return Some(
+            "note: this WAKE is STANDING (`once: false`) — every future matching event wakes \
+             this session with a new paid turn until unregistered. Bound it with lifecycle \
+             { max_fires | expires_in_ms } or unregister it in your teardown so it cannot wake \
+             you forever."
+                .to_string(),
+        );
     }
     if req.trigger_type == "cron" {
         let bounded = req
@@ -2148,6 +2168,30 @@ pub(crate) mod tests {
         // once retires itself.
         assert!(standing_binding_advisory(&mk("state"), true).is_none());
         assert!(standing_binding_advisory(&mk("cron"), true).is_none());
+    }
+
+    /// MOT-5449: a wake asked to stand (`once: false`) has no call to re-run;
+    /// its cost is a paid turn per event, and one-shot is its default, not
+    /// something to tell it to pass.
+    #[test]
+    fn a_standing_wake_is_not_told_it_is_a_call_binding() {
+        let mk = |lifecycle: Value| -> SubscribeRequest {
+            let mut v = json!({ "trigger_type": "state", "config": { "scope": "run-1" } });
+            if !lifecycle.is_null() {
+                v["lifecycle"] = lifecycle;
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let note = standing_binding_advisory(&mk(Value::Null), false);
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("WAKE is STANDING"), "got: {note}");
+        assert!(note.contains("paid turn"), "got: {note}");
+        assert!(!note.contains("call"), "a wake has no call: {note}");
+        // A lifecycle bound already stops it waking forever.
+        assert!(standing_binding_advisory(&mk(json!({ "max_fires": 3 })), false).is_none());
+        assert!(
+            standing_binding_advisory(&mk(json!({ "expires_in_ms": 60_000 })), false).is_none()
+        );
     }
 
     /// Both discovery runs registered a recurring cron with no lifecycle and
