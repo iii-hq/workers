@@ -41,8 +41,8 @@ write that lands before its binding is armed is lost to that binding.
   wake per `database::row-changed` event that you count yourself, or a
   completion key the last writer sets.
 - **Deadline**: a `timer` wake (`{ "in_ms": <ms> }`) so silence becomes a
-  notification instead of an eternal park. A `lifecycle.expires_at` on the
-  completion wake does the same from the other side — an expired unfired wake
+  notification instead of an eternal park. A `lifecycle.expires_in_ms` on
+  the completion wake does the same from the other side — an expired unfired wake
   wakes you with a notice.
 
 ## 3. Spawn workers directly
