@@ -46,7 +46,8 @@ fields:
 struct ProxySession {
     session_id: Uuid,
     ip_address: String,
-    allowed_functions: Vec<String>,
+    namespaces: HashMap<String, Vec<String>>,     // scoped grants; keys = declarable namespaces
+    allowed_functions: Vec<String>,               // apply in `default` only
     forbidden_functions: Vec<String>,
     allowed_trigger_types: Option<Vec<String>>, // None = all allowed
     allow_trigger_type_registration: bool,        // default false
@@ -132,7 +133,15 @@ rbac:
     - metadata:
         tier: free
         name: match("*public*")
+    - match: "orders::*"     # map form, scoped to a namespace
+      namespace: orders
 ```
+
+A filter answers in the namespace it names, and in `default` when it names
+none: `match("api::*")` does not expose `api::x` reached in `orders`. The map
+form takes `match` (a raw pattern) or `metadata`, plus an optional
+`namespace`; any other key is refused, so a typo cannot silently rescope a
+rule.
 
 The proxy vendors the engine matcher so the semantics are identical:
 
@@ -150,13 +159,21 @@ entry) over its control connection; see
 ## Access resolution order
 
 Every `InvokeFunction` frame from a downstream connection walks the exact engine
-decision flow (`rbac_config.rs:253-289`), evaluated by the proxy:
+decision flow (`rbac_config.rs`, `is_function_allowed_ref`), evaluated by the
+proxy for `function_id` reached in the call's `namespace` (absent = `default`):
 
-1. `function_id` in `forbidden_functions` → **deny**.
-2. `function_id` in `allowed_functions` → **allow**.
-3. `function_id` in the infrastructure carve-out → **allow**.
-4. any `expose_functions` filter matches → **allow**.
-5. otherwise → **deny**.
+1. `function_id` in `forbidden_functions` → **deny** (in every namespace).
+2. a grant in `namespaces[namespace]` covers it (exact id or wildcard) → **allow**.
+3. `function_id` in `allowed_functions` and `namespace` is `default` → **allow**.
+4. `function_id` in the infrastructure carve-out → **allow**.
+5. an `expose_functions` filter scoped to `namespace` matches → **allow**.
+6. otherwise → **deny**.
+
+A function the session registered on this connection is its own only in the
+namespace the connection declared; the same id elsewhere is somebody else's.
+When `namespaces` is non-empty, its keys are also the namespaces the connection
+may declare on `engine::workers::register`; declaring another one closes the
+connection, as the engine does.
 
 The **infrastructure carve-out** is vendored verbatim and is part of the
 contract (additive-only within a major version):
@@ -226,7 +243,7 @@ sequenceDiagram
   participant T as target fn (engine)
   W->>P: InvokeFunction{ fn=api::users::list, data }
   P->>P: allowed? yes. engine::? no. middleware set? yes.
-  P->>M: iii.trigger(middleware_id, { function_id, payload, action, context })
+  P->>M: iii.trigger(middleware_id, { function_id, payload, action, context, namespace })
   M->>T: iii.trigger(api::users::list, enrichedPayload)   %% middleware's choice
   T-->>M: result
   M-->>P: result (becomes the InvocationResult)
@@ -241,9 +258,11 @@ sequenceDiagram
 | `payload` | object | The payload the worker sent. |
 | `action` | TriggerAction or omitted | Routing action (`enqueue`, `void`), if any. |
 | `context` | object | `AuthResult.context` for this session (`{}` when no auth fn). |
+| `namespace` | string | The namespace the call was made in (`default` when it named none). |
 
 The middleware runs on the proxy's **control connection** (`iii.trigger`),
-exactly as the engine runs it via `engine.call`. Keep middleware idempotent —
+exactly as the engine runs it via `engine.call`: resolved in the caller's
+namespace, and given the call's metadata sidecar. Keep middleware idempotent —
 retries must not double-charge or double-log.
 
 ## Trigger registration RBAC
@@ -417,7 +436,8 @@ them.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `allowed_functions` | `string[]` | `[]` | Allow beyond `expose_functions`. |
+| `namespaces` | `Record<string, string[]>` | `{}` | Grants scoped to a namespace (`{ "orders": ["svc::*"] }`); the keys are the namespaces the connection may declare. Empty: declare any. |
+| `allowed_functions` | `string[]` | `[]` | Allow beyond `expose_functions`, in `default` only. |
 | `forbidden_functions` | `string[]` | `[]` | Deny even if exposed. Highest precedence. |
 | `allowed_trigger_types` | `string[]` or omitted | omitted (all) | Trigger types the worker may bind. |
 | `allow_trigger_type_registration` | `boolean` | `false` | May register new trigger types. |
@@ -433,6 +453,7 @@ them.
 | `payload` | `object` | Caller payload. |
 | `action` | TriggerAction or omitted | `enqueue` / `void`, if any. |
 | `context` | `object` | Session auth context. |
+| `namespace` | `string` | The caller's namespace. |
 
 ### Registration hook I/O
 

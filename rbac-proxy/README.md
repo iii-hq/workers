@@ -7,13 +7,17 @@ reverse-proxies every frame — functions **and** channels — to a trusted engi
 listener, while at the boundary it:
 
 - **authenticates** each connection (the operator's `auth_function_id`),
-- **gates** every invocation (vendored `is_function_allowed`: forbidden >
-  allowed > infrastructure carve-out > `expose_functions` > deny),
+- **gates** every invocation in the namespace it is made in (vendored
+  `is_function_allowed`: forbidden > scoped grant > allowed > infrastructure
+  carve-out > `expose_functions` > deny), and the namespace a connection may
+  declare,
 - **gates trigger bindings** to functions the session may actually invoke,
 - **namespaces** a session's registrations behind `function_registration_prefix`,
 - runs **middleware** and the three **registration hooks**, and
 - **rewrites the results of the eight `engine::*` discovery functions** so a
-  caller only ever sees the surface it is allowed to invoke.
+  caller only ever sees the surface it is allowed to invoke, and
+- **forwards only the frame types it knows**: anything else is dropped, so a
+  protocol addition stays closed until the proxy learns to gate it.
 
 It is the [`console`](https://github.com/iii-hq/workers/tree/main/ade) reverse-proxy pattern (`src/proxy.rs`: one
 outbound engine WebSocket per inbound connection) with an RBAC interceptor
@@ -73,12 +77,38 @@ rbac:
     - match("*::public")
     - metadata:              # all keys AND'd; filters OR'd
         public: true
+    - match: "orders::*"     # scoped to a namespace (the others answer in `default`)
+      namespace: orders
 ```
+
+Namespaces work as in the engine's RBAC: a rule answers in the namespace it
+names, `default` when it names none. The auth function may return scoped
+grants (`namespaces: { orders: ["svc::*"] }`); their keys are then the only
+namespaces a connection may declare, and `allowed_functions` applies in
+`default` only. `on_observer_registration_function_id` is accepted (so an
+engine `rbac` block copies over unchanged) but not called yet; see below.
 
 Hot reload: a `host`/`port` change rebinds the public listener (last-good on
 bind failure — the previous listener *and* config are kept); everything else
 (`engine_url`, `rbac.*`, `middleware_function_id`, `expose_worker_internals`)
 takes effect on the next connection.
+
+## iii 0.25 observe
+
+The proxy does not support observers yet, and the engine behind it gates none
+of them for a proxied connection, so it keeps them off:
+
+- it removes `observe.v1` / `local-dispatch.v1` from what the worker declares
+  and what the engine answers, so a 0.25 SDK speaks the 0.24 protocol
+  (`observe()` fails with `UNSUPPORTED`, nothing runs in-process);
+- it refuses `observe` (`UNSUPPORTED`) and owner deliveries (`activation`),
+  drops the other observe messages, removes the SDK's `caller` /
+  `observe_depth` claims from calls and the `observe` descriptor from
+  registrations (keeping only `allow: false`), and refuses
+  `engine::observers::*`.
+
+Workers behind the proxy keep `registerTrigger`, which the 0.25 engine still
+serves. Details: [`protocol-interception.md § iii 0.25 observe`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-rbac-proxy-worker/protocol-interception.md#iii-025-observe).
 
 > **Security.** Only the proxy's RBAC port should face untrusted networks.
 > Always set `auth_function_id` on a public proxy — with no auth function,
@@ -102,6 +132,12 @@ UPDATE_GOLDENS=1 cargo test  # regenerate tests/golden/ after an intentional sur
 
 `tests/integration.rs` boots a real `iii` engine + the proxy and drives a
 downstream worker through the proxy port (exposed call, forbidden call,
-forbidden trigger binding, channel round-trip, filtered discovery). It
-**self-skips** when the `iii` binary is absent or the proxy does not come up
-(e.g. the `configuration` worker is not deployed).
+forbidden trigger binding, channel round-trip, filtered discovery, a call in
+another namespace, `observe`). The engine is `III_BIN` or the `iii` on `PATH`,
+started from a temporary directory on its own port (49381; the proxy on
+49382), never the default 49134. It **self-skips** when there is no `iii`
+binary, a port is taken, or the proxy does not come up (e.g. the
+`configuration` worker is not deployed).
+
+`tests/observe_protocol.rs` runs iii 0.25's observe wire fixtures (vendored in
+`tests/fixtures/protocol/observe/`) through the interceptor.

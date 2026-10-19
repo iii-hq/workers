@@ -1,8 +1,16 @@
 //! Per-frame interception: parse each JSON text frame, decide per `type`
 //! whether to forward (possibly rewritten), answer it out-of-band, or drop it,
 //! then re-serialize. The proxy never invents a wire format — it speaks the
-//! iii worker protocol verbatim and forwards anything it does not recognise
-//! unchanged, so protocol additions degrade to pass-through.
+//! iii worker protocol verbatim.
+//!
+//! It forwards only the frame types it knows ([`DOWNSTREAM_TYPES`],
+//! [`UPSTREAM_TYPES`]) and drops the rest. The engine behind the proxy runs
+//! with no RBAC session of its own, so a frame type the proxy has not learned
+//! to gate is a frame nothing gates: protocol additions are closed until the
+//! proxy learns them. iii 0.25's observe messages are the case in point. The
+//! proxy also advertises no protocol features in either direction
+//! ([`SUPPORTED_FEATURES`]), so SDKs and the engine fall back to the 0.24
+//! protocol, and it refuses `observe` outright.
 //!
 //! Frames are parsed into [`serde_json::Value`] (not a typed `Message` enum)
 //! so unknown fields and unknown frame types survive a rewrite byte-for-byte —
@@ -25,7 +33,56 @@ use uuid::Uuid;
 
 use crate::config::WorkerConfig;
 use crate::engine_overrides::{self, CatalogCache, OverrideOutcome};
-use crate::rbac::{self, ProxySession};
+use crate::rbac::{self, ProxySession, DEFAULT_NAMESPACE};
+
+/// Worker → engine frame types the proxy forwards (after gating the ones it
+/// rewrites). Any other type is dropped.
+pub const DOWNSTREAM_TYPES: &[&str] = &[
+    "registerfunction",
+    "unregisterfunction",
+    "registertrigger",
+    "unregistertrigger",
+    "registertriggertype",
+    "unregistertriggertype",
+    "triggerregistrationresult",
+    "invokefunction",
+    "invocationresult",
+    "registerservice",
+    "reattach",
+    "ping",
+    "pong",
+];
+
+/// Engine → worker frame types the proxy forwards. Any other type is dropped.
+pub const UPSTREAM_TYPES: &[&str] = &[
+    "workerregistered",
+    "registrationrejected",
+    "invokefunction",
+    "invocationresult",
+    "registertrigger",
+    "unregistertrigger",
+    "triggerregistrationresult",
+    "error",
+    "ping",
+    "pong",
+];
+
+/// Protocol features (iii 0.25 `features` negotiation) the proxy can enforce
+/// end to end. None yet: `observe.v1` and `local-dispatch.v1` need the
+/// interception the proxy does not have, so they are removed from the
+/// worker's declaration and from the engine's answer.
+pub const SUPPORTED_FEATURES: &[&str] = &[];
+
+/// The engine's observer builtins (`engine::observers::list|get|dispose`). The
+/// engine filters them by the caller's session, and the proxy's connections
+/// have none, so they are refused whatever `expose_functions` says.
+const OBSERVER_FUNCTIONS_PREFIX: &str = "engine::observers::";
+
+/// `RegistrationRejected.code` for a namespace the session may not declare.
+const NAMESPACE_FORBIDDEN: &str = "NAMESPACE_FORBIDDEN";
+
+/// Observe error code for what this proxy does not support.
+const UNSUPPORTED: &str = "UNSUPPORTED";
 
 /// What the downstream→engine pump should do with a frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,14 +92,20 @@ pub enum DownstreamAction {
     /// Answer the downstream worker directly; do **not** touch the engine
     /// (deny synthesis, registration-denial frame, middleware result).
     ReplyToClient(String),
-    /// Silently drop (denied `RegisterFunction` — the engine does the same).
+    /// Silently drop (denied `RegisterFunction` — the engine does the same —
+    /// and any frame type the proxy does not forward).
     Drop,
+    /// Answer the downstream worker with these frames, then close the
+    /// connection (a namespace the session may not declare).
+    Close(Vec<String>),
 }
 
 /// What the engine→downstream pump should do with a frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpstreamAction {
     Forward(String),
+    /// A frame type the proxy does not forward.
+    Drop,
 }
 
 /// Per-connection interceptor state, shared (behind `Arc`) by both pump
@@ -62,6 +125,10 @@ pub struct Interceptor {
     /// connection — the own-vs-foreign discriminator for invoke / trigger
     /// targets.
     registered_ids: Mutex<HashSet<String>>,
+    /// The namespace this connection declared on `engine::workers::register`
+    /// (`None` until it does, which the engine treats as `default`). Its own
+    /// registrations live there, so an id is "own" only in this namespace.
+    connection_namespace: Mutex<Option<String>>,
     /// `invocation_id → engine:: discovery fn` for results to rewrite.
     pending_overrides: Mutex<HashMap<Uuid, String>>,
     /// Out-of-band channel for synthesized replies (text frames) produced by
@@ -88,6 +155,7 @@ impl Interceptor {
             catalog,
             session,
             registered_ids: Mutex::new(HashSet::new()),
+            connection_namespace: Mutex::new(None),
             pending_overrides: Mutex::new(HashMap::new()),
             reply_tx,
         }
@@ -119,12 +187,22 @@ impl Interceptor {
         }
     }
 
-    /// Resolve a worker-supplied bare `function_id` to the id as it exists in
-    /// the engine registry: a prefixed session's own registration
-    /// (`{prefix}::id`) when it registered one, else the canonical (foreign)
-    /// id. See spec *Prefix resolution*.
-    async fn resolve_target(&self, function_id: &str) -> String {
-        if self.prefix().is_some() {
+    /// The namespace this connection's own registrations live in.
+    async fn own_namespace(&self) -> String {
+        self.connection_namespace
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string())
+    }
+
+    /// Resolve a worker-supplied bare `function_id`, reached in `namespace`, to
+    /// the id as it exists in the engine registry: a prefixed session's own
+    /// registration (`{prefix}::id`) when it registered one in this
+    /// namespace, else the canonical (foreign) id. See spec *Prefix
+    /// resolution*.
+    async fn resolve_target(&self, namespace: &str, function_id: &str) -> String {
+        if self.prefix().is_some() && namespace == self.own_namespace().await {
             let candidate = self.apply_prefix(function_id);
             if self.registered_ids.lock().await.contains(&candidate) {
                 return candidate;
@@ -133,24 +211,29 @@ impl Interceptor {
         function_id.to_string()
     }
 
-    /// Is `engine_id` a function this session registered on this connection?
-    async fn is_own(&self, engine_id: &str) -> bool {
-        self.registered_ids.lock().await.contains(engine_id)
+    /// Is `engine_id`, reached in `namespace`, a function this session
+    /// registered on this connection? The same id in another namespace is
+    /// somebody else's.
+    async fn is_own(&self, namespace: &str, engine_id: &str) -> bool {
+        namespace == self.own_namespace().await
+            && self.registered_ids.lock().await.contains(engine_id)
     }
 
-    /// Access-resolution against the live rbac config + this session. The
-    /// target's registered metadata is fetched from the catalog **only** when
-    /// the config has a metadata filter (a cold cache then fails closed for
-    /// metadata filters); wildcard-only configs need no catalog round trip.
-    async fn allowed(&self, engine_id: &str) -> bool {
+    /// Access-resolution against the live rbac config + this session, for
+    /// `engine_id` reached in `namespace`. The target's registered metadata is
+    /// fetched from the catalog **only** when the config has a metadata
+    /// filter (a cold cache then fails closed for metadata filters);
+    /// wildcard-only configs need no catalog round trip.
+    async fn allowed(&self, namespace: &str, engine_id: &str) -> bool {
         let metadata = if self.config.rbac.uses_metadata() {
-            self.catalog.metadata_for(engine_id).await
+            self.catalog.metadata_for(namespace, engine_id).await
         } else {
             None
         };
         rbac::access_allowed(
             Some(&self.config.rbac),
             &self.session,
+            namespace,
             engine_id,
             metadata.as_ref(),
         )
@@ -178,14 +261,23 @@ impl Interceptor {
     // ----- downstream (worker → engine) ----------------------------------
 
     pub async fn handle_downstream(&self, text: &str) -> DownstreamAction {
+        // Not JSON we can classify: dropped, as the engine drops it.
         let Ok(mut v) = serde_json::from_str::<Value>(text) else {
-            // Not JSON we can classify — forward unchanged (the engine logs &
-            // drops malformed frames; the proxy stays transparent).
-            return DownstreamAction::Forward(text.to_string());
+            tracing::debug!("dropping a downstream frame that is not JSON");
+            return DownstreamAction::Drop;
         };
         let Some(ty) = v.get("type").and_then(Value::as_str).map(str::to_string) else {
-            return DownstreamAction::Forward(text.to_string());
+            tracing::debug!("dropping a downstream frame with no type");
+            return DownstreamAction::Drop;
         };
+
+        if ty == "observe" {
+            return refuse_observe(&v);
+        }
+        if !DOWNSTREAM_TYPES.contains(&ty.as_str()) {
+            tracing::debug!(frame_type = %ty, "dropping a downstream frame type rbac-proxy does not forward");
+            return DownstreamAction::Drop;
+        }
 
         match ty.as_str() {
             "registerfunction" => self.on_register_function(v).await,
@@ -203,8 +295,10 @@ impl Interceptor {
             "registertriggertype" => self.on_register_trigger_type(v).await,
             "invokefunction" => self.on_invoke(v).await,
             // `UnregisterTrigger.id` is a trigger-instance id (never prefixed);
-            // InvocationResult correlation is by invocation_id; RegisterService
-            // is engine-internal. All pass through unchanged.
+            // `UnregisterTriggerType` only takes effect for the type's own
+            // provider; InvocationResult correlation is by invocation_id;
+            // RegisterService is engine-internal; `Reattach` carries the
+            // connection's own token. All pass through unchanged.
             _ => DownstreamAction::Forward(v.to_string()),
         }
     }
@@ -245,6 +339,7 @@ impl Interceptor {
         let engine_id = self.apply_prefix(&mapped_bare);
         self.registered_ids.lock().await.insert(engine_id.clone());
         v["id"] = Value::String(engine_id);
+        strip_observe_descriptor(&mut v);
         DownstreamAction::Forward(v.to_string())
     }
 
@@ -305,19 +400,25 @@ impl Interceptor {
             }
         }
 
-        // 3. Resolve the engine target with own-vs-foreign prefix rules.
+        // 3. Resolve the engine target with own-vs-foreign prefix rules, in the
+        //    namespace the trigger's target resolves in (`namespace`, absent =
+        //    `default` whatever the registering connection declared).
         let bound_fn = v
             .get("function_id")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let target = self.resolve_target(&bound_fn).await;
+        let Some(namespace) = requested_namespace(&v) else {
+            return self.deny_trigger_registration(&v, "namespace must be a string");
+        };
+        let target = self.resolve_target(&namespace, &bound_fn).await;
 
         // 4. Target access check — own registrations are exempt; otherwise the
         //    session must be allowed to invoke the bound function (trigger
         //    firing bypasses the invoke gate, so this is always-on hardening
         //    beyond the engine).
-        let permitted = self.is_own(&target).await || self.allowed(&target).await;
+        let permitted =
+            self.is_own(&namespace, &target).await || self.allowed(&namespace, &target).await;
         if !permitted {
             let remediation = rbac::remediation(&self.session, &target);
             let msg = rbac::forbidden_message(&target, remediation);
@@ -365,14 +466,60 @@ impl Interceptor {
             .and_then(Value::as_str)
             .and_then(|s| Uuid::parse_str(s).ok());
 
+        // iii 0.25 observe fields. `activation` marks an owner delivery
+        // (`obs.call`), which the engine routes without a session; the proxy
+        // does not support it yet, so it is refused rather than forwarded.
+        // `caller` and `observe_depth` are the SDK's own assertions about the
+        // call chain, which observers read; the proxy cannot vouch for them,
+        // so they are removed.
+        if v.get("activation").is_some_and(|a| !a.is_null()) {
+            return self.reply_invoke_error(
+                &function_id,
+                inv_id,
+                &v,
+                UNSUPPORTED,
+                "owner delivery (`activation`) is not supported through rbac-proxy",
+            );
+        }
+        if let Some(obj) = v.as_object_mut() {
+            obj.remove("caller");
+            obj.remove("observe_depth");
+        }
+
+        // The namespace the call is routed in (absent = `default`). A
+        // non-string one would fail to decode in the engine, which drops the
+        // frame; the proxy drops it too rather than guess.
+        let Some(namespace) = requested_namespace(&v) else {
+            tracing::debug!(function_id = %function_id, "dropping an invocation whose namespace is not a string");
+            return DownstreamAction::Drop;
+        };
+
         // Resolve own-vs-foreign target (engine:: ids are never own; resolve
         // is a no-op for them).
-        let target = self.resolve_target(&function_id).await;
+        let target = self.resolve_target(&namespace, &function_id).await;
 
-        // Access resolution (forbidden > allowed > carve-out > expose > deny).
-        let permitted = self.is_own(&target).await || self.allowed(&target).await;
+        if target.starts_with(OBSERVER_FUNCTIONS_PREFIX) {
+            return self.reply_invoke_error(
+                &function_id,
+                inv_id,
+                &v,
+                "FORBIDDEN",
+                &format!(
+                    "function '{function_id}' is not available through rbac-proxy (observers are not supported yet)"
+                ),
+            );
+        }
+
+        // Access resolution (forbidden > scoped grant > allowed > carve-out >
+        // expose > deny), in the call's namespace.
+        let permitted =
+            self.is_own(&namespace, &target).await || self.allowed(&namespace, &target).await;
         if !permitted {
             return self.deny_invoke(&function_id, inv_id, &v);
+        }
+
+        if target == "engine::workers::register" {
+            return self.on_register_worker(v, inv_id).await;
         }
 
         // Discovery functions: record the override so the result is filtered,
@@ -405,7 +552,7 @@ impl Interceptor {
         // call is spawned (not awaited inline) so the pump stays free — see
         // `reply_tx`.
         if let Some(mw_id) = self.config.middleware_function_id.clone() {
-            self.spawn_middleware(mw_id, target, &v);
+            self.spawn_middleware(mw_id, target, namespace, &v);
             return DownstreamAction::Drop;
         }
 
@@ -414,20 +561,109 @@ impl Interceptor {
         DownstreamAction::Forward(v.to_string())
     }
 
+    /// `engine::workers::register`, already allowed (it is in the carve-out).
+    ///
+    /// The namespace a connection declares is an authorization decision: once
+    /// the auth function scopes the session to a set of namespaces, declaring
+    /// one outside them is refused exactly as the engine refuses it — the
+    /// call's `FORBIDDEN` result, a `RegistrationRejected { code:
+    /// NAMESPACE_FORBIDDEN }`, then Close, so the worker cannot keep running
+    /// (and registering) in `default`. An unscoped session declares freely.
+    ///
+    /// The worker's `features` are reduced to [`SUPPORTED_FEATURES`] on the
+    /// way, so the engine treats it as a pre-0.25 worker.
+    async fn on_register_worker(&self, mut v: Value, inv_id: Option<Uuid>) -> DownstreamAction {
+        let declared = v
+            .get("data")
+            .and_then(|d| d.get("namespace"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        if !self.session.namespaces.is_empty() {
+            let checked = declared.as_deref().unwrap_or(DEFAULT_NAMESPACE);
+            if !self.session.namespaces.contains_key(checked) {
+                let mut permitted: Vec<&str> =
+                    self.session.namespaces.keys().map(String::as_str).collect();
+                permitted.sort_unstable();
+                let mut frames = Vec::new();
+                if let Some(id) = inv_id {
+                    frames.push(
+                        json!({
+                            "type": "invocationresult",
+                            "invocation_id": id.to_string(),
+                            "function_id": "engine::workers::register",
+                            "error": {
+                                "code": "FORBIDDEN",
+                                "message": format!(
+                                    "namespace '{checked}' not allowed for this session (permitted: {})",
+                                    permitted.join(", ")
+                                ),
+                            },
+                        })
+                        .to_string(),
+                    );
+                }
+                let mut rejected = json!({
+                    "type": "registrationrejected",
+                    "code": NAMESPACE_FORBIDDEN,
+                    "namespace": checked,
+                    "owner_worker_id": "",
+                });
+                if let Some(name) = v
+                    .get("data")
+                    .and_then(|d| d.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    rejected["worker_name"] = Value::String(name.to_string());
+                }
+                frames.push(rejected.to_string());
+                tracing::warn!(namespace = %checked, "namespace not allowed for this session — closing the connection");
+                return DownstreamAction::Close(frames);
+            }
+        }
+
+        // The engine keeps the last namespace a worker declared; a declaration
+        // without one leaves it unchanged.
+        if let Some(namespace) = declared {
+            *self.connection_namespace.lock().await = Some(namespace);
+        }
+        if let Some(data) = v.get_mut("data").and_then(Value::as_object_mut) {
+            retain_supported_features(data);
+        }
+        DownstreamAction::Forward(v.to_string())
+    }
+
     /// Synthesize the engine's `FORBIDDEN` `InvocationResult` (engine/mod.rs:
     /// 911-937). The engine always replies — even for a `void` action, where
     /// it fabricates an `invocation_id`; the proxy mirrors that.
     fn deny_invoke(&self, function_id: &str, inv_id: Option<Uuid>, v: &Value) -> DownstreamAction {
-        let id = inv_id.unwrap_or_else(Uuid::new_v4);
         let remediation = rbac::remediation(&self.session, function_id);
+        self.reply_invoke_error(
+            function_id,
+            inv_id,
+            v,
+            "FORBIDDEN",
+            &rbac::forbidden_message(function_id, remediation),
+        )
+    }
+
+    /// An `InvocationResult { error: { code, message } }` for the caller, with
+    /// the engine's conventions: always sent, even for a `void` call (with a
+    /// fabricated `invocation_id`), and echoing the trace context.
+    fn reply_invoke_error(
+        &self,
+        function_id: &str,
+        inv_id: Option<Uuid>,
+        v: &Value,
+        code: &str,
+        message: &str,
+    ) -> DownstreamAction {
+        let id = inv_id.unwrap_or_else(Uuid::new_v4);
         let mut result = json!({
             "type": "invocationresult",
             "invocation_id": id.to_string(),
             "function_id": function_id,
-            "error": {
-                "code": "FORBIDDEN",
-                "message": rbac::forbidden_message(function_id, remediation),
-            },
+            "error": { "code": code, "message": message },
         });
         // Echo trace context, as the engine does.
         if let Some(tp) = v.get("traceparent") {
@@ -450,7 +686,11 @@ impl Interceptor {
     /// session calling its own handler), whose dispatched result must flow back
     /// through the downstream→engine pump. Awaiting inline parks that pump and
     /// deadlocks the round trip.
-    fn spawn_middleware(&self, mw_id: String, target: String, v: &Value) {
+    ///
+    /// As in the engine, the middleware is resolved in the caller's namespace
+    /// and told that namespace (so it can re-target the same one), and it
+    /// receives the call's metadata sidecar.
+    fn spawn_middleware(&self, mw_id: String, target: String, namespace: String, v: &Value) {
         let inv_id = v
             .get("invocation_id")
             .and_then(Value::as_str)
@@ -461,7 +701,9 @@ impl Interceptor {
             "payload": v.get("data").cloned().unwrap_or(Value::Null),
             "action": v.get("action").cloned().unwrap_or(Value::Null),
             "context": self.session.context,
+            "namespace": namespace,
         });
+        let metadata = v.get("metadata").filter(|m| !m.is_null()).cloned();
         let traceparent = v.get("traceparent").cloned();
         let baggage = v.get("baggage").cloned();
         let iii = self.iii.clone();
@@ -473,15 +715,17 @@ impl Interceptor {
                 "invocation_id": inv_id.to_string(),
                 "function_id": target,
             });
-            match iii
-                .trigger(TriggerRequest {
-                    function_id: mw_id,
-                    payload: input,
-                    action: None,
-                    timeout_ms: None,
-                })
-                .await
-            {
+            let mut request = TriggerRequest {
+                function_id: mw_id,
+                payload: input,
+                action: None,
+                timeout_ms: None,
+            }
+            .namespace(namespace);
+            if let Some(metadata) = metadata {
+                request = request.metadata(metadata);
+            }
+            match iii.trigger(request).await {
                 Ok(value) => {
                     result["result"] = value;
                 }
@@ -504,13 +748,27 @@ impl Interceptor {
 
     pub async fn handle_upstream(&self, text: &str) -> UpstreamAction {
         let Ok(mut v) = serde_json::from_str::<Value>(text) else {
-            return UpstreamAction::Forward(text.to_string());
+            tracing::debug!("dropping an upstream frame that is not JSON");
+            return UpstreamAction::Drop;
         };
         let Some(ty) = v.get("type").and_then(Value::as_str).map(str::to_string) else {
-            return UpstreamAction::Forward(text.to_string());
+            tracing::debug!("dropping an upstream frame with no type");
+            return UpstreamAction::Drop;
         };
+        if !UPSTREAM_TYPES.contains(&ty.as_str()) {
+            tracing::debug!(frame_type = %ty, "dropping an upstream frame type rbac-proxy does not forward");
+            return UpstreamAction::Drop;
+        }
 
         match ty.as_str() {
+            // The engine's protocol features, reduced to what the proxy
+            // enforces, so the SDK speaks the protocol the proxy can gate.
+            "workerregistered" => {
+                if let Some(obj) = v.as_object_mut() {
+                    retain_supported_features(obj);
+                }
+                UpstreamAction::Forward(v.to_string())
+            }
             // Engine dispatching a call TO the worker: strip the session's own
             // prefix so the worker SDK finds its local (bare) handler
             // (worker_connections/traits.rs:105-117).
@@ -587,6 +845,80 @@ impl Interceptor {
     }
 }
 
+/// `observe` (iii 0.25) is refused: `ObserveResult { state: "error", error:
+/// UNSUPPORTED }`, the answer an SDK gets for a feature the engine lacks. The
+/// proxy cannot gate the observed function, the target, or the owner side of
+/// an observer yet, and the engine behind it checks none of them for a
+/// connection without a session.
+fn refuse_observe(v: &Value) -> DownstreamAction {
+    let Some(id) = v.get("id").and_then(Value::as_str) else {
+        return DownstreamAction::Drop;
+    };
+    tracing::debug!(observer_id = %id, "refusing observe (not supported through rbac-proxy)");
+    DownstreamAction::ReplyToClient(
+        json!({
+            "type": "observeresult",
+            "id": id,
+            "state": "error",
+            "error": {
+                "code": UNSUPPORTED,
+                "message": "observers are not supported through rbac-proxy",
+            },
+        })
+        .to_string(),
+    )
+}
+
+/// The namespace a frame names in `namespace`: absent or `null` is
+/// `default`; any other non-string is `None` (the engine would fail to decode
+/// the frame).
+fn requested_namespace(v: &Value) -> Option<String> {
+    match v.get("namespace") {
+        None | Some(Value::Null) => Some(DEFAULT_NAMESPACE.to_string()),
+        Some(Value::String(ns)) => Some(ns.clone()),
+        Some(_) => None,
+    }
+}
+
+/// Keep only the [`SUPPORTED_FEATURES`] in an object's `features` list, and
+/// drop the key when none is left (an absent list reads as "no features" on
+/// both sides).
+fn retain_supported_features(obj: &mut serde_json::Map<String, Value>) {
+    let kept: Vec<Value> = obj
+        .get("features")
+        .and_then(Value::as_array)
+        .map(|features| {
+            features
+                .iter()
+                .filter(|f| f.as_str().is_some_and(|f| SUPPORTED_FEATURES.contains(&f)))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    if kept.is_empty() {
+        obj.remove("features");
+    } else {
+        obj.insert("features".to_string(), Value::Array(kept));
+    }
+}
+
+/// `RegisterFunction.observe` (iii 0.25) declares how the function is
+/// observed: owner delivery, an args schema, and a `legacy_trigger_type` that
+/// makes it the stand-in for an old trigger type. None of it is gated by the
+/// proxy yet (a stand-in would take over another provider's trigger type
+/// without `allow_trigger_type_registration`), so the descriptor is removed.
+/// Only an opt-out (`allow: false`) is kept: it narrows, never widens.
+fn strip_observe_descriptor(v: &mut Value) {
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    if let Some(descriptor) = obj.remove("observe") {
+        if descriptor.get("allow") == Some(&Value::Bool(false)) {
+            obj.insert("observe".to_string(), json!({ "allow": false }));
+        }
+    }
+}
+
 /// Map iii-sdk `Error` to a `{code, message}` for a synthesized error result.
 /// A remote function error preserves its code; transport/availability errors
 /// surface as a clearly fail-closed code so a broken control plane denies.
@@ -637,7 +969,7 @@ fn apply_trigger_hook_mapping(v: &mut Value, mapped: &Value) {
 mod tests {
     use super::*;
     use crate::engine_overrides::CatalogCache;
-    use crate::rbac::{FunctionFilter, RbacConfig, WildcardPattern};
+    use crate::rbac::{FunctionFilter, RbacConfig};
 
     fn iii() -> Arc<IIIClient> {
         // A disconnected client is enough for the engine-free interception
@@ -661,7 +993,7 @@ mod tests {
         RbacConfig {
             expose_functions: patterns
                 .iter()
-                .map(|p| FunctionFilter::Match(WildcardPattern::new(p)))
+                .map(|p| FunctionFilter::match_pattern(p))
                 .collect(),
             ..RbacConfig::default()
         }
@@ -871,7 +1203,9 @@ mod tests {
     async fn upstream_dispatch_strips_prefix() {
         let i = interceptor(config_with(expose(&[]), None), session(Some("tenant1")));
         let frame = json!({"type":"invokefunction","invocation_id":"22222222-2222-2222-2222-222222222222","function_id":"tenant1::foo","data":{}});
-        let UpstreamAction::Forward(out) = i.handle_upstream(&frame.to_string()).await;
+        let UpstreamAction::Forward(out) = i.handle_upstream(&frame.to_string()).await else {
+            panic!("expected forward");
+        };
         let o: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(o["function_id"], "foo");
     }
@@ -880,22 +1214,34 @@ mod tests {
     async fn upstream_trigger_result_strips_prefix() {
         let i = interceptor(config_with(expose(&[]), None), session(Some("tenant1")));
         let frame = json!({"type":"triggerregistrationresult","id":"t1","trigger_type":"cron","function_id":"tenant1::foo"});
-        let UpstreamAction::Forward(out) = i.handle_upstream(&frame.to_string()).await;
+        let UpstreamAction::Forward(out) = i.handle_upstream(&frame.to_string()).await else {
+            panic!("expected forward");
+        };
         let o: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(o["function_id"], "foo");
     }
 
     #[tokio::test]
-    async fn unknown_frame_passes_through_unchanged() {
+    async fn unknown_frame_types_are_dropped_both_ways() {
         let i = interceptor(config_with(expose(&[]), None), session(None));
         let frame = json!({"type":"ping"});
         assert_eq!(
             i.handle_downstream(&frame.to_string()).await,
             DownstreamAction::Forward(frame.to_string())
         );
-        let frame2 = json!({"type":"somefutureframe","x":1});
-        let UpstreamAction::Forward(out) = i.handle_upstream(&frame2.to_string()).await;
-        assert_eq!(serde_json::from_str::<Value>(&out).unwrap(), frame2);
+        let future = json!({"type":"somefutureframe","x":1});
+        assert_eq!(
+            i.handle_downstream(&future.to_string()).await,
+            DownstreamAction::Drop
+        );
+        assert_eq!(
+            i.handle_upstream(&future.to_string()).await,
+            UpstreamAction::Drop
+        );
+        for text in ["not json", "{\"no_type\":1}", "[1,2]"] {
+            assert_eq!(i.handle_downstream(text).await, DownstreamAction::Drop);
+            assert_eq!(i.handle_upstream(text).await, UpstreamAction::Drop);
+        }
     }
 
     #[tokio::test]
@@ -909,5 +1255,428 @@ mod tests {
         };
         let o: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(o["function_id"], "engine::channels::create");
+    }
+
+    // ----- iii 0.25 observe: closed until the proxy can gate it -----------
+
+    fn reply(action: DownstreamAction) -> Value {
+        let DownstreamAction::ReplyToClient(text) = action else {
+            panic!("expected a synthesized reply, got {action:?}");
+        };
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn forwarded(action: DownstreamAction) -> Value {
+        let DownstreamAction::Forward(text) = action else {
+            panic!("expected a forward, got {action:?}");
+        };
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[tokio::test]
+    async fn observe_is_refused_with_unsupported() {
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        let frame = json!({
+            "type": "observe",
+            "id": "5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d",
+            "source": { "function_id": "api::orders" },
+            "target": { "function_id": "api::sink" }
+        });
+        let r = reply(i.handle_downstream(&frame.to_string()).await);
+        assert_eq!(r["type"], "observeresult");
+        assert_eq!(r["id"], "5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d");
+        assert_eq!(r["state"], "error");
+        assert_eq!(r["error"]["code"], "UNSUPPORTED");
+
+        // Without a string id there is nothing to answer.
+        let no_id = json!({ "type": "observe", "source": {}, "target": {} });
+        assert_eq!(
+            i.handle_downstream(&no_id.to_string()).await,
+            DownstreamAction::Drop
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_owner_frames_are_dropped() {
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        for ty in [
+            "unobserve",
+            "observerack",
+            "invocationsobserved",
+            "localinvocationstats",
+        ] {
+            let frame = json!({ "type": ty, "id": "x", "function_id": "api::a" });
+            assert_eq!(
+                i.handle_downstream(&frame.to_string()).await,
+                DownstreamAction::Drop,
+                "{ty} must not reach the engine"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_delivery_invoke_is_refused() {
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "invocation_id": "11111111-1111-1111-1111-111111111111",
+            "function_id": "api::users::get",
+            "data": {},
+            "activation": { "observer_id": "o-1" }
+        });
+        let r = reply(i.handle_downstream(&frame.to_string()).await);
+        assert_eq!(r["type"], "invocationresult");
+        assert_eq!(r["invocation_id"], "11111111-1111-1111-1111-111111111111");
+        assert_eq!(r["error"]["code"], "UNSUPPORTED");
+
+        // Malformed (the engine would read it as absent): still refused, never
+        // forwarded as an ordinary call carrying the field.
+        let malformed = json!({
+            "type": "invokefunction",
+            "invocation_id": "22222222-2222-2222-2222-222222222222",
+            "function_id": "api::users::get",
+            "data": {},
+            "activation": { "observer_id": 7 }
+        });
+        let r = reply(i.handle_downstream(&malformed.to_string()).await);
+        assert_eq!(r["error"]["code"], "UNSUPPORTED");
+
+        // `null` is absent: an ordinary call.
+        let null = json!({
+            "type": "invokefunction",
+            "invocation_id": "33333333-3333-3333-3333-333333333333",
+            "function_id": "api::users::get",
+            "data": {},
+            "activation": null
+        });
+        forwarded(i.handle_downstream(&null.to_string()).await);
+    }
+
+    #[tokio::test]
+    async fn caller_and_observe_depth_are_removed_from_calls() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "invocation_id": "11111111-1111-1111-1111-111111111111",
+            "function_id": "api::a",
+            "data": { "q": 1 },
+            "caller": { "function_id": "billing::charge", "parent": { "worker_name": "checkout" } },
+            "observe_depth": 3
+        });
+        let o = forwarded(i.handle_downstream(&frame.to_string()).await);
+        assert!(o.get("caller").is_none());
+        assert!(o.get("observe_depth").is_none());
+        assert_eq!(o["data"]["q"], 1);
+    }
+
+    #[tokio::test]
+    async fn features_are_removed_in_both_directions() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        let register = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "w", "features": ["observe.v1", "local-dispatch.v1"] },
+            "action": { "type": "void" }
+        });
+        let o = forwarded(i.handle_downstream(&register.to_string()).await);
+        assert!(o["data"].get("features").is_none());
+        assert_eq!(o["data"]["name"], "w");
+
+        let registered = json!({
+            "type": "workerregistered",
+            "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
+            "reattach_token": "t",
+            "features": ["observe.v1", "local-dispatch.v1"]
+        });
+        let UpstreamAction::Forward(out) = i.handle_upstream(&registered.to_string()).await else {
+            panic!("workerregistered must be forwarded");
+        };
+        let o: Value = serde_json::from_str(&out).unwrap();
+        assert!(o.get("features").is_none());
+        assert_eq!(o["reattach_token"], "t");
+    }
+
+    #[tokio::test]
+    async fn observe_engine_frames_are_dropped() {
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        for ty in [
+            "functionregistered",
+            "observeradded",
+            "observerremoved",
+            "observeresult",
+            "observerstatechanged",
+        ] {
+            let frame = json!({ "type": ty, "id": "x", "function_id": "api::a" });
+            assert_eq!(
+                i.handle_upstream(&frame.to_string()).await,
+                UpstreamAction::Drop,
+                "{ty} must not reach the worker"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_builtins_are_refused_even_when_exposed() {
+        let i = interceptor(config_with(expose(&["engine::*"]), None), session(None));
+        for id in [
+            "engine::observers::list",
+            "engine::observers::get",
+            "engine::observers::dispose",
+        ] {
+            let frame = json!({
+                "type": "invokefunction",
+                "invocation_id": "11111111-1111-1111-1111-111111111111",
+                "function_id": id,
+                "data": {}
+            });
+            let r = reply(i.handle_downstream(&frame.to_string()).await);
+            assert_eq!(r["error"]["code"], "FORBIDDEN", "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn observe_descriptor_is_removed_from_registrations() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        let stand_in = json!({
+            "type": "registerfunction",
+            "id": "my::cron",
+            "observe": { "delivery": "owner", "legacy_trigger_type": "cron" }
+        });
+        let o = forwarded(i.handle_downstream(&stand_in.to_string()).await);
+        assert!(o.get("observe").is_none());
+
+        let opt_out = json!({
+            "type": "registerfunction",
+            "id": "my::private",
+            "observe": { "allow": false, "legacy_trigger_type": "cron" }
+        });
+        let o = forwarded(i.handle_downstream(&opt_out.to_string()).await);
+        assert_eq!(o["observe"], json!({ "allow": false }));
+    }
+
+    #[tokio::test]
+    async fn known_frame_types_still_pass_through() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        for frame in [
+            json!({ "type": "pong" }),
+            json!({ "type": "unregistertrigger", "id": "t1" }),
+            json!({ "type": "unregistertriggertype", "id": "cron" }),
+            json!({ "type": "reattach", "previous_worker_id": "w", "reattach_token": "t" }),
+            json!({ "type": "registerservice", "id": "s", "name": "s" }),
+            json!({ "type": "triggerregistrationresult", "id": "t1", "trigger_type": "cron", "function_id": "f" }),
+            json!({ "type": "invocationresult", "invocation_id": "11111111-1111-1111-1111-111111111111", "function_id": "f", "result": 1 }),
+        ] {
+            assert_eq!(
+                i.handle_downstream(&frame.to_string()).await,
+                DownstreamAction::Forward(frame.to_string())
+            );
+        }
+        for frame in [
+            json!({ "type": "registrationrejected", "code": "X", "namespace": "default", "owner_worker_id": "" }),
+            json!({ "type": "registertrigger", "id": "t1", "trigger_type": "cron", "function_id": "f", "config": {} }),
+            json!({ "type": "unregistertrigger", "id": "t1" }),
+            json!({ "type": "error", "error": { "code": "AUTH_ERROR", "message": "m" } }),
+            json!({ "type": "ping" }),
+        ] {
+            assert_eq!(
+                i.handle_upstream(&frame.to_string()).await,
+                UpstreamAction::Forward(frame.to_string())
+            );
+        }
+    }
+
+    // ----- namespaces ------------------------------------------------------
+
+    fn scoped(prefix: Option<&str>, grants: &[(&str, &[&str])]) -> Arc<ProxySession> {
+        Arc::new(ProxySession {
+            function_registration_prefix: prefix.map(str::to_string),
+            namespaces: grants
+                .iter()
+                .map(|(ns, ids)| (ns.to_string(), ids.iter().map(|s| s.to_string()).collect()))
+                .collect(),
+            ..ProxySession::permissive("1.2.3.4".to_string())
+        })
+    }
+
+    fn invoke_in(namespace: Option<&str>, function_id: &str) -> String {
+        let mut frame = json!({
+            "type": "invokefunction",
+            "invocation_id": "11111111-1111-1111-1111-111111111111",
+            "function_id": function_id,
+            "data": {}
+        });
+        if let Some(ns) = namespace {
+            frame["namespace"] = json!(ns);
+        }
+        frame.to_string()
+    }
+
+    #[tokio::test]
+    async fn an_expose_rule_without_namespace_answers_in_default_only() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        forwarded(i.handle_downstream(&invoke_in(None, "api::a")).await);
+        forwarded(
+            i.handle_downstream(&invoke_in(Some("default"), "api::a"))
+                .await,
+        );
+        let r = reply(
+            i.handle_downstream(&invoke_in(Some("orders"), "api::a"))
+                .await,
+        );
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn a_namespaced_expose_rule_answers_in_its_namespace_only() {
+        let rbac = RbacConfig {
+            expose_functions: vec![FunctionFilter::match_pattern("api::*").in_namespace("orders")],
+            ..RbacConfig::default()
+        };
+        let i = interceptor(config_with(rbac, None), session(None));
+        let o = forwarded(
+            i.handle_downstream(&invoke_in(Some("orders"), "api::a"))
+                .await,
+        );
+        assert_eq!(o["namespace"], "orders");
+        let r = reply(i.handle_downstream(&invoke_in(None, "api::a")).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn scoped_grants_answer_in_their_namespace() {
+        let i = interceptor(
+            config_with(expose(&[]), None),
+            scoped(None, &[("orders", &["svc::*"])]),
+        );
+        forwarded(
+            i.handle_downstream(&invoke_in(Some("orders"), "svc::get"))
+                .await,
+        );
+        let r = reply(
+            i.handle_downstream(&invoke_in(Some("billing"), "svc::get"))
+                .await,
+        );
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+        let r = reply(i.handle_downstream(&invoke_in(None, "svc::get")).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn a_non_string_namespace_is_dropped() {
+        let i = interceptor(config_with(expose(&["*"]), None), session(None));
+        let mut frame: Value = serde_json::from_str(&invoke_in(None, "api::a")).unwrap();
+        frame["namespace"] = json!(5);
+        assert_eq!(
+            i.handle_downstream(&frame.to_string()).await,
+            DownstreamAction::Drop
+        );
+    }
+
+    fn register_worker_frame(namespace: Option<&str>) -> String {
+        let mut frame = json!({
+            "type": "invokefunction",
+            "invocation_id": "44444444-4444-4444-4444-444444444444",
+            "function_id": "engine::workers::register",
+            "data": { "name": "billing" }
+        });
+        if let Some(ns) = namespace {
+            frame["data"]["namespace"] = json!(ns);
+        }
+        frame.to_string()
+    }
+
+    #[tokio::test]
+    async fn declaring_a_namespace_outside_the_grants_closes_the_connection() {
+        let i = interceptor(
+            config_with(expose(&[]), None),
+            scoped(None, &[("orders", &[]), ("billing", &[])]),
+        );
+        let DownstreamAction::Close(frames) = i
+            .handle_downstream(&register_worker_frame(Some("analytics")))
+            .await
+        else {
+            panic!("expected the connection to be closed");
+        };
+        let frames: Vec<Value> = frames
+            .iter()
+            .map(|f| serde_json::from_str(f).unwrap())
+            .collect();
+        assert_eq!(frames[0]["type"], "invocationresult");
+        assert_eq!(
+            frames[0]["invocation_id"],
+            "44444444-4444-4444-4444-444444444444"
+        );
+        assert_eq!(frames[0]["error"]["code"], "FORBIDDEN");
+        assert_eq!(
+            frames[0]["error"]["message"],
+            "namespace 'analytics' not allowed for this session (permitted: billing, orders)"
+        );
+        assert_eq!(frames[1]["type"], "registrationrejected");
+        assert_eq!(frames[1]["code"], "NAMESPACE_FORBIDDEN");
+        assert_eq!(frames[1]["namespace"], "analytics");
+        assert_eq!(frames[1]["worker_name"], "billing");
+
+        // No namespace is `default`, which is not granted either.
+        assert!(matches!(
+            i.handle_downstream(&register_worker_frame(None)).await,
+            DownstreamAction::Close(_)
+        ));
+        // A granted one goes through.
+        forwarded(
+            i.handle_downstream(&register_worker_frame(Some("orders")))
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unscoped_session_declares_any_namespace() {
+        let i = interceptor(config_with(expose(&[]), None), session(None));
+        let o = forwarded(
+            i.handle_downstream(&register_worker_frame(Some("analytics")))
+                .await,
+        );
+        assert_eq!(o["data"]["namespace"], "analytics");
+    }
+
+    #[tokio::test]
+    async fn own_functions_are_own_only_in_the_declared_namespace() {
+        // tenant1 registers `foo` (engine id tenant1::foo) from a connection
+        // declared in `orders`.
+        let i = interceptor(config_with(expose(&[]), None), session(Some("tenant1")));
+        forwarded(
+            i.handle_downstream(&register_worker_frame(Some("orders")))
+                .await,
+        );
+        let reg = json!({"type":"registerfunction","id":"foo"});
+        forwarded(i.handle_downstream(&reg.to_string()).await);
+
+        let o = forwarded(i.handle_downstream(&invoke_in(Some("orders"), "foo")).await);
+        assert_eq!(o["function_id"], "tenant1::foo");
+
+        // The same id in `default` is somebody else's, and not exposed.
+        let r = reply(i.handle_downstream(&invoke_in(None, "foo")).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+        let r = reply(i.handle_downstream(&invoke_in(None, "tenant1::foo")).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    #[tokio::test]
+    async fn a_trigger_target_is_checked_in_its_namespace() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "registertrigger",
+            "id": "t1",
+            "trigger_type": "cron",
+            "function_id": "api::run",
+            "config": {},
+            "namespace": "orders"
+        });
+        let r = reply(i.handle_downstream(&frame.to_string()).await);
+        assert_eq!(r["type"], "triggerregistrationresult");
+        assert_eq!(r["error"]["code"], "REGISTRATION_DENIED");
+
+        let mut in_default = frame.clone();
+        in_default.as_object_mut().unwrap().remove("namespace");
+        forwarded(i.handle_downstream(&in_default.to_string()).await);
     }
 }
