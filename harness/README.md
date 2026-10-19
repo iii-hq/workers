@@ -260,6 +260,11 @@ counted through their root session when its turn ends.
   catalog, and `llm.unknown` means the failure has no classification.
 - A session that an earlier harness release ran takes its usage so far as a
   baseline on its first turn after the upgrade. That usage is not counted again.
+- A fork (`session::fork`) takes the history it copied as its baseline, so
+  only the model calls the fork makes are counted.
+- The usage already counted is kept per session of the tree. When a session is
+  deleted from the tree, the model calls of the other sessions are still
+  counted.
 
 The reporting keeps its own bookkeeping and only reads the harness's
 accounting (`harness::metrics`). The counters live in the `state` worker's
@@ -267,10 +272,11 @@ store, so each project counts on its own with the default file-backed `state`
 (and an `in_memory` store starts again from zero). The `harness_usage/_machine`
 row holds the store-wide counters, updated by compare-and-set. Each
 `harness_usage/<session_id>` row records the outcomes a session announced and
-the model usage already folded in, so a turn after a restart does not count
-that usage again. A crash after the `_machine` update and before the session
-row is saved folds that turn's model usage twice. Each step is best effort: a
-failed read or publish is logged at debug level and the turn continues.
+the model usage already folded in, per session of its tree, so a turn after a
+restart does not count that usage again. A crash after the `_machine` update
+and before the session row is saved folds that turn's model usage twice. Each
+step is best effort: a failed read or publish is logged at debug level and the
+turn continues.
 
 To stop the reports, set `III_TELEMETRY_ENABLED=false` on the engine. The engine
 then takes the messages from the topic and discards them, so an opted-out

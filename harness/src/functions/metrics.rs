@@ -668,6 +668,36 @@ pub async fn handle(
     })
 }
 
+/// The usage a forked session copied from its source, `None` for a session
+/// `session::fork` did not create. A fork copies entries with their original
+/// timestamps, all before the fork was created; what the fork generates
+/// itself comes after.
+pub async fn forked_usage(
+    deps: &Deps,
+    session_id: &str,
+) -> Result<Option<SessionUsageV1>, HarnessError> {
+    let session = deps.session().await;
+    let Some(created_at) = session.forked_at(session_id).await? else {
+        return Ok(None);
+    };
+    let mut usage = UsageAccumulator::default();
+    for entry in session
+        .messages_from(session_id, None, Projection::Usage)
+        .await?
+    {
+        if let Some(message) = entry.message.filter(|m| m.timestamp() < created_at) {
+            usage.observe(&message);
+        }
+    }
+    let node = SessionTreeNodeV1 {
+        session_id: session_id.to_string(),
+        parent_session_id: None,
+        parent_turn_id: None,
+        depth: 0,
+    };
+    Ok(Some(usage.finish_session(&node, None)))
+}
+
 /// The context snapshot a session reports, and whether the durable
 /// `harness_context` row has to be read back for it: nothing, and no read,
 /// when the caller asked to omit context.

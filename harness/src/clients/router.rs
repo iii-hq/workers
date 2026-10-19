@@ -207,6 +207,19 @@ const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 /// whole generation timeout. Past it the answer is unknown.
 const MODEL_LISTED_TIMEOUT_MS: u64 = 5_000;
 
+/// Whether a `router::models::list` page holds `id`, bare or as
+/// `provider/model`.
+fn catalog_lists(models: &[Value], id: &str) -> bool {
+    models.iter().any(|m| {
+        let model = m.get("id").and_then(Value::as_str);
+        let owner = m.get("provider").and_then(Value::as_str);
+        model == Some(id)
+            || owner
+                .zip(model)
+                .is_some_and(|(p, m)| id == format!("{p}/{m}"))
+    })
+}
+
 #[derive(Clone)]
 pub struct RouterClient {
     iii: Arc<IIIClient>,
@@ -693,17 +706,31 @@ impl RouterClient {
         if let Some(p) = provider {
             payload["provider"] = json!(p);
         }
+        let resp = self.catalog_call("router::models::get", payload).await?;
+        if resp.get("model").is_some_and(|m| !m.is_null()) {
+            return Some(true);
+        }
+        if provider.is_some() {
+            return Some(false);
+        }
+        // Without a provider, `models::get` is also `null` for an id two
+        // providers serve: only the whole catalog says the id is absent.
         let resp = self
-            .iii
+            .catalog_call("router::models::list", json!({ "modality": "any" }))
+            .await?;
+        Some(catalog_lists(resp.get("models")?.as_array()?, id))
+    }
+
+    async fn catalog_call(&self, function_id: &str, payload: Value) -> Option<Value> {
+        self.iii
             .trigger(TriggerRequest {
-                function_id: "router::models::get".into(),
+                function_id: function_id.into(),
                 payload,
                 action: None,
                 timeout_ms: Some(self.timeout_ms.min(MODEL_LISTED_TIMEOUT_MS)),
             })
             .await
-            .ok()?;
-        Some(resp.get("model").is_some_and(|m| !m.is_null()))
+            .ok()
     }
 
     /// One provider's declared starting point (`None` when the router is
@@ -1486,5 +1513,24 @@ mod streaming_args_tests {
         let cum = tracker.current().unwrap();
         assert_eq!(cum.content, with_call.content);
         assert_eq!(open_call_id(&cum), Some("c1"));
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    /// Prevents: a provider-less id that two providers serve (`models::get`
+    /// answers `null`) reported as absent from the catalog.
+    #[test]
+    fn the_catalog_lists_a_shared_id_bare_or_qualified() {
+        let models = vec![
+            json!({ "id": "m1", "provider": "anthropic" }),
+            json!({ "id": "m1", "provider": "openrouter" }),
+        ];
+        assert!(catalog_lists(&models, "m1"));
+        assert!(catalog_lists(&models, "openrouter/m1"));
+        assert!(!catalog_lists(&models, "m2"));
+        assert!(!catalog_lists(&[], "m1"));
     }
 }

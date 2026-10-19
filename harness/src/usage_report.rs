@@ -35,8 +35,14 @@
 //! * A spawn with no parent of either kind is a root session of its own, so
 //!   its turn counts as a user turn.
 //! * A session the per-session milestone version ran (its row has no
-//!   `folded`) takes its usage so far as a baseline on its first turn here:
-//!   that usage is not counted again, and the session joins `sessions_total`.
+//!   `folded_sessions`) takes its usage so far as a baseline on its first turn
+//!   here: that usage is not counted again, and the session joins
+//!   `sessions_total`.
+//! * A fork (`session::fork`) takes the history it copied as its baseline:
+//!   that usage was counted in the source session.
+//! * The usage already counted is kept per session of the tree, so a session
+//!   deleted from the tree (`harness::delete-session-tree`) takes nothing
+//!   from the new usage of the others.
 //!
 //! The milestone `dedupe_key`s carry the namespace, so two projects on one
 //! engine never share one.
@@ -65,9 +71,7 @@ use serde_json::{json, Value};
 use iii_sdk::protocol::TriggerRequest;
 
 use crate::deps::Deps;
-use crate::functions::metrics::{
-    self, ModelUsageV1, SessionMetricsRequestV1, SessionUsageTotalsV1,
-};
+use crate::functions::metrics::{self, ModelUsageV1, SessionMetricsRequestV1, SessionUsageV1};
 use crate::state::{self, USAGE_SCOPE};
 use crate::types::message::AgentMessage;
 use crate::types::turn::TurnRecord;
@@ -117,8 +121,7 @@ pub fn crossed(prev: u64, next: u64) -> Option<u64> {
         .find(|m| *m > prev && *m <= next)
 }
 
-/// Model usage counters, as `harness::metrics` reports them for a session
-/// tree.
+/// Model usage counters, as `harness::metrics` reports them for a session.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelUsage {
     #[serde(default)]
@@ -140,10 +143,10 @@ pub struct ModelUsage {
 }
 
 impl ModelUsage {
-    /// A session tree's totals. A counter the provider left unreported keeps
-    /// the value `prev` already folded in, so a gap is neither counted as zero
-    /// now nor counted twice when it reports again.
-    fn observed(totals: &SessionUsageTotalsV1, prev: &ModelUsage) -> Self {
+    /// A session's totals. A counter the provider left unreported keeps the
+    /// value `prev` already folded in, so a gap is neither counted as zero now
+    /// nor counted twice when it reports again.
+    fn observed(totals: &SessionUsageV1, prev: &ModelUsage) -> Self {
         Self {
             model_calls: totals.turns,
             tool_calls: totals.function_calls,
@@ -191,7 +194,7 @@ impl ModelUsage {
 }
 
 impl ModelUsage {
-    /// One model's share of a session tree, filled the same way as
+    /// One model's share of a session, filled the same way as
     /// [`ModelUsage::observed`]. Tool call errors are not split by model.
     fn observed_model(u: &ModelUsageV1, prev: &ModelUsage) -> Self {
         Self {
@@ -302,39 +305,62 @@ fn usage_of<'a>(list: &'a [ModelEntry], provider: &str, model: &str) -> Option<&
     model_entry(list, provider, model).map(|e| &e.usage)
 }
 
-/// A session tree's usage as `harness::metrics` reports it, in total and per
+/// One session's usage as `harness::metrics` reports it, in total and per
 /// model.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Observed {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
     pub total: ModelUsage,
+    #[serde(default)]
     pub by_model: Vec<ModelEntry>,
 }
 
 impl Observed {
-    fn read(
-        totals: &SessionUsageTotalsV1,
-        prev: &ModelUsage,
-        prev_by_model: &[ModelEntry],
-    ) -> Self {
+    /// `u`, a counter it left unreported keeping what `prev` folded in.
+    fn read(u: &SessionUsageV1, prev: Option<&Observed>) -> Self {
         let none = ModelUsage::default();
+        let prev_total = prev.map_or(&none, |p| &p.total);
+        let prev_by_model = prev.map_or(&[][..], |p| &p.by_model);
         Self {
-            total: ModelUsage::observed(totals, prev),
-            by_model: totals
+            session_id: u.session_id.clone(),
+            total: ModelUsage::observed(u, prev_total),
+            by_model: u
                 .by_model
                 .iter()
-                .map(|u| ModelEntry {
-                    provider: u.provider.clone(),
-                    model: u.model.clone(),
+                .map(|m| ModelEntry {
+                    provider: m.provider.clone(),
+                    model: m.model.clone(),
                     user_turns: 0,
                     sessions: 0,
                     usage: ModelUsage::observed_model(
-                        u,
-                        usage_of(prev_by_model, &u.provider, &u.model).unwrap_or(&none),
+                        m,
+                        usage_of(prev_by_model, &m.provider, &m.model).unwrap_or(&none),
                     ),
                 })
                 .collect(),
         }
     }
+}
+
+fn session_of<'a>(list: &'a [Observed], session_id: &str) -> Option<&'a Observed> {
+    list.iter().find(|s| s.session_id == session_id)
+}
+
+/// `prev` with each session of `now` replaced. A session `now` does not
+/// return (deleted, or unreadable this time) keeps its entry, so its usage
+/// never offsets another session's new usage.
+// ponytail: a deleted session's entry stays in the row for good; prune by
+// the tree if rows ever grow large.
+fn merged(prev: &[Observed], now: &[Observed]) -> Vec<Observed> {
+    let mut out: Vec<Observed> = prev
+        .iter()
+        .filter(|p| session_of(now, &p.session_id).is_none())
+        .cloned()
+        .collect();
+    out.extend(now.iter().cloned());
+    out
 }
 
 /// Per-session reporting bookkeeping (`harness_usage/<session_id>`).
@@ -353,22 +379,20 @@ pub struct UsageRow {
     /// When this session's first reported turn ended; zero until then.
     #[serde(default)]
     pub first_at: i64,
-    /// This session tree's model usage already folded into the machine row.
-    /// `None` on a row the per-session milestone version wrote: that session
-    /// has usage the machine row never saw, and its first turn here takes it
-    /// as the baseline instead of counting it.
+    /// The model usage already folded into the machine row, per session of
+    /// this tree. Kept per session so a session deleted from the tree takes
+    /// nothing from the others. `None` on a row the per-session milestone
+    /// version wrote: that session has usage the machine row never saw, and
+    /// its first turn here takes it as the baseline instead of counting it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folded: Option<ModelUsage>,
-    /// `folded`, per model.
-    #[serde(default)]
-    pub folded_by_model: Vec<ModelEntry>,
+    pub folded_sessions: Option<Vec<Observed>>,
 }
 
 impl UsageRow {
     /// Written by the per-session milestone version: it has reported turns
-    /// but no `folded`.
+    /// but no `folded_sessions`.
     fn is_legacy(&self) -> bool {
-        self.folded.is_none() && self.first_at != 0
+        self.folded_sessions.is_none() && self.first_at != 0
     }
 }
 
@@ -459,26 +483,31 @@ impl MachineRow {
 fn fold_for(
     first_turn: bool,
     legacy: bool,
-    observed: Option<&Observed>,
-    prev_folded: &ModelUsage,
-    prev_by_model: &[ModelEntry],
+    observed: Option<&[Observed]>,
+    prev: &[Observed],
     turn_model: (&str, &str),
 ) -> Fold {
     let none = ModelUsage::default();
     let mut by_model = Vec::new();
-    let usage = match (legacy, observed) {
-        (false, Some(now)) => {
-            for e in &now.by_model {
-                let prev = usage_of(prev_by_model, &e.provider, &e.model).unwrap_or(&none);
-                let delta = e.usage.since(prev);
+    let mut usage = ModelUsage::default();
+    if let (false, Some(now)) = (legacy, observed) {
+        // Per session: a session that shrank or left the tree adds nothing,
+        // and takes nothing from another session's new usage.
+        for s in now {
+            let p = session_of(prev, &s.session_id);
+            usage = usage.plus(&s.total.since(p.map_or(&none, |p| &p.total)));
+            for e in &s.by_model {
+                let before = p
+                    .and_then(|p| usage_of(&p.by_model, &e.provider, &e.model))
+                    .unwrap_or(&none);
+                let delta = e.usage.since(before);
                 if delta != none {
-                    entry(&mut by_model, &e.provider, &e.model).usage = delta;
+                    let mine = entry(&mut by_model, &e.provider, &e.model);
+                    mine.usage = mine.usage.plus(&delta);
                 }
             }
-            now.total.since(prev_folded)
         }
-        _ => ModelUsage::default(),
-    };
+    }
     let sessions = u64::from(first_turn || (legacy && observed.is_some()));
     let turn = entry(&mut by_model, turn_model.0, turn_model.1);
     turn.user_turns = 1;
@@ -524,13 +553,19 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     };
     let first_turn = row.first_at == 0;
     let legacy = row.is_legacy();
-    if !legacy {
-        // Nothing folded yet is a real zero for a session this version
-        // started, so a failed fold below still leaves it to the next turn.
-        row.folded.get_or_insert_with(ModelUsage::default);
+    if !legacy && row.folded_sessions.is_none() {
+        // A session this version started. Nothing folded yet is a real zero,
+        // except for a fork: the history it copied was counted in its source.
+        let copied = match metrics::forked_usage(deps, session_id).await {
+            Ok(copied) => copied,
+            Err(e) => {
+                tracing::debug!(session_id = %session_id, error = %e, "fork history unreadable");
+                None
+            }
+        };
+        row.folded_sessions = Some(copied.iter().map(|u| Observed::read(u, None)).collect());
     }
-    let prev_folded = row.folded.clone().unwrap_or_default();
-    let prev_by_model = row.folded_by_model.clone();
+    let prev = row.folded_sessions.clone().unwrap_or_default();
     row.turns += 1;
     if first_turn {
         row.first_at = AgentMessage::now_ms();
@@ -558,7 +593,12 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     )
     .await
     {
-        Ok(m) => Some(Observed::read(&m.totals, &prev_folded, &prev_by_model)),
+        Ok(m) => Some(
+            m.by_session
+                .iter()
+                .map(|u| Observed::read(u, session_of(&prev, &u.session_id)))
+                .collect::<Vec<_>>(),
+        ),
         Err(e) => {
             tracing::debug!(session_id = %session_id, error = %e, "usage metrics unavailable");
             None
@@ -568,22 +608,20 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     let add = fold_for(
         first_turn,
         legacy,
-        observed.as_ref(),
-        &prev_folded,
-        &prev_by_model,
+        observed.as_deref(),
+        &prev,
         (&provider, &record.options.model),
     );
 
     match update_machine(deps, timeout_ms, |m| m.fold_and_claim(&add)).await {
         Ok((before, after)) => {
             if let Some(now) = observed {
-                row.folded = Some(now.total);
-                row.folded_by_model = now.by_model;
+                row.folded_sessions = Some(merged(&prev, &now));
             }
             announce(deps, &before, &after, timeout_ms).await;
         }
         Err(e) => {
-            // The session row keeps its old `folded`, so the next turn folds
+            // The session row keeps its old `folded_sessions`, so the next turn folds
             // this turn's model usage in; this user turn is not counted.
             if first_turn {
                 // Not counted as a session yet: the next fold that lands
@@ -921,11 +959,11 @@ mod tests {
     #[test]
     fn an_unreported_counter_keeps_what_was_folded() {
         let prev = usage(3, 100, 0.5);
-        let totals = SessionUsageTotalsV1 {
+        let totals = SessionUsageV1 {
             turns: 5,
             input_tokens: None,
             cost_usd: Some(0.75),
-            ..Default::default()
+            ..session_usage("s")
         };
         let now = ModelUsage::observed(&totals, &prev);
         assert_eq!(now.input_tokens, 100);
@@ -948,8 +986,32 @@ mod tests {
         }
     }
 
+    fn session_usage(session_id: &str) -> SessionUsageV1 {
+        SessionUsageV1 {
+            session_id: session_id.into(),
+            parent_session_id: None,
+            depth: 0,
+            turns: 0,
+            function_calls: 0,
+            function_call_errors: 0,
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            reasoning_tokens: Some(0),
+            cost_usd: Some(0.0),
+            by_model: Vec::new(),
+            context: None,
+        }
+    }
+
     fn observed(provider: &str, model: &str, u: ModelUsage) -> Observed {
+        on("s_root", provider, model, u)
+    }
+
+    fn on(session_id: &str, provider: &str, model: &str, u: ModelUsage) -> Observed {
         Observed {
+            session_id: session_id.into(),
             total: u.clone(),
             by_model: vec![ModelEntry {
                 provider: provider.into(),
@@ -1154,6 +1216,7 @@ mod tests {
             usage: usage(2, 20, 0.2),
         }];
         let now = Observed {
+            session_id: "s_root".into(),
             total: usage(5, 50, 0.5),
             by_model: vec![
                 ModelEntry {
@@ -1169,14 +1232,12 @@ mod tests {
                 },
             ],
         };
-        let add = fold_for(
-            false,
-            false,
-            Some(&now),
-            &usage(2, 20, 0.2),
-            &prev,
-            ("openai", "m2"),
-        );
+        let prev = vec![Observed {
+            session_id: "s_root".into(),
+            total: usage(2, 20, 0.2),
+            by_model: prev,
+        }];
+        let add = fold_for(false, false, Some(&[now]), &prev, ("openai", "m2"));
         let m = MachineRow::default().fold(&add);
         let m1 = m.by_model.iter().find(|e| e.model == "m1").unwrap();
         let m2 = m.by_model.iter().find(|e| e.model == "m2").unwrap();
@@ -1210,7 +1271,7 @@ mod tests {
     }
 
     /// Prevents: rows written by the per-session milestone version failing to
-    /// load (they carry `reported`, and no `folded`).
+    /// load (they carry `reported`, and no `folded_sessions`).
     #[test]
     fn rows_from_the_previous_layout_and_malformed_rows_load() {
         let row: UsageRow = serde_json::from_value(json!({
@@ -1219,7 +1280,7 @@ mod tests {
         .unwrap();
         assert_eq!(row.turns, 5);
         assert_eq!(row.outcomes, vec!["failed".to_string()]);
-        assert_eq!(row.folded, None);
+        assert_eq!(row.folded_sessions, None);
         assert!(row.is_legacy());
         assert!(!UsageRow::default().is_legacy());
         assert_eq!(machine_row(&Value::Null), MachineRow::default());
@@ -1231,9 +1292,9 @@ mod tests {
     /// while its earlier user turns and the session itself go uncounted.
     #[test]
     fn a_legacy_session_takes_its_history_as_the_baseline() {
-        let history = observed("anthropic", "m1", usage(4, 700, 0.2));
+        let history = [observed("anthropic", "m1", usage(4, 700, 0.2))];
         let none = ModelUsage::default();
-        let add = fold_for(false, true, Some(&history), &none, &[], ("anthropic", "m1"));
+        let add = fold_for(false, true, Some(&history), &[], ("anthropic", "m1"));
         assert_eq!(add.user_turns, 1);
         assert_eq!(add.sessions, 1);
         assert_eq!(add.usage, none);
@@ -1244,28 +1305,20 @@ mod tests {
         );
 
         // Usage unreadable: count the turn, keep the session for the next one.
-        let add = fold_for(false, true, None, &none, &[], ("anthropic", "m1"));
+        let add = fold_for(false, true, None, &[], ("anthropic", "m1"));
         assert_eq!((add.user_turns, add.sessions), (1, 0));
     }
 
     #[test]
     fn a_new_session_folds_its_usage_and_counts_once() {
-        let none = ModelUsage::default();
         let key = ("anthropic", "m1");
-        let first_seen = observed(key.0, key.1, usage(2, 50, 0.1));
-        let first = fold_for(true, false, Some(&first_seen), &none, &[], key);
+        let first_seen = [observed(key.0, key.1, usage(2, 50, 0.1))];
+        let first = fold_for(true, false, Some(&first_seen), &[], key);
         assert_eq!(first.sessions, 1);
         assert_eq!(first.usage.model_calls, 2);
 
-        let next_seen = observed(key.0, key.1, usage(5, 80, 0.3));
-        let next = fold_for(
-            false,
-            false,
-            Some(&next_seen),
-            &first_seen.total,
-            &first_seen.by_model,
-            key,
-        );
+        let next_seen = [observed(key.0, key.1, usage(5, 80, 0.3))];
+        let next = fold_for(false, false, Some(&next_seen), &first_seen, key);
         assert_eq!(next.sessions, 0);
         assert_eq!(next.usage.model_calls, 3);
         assert_eq!(next.usage.input_tokens, 30);
@@ -1297,9 +1350,8 @@ mod tests {
     /// total.
     #[test]
     fn a_session_counts_under_its_first_turn_model() {
-        let none = ModelUsage::default();
-        let first = fold_for(true, false, None, &none, &[], ("anthropic", "m1"));
-        let later = fold_for(false, false, None, &none, &[], ("openai", "m2"));
+        let first = fold_for(true, false, None, &[], ("anthropic", "m1"));
+        let later = fold_for(false, false, None, &[], ("openai", "m2"));
         let m = MachineRow::default().fold(&first).fold(&later);
         let sessions: u64 = m.by_model.iter().map(|e| e.sessions).sum();
         assert_eq!((m.sessions, sessions), (1, 1));
@@ -1311,5 +1363,59 @@ mod tests {
                 .sessions,
             1
         );
+    }
+
+    /// Prevents: deleting a sub-agent's session offsetting the usage the rest
+    /// of the tree generates afterwards (Anderson's case: 2 parent calls and
+    /// 8 child calls, the child deleted, then one more parent call).
+    #[test]
+    fn a_deleted_session_takes_nothing_from_new_usage() {
+        let key = ("anthropic", "m1");
+        let before = [
+            on("s_root", key.0, key.1, usage(2, 20, 0.2)),
+            on("s_child", key.0, key.1, usage(8, 80, 0.8)),
+        ];
+        let after_delete = [on("s_root", key.0, key.1, usage(3, 30, 0.3))];
+        let add = fold_for(false, false, Some(&after_delete), &before, key);
+        assert_eq!(add.usage.model_calls, 1);
+        assert_eq!(add.usage.input_tokens, 10);
+        assert_eq!(add.by_model[0].usage.model_calls, 1);
+
+        // The deleted session keeps its baseline, so it never counts again.
+        let kept = merged(&before, &after_delete);
+        assert_eq!(kept.len(), 2);
+        let back = fold_for(false, false, Some(&before), &kept, key);
+        assert_eq!(back.usage.model_calls, 0);
+    }
+
+    /// Prevents: a fork counting the history it copied again on its first
+    /// turn (Anderson's case: 10 copied calls and one new call add 11).
+    #[test]
+    fn a_fork_counts_only_what_it_generates() {
+        let key = ("anthropic", "m1");
+        let copied = SessionUsageV1 {
+            turns: 10,
+            input_tokens: Some(1_000),
+            by_model: vec![ModelUsageV1 {
+                provider: key.0.into(),
+                model: key.1.into(),
+                turns: 10,
+                function_calls: 0,
+                input_tokens: Some(1_000),
+                output_tokens: Some(0),
+                cache_read_tokens: Some(0),
+                cache_write_tokens: Some(0),
+                reasoning_tokens: Some(0),
+                cost_usd: Some(0.0),
+            }],
+            ..session_usage("s_fork")
+        };
+        let baseline = [Observed::read(&copied, None)];
+        let now = [on("s_fork", key.0, key.1, usage(11, 1_100, 0.0))];
+        let add = fold_for(true, false, Some(&now), &baseline, key);
+        assert_eq!((add.user_turns, add.sessions), (1, 1));
+        assert_eq!(add.usage.model_calls, 1);
+        assert_eq!(add.usage.input_tokens, 100);
+        assert_eq!(add.by_model[0].usage.model_calls, 1);
     }
 }
