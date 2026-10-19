@@ -22,6 +22,24 @@
 //! ones before it, and each carries a `*_delta` since the previous successful
 //! report of its kind, so the deltas of one machine sum to its total.
 //!
+//! Model calls are folded in when a ROOT turn ends, from `harness::metrics`
+//! over its whole session tree:
+//!
+//! * A sub-agent's calls are in its root's tree and are counted when the root
+//!   turn that waited for it ends.
+//! * A spawn with a display-only parent (`parent_session_id`, no live parent
+//!   turn) is in that parent's tree but is not a root turn. Its calls are
+//!   counted at the parent's NEXT root turn, and never if the parent has no
+//!   further turn.
+//! * A spawn with no parent of either kind is a root session of its own, so
+//!   its turn counts as a user turn.
+//! * A session the per-session milestone version ran (its row has no
+//!   `folded`) takes its usage so far as a baseline on its first turn here:
+//!   that usage is not counted again, and the session joins `sessions_total`.
+//!
+//! The milestone `dedupe_key`s carry the namespace, so two projects on one
+//! engine never share one.
+//!
 //! This module only READS the harness's own accounting: model usage comes
 //! from `harness::metrics` over the session tree, and what this module keeps
 //! is its own reporting bookkeeping under `harness_usage`: one row per session
@@ -183,8 +201,19 @@ pub struct UsageRow {
     #[serde(default)]
     pub first_at: i64,
     /// This session tree's model usage already folded into the machine row.
-    #[serde(default)]
-    pub folded: ModelUsage,
+    /// `None` on a row the per-session milestone version wrote: that session
+    /// has usage the machine row never saw, and its first turn here takes it
+    /// as the baseline instead of counting it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded: Option<ModelUsage>,
+}
+
+impl UsageRow {
+    /// Written by the per-session milestone version: it has reported turns
+    /// but no `folded`.
+    fn is_legacy(&self) -> bool {
+        self.folded.is_none() && self.first_at != 0
+    }
 }
 
 /// The machine-wide counters (`harness_usage/_machine`).
@@ -226,6 +255,28 @@ impl MachineRow {
     }
 }
 
+/// What one finished root turn adds to the machine row. A legacy session
+/// (see [`UsageRow::is_legacy`]) joins the machine count on the first turn
+/// whose usage can be read: that usage becomes its baseline and adds nothing,
+/// because the user turns behind it were never counted here and the old
+/// per-session events already reported it.
+fn fold_for(
+    first_turn: bool,
+    legacy: bool,
+    observed: Option<&ModelUsage>,
+    prev_folded: &ModelUsage,
+) -> Fold {
+    let usage = match (legacy, observed) {
+        (false, Some(now)) => now.since(prev_folded),
+        _ => ModelUsage::default(),
+    };
+    Fold {
+        user_turns: 1,
+        sessions: u64::from(first_turn || (legacy && observed.is_some())),
+        usage,
+    }
+}
+
 /// Whether this turn belongs to a root session. A sub-agent turn reports
 /// nothing of its own, and neither does a turn a reaction delivered into a
 /// session on a parent's behalf: it has no `parent` link, but its
@@ -258,6 +309,13 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
         }
     };
     let first_turn = row.first_at == 0;
+    let legacy = row.is_legacy();
+    if !legacy {
+        // Nothing folded yet is a real zero for a session this version
+        // started, so a failed fold below still leaves it to the next turn.
+        row.folded.get_or_insert_with(ModelUsage::default);
+    }
+    let prev_folded = row.folded.clone().unwrap_or_default();
     row.turns += 1;
     if first_turn {
         row.first_at = AgentMessage::now_ms();
@@ -285,25 +343,18 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     )
     .await
     {
-        Ok(m) => Some(ModelUsage::observed(&m.totals, &row.folded)),
+        Ok(m) => Some(ModelUsage::observed(&m.totals, &prev_folded)),
         Err(e) => {
             tracing::debug!(session_id = %session_id, error = %e, "usage metrics unavailable");
             None
         }
     };
-    let add = Fold {
-        user_turns: 1,
-        sessions: u64::from(first_turn),
-        usage: observed
-            .as_ref()
-            .map(|now| now.since(&row.folded))
-            .unwrap_or_default(),
-    };
+    let add = fold_for(first_turn, legacy, observed.as_ref(), &prev_folded);
 
     match update_machine(deps, timeout_ms, |m| m.fold(&add)).await {
         Ok((before, after)) => {
-            if let Some(now) = observed {
-                row.folded = now;
+            if observed.is_some() {
+                row.folded = observed;
             }
             announce(deps, record, &before, &after, timeout_ms).await;
         }
@@ -330,8 +381,18 @@ async fn announce(
     after: &MachineRow,
     timeout_ms: u64,
 ) {
+    let ns = deps
+        .iii
+        .namespace()
+        .unwrap_or_else(|| "default".to_string());
     if let Some(reached) = crossed(before.user_turns, after.user_turns) {
-        if publish(deps, user_turns_payload(record, reached, after), timeout_ms).await {
+        if publish(
+            deps,
+            user_turns_payload(record, &ns, reached, after),
+            timeout_ms,
+        )
+        .await
+        {
             let total = after.user_turns;
             let marked = update_machine(deps, timeout_ms, |m| MachineRow {
                 user_turns_announced: m.user_turns_announced.max(total),
@@ -346,7 +407,7 @@ async fn announce(
     if let Some(reached) = crossed(before.usage.model_calls, after.usage.model_calls) {
         if publish(
             deps,
-            model_calls_payload(record, reached, after),
+            model_calls_payload(record, &ns, reached, after),
             timeout_ms,
         )
         .await
@@ -393,11 +454,11 @@ fn failed_payload(
 /// `harness_user_turns`: the machine's user turns. `user_turns_delta` is the
 /// user turns since the last one of these that was published, so summing it
 /// over a machine's events gives its `user_turns_total`.
-fn user_turns_payload(record: &TurnRecord, reached: u64, m: &MachineRow) -> Value {
+fn user_turns_payload(record: &TurnRecord, ns: &str, reached: u64, m: &MachineRow) -> Value {
     with_provider(
         json!({
             "event": USER_TURNS_EVENT,
-            "dedupe_key": format!("user_turns:{reached}"),
+            "dedupe_key": format!("{ns}:user_turns:{reached}"),
             "milestone": reached,
             "user_turns_total": m.user_turns,
             "user_turns_delta": m.user_turns.saturating_sub(m.user_turns_announced),
@@ -410,12 +471,12 @@ fn user_turns_payload(record: &TurnRecord, reached: u64, m: &MachineRow) -> Valu
 
 /// `harness_model_calls`: the machine's model calls and everything that goes
 /// with them. `model_calls_delta` sums to `model_calls_total` the same way.
-fn model_calls_payload(record: &TurnRecord, reached: u64, m: &MachineRow) -> Value {
+fn model_calls_payload(record: &TurnRecord, ns: &str, reached: u64, m: &MachineRow) -> Value {
     let u = &m.usage;
     with_provider(
         json!({
             "event": MODEL_CALLS_EVENT,
-            "dedupe_key": format!("model_calls:{reached}"),
+            "dedupe_key": format!("{ns}:model_calls:{reached}"),
             "milestone": reached,
             "model_calls_total": u.model_calls,
             "model_calls_delta": u.model_calls.saturating_sub(m.model_calls_announced),
@@ -654,7 +715,7 @@ mod tests {
                 if reached == 10 {
                     continue;
                 }
-                let payload = user_turns_payload(&record, reached, &m);
+                let payload = user_turns_payload(&record, "default", reached, &m);
                 sum += payload["user_turns_delta"].as_u64().unwrap();
                 assert_eq!(sum, m.user_turns);
                 m.user_turns_announced = m.user_turns;
@@ -672,9 +733,9 @@ mod tests {
             user_turns_announced: 50,
             ..Default::default()
         };
-        let p = user_turns_payload(&record, 100, &m);
+        let p = user_turns_payload(&record, "default", 100, &m);
         assert_eq!(p["event"], USER_TURNS_EVENT);
-        assert_eq!(p["dedupe_key"], "user_turns:100");
+        assert_eq!(p["dedupe_key"], "default:user_turns:100");
         assert_eq!(p["milestone"], 100);
         assert_eq!(p["user_turns_total"], 100);
         assert_eq!(p["user_turns_delta"], 50);
@@ -701,9 +762,9 @@ mod tests {
             model_calls_announced: 52,
             ..Default::default()
         };
-        let p = model_calls_payload(&record, 100, &m);
+        let p = model_calls_payload(&record, "default", 100, &m);
         assert_eq!(p["event"], MODEL_CALLS_EVENT);
-        assert_eq!(p["dedupe_key"], "model_calls:100");
+        assert_eq!(p["dedupe_key"], "default:model_calls:100");
         assert_eq!(p["milestone"], 100);
         assert_eq!(p["model_calls_total"], 103);
         assert_eq!(p["model_calls_delta"], 51);
@@ -749,8 +810,63 @@ mod tests {
         .unwrap();
         assert_eq!(row.turns, 5);
         assert_eq!(row.outcomes, vec!["failed".to_string()]);
-        assert_eq!(row.folded, ModelUsage::default());
+        assert_eq!(row.folded, None);
+        assert!(row.is_legacy());
+        assert!(!UsageRow::default().is_legacy());
         assert_eq!(machine_row(&Value::Null), MachineRow::default());
         assert_eq!(machine_row(&json!("garbage")), MachineRow::default());
+    }
+
+    /// Prevents: a session the old version ran folding its whole history
+    /// into the machine model calls on its first turn after the upgrade,
+    /// while its earlier user turns and the session itself go uncounted.
+    #[test]
+    fn a_legacy_session_takes_its_history_as_the_baseline() {
+        let history = usage(4, 700, 0.2);
+        let add = fold_for(false, true, Some(&history), &ModelUsage::default());
+        assert_eq!(add.user_turns, 1);
+        assert_eq!(add.sessions, 1);
+        assert_eq!(add.usage, ModelUsage::default());
+
+        // Usage unreadable: count the turn, keep the session for the next one.
+        let add = fold_for(false, true, None, &ModelUsage::default());
+        assert_eq!((add.user_turns, add.sessions), (1, 0));
+    }
+
+    #[test]
+    fn a_new_session_folds_its_usage_and_counts_once() {
+        let first = fold_for(
+            true,
+            false,
+            Some(&usage(2, 50, 0.1)),
+            &ModelUsage::default(),
+        );
+        assert_eq!(first.sessions, 1);
+        assert_eq!(first.usage.model_calls, 2);
+
+        let next = fold_for(false, false, Some(&usage(5, 80, 0.3)), &usage(2, 50, 0.1));
+        assert_eq!(next.sessions, 0);
+        assert_eq!(next.usage.model_calls, 3);
+        assert_eq!(next.usage.input_tokens, 30);
+    }
+
+    /// Prevents: two projects on one engine (one namespace each) sharing a
+    /// milestone key, so the engine drops the second project's report.
+    #[test]
+    fn milestone_keys_carry_the_namespace() {
+        let record = crate::types::turn::tests::record();
+        let m = MachineRow {
+            user_turns: 1,
+            usage: usage(1, 0, 0.0),
+            ..Default::default()
+        };
+        assert_ne!(
+            user_turns_payload(&record, "a", 1, &m)["dedupe_key"],
+            user_turns_payload(&record, "b", 1, &m)["dedupe_key"]
+        );
+        assert_eq!(
+            model_calls_payload(&record, "b", 1, &m)["dedupe_key"],
+            "b:model_calls:1"
+        );
     }
 }

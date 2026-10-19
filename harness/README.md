@@ -238,7 +238,17 @@ message. Three moments report:
 A message carries the model name, the provider name, the counters above and a
 fixed failure class. It carries no message text, no prompt, no file path and no
 function id. Sub-agent turns report nothing of their own; their model calls are
-counted through their root session.
+counted through their root session when its turn ends.
+
+- A spawn with only a display parent (`parent_session_id`) is not a root turn.
+  Its model calls are counted at the display parent's next root turn. If the
+  parent has no further turn, they are not counted.
+- A spawn with no parent is a root session, so its turn counts as a user turn.
+- A failed turn counts as a user turn. Its `harness_turn_failed` event carries
+  `error_kind`; `llm.unknown_model` means the model is not in the router
+  catalog, and `llm.unknown` means the failure has no classification.
+- A session that an earlier harness release ran takes its usage so far as a
+  baseline on its first turn after the upgrade. That usage is not counted again.
 
 The reporting keeps its own bookkeeping and only reads the harness's
 accounting (`harness::metrics`). The `harness_usage/_machine` state row holds
