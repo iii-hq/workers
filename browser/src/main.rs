@@ -141,11 +141,31 @@ async fn main() -> Result<()> {
     // setup wizard).
     if cfg.engine == BrowserEngine::Chromium {
         match browser::chromium::resolve_executable(&cfg) {
-            Some(found) => tracing::info!(
-                path = %found.path.display(),
-                source = found.source.as_str(),
-                "chromium found"
-            ),
+            Some(found) => {
+                // The resolver only checks the execute bit: a wrapper script
+                // whose target is gone passes it and fails on the first session.
+                let probe = found.path.clone();
+                let version = tokio::task::spawn_blocking(move || {
+                    functions::doctor::chromium_version(&probe)
+                })
+                .await
+                .ok()
+                .flatten();
+                match version {
+                    Some(version) => tracing::info!(
+                        path = %found.path.display(),
+                        source = found.source.as_str(),
+                        version = %version,
+                        "chromium found"
+                    ),
+                    None => tracing::warn!(
+                        path = %found.path.display(),
+                        source = found.source.as_str(),
+                        "chromium found but `--version` printed nothing; sessions will fail \
+                         to start (a wrapper script may exec a missing binary)"
+                    ),
+                }
+            }
             None => tracing::warn!("{}", browser::chromium::missing_error(&cfg)),
         }
     }

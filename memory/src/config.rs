@@ -27,7 +27,7 @@ pub struct WorkerConfig {
 
     /// Bank used when nothing selects one. Turn metadata `memory_bank`
     /// wins, then session metadata, then a sub-agent's parent session,
-    /// then this — for injection, extraction, and agent calls alike.
+    /// then the bank of the turn's repository or directory, then this — for injection, extraction, and agent calls alike.
     #[serde(default = "default_bank")]
     pub default_bank: String,
 
@@ -65,7 +65,8 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub extraction_model: String,
 
-    /// How many recent user/assistant messages the extraction call reads.
+    /// How many recent non-empty user/assistant messages the extraction
+    /// call reads, plus the turn's user message when they leave it out.
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 

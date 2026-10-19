@@ -7,7 +7,9 @@
 //! of the agent-facing surface.
 
 use crate::ask::{AskRequest, AskResponse};
+use crate::compaction::Outcome as CompactOutcome;
 use crate::functions::{
+    compact::CompactRequest,
     context_policy::{ContextPolicyRequest, ContextPolicyResponse},
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_trigger::{FunctionTriggerRequest, FunctionTriggerResponse},
@@ -24,8 +26,8 @@ use crate::functions::{
     },
 };
 use crate::functions::{
-    ASK_ID, CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID,
-    SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
+    ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID,
+    SEND_ID, SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
 
@@ -66,6 +68,7 @@ pub fn schema_value<T: schemars::JsonSchema>() -> serde_json::Value {
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<SendRequest, SendResponse>(SEND_ID),
+        spec::<CompactRequest, CompactOutcome>(COMPACT_ID),
         spec::<SpawnRequest, SpawnResponse>(SPAWN_ID),
         spec::<AskRequest, AskResponse>(ASK_ID),
         spec::<TurnStepPayload, TurnStepResult>(TURN_ID),

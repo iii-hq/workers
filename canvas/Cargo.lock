@@ -119,7 +119,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "canvas"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "anyhow",
  "clap",
@@ -671,9 +671,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.24.5"
+version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "153d1efa91fc973adda221013d28bf1428f6c39d48c2b5c0ad83f23eac6a137f"
+checksum = "3a6af460c1ecd277c99d375fb6b1c652639520148ddad304f424a3d9cd97b5d1"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -692,9 +692,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.24.5"
+version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c40db04bca94554b42a6dbd697e44555f51c44d68a3ba3a4702d913d8fce80c"
+checksum = "33696540e03a6d9650009c4091d1aee78f7caa3fbd8a2375d75032d83000604f"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1159,9 +1159,9 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",

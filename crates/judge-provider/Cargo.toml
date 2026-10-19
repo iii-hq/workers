@@ -13,7 +13,7 @@ judge-contract = { path = "../judge-contract" }
 # Workers carry their own exact SDK pins. Widen this range together with
 # theirs (0.24): a second iii-sdk version makes `IIIClient` a different type
 # from the one the worker passes in.
-iii-sdk = ">=0.24.5, <0.25.0"
+iii-sdk = "=0.24.6"
 # The worker picks TLS and the other reqwest features.
 reqwest = { version = "0.12", default-features = false }
 tokio = { version = "1", features = ["sync", "time"] }

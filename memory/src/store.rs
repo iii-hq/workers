@@ -18,7 +18,7 @@
 //! mutation flows: file, map, and index update together or not at all.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -119,6 +119,19 @@ fn compact_vectors(
     })
 }
 
+/// Replace a small file whole: hidden temp file beside it, fsync, rename
+/// over. A crash leaves the old content or the new, never a torn file.
+fn write_atomic(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(content)?;
+    file.sync_all()?;
+    std::fs::rename(&tmp, path)
+}
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -150,11 +163,36 @@ pub(crate) const STOPWORDS: &[&str] = &[
     "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
 ];
 
-/// Query tokens without stopwords (all kept when nothing else is left), with
+/// Bytes of a recall query kept: half from its head, half from its tail.
+const QUERY_MAX_BYTES: usize = 800;
+
+/// A recall query within [`QUERY_MAX_BYTES`]: a longer one (a pasted log, a
+/// sub-agent's brief) keeps its head and tail, where a request sits around
+/// a paste. Its middle would dilute BM25 over every memory sharing a word
+/// and can overrun or time out the query embed.
+// ponytail: identifiers mid-paste that match memories are dropped; measure
+// on a long-query eval before tuning the size.
+pub(crate) fn cap_query(query: &str) -> String {
+    if query.len() <= QUERY_MAX_BYTES {
+        return query.to_string();
+    }
+    let half = QUERY_MAX_BYTES / 2;
+    let head = crate::extract::clamp_char_boundary(query, half);
+    let mut tail = query.len() - half;
+    while !query.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}\n{}", &query[..head], &query[tail..])
+}
+
+/// Query tokens without stopwords (all kept when nothing else is left) or
+/// repeats (BM25 would count a pasted term once per occurrence), with
 /// first-person pronouns expanded to the `user` entity handle so identity
 /// questions reach memories phrased about the user.
 fn query_tokens(query: &str) -> Vec<String> {
     let mut tokens = crate::index::tokenize(query);
+    let mut seen = std::collections::HashSet::new();
+    tokens.retain(|t| seen.insert(t.clone()));
     let first_person = tokens
         .iter()
         .any(|t| matches!(t.as_str(), "i" | "me" | "my" | "mine" | "myself"));
@@ -217,6 +255,12 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
             "name `{name}` must match [a-z0-9][a-z0-9_-]{{0,63}}"
         )))
     }
+}
+
+/// How strongly a memory stands with no query: pinned first, then
+/// corroboration, then recency.
+pub(crate) fn strength(m: &Memory) -> (bool, u32, u64) {
+    (m.pinned, m.corroboration, m.updated_at)
 }
 
 impl Store {
@@ -291,12 +335,13 @@ impl Store {
         let bank_name = name.to_string();
         let bank = run_blocking(move || {
             std::fs::create_dir_all(dir.join(RULES_DIR))?;
-            std::fs::write(
-                dir.join(BANK_META),
+            write_atomic(
+                &dir.join(BANK_META),
                 format!(
                     "description: {}\n",
                     serde_yaml::to_string(&desc).unwrap_or_default().trim()
-                ),
+                )
+                .as_bytes(),
             )?;
             Bank::load(&bank_name, dir)
         })
@@ -551,10 +596,25 @@ impl Bank {
         run_blocking(move || -> Result<(), MemoryError> {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
+                .read(true)
                 .append(true)
                 .open(path)?;
-            file.write_all(line.as_bytes())?;
-            file.write_all(b"\n")?;
+            // A last line without its newline (a hand edit, a torn write)
+            // would fuse with this record: both unparseable on replay, and
+            // a lost tombstone brings its memory back. One buffer, one
+            // write: no kill between record and newline.
+            let mut buf = Vec::with_capacity(line.len() + 2);
+            if file.metadata()?.len() > 0 {
+                let mut last = [0u8];
+                file.seek(std::io::SeekFrom::End(-1))?;
+                file.read_exact(&mut last)?;
+                if last[0] != b'\n' {
+                    buf.push(b'\n');
+                }
+            }
+            buf.extend_from_slice(line.as_bytes());
+            buf.push(b'\n');
+            file.write_all(&buf)?;
             file.sync_data()?;
             Ok(())
         })
@@ -763,18 +823,17 @@ impl Bank {
         scored
     }
 
-    /// The bank's strongest memories with no query: pinned first, then
-    /// corroboration, then recency. The injection floor for turns whose
-    /// query recalls little (identity questions, session openers).
-    pub async fn top_memories(&self, limit: usize) -> Vec<Memory> {
+    /// The bank's strongest live memories that `keep` accepts, with no
+    /// query ([`strength`]). The injection floor for turns whose query
+    /// recalls little (identity questions, session openers).
+    pub async fn top_memories(&self, limit: usize, keep: impl Fn(&Memory) -> bool) -> Vec<Memory> {
         let inner = self.inner.read().await;
-        let mut all: Vec<&Memory> = inner.memories.values().filter(|f| f.is_live()).collect();
-        all.sort_by(|a, b| {
-            b.pinned
-                .cmp(&a.pinned)
-                .then(b.corroboration.cmp(&a.corroboration))
-                .then(b.updated_at.cmp(&a.updated_at))
-        });
+        let mut all: Vec<&Memory> = inner
+            .memories
+            .values()
+            .filter(|f| f.is_live() && keep(f))
+            .collect();
+        all.sort_by_key(|m| std::cmp::Reverse(strength(m)));
         all.into_iter().take(limit).cloned().collect()
     }
 
@@ -824,7 +883,7 @@ impl Bank {
         Ok(rules)
     }
 
-    /// Atomic write (tmp + rename); empty content removes the rule.
+    /// Atomic write ([`write_atomic`]); empty content removes the rule.
     pub fn set_rule(&self, name: &str, content: &str) -> Result<(), MemoryError> {
         validate_name(name)?;
         // Rules are injected into every turn: no known secret shape is kept.
@@ -843,9 +902,7 @@ impl Bank {
             }
             return Ok(());
         }
-        let tmp = dir.join(format!(".{name}.md.tmp"));
-        std::fs::write(&tmp, content)?;
-        std::fs::rename(&tmp, &path)?;
+        write_atomic(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -1030,6 +1087,24 @@ mod tests {
         );
         // An all-stopword query keeps its tokens rather than matching nothing.
         assert_eq!(query_tokens("what is it"), ["what", "is", "it"]);
+        // A pasted term counts once.
+        assert_eq!(
+            query_tokens("error: timeout\nerror: timeout\nwhy my error"),
+            ["error", "timeout", "user"]
+        );
+    }
+
+    #[test]
+    fn a_long_query_keeps_its_head_and_tail() {
+        assert_eq!(
+            cap_query("which db does ledgerly use"),
+            "which db does ledgerly use"
+        );
+        let paste = format!("why does this fail? {} end of the log é", "é".repeat(2_000));
+        let capped = cap_query(&paste);
+        assert!(capped.len() <= QUERY_MAX_BYTES + 1, "{}", capped.len());
+        assert!(capped.starts_with("why does this fail? "));
+        assert!(capped.ends_with(" end of the log é"));
     }
 
     #[tokio::test]
@@ -1110,6 +1185,29 @@ mod tests {
         let bank2 = store2.bank("main").await.unwrap();
         let (_, total) = bank2.list(10, 0, false, None).await;
         assert_eq!(total, 2);
+    }
+
+    #[tokio::test]
+    async fn a_last_line_without_its_newline_is_not_fused_with_the_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut gone = memory("deleted by the user");
+        bank.commit(gone.clone()).await.unwrap();
+        bank.commit(memory("kept by hand")).await.unwrap();
+        // An editor saved the file without its final newline.
+        let path = bank.dir().join(MEMORIES_FILE);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, raw.trim_end()).unwrap();
+        gone.invalid_at = Some(now_ms());
+        gone.revision += 1;
+        bank.commit(gone).await.unwrap();
+
+        let store2 = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank2 = store2.bank("main").await.unwrap();
+        let (live, _) = bank2.list(10, 0, false, None).await;
+        let texts: Vec<&str> = live.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["kept by hand"], "the tombstone held, the tail kept");
     }
 
     #[tokio::test]
@@ -1450,7 +1548,7 @@ mod tests {
         for m in [&a, &b, &c, &d] {
             bank.commit(m.clone()).await.unwrap();
         }
-        let top = bank.top_memories(10).await;
+        let top = bank.top_memories(10, |_| true).await;
         let texts: Vec<&str> = top.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(
             texts,

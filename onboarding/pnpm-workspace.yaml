@@ -2,8 +2,8 @@
 # `pnpm install` here does not reach up into the shared console-UI workspace
 # (which owns ./ui). Same split kanban/ uses.
 minimumReleaseAgeExclude:
-  - '@iii-dev/helpers@0.23.0 || 0.24.5'
-  - iii-sdk@0.23.0 || 0.24.5
+  - '@iii-dev/helpers@0.23.0 || 0.24.6'
+  - iii-sdk@0.23.0 || 0.24.6
 
 allowBuilds:
   esbuild: true

@@ -2,7 +2,7 @@
 
 [package]
 name = "eval"
-version = "0.2.20"
+version = "0.2.21"
 edition = "2021"
 publish = false
 
@@ -16,8 +16,8 @@ path = "src/lib.rs"
 
 [dependencies]
 harness = { path = "../harness" }
-iii-sdk = "=0.24.5"
-iii-helpers = "=0.24.5"
+iii-sdk = "=0.24.6"
+iii-helpers = "=0.24.6"
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

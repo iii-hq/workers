@@ -59,6 +59,19 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
     model: None,
 };
 
+/// An assembly overflow on a model the router catalog does not list: the
+/// context manager fell back to conservative limits, so the overflow says
+/// nothing about the conversation.
+const UNKNOWN_MODEL_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.unknown_model",
+    phase: "context_assembly",
+    retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+};
+
 const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.budget_exceeded",
     phase: "budget_preflight",
@@ -756,15 +769,10 @@ async fn generate_step(
         {
             Ok(assembled) => assembled,
             Err(HarnessError::ContextOverflow(reason)) => {
-                return finalize_failed(
-                    deps,
-                    &session,
-                    &mut record,
-                    &reason,
-                    CONTEXT_OVERFLOW_FAILURE,
-                )
-                .await
-                .map(PreparedStep::Finished);
+                let failure = overflow_failure(deps, &record).await;
+                return finalize_failed(deps, &session, &mut record, &reason, failure)
+                    .await
+                    .map(PreparedStep::Finished);
             }
             Err(error) => return Err(error),
         };
@@ -929,15 +937,10 @@ async fn generate_step(
                 "final model request exceeds the assembled usable budget: {final_request_tokens} tokens > {} usable (persists after re-assembly with reserved headroom)",
                 assembled.usable
             );
-            return finalize_failed(
-                deps,
-                &session,
-                &mut record,
-                &reason,
-                CONTEXT_OVERFLOW_FAILURE,
-            )
-            .await
-            .map(PreparedStep::Finished);
+            let failure = overflow_failure(deps, &record).await;
+            return finalize_failed(deps, &session, &mut record, &reason, failure)
+                .await
+                .map(PreparedStep::Finished);
         }
         // One-shot recovery: fold the measured post-assembly additions (plus
         // margin for hook variance on the retry — hooks re-run against the
@@ -2582,7 +2585,25 @@ struct FailurePresentation {
     next_actions: Vec<&'static str>,
 }
 
+/// The failure for an assembly overflow: [`UNKNOWN_MODEL_FAILURE`] only when
+/// the router catalog confirms it does not list the turn's model. A lookup
+/// that fails keeps [`CONTEXT_OVERFLOW_FAILURE`].
+async fn overflow_failure(deps: &Deps, record: &TurnRecord) -> FailureInfo<'static> {
+    let listed = deps
+        .router()
+        .await
+        .model_listed(record.options.provider.as_deref(), &record.options.model)
+        .await;
+    match listed {
+        Some(false) => UNKNOWN_MODEL_FAILURE,
+        _ => CONTEXT_OVERFLOW_FAILURE,
+    }
+}
+
 fn failure_class(failure: FailureInfo<'_>) -> &'static str {
+    if failure.code == UNKNOWN_MODEL_FAILURE.code {
+        return "llm.unknown_model";
+    }
     match failure.kind {
         Some(ErrorKind::AuthExpired) => "llm.auth_expired",
         Some(ErrorKind::RateLimited) => "llm.rate_limited",
@@ -2590,7 +2611,7 @@ fn failure_class(failure: FailureInfo<'_>) -> &'static str {
         Some(ErrorKind::Transient) => "llm.transient",
         Some(ErrorKind::Permanent) => "llm.permanent",
         None if failure.retryable => "llm.transient",
-        None => "llm.permanent",
+        None => "llm.unknown",
     }
 }
 
@@ -2669,6 +2690,13 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
         "router/provider_rate_limited" => (
             "The provider is busy right now.",
             &["Wait a moment, then retry the turn."],
+        ),
+        "harness.unknown_model" => (
+            "The selected model is not in the model catalog.",
+            &[
+                "Choose another model.",
+                "Check the model id, or configure a provider that serves it.",
+            ],
         ),
         "harness.context_overflow" => (
             "The conversation could not be compacted to fit the selected model.",
@@ -3503,16 +3531,16 @@ fn strip_compacted_thinking(
 /// The latest `compaction` custom entry on the path, resolved to where the
 /// model-facing window opens.
 #[derive(Debug, Default, PartialEq)]
-struct CompactionAnchor {
+pub(crate) struct CompactionAnchor {
     /// The persisted summary, passed back as `previous_summary`.
-    summary: Option<String>,
+    pub(crate) summary: Option<String>,
     /// Index into the path of the first entry the window keeps.
-    window_start: usize,
+    pub(crate) window_start: usize,
     /// Size of the history the summary replaced (display only).
-    summarized_head_tokens: Option<u64>,
+    pub(crate) summarized_head_tokens: Option<u64>,
     /// Path index of the record whose summary is in the prompt (0 when none):
     /// the entries before it were logged under a prefix that is gone.
-    record_index: usize,
+    pub(crate) record_index: usize,
 }
 
 /// Resolve the window from the latest compaction entry:
@@ -3526,7 +3554,7 @@ struct CompactionAnchor {
 /// - a record without a summary, or whose boundary is missing or not a
 ///   string: the whole path too — only an explicit JSON `null` opens the
 ///   window after the record.
-fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
+pub(crate) fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
     let latest = entries.iter().enumerate().rev().find_map(|(index, entry)| {
         let custom = entry.custom.as_ref()?;
         (custom.custom_type == "compaction").then_some((index, &custom.data))
@@ -5171,6 +5199,30 @@ mod tests {
         );
         assert!(presentation.next_actions[0].contains("before switching again"));
         assert!(presentation.next_actions[1].contains("new conversation"));
+    }
+
+    /// Prevents: a model missing from the catalog reporting as a context
+    /// overflow ("could not be compacted"), which sends the user and the
+    /// usage reports after the wrong cause.
+    #[test]
+    fn an_unknown_model_has_its_own_class_and_copy() {
+        let failure = super::UNKNOWN_MODEL_FAILURE;
+        assert_eq!(super::failure_class(failure), "llm.unknown_model");
+        let presentation = super::failure_presentation("context/overflow: 9000 > 4000", failure);
+        assert_eq!(
+            presentation.summary,
+            "The selected model is not in the model catalog."
+        );
+    }
+
+    #[test]
+    fn an_unclassified_failure_is_unknown() {
+        assert_eq!(super::failure_class(super::INTERNAL_FAILURE), "llm.unknown");
+        let retryable = super::FailureInfo {
+            retryable: true,
+            ..super::INTERNAL_FAILURE
+        };
+        assert_eq!(super::failure_class(retryable), "llm.transient");
     }
 
     #[test]

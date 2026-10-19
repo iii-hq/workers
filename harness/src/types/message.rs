@@ -110,6 +110,15 @@ impl AgentMessage {
         })
     }
 
+    pub fn timestamp(&self) -> i64 {
+        match self {
+            AgentMessage::User(m) => m.timestamp,
+            AgentMessage::Assistant(m) => m.timestamp,
+            AgentMessage::FunctionResult(m) => m.timestamp,
+            AgentMessage::Custom(m) => m.timestamp,
+        }
+    }
+
     pub fn role_str(&self) -> &'static str {
         match self {
             AgentMessage::User(_) => "user",

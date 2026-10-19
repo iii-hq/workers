@@ -4,7 +4,7 @@ exclude = ["vendor/cssselect", "vendor/curl_impersonate_sys", "vendor/rustpython
 
 [package]
 name = "browser"
-version = "0.2.30"
+version = "0.2.32"
 edition = "2021"
 publish = false
 
@@ -21,7 +21,7 @@ name = "browser"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.5"
+iii-sdk = "=0.24.6"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
@@ -78,7 +78,7 @@ ipnet = "2"
 # (that is all the archives use; no zopfli compressor), through flate2's
 # pure-Rust backend, named here so it never depends on another crate's
 # feature choice.
-zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 jpeg-encoder = "0.7.1"

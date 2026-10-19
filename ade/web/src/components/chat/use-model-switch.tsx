@@ -18,28 +18,32 @@ interface Options {
   onCompacted: (switchApplied: boolean) => void
 }
 
-function withoutOwnCompactionMarker(
+/** The transcript without the rows this compaction wrote, each at most once. */
+function withoutOwnCompactionRows(
   messages: Message[],
-  entryId: string,
+  entryIds: readonly string[],
 ): Message[] | null {
-  const indexes = messages
-    .map((message, index) => (message.id === entryId ? index : -1))
-    .filter((index) => index >= 0)
-  if (indexes.length !== 1) return null
-  return messages.filter((_, index) => index !== indexes[0])
+  const own = messages.filter((message) => entryIds.includes(message.id))
+  if (new Set(own.map((message) => message.id)).size !== own.length) return null
+  return messages.filter((message) => !entryIds.includes(message.id))
 }
 
+/**
+ * Whether the transcript changed only by this compaction's own rows — the
+ * harness writes a "compacting…" notice, then the marker, and either may not
+ * have arrived yet.
+ */
 function changedOnlyByOwnCompaction(
   startTranscript: Message[],
   currentTranscript: Message[],
-  entryId: string,
+  entryIds: readonly string[],
 ): boolean {
-  if (startTranscript.some((message) => message.id === entryId)) return false
-  const withoutMarker = withoutOwnCompactionMarker(currentTranscript, entryId)
+  if (startTranscript.some((message) => entryIds.includes(message.id)))
+    return false
+  const withoutOwn = withoutOwnCompactionRows(currentTranscript, entryIds)
   return (
-    withoutMarker !== null &&
-    currentTranscript.length === startTranscript.length + 1 &&
-    JSON.stringify(withoutMarker) === JSON.stringify(startTranscript)
+    withoutOwn !== null &&
+    JSON.stringify(withoutOwn) === JSON.stringify(startTranscript)
   )
 }
 
@@ -161,7 +165,7 @@ export function useModelSwitch(options: Options) {
         const ownMarkerChange = changedOnlyByOwnCompaction(
           startTranscript,
           current.current.transcript,
-          result.compactionEntryId,
+          result.ownEntryIds ?? [result.compactionEntryId],
         )
         if (!valid() || (transcriptChanged && !ownMarkerChange)) {
           start.onCompacted(false)

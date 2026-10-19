@@ -219,25 +219,64 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 The harness announces its own usage on the durable `harness:usage` topic. The
 engine subscribes to that topic and sends one anonymous product event for each
-message. Two moments report:
+message. Three moments report:
 
-- `harness_session_progress`, at root turn 1, 2, 5, 10, 25 and 50. Each report
-  carries the cumulative totals that `harness::metrics` aggregates over the
-  session tree: turns, function calls, tokens and cost. A later report
-  supersedes the one before it.
+- `harness_user_turns`, when the user turns (root turns: one user message
+  through its final reply) counted across every session in the state store
+  reach 1, 2, 5, 10, 25 and 50, then every 50 after that (100, 150, ...). It
+  carries `user_turns_total`, `sessions_total`, and `by_model`: user turns per
+  provider and model of the root turn, and sessions per provider and model of
+  the session's first root turn.
+- `harness_model_calls`, on the same milestones of the model calls (assistant
+  messages, sub-agents included) counted across every session in the state
+  store. Model calls move several at a time, so a report goes out at the
+  highest milestone passed. It carries `model_calls_total`, tool call and tool
+  call error totals, token totals, `cost_usd`, `user_turns_total` and
+  `sessions_total`, all across the state store, and `by_model`: model calls,
+  tool calls, tokens and cost per provider and model that generated them.
+
+Every counter on both events, in total and in each `by_model` entry, has a
+matching `*_delta` (for example `tool_calls_delta`, `cost_usd_delta`): the
+count since the previous report of the same event. The deltas of one state
+store sum to its totals, so they can be added up across stores and time
+windows.
+
 - `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
-  and `max_turns` outcomes. This keeps the reason a run stopped exact when it
-  stopped between two milestones.
+  and `max_turns` outcomes. This keeps the reason a run stopped exact.
 
-One session reports at most 9 messages, however many turns it runs, and
-sub-agent turns report nothing of their own. A message carries the model name,
-the provider name, the counters above and a fixed failure class. It carries no
-message text, no prompt, no file path and no function id.
+`harness_turn_failed` carries the failed turn's model and provider; the two
+counting events carry them only inside `by_model`, because their totals span
+every model. Beyond those and the counters above, a message carries only a
+fixed failure class: no message text, no prompt, no file path and no function
+id. Sub-agent turns report nothing of their own; their model calls are
+counted through their root session when its turn ends.
 
-The `harness_usage/<session_id>` state row records the milestones and outcomes
-a session announced, so a restart does not announce one again. Each step is best
-effort: a failed read or publish is logged at debug level and the turn
-continues.
+- A spawn with only a display parent (`parent_session_id`) is not a root turn.
+  Its model calls are counted at the display parent's next root turn. If the
+  parent has no further turn, they are not counted.
+- A spawn with no parent is a root session, so its turn counts as a user turn.
+- A failed turn counts as a user turn. Its `harness_turn_failed` event carries
+  `error_kind`; `llm.unknown_model` means the model is not in the router
+  catalog, and `llm.unknown` means the failure has no classification.
+- A session that an earlier harness release ran takes its usage so far as a
+  baseline on its first turn after the upgrade. That usage is not counted again.
+- A fork (`session::fork`) takes the history it copied as its baseline, so
+  only the model calls the fork makes are counted.
+- The usage already counted is kept per session of the tree. When a session is
+  deleted from the tree, the model calls of the other sessions are still
+  counted.
+
+The reporting keeps its own bookkeeping and only reads the harness's
+accounting (`harness::metrics`). The counters live in the `state` worker's
+store, so each project counts on its own with the default file-backed `state`
+(and an `in_memory` store starts again from zero). The `harness_usage/_machine`
+row holds the store-wide counters, updated by compare-and-set. Each
+`harness_usage/<session_id>` row records the outcomes a session announced and
+the model usage already folded in, per session of its tree, so a turn after a
+restart does not count that usage again. A crash after the `_machine` update
+and before the session row is saved folds that turn's model usage twice. Each
+step is best effort: a failed read or publish is logged at debug level and the
+turn continues.
 
 To stop the reports, set `III_TELEMETRY_ENABLED=false` on the engine. The engine
 then takes the messages from the topic and discards them, so an opted-out
@@ -463,6 +502,39 @@ waits for terminal turns/in-flight tools, delivers one consolidated message to
 the surviving direct parent, and deletes child-first. Unconfirmed work fails
 closed with data retained. See [recovery, safety boundaries and tests](architecture/session-tree-deletion.md).
 
+## Compacting a conversation (`/compact`)
+
+`/compact` is a command, not a prompt. Sent through `harness::send` by any
+client — the console, the mobile apps, a bot — as the whole message (text only,
+optionally followed by guidance: `/compact keep the ticket ids`), it never
+reaches the model and no turn runs: the send returns at once with
+`compaction: { compaction_id, entry_id }` and the harness compacts in the
+background. `harness::compact { session_id, model?, provider?, instructions? }`
+runs the same compaction and returns its outcome (`ok` / `busy` / `empty` /
+`failed`, the user-facing `message`, the token counts and the `entry_ids` it
+wrote) for a caller that has to wait, such as the console's model switch.
+
+Every device watching the session learns about it, not only the one that asked:
+
+- a `notice` row "compacting the conversation…" lands when it starts — under
+  the send's `e_idem_<idempotency_key>` id, so the sender's optimistic
+  `/compact` row turns into it;
+- a `/compact` send shows the session `working` / "compacting context" while it
+  runs (a live turn keeps its own status line);
+- it ends with one row: the `compaction` record (the marker), or a `notice`
+  saying why there is none;
+- `harness::compaction` fires with `phase: started` and `phase: completed`;
+- the `harness_context` snapshot is rewritten for the compacted window, so the
+  `context` chip and `harness::status` (which returns the newer snapshot) stop
+  showing the old one.
+
+The window is the one the next turn would assemble (latest compaction anchor,
+`message_order`, replayed notices); the router resolves the summariser model's
+limits; and a live turn's unanswered calls stay in the verbatim tail with
+their results. It runs under the session's context-manager lease, so it is
+safe beside a running turn, and it does not depend on the requester staying
+connected.
+
 ## Asking the user (`harness::ask`)
 
 `harness::ask` lets the model put a decision with discrete options to the user
@@ -561,6 +633,7 @@ plug into in-path. Bind with the standard two-step pattern.
 | `harness::session-tree-deletion` | async event | A subtree deletion snapshot; config `{ session_id?, operation_id? }`. Terminal statuses are `completed` and `failed`. |
 | `harness::turn-started` | async event | A turn began executing (first loop step). Payload: `session_id`, `turn_id`, `timestamp`, `depth` (0 = top level), `message_preview` (first characters of the message that started the turn, when there is one), and `parent` / `parent_session_id` for sub-agents. Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
 | `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
+| `harness::compaction` | async event | An explicit compaction (`/compact`, `harness::compact`) started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids` it wrote). Payload also carries `session_id`, `compaction_id`, `timestamp`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
 | `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it directly and skips the compatibility handler. |
 | `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |

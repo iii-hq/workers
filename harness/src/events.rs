@@ -1,9 +1,10 @@
 //! The async orchestration trigger types the harness emits —
 //! `harness::ready` after boot, `harness::turn-started` /
 //! `harness::turn-completed` at turn boundaries, `harness::message-queued`
-//! when a message parks in the mid-turn queue, and
-//! `harness::triggers-changed` when a session's binding set or fire count
-//! changes (harness.md § Trigger types emitted). Consumers and siblings bind
+//! when a message parks in the mid-turn queue, `harness::triggers-changed`
+//! when a session's binding set or fire count changes, and
+//! `harness::compaction` when an explicit compaction starts and finishes
+//! (harness.md § Trigger types emitted). Consumers and siblings bind
 //! these to react without polling.
 //!
 //! Delivery is fire-and-forget (`TriggerAction::Void`), at-least-once, and
@@ -31,6 +32,7 @@ pub const TURN_COMPLETED: &str = "harness::turn-completed";
 pub const MESSAGE_QUEUED: &str = "harness::message-queued";
 pub const TRIGGERS_CHANGED: &str = "harness::triggers-changed";
 pub const READY: &str = "harness::ready";
+pub const COMPACTION: &str = "harness::compaction";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -223,6 +225,7 @@ pub struct TurnEvents {
     completed: SubscriberSet,
     queued: SubscriberSet,
     triggers_changed: SubscriberSet,
+    compaction: SubscriberSet,
 }
 
 impl TurnEvents {
@@ -235,6 +238,7 @@ impl TurnEvents {
         let completed = SubscriberSet::default();
         let queued = SubscriberSet::default();
         let triggers_changed = SubscriberSet::default();
+        let compaction = SubscriberSet::default();
 
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
@@ -292,8 +296,20 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
+        let _ = iii.register_trigger_type(
+            RegisterTriggerType::new(
+                COMPACTION,
+                "An explicit compaction of a session started (`phase: started`) or finished \
+                 (`phase: completed`, with `status` ok/busy/empty/failed and the user-facing `message`).",
+                TurnEventTriggerHandler {
+                    type_id: COMPACTION,
+                    set: compaction.clone(),
+                },
+            )
+            .trigger_request_format::<TurnEventBindingConfig>(),
+        );
         tracing::info!(
-            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued / harness::triggers-changed trigger types"
+            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued / harness::triggers-changed / harness::compaction trigger types"
         );
 
         Self {
@@ -304,6 +320,7 @@ impl TurnEvents {
             completed,
             queued,
             triggers_changed,
+            compaction,
         }
     }
 
@@ -350,6 +367,22 @@ impl TurnEvents {
         self.fan_out(
             &self.triggers_changed,
             TRIGGERS_CHANGED,
+            session_id,
+            None,
+            None,
+            payload,
+        )
+        .await;
+    }
+
+    /// An explicit compaction's progress (`crate::compaction::event_payload`).
+    /// Every client also gets it durably: the start notice and the outcome
+    /// row land in the transcript; this is the live signal for consumers that
+    /// track the operation itself.
+    pub async fn emit_compaction(&self, session_id: &str, payload: Value) {
+        self.fan_out(
+            &self.compaction,
+            COMPACTION,
             session_id,
             None,
             None,

@@ -496,9 +496,29 @@ fn resolve_timer_request(req: &mut SubscribeRequest) -> Result<(), HarnessError>
 /// with NO lifecycle bound fires forever, and every live run that registered
 /// one meant it as a deadline or a bounded sweep (rctest7's 69 fires; both
 /// discovery runs left one firing past their own teardown claim).
+///
+/// A wake is one-shot by default, so a standing one was asked for with
+/// `once: false`: it has no call to re-run, and the cost is a new paid turn
+/// in the registering session per event (MOT-5449).
 fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
     if once {
         return None;
+    }
+    if is_wake_shape(req) && req.trigger_type != "cron" {
+        let bounded = req
+            .lifecycle
+            .as_ref()
+            .is_some_and(|l| l.max_fires.is_some() || l.expires_in_ms.is_some());
+        if bounded {
+            return None;
+        }
+        return Some(
+            "note: this WAKE is STANDING (`once: false`) — every future matching event wakes \
+             this session with a new paid turn until unregistered. Bound it with lifecycle \
+             { max_fires | expires_in_ms } or unregister it in your teardown so it cannot wake \
+             you forever."
+                .to_string(),
+        );
     }
     if req.trigger_type == "cron" {
         let bounded = req
@@ -578,30 +598,69 @@ async fn prewritten_key_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<
 /// a keyed binding it double-fires every event, and every fire delivers its
 /// own unthrottled paid reaction (rctest-k7m3 postmortem). Purely informative —
 /// a deliberate catch-all watcher ignores it.
-fn state_catchall_advisory(req: &SubscribeRequest) -> Option<String> {
+fn state_catchall_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
     if req.trigger_type != "state" || req.config.get("key").is_some() {
         return None;
     }
-    // Scope-only is CORRECT for the per-event-unique-key shape (producers
-    // writing `item-1`, `item-2`, … so nothing overwrites) — discovery run 7
-    // registered exactly that, read the old "add a `key`" push as an
-    // instruction, pinned `key: "shipment"`, and its producers' unique keys
-    // then matched nothing at all. State the trade-off; do not pick a side.
-    match req.config.get("scope").and_then(Value::as_str) {
-        Some(scope) => Some(format!(
+    let scope = req.config.get("scope").and_then(Value::as_str);
+    let gated = if req.conditions.is_empty() {
+        ""
+    } else {
+        " that passes its conditions"
+    };
+    match (scope, once) {
+        // The fan-in wave (MOT-5408): a one-shot gated by a barrier that
+        // names its arrivals wakes once, on the writes it names, so no stray
+        // key wins and nothing fans out.
+        (Some(_), true) if names_its_arrivals(req) => None,
+        // Any other one-shot retires on the FIRST write that fires it, so the
+        // risk is the wrong write winning (a count barrier counts any key).
+        (Some(scope), true) => Some(format!(
+            "note: this one-shot state wake has no `key` filter, so the FIRST write of ANY key \
+             in scope \"{scope}\"{gated} (a progress or done marker included) fires it and \
+             retires it. If only specific writes should wake it, add that `key`, or list their \
+             keys in a state::barrier `expect` array."
+        )),
+        // No scope: every state write anywhere (the harness's own records
+        // included) reaches it, conditions or not.
+        (None, true) => Some(format!(
+            "warning: this one-shot state wake has neither `scope` nor `key`, so the first \
+             state write in ANY scope{gated}, other runs' traffic included, fires it. Scope it \
+             to this run at minimum."
+        )),
+        // Scope-only is CORRECT for the per-event-unique-key shape (producers
+        // writing `item-1`, `item-2`, … so nothing overwrites) — discovery
+        // run 7 registered exactly that, read the old "add a `key`" push as
+        // an instruction, pinned `key: "shipment"`, and its producers' unique
+        // keys then matched nothing at all. State the trade-off; do not pick
+        // a side.
+        (Some(scope), false) => Some(format!(
             "note: this state binding has no `key` filter, so it fires for EVERY key written in \
              scope \"{scope}\" — done markers and progress keys included — and every matching \
-             write dispatches its own unthrottled paid reaction. That is the RIGHT shape when \
-             producers write one unique key per event (item-1, item-2, …); keep this scope \
+             write{gated} dispatches its own unthrottled paid reaction. That is the RIGHT shape \
+             when producers write one unique key per event (item-1, item-2, …); keep this scope \
              private to those events. Add a `key` ONLY if every producer writes that exact key."
         )),
-        None => Some(
+        (None, false) => Some(format!(
             "warning: this state binding has neither `scope` nor `key` — it fires for EVERY \
-             state write in EVERY scope, including other runs' traffic, and each one dispatches \
-             its own unthrottled paid reaction. Scope it to this run at minimum."
-                .to_string(),
-        ),
+             state write in EVERY scope, including other runs' traffic, and each one{gated} \
+             dispatches its own unthrottled paid reaction. Scope it to this run at minimum."
+        )),
     }
+}
+
+/// Whether a condition picks the writes that fire the binding: a
+/// `state::barrier` whose `expect` is a list accepts only those arrivals,
+/// while a count accepts any key.
+fn names_its_arrivals(req: &SubscribeRequest) -> bool {
+    req.conditions.iter().any(|condition| {
+        condition.function_id == "state::barrier"
+            && condition
+                .config
+                .as_ref()
+                .and_then(|config| config.get("expect"))
+                .is_some_and(Value::is_array)
+    })
 }
 
 async fn intercept_register(
@@ -818,8 +877,8 @@ async fn handle(
         provider_presence_note(deps, &req.trigger_type).await,
         prewritten_key_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
-        state_catchall_advisory(&req),
-        armed_wake_advisory(&req, once),
+        state_catchall_advisory(&req, once),
+        armed_wake_advisory(&req, once, expires_at.is_some()),
     ]
     .into_iter()
     .flatten()
@@ -1161,8 +1220,11 @@ fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
 /// `report_ready` while its finalizer's task never mentioned the key — every
 /// row landed correctly and the orchestrator still slept forever, leaving
 /// the run's teardown permanently pending. Purely informative.
-fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
-    if !once || req.trigger_type != "state" {
+fn armed_wake_advisory(req: &SubscribeRequest, once: bool, has_deadline: bool) -> Option<String> {
+    // A deadline (the caller's `expires_in_ms`, or a leaf's capped wake)
+    // turns a write that never comes into an expiry notice: the park-forever
+    // risk this note exists for is already handled.
+    if !once || has_deadline || req.trigger_type != "state" {
         return None;
     }
     let scope = req
@@ -1171,17 +1233,24 @@ fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
         .and_then(Value::as_str)
         .unwrap_or("*");
     let key = req.config.get("key").and_then(Value::as_str).unwrap_or("*");
+    // With a condition (a `state::barrier`), only a write that passes it
+    // wakes the session.
+    let gated = if req.conditions.is_empty() {
+        ""
+    } else {
+        " that passes its conditions"
+    };
     // The two observed park-forever shapes, named in order: the medium
     // mismatch (a finisher wrote a DATABASE table named like the state scope
     // — same word, disjoint worlds, the wake never fired), and the missing
     // deadline (no lifecycle, so nothing could ever convert the silence into
     // a notice).
     Some(format!(
-        "note: one-shot WAKE — this session stays parked until state {scope}/{key} is \
-         written, and nothing fires it automatically. Only a state write (state::set / \
-         state::delete) on that exact scope/key fires it — a database table or row with the \
-         same name does NOT. Double-check that a task you spawned (worker/finalizer) \
-         EXPLICITLY sets that exact scope/key when its condition is met, or this session \
+        "note: one-shot WAKE — this session stays parked until a state write on \
+         {scope}/{key}{gated} fires it, and nothing fires it automatically. Only a state \
+         write (state::set, state::update, a swapping state::compare-and-set or state::delete) on that \
+         exact scope/key fires it — a database table or row with the same name does NOT. \
+         Double-check that a task you spawned (worker/finalizer) EXPLICITLY sets that exact scope/key when its condition is met, or this session \
          sleeps forever and its cleanup never runs. Set lifecycle \
          {{ expires_in_ms: <relative ms> }} to be woken with an expiry notice instead if the \
          write never comes."
@@ -1903,7 +1972,7 @@ pub(crate) mod tests {
         // Scope without key: the trade-off, naming the scope — NOT a push to
         // add a key. Run 7 read the old push as an instruction, pinned an
         // exact key, and its per-event unique keys then matched nothing.
-        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })));
+        let note = state_catchall_advisory(&mk("state", json!({ "scope": "run-1" })), false);
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("run-1"), "got: {note}");
         assert!(note.contains("no `key` filter"), "got: {note}");
@@ -1916,17 +1985,101 @@ pub(crate) mod tests {
             "adding a key must be conditioned on the producers: {note}"
         );
         // No scope AND no key: the global catch-all, still warned hard.
-        let note = state_catchall_advisory(&mk("state", json!({})));
+        let note = state_catchall_advisory(&mk("state", json!({})), false);
         assert!(note.as_deref().unwrap_or("").contains("EVERY scope"));
         // A key filter silences it, with or without scope.
-        assert!(state_catchall_advisory(&mk(
-            "state",
-            json!({ "scope": "run-1", "key": "change" })
-        ))
-        .is_none());
-        assert!(state_catchall_advisory(&mk("state", json!({ "key": "change" }))).is_none());
-        // Non-state trigger types are not advised on.
-        assert!(state_catchall_advisory(&mk("cron", json!({}))).is_none());
+        for once in [false, true] {
+            assert!(state_catchall_advisory(
+                &mk("state", json!({ "scope": "run-1", "key": "change" })),
+                once
+            )
+            .is_none());
+            assert!(
+                state_catchall_advisory(&mk("state", json!({ "key": "change" })), once).is_none()
+            );
+            // Non-state trigger types are not advised on.
+            assert!(state_catchall_advisory(&mk("cron", json!({})), once).is_none());
+        }
+    }
+
+    /// The fan-in wave shape (MOT-5408): a scope-only one-shot wake gated by
+    /// `state::barrier` with a lifecycle deadline. It delivers one reaction,
+    /// on the write the barrier allows, and the deadline already turns
+    /// silence into a notice, so neither advisory has anything true to say.
+    #[test]
+    fn a_barrier_gated_one_shot_wake_with_a_deadline_gets_no_advisory() {
+        let wave: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "state",
+            "config": { "scope": "run-r1-w1" },
+            "conditions": [{
+                "function_id": "state::barrier",
+                "config": { "id": "run-r1-w1", "expect": ["KAN-12", "KAN-13"], "carry": "/event_type" }
+            }],
+            "lifecycle": { "expires_in_ms": 1_260_000 }
+        }))
+        .unwrap();
+        let once = effective_once(&wave);
+        assert!(once, "a wake defaults to one-shot");
+        let has_deadline = resolved_expires_at(wave.lifecycle.as_ref(), 0).is_some();
+        assert!(has_deadline, "expires_in_ms resolves to a deadline");
+        assert!(state_catchall_advisory(&wave, once).is_none());
+        assert!(armed_wake_advisory(&wave, once, has_deadline).is_none());
+    }
+
+    #[test]
+    fn a_keyless_one_shot_state_wake_is_told_which_write_wins() {
+        let mk =
+            |body: serde_json::Value| -> SubscribeRequest { serde_json::from_value(body).unwrap() };
+        let barrier = |expect: serde_json::Value| json!([{ "function_id": "state::barrier", "config": { "id": "b", "expect": expect } }]);
+        // No condition: the first write of any key retires it.
+        let note = state_catchall_advisory(
+            &mk(json!({ "trigger_type": "state", "config": { "scope": "run-1" } })),
+            true,
+        );
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("FIRST write of ANY key"), "got: {note}");
+        assert!(note.contains("run-1"), "got: {note}");
+        assert!(
+            !note.contains("every matching write"),
+            "a one-shot retires on its first fire: {note}"
+        );
+        assert!(!note.contains("passes its conditions"), "got: {note}");
+        // A count barrier counts ANY key, so a stray write can still complete
+        // it: the note stays, naming the gate.
+        let note = state_catchall_advisory(
+            &mk(json!({
+                "trigger_type": "state",
+                "config": { "scope": "run-1" },
+                "conditions": barrier(json!(3))
+            })),
+            true,
+        );
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("that passes its conditions"), "got: {note}");
+        assert!(note.contains("`expect` array"), "got: {note}");
+        // No scope: conditions or not, every write anywhere reaches it.
+        for conditions in [json!([]), barrier(json!(["a"]))] {
+            let note = state_catchall_advisory(
+                &mk(json!({ "trigger_type": "state", "config": {}, "conditions": conditions })),
+                true,
+            );
+            assert!(note.as_deref().unwrap_or("").contains("ANY scope"));
+        }
+        // Standing: a named barrier does not silence it, and the reaction is
+        // per write the conditions allow.
+        let note = state_catchall_advisory(
+            &mk(json!({
+                "trigger_type": "state",
+                "config": { "scope": "run-1" },
+                "conditions": barrier(json!(["a"]))
+            })),
+            false,
+        );
+        let note = note.as_deref().unwrap_or("");
+        assert!(
+            note.contains("every matching write that passes its conditions"),
+            "got: {note}"
+        );
     }
 
     #[test]
@@ -1939,6 +2092,7 @@ pub(crate) mod tests {
         let note = armed_wake_advisory(
             &mk("state", json!({ "scope": "run-1", "key": "report_ready" })),
             true,
+            false,
         );
         let note = note.as_deref().unwrap_or("");
         assert!(note.contains("run-1/report_ready"), "got: {note}");
@@ -1952,9 +2106,50 @@ pub(crate) mod tests {
         );
         assert!(note.contains("expires_in_ms"), "got: {note}");
         assert!(note.contains("expiry notice"), "got: {note}");
+        // Every state write fires a state wake, compare-and-set and update
+        // included (the state worker emits the same event for them).
+        for write in [
+            "state::set",
+            "state::update",
+            "state::compare-and-set",
+            "state::delete",
+        ] {
+            assert!(note.contains(write), "{write} missing: {note}");
+        }
+        assert!(
+            !note.contains("passes its conditions"),
+            "no condition, no gate: {note}"
+        );
+        // A condition gates the wake: say so.
+        let gated: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "state",
+            "config": { "scope": "run-1", "key": "report_ready" },
+            "conditions": [{ "function_id": "state::barrier", "config": { "id": "b", "expect": ["a"] } }]
+        }))
+        .unwrap();
+        let note = armed_wake_advisory(&gated, true, false);
+        assert!(note
+            .as_deref()
+            .unwrap_or("")
+            .contains("that passes its conditions"));
+        // A deadline (expires_in_ms, or a leaf's capped wake) already
+        // converts silence into a notice.
+        let keyed = mk("state", json!({ "scope": "run-1", "key": "report_ready" }));
+        assert!(armed_wake_advisory(&keyed, true, true).is_none());
+        // A lifecycle without a deadline does not: still warned.
+        for lifecycle in [json!({ "once": true }), json!({ "max_fires": 1 })] {
+            let req: SubscribeRequest = serde_json::from_value(json!({
+                "trigger_type": "state",
+                "config": { "scope": "run-1", "key": "report_ready" },
+                "lifecycle": lifecycle
+            }))
+            .unwrap();
+            let has_deadline = resolved_expires_at(req.lifecycle.as_ref(), 0).is_some();
+            assert!(armed_wake_advisory(&req, true, has_deadline).is_some());
+        }
         // Standing notifies and non-state types are not wakes.
-        assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false).is_none());
-        assert!(armed_wake_advisory(&mk("cron", json!({})), true).is_none());
+        assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false, false).is_none());
+        assert!(armed_wake_advisory(&mk("cron", json!({})), true, false).is_none());
     }
 
     #[test]
@@ -1973,6 +2168,30 @@ pub(crate) mod tests {
         // once retires itself.
         assert!(standing_binding_advisory(&mk("state"), true).is_none());
         assert!(standing_binding_advisory(&mk("cron"), true).is_none());
+    }
+
+    /// MOT-5449: a wake asked to stand (`once: false`) has no call to re-run;
+    /// its cost is a paid turn per event, and one-shot is its default, not
+    /// something to tell it to pass.
+    #[test]
+    fn a_standing_wake_is_not_told_it_is_a_call_binding() {
+        let mk = |lifecycle: Value| -> SubscribeRequest {
+            let mut v = json!({ "trigger_type": "state", "config": { "scope": "run-1" } });
+            if !lifecycle.is_null() {
+                v["lifecycle"] = lifecycle;
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let note = standing_binding_advisory(&mk(Value::Null), false);
+        let note = note.as_deref().unwrap_or("");
+        assert!(note.contains("WAKE is STANDING"), "got: {note}");
+        assert!(note.contains("paid turn"), "got: {note}");
+        assert!(!note.contains("call"), "a wake has no call: {note}");
+        // A lifecycle bound already stops it waking forever.
+        assert!(standing_binding_advisory(&mk(json!({ "max_fires": 3 })), false).is_none());
+        assert!(
+            standing_binding_advisory(&mk(json!({ "expires_in_ms": 60_000 })), false).is_none()
+        );
     }
 
     /// Both discovery runs registered a recurring cron with no lifecycle and

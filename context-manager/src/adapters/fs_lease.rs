@@ -75,15 +75,54 @@ pub struct FsLeaseStore {
 }
 
 impl FsLeaseStore {
-    /// Open (and create if needed) the lease directory.
+    /// Open (and create if needed) the lease directory, releasing every
+    /// claim another process left behind.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("create lease_dir {}: {e}", dir.display()))?;
-        Ok(Self {
+        let store = Self {
             dir,
             cache: Mutex::new(HashMap::new()),
-        })
+        };
+        store.release_foreign_claims();
+        Ok(store)
+    }
+
+    /// Delete claims minted by another process (`core::lease` nonces are
+    /// `<pid>-<uuid>`). One instance owns a lease dir, so such a claim is a
+    /// worker that died mid-summary: left in place, it answered `busy` to
+    /// every compaction of that session until the TTL ran out.
+    fn release_foreign_claims(&self) {
+        let own = format!("{}-", std::process::id());
+        let Ok(scopes) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        for file in scopes
+            .flatten()
+            .filter_map(|scope| std::fs::read_dir(scope.path()).ok())
+            .flatten()
+            .flatten()
+        {
+            let path = file.path();
+            let Some(record) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|body| serde_json::from_str::<LeaseRecord>(&body).ok())
+            else {
+                continue;
+            };
+            if record.nonce.starts_with(&own) {
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    tracing::info!(path = %path.display(), "released a compaction lease left by another process")
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "could not release a stale compaction lease")
+                }
+            }
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
@@ -205,9 +244,11 @@ mod tests {
 
     const SCOPE: &str = "context_lease";
 
+    /// A claim minted by this process (`core::lease` nonce shape), so it
+    /// survives a store reopen.
     fn rec(nonce: &str, ts: i64) -> LeaseRecord {
         LeaseRecord {
-            nonce: nonce.into(),
+            nonce: format!("{}-{nonce}", std::process::id()),
             ts,
         }
     }
@@ -268,6 +309,24 @@ mod tests {
             store.swap(SCOPE, "k1", rec("n2", 2)).await.unwrap(),
             Some(rec("n1", 1))
         );
+    }
+
+    #[tokio::test]
+    async fn reopening_releases_claims_left_by_another_process() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = FsLeaseStore::new(dir.path()).unwrap();
+            let dead = LeaseRecord {
+                nonce: "4242-crashed".into(),
+                ts: 1,
+            };
+            store.set(SCOPE, "dead", Some(dead)).await.unwrap();
+            store.set(SCOPE, "mine", Some(rec("n1", 1))).await.unwrap();
+        }
+        let store = FsLeaseStore::new(dir.path()).unwrap();
+        assert_eq!(store.get(SCOPE, "dead").await.unwrap(), None);
+        assert!(!store.file_path(SCOPE, "dead").exists());
+        assert_eq!(store.get(SCOPE, "mine").await.unwrap(), Some(rec("n1", 1)));
     }
 
     #[test]

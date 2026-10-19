@@ -7,7 +7,9 @@ import { listBanks, type MemoryBank } from '@/lib/memory'
  * In-chat memory bank picker — the "which memory am I using" control.
  * Writing blogs? Pick the blog bank and its style rules + memories feed
  * every turn. Switch to coding and a different memory applies. Selecting
- * `auto` defers to the memory worker's configured default bank. Lives next
+ * `auto` lets the memory worker pick: the bank of the chat's repository or
+ * directory (the default bank's rules and memories about the user read
+ * under it), else the default bank. Lives next
  * to the composer as one compact dropdown and commits through session
  * metadata (`memory_bank`), so it applies to the NEXT turn immediately. A
  * mid-conversation switch arrives as an appended override (memory never
@@ -17,7 +19,7 @@ import { listBanks, type MemoryBank } from '@/lib/memory'
  */
 
 interface BankPickerProps {
-  /** Bank for THIS conversation; null = the worker's default bank. */
+  /** Bank for THIS conversation; null = auto (the worker picks). */
   value: string | null
   onChange: (next: string | null) => void
   disabled?: boolean
@@ -45,7 +47,8 @@ function useBankOptions(value: string | null, conciseLabels: boolean) {
     {
       value: AUTO,
       label: conciseLabels ? 'Auto' : 'memory: auto',
-      title: "use the memory worker's default bank",
+      title:
+        "let the memory worker pick: this chat's repository or directory bank, else the default bank",
     },
     ...banks.map((bank) => ({
       value: bank.name,

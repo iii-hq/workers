@@ -14,6 +14,7 @@ interface MemoryChipProps {
     bank: string
     memories: number
     memoryIds: string[]
+    memoryBanks: string[]
     rules?: number
     truncated?: boolean
     semantic?: boolean
@@ -40,8 +41,11 @@ export function MemoryChip({ memory }: MemoryChipProps) {
       setLoading(true)
       setLoadError(false)
       try {
+        // Each id from the bank holding it: a layer's live in another.
         const loaded = await Promise.all(
-          memory.memoryIds.map((id) => getMemory(memory.bank, id)),
+          memory.memoryIds.map((id, i) =>
+            getMemory(memory.memoryBanks[i] ?? memory.bank, id),
+          ),
         )
         setMemories(loaded.filter((m): m is MemoryItem => m !== null))
       } catch {

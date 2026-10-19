@@ -116,14 +116,48 @@ pub async fn reconcile(
     }
     let schema = schema_for(deps, function_id).await?;
     let compiled = JSONSchema::compile(&schema).ok()?;
-    if compiled.is_valid(arguments) || unresolvable(&compiled, arguments) {
+    let untyped = parse_untyped(&schema, &compiled, arguments);
+    let base = untyped.as_ref().map_or(arguments, |r| &r.arguments);
+    let repaired = repair(
+        deps,
+        cfg,
+        &compiled,
+        &schema,
+        function_id,
+        base,
+        description,
+    )
+    .await;
+    match (untyped, repaired) {
+        (Some(mut first), Some(rest)) => {
+            first.changes.extend(rest.changes);
+            Some(Reconciled {
+                arguments: rest.arguments,
+                changes: first.changes,
+            })
+        }
+        (untyped, repaired) => repaired.or(untyped),
+    }
+}
+
+/// Layers A and B on arguments the schema rejects.
+async fn repair(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    compiled: &JSONSchema,
+    schema: &Value,
+    function_id: &str,
+    arguments: &Value,
+    description: Option<&str>,
+) -> Option<Reconciled> {
+    if compiled.is_valid(arguments) || unresolvable(compiled, arguments) {
         return None;
     }
-    let coerced = coerce_compiled(&compiled, arguments);
+    let coerced = coerce_compiled(compiled, arguments);
     let current = coerced.as_ref().map_or(arguments, |r| &r.arguments);
     if cfg.call_reconciliation == CallReconciliation::Judge && !compiled.is_valid(current) {
         if let Some(judged) =
-            judge_layer(deps, &compiled, &schema, function_id, current, description).await
+            judge_layer(deps, compiled, schema, function_id, current, description).await
         {
             let mut changes = coerced.map(|r| r.changes).unwrap_or_default();
             changes.extend(judged.changes);
@@ -156,6 +190,59 @@ async fn schema_for(deps: &Deps, function_id: &str) -> Option<Value> {
         .find(|f| f.function_id == function_id)?
         .parameters
         .clone()
+}
+
+/// A top-level argument whose schema puts no constraint on it (`true`, or
+/// only annotations such as `description`) and that is a string holding a
+/// JSON object or array is parsed in place. The validator cannot flag it —
+/// any value passes — but a model calling a native tool with no type hint
+/// writes objects that way. A scalar string is left alone: `"5"` may be
+/// meant as a string. A call the parse would turn from valid to invalid
+/// (an `allOf` that still wants a string) keeps its arguments.
+// ponytail: top-level properties only; walk nested untyped fields if a
+// target ever needs it.
+pub fn parse_untyped(
+    schema: &Value,
+    compiled: &JSONSchema,
+    arguments: &Value,
+) -> Option<Reconciled> {
+    const ANNOTATIONS: [&str; 5] = ["description", "title", "default", "examples", "$comment"];
+    let properties = schema.get("properties")?.as_object()?;
+    let mut changes = Vec::new();
+    for (name, value) in arguments.as_object()? {
+        let untyped = match properties.get(name) {
+            Some(Value::Bool(true)) => true,
+            Some(Value::Object(keys)) => keys.keys().all(|k| ANNOTATIONS.contains(&k.as_str())),
+            _ => false,
+        };
+        let Some(parsed) = untyped.then(|| parse_embedded(value)).flatten() else {
+            continue;
+        };
+        if parsed.is_object() || parsed.is_array() {
+            changes.push(Change {
+                path: format!("/{}", name.replace('~', "~0").replace('/', "~1")),
+                kind: ChangeKind::Parsed,
+                from: value.clone(),
+                to: parsed,
+            });
+        }
+    }
+    if changes.is_empty() {
+        return None;
+    }
+    let mut current = arguments.clone();
+    for change in &changes {
+        if let Some(slot) = current.pointer_mut(&change.path) {
+            *slot = change.to.clone();
+        }
+    }
+    if !compiled.is_valid(&current) && compiled.is_valid(arguments) {
+        return None;
+    }
+    Some(Reconciled {
+        arguments: current,
+        changes,
+    })
 }
 
 /// Layer A: parse stringified JSON wherever the schema rejects the string.
@@ -897,6 +984,74 @@ mod tests {
         let paths: Vec<&str> = reconciled.changes.iter().map(|c| c.path.as_str()).collect();
         assert_eq!(paths.len(), 3);
         assert!(paths.contains(&"/regex") && paths.contains(&"/max_depth"));
+    }
+
+    #[test]
+    fn parses_json_strings_in_untyped_properties_only() {
+        // state::compare-and-set as registered: `value` is `true`, `expected`
+        // carries only annotations.
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "scope": { "type": "string" },
+                "key": { "type": "string" },
+                "expected": { "default": null, "description": "what is there" },
+                "value": true
+            },
+            "required": ["key", "scope", "value"]
+        });
+        let compiled = compile(&schema);
+        let reconciled = parse_untyped(
+            &schema,
+            &compiled,
+            &json!({ "scope": "s", "key": "{\"a\":1}", "value": "{\"item\":\"KAN-1\"}", "expected": "[1]" }),
+        )
+        .expect("untyped strings parsed");
+        assert_eq!(
+            reconciled.arguments,
+            json!({ "scope": "s", "key": "{\"a\":1}", "value": { "item": "KAN-1" }, "expected": [1] })
+        );
+        assert_eq!(reconciled.changes.len(), 2);
+
+        // Scalars and plain strings stay strings; typed properties are untouched.
+        assert_eq!(
+            parse_untyped(
+                &schema,
+                &compiled,
+                &json!({ "scope": "s", "key": "k", "value": "5" })
+            ),
+            None
+        );
+        assert_eq!(
+            parse_untyped(
+                &schema,
+                &compiled,
+                &json!({ "scope": "s", "key": "k", "value": "hello" })
+            ),
+            None
+        );
+        assert_eq!(
+            parse_untyped(
+                &schema,
+                &compiled,
+                &json!({ "scope": "s", "key": "k", "value": { "a": 1 } })
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn keeps_a_valid_call_the_parse_would_break() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "value": true },
+            "allOf": [{ "properties": { "value": { "type": "string" } } }]
+        });
+        let compiled = compile(&schema);
+        assert_eq!(
+            parse_untyped(&schema, &compiled, &json!({ "value": "{\"a\":1}" })),
+            None
+        );
     }
 
     #[test]

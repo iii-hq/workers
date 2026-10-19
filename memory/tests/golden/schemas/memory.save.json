@@ -14,7 +14,7 @@
       },
       "entities": {
         "default": [],
-        "description": "Entity handles (people/projects/tools) used as a retrieval signal.",
+        "description": "Entity handles (people/projects/tools) used as a retrieval signal. None into the default bank: `user`, read under every repository's bank.",
         "items": {
           "type": "string"
         },

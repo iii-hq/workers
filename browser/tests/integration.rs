@@ -2339,3 +2339,57 @@ async fn idle_and_expired_tabs_go_on_their_own_deadlines() {
     call("browser::sessions::stop", json!({ "session_id": idle_id })).await;
     client.shutdown_async().await;
 }
+
+/// A configured executable that passes the resolver (it is executable) but
+/// cannot run — a wrapper whose target is gone — must not read as `ok`.
+#[cfg(unix)]
+#[tokio::test]
+async fn doctor_is_not_ok_when_the_executable_prints_no_version() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let wrapper = std::env::temp_dir().join(format!(
+        "browser-integration-wrapper-{}.sh",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::write(&wrapper, "#!/bin/sh\nexec /nonexistent/chrome \"$@\"\n").unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let seed = format!(
+        "browser:\n  executable: {}\n",
+        serde_json::to_string(&wrapper.to_string_lossy()).unwrap()
+    );
+    let Some(h) = boot_seeded(&seed).await else {
+        let _ = std::fs::remove_file(&wrapper);
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let doctor = timeout(
+        Duration::from_secs(30),
+        client.trigger(TriggerRequest {
+            function_id: "browser::doctor".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10_000),
+        }),
+    )
+    .await
+    .expect("trigger timed out")
+    .expect("trigger failed");
+    // Gone before the asserts, so a failing run leaves no script behind.
+    let _ = std::fs::remove_file(&wrapper);
+
+    assert_eq!(doctor["ok"], false, "{doctor}");
+    assert!(doctor["chromium_version"].is_null(), "{doctor}");
+    assert!(
+        doctor["issues"]
+            .as_array()
+            .is_some_and(|issues| issues.iter().any(|i| i["what"]
+                .as_str()
+                .is_some_and(|what| what.contains("printed no version")))),
+        "{doctor}"
+    );
+
+    client.shutdown_async().await;
+}
