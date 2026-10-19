@@ -7,6 +7,8 @@ from pathlib import Path
 
 LEVELS = ("low", "medium", "high", "xhigh")
 WEIGHTS = {"input": 1, "cache_write": 1.25, "cache_read": 0.1, "output": 5}
+# USD per million input tokens (provider-anthropic/src/curated.rs): G3 pools models in dollars (R16)
+INPUT_USD = {"claude-opus-5-5": 4.0, "claude-sonnet-5-5": 2.0, "claude-fable-5-1": 10.0, "claude-haiku-5-5": 0.10}
 
 
 class TriggerError(Exception):

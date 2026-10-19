@@ -1,6 +1,7 @@
 """Judge prompt rows from session-manager corpora: python3 -I extract.py <out_dir> <dir>..."""
 
 import hashlib
+import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -9,6 +10,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
 
 NOTIFICATION = "[notification]"
+
+
+def effective(level: str | None) -> str | None:
+    """The level a thinking_level runs at: provider-anthropic's effort_for sends minimal and off as low."""
+    return "low" if level in ("minimal", "off") else level
+
+
+def turn_levels(state_file: Path, session_ids: set[str]) -> dict[str, str]:
+    """The level each session's latest harness turn ran at, from a state store file (R10).
+
+    The file holds the turn records as JSON among binary framing, `"<session id>":{…,"options":{…,"thinking_level":…}}`,
+    each alone in braces or as one key of a map. The last record that decodes wins. An id with no record or a null level
+    is left out, and a missing file gives {}.
+    """
+    try:
+        text = Path(state_file).read_bytes().decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return {}
+    decoder, levels = json.JSONDecoder(), {}
+    for sid in session_ids:
+        key, level = f'"{sid}":', None
+        at = text.find(key)
+        while at != -1:
+            try:
+                level = decoder.raw_decode(text, at + len(key))[0]["options"]["thinking_level"]
+            except (ValueError, KeyError, TypeError):
+                pass  # no turn record starts there
+            at = text.find(key, at + 1)
+        if level:
+            levels[sid] = effective(level)
+    return levels
 
 
 def text(message: dict) -> str:
@@ -44,6 +76,7 @@ def session_rows(path: Path, source: str) -> list[dict]:
     if meta.get("kind", "user") != "user":  # e2e and automation sessions are scripted; the store's default is user
         return []
     metadata = meta.get("metadata") or {}
+    level = effective(metadata.get("thinking_level"))  # prompts() prefers the session's turn record
     sid = meta.get("session_id", path.stem)
     child = bool(metadata.get("parent_session_id"))
     turns = []  # (start message, its assistant messages, context, gap_ms)
@@ -82,7 +115,8 @@ def session_rows(path: Path, source: str) -> list[dict]:
                 "message": text(m)[:4000],
                 "context": context,
                 "model": (steps[0].get("model") if steps else None) or metadata.get("model"),
-                "level": metadata.get("thinking_level"),
+                "level": level,
+                "level_source": "metadata" if level else None,
                 "gap_ms": gap_ms,
                 "cost_units": sum((common.units(step.get("usage")) for step in window), 0.0),
                 "steps": len(steps),
@@ -96,12 +130,16 @@ def prompts(dirs: list[Path]) -> list[dict]:
     rows, seen = [], set()
     for d in map(Path, dirs):
         source = d.absolute().parent.parent.name
-        for path in sorted(d.glob("*.jsonl")):
-            for row in session_rows(path, source):
-                key = (row["slice"], row["message"])
-                if key not in seen:
-                    seen.add(key)
-                    rows.append(row)
+        found = [row for path in sorted(d.glob("*.jsonl")) for row in session_rows(path, source)]
+        # R10: a session ran at its latest harness turn's level, which the state store beside the corpus keeps
+        levels = turn_levels(d.absolute().parent / "state" / "harness_turn.bin", {row["session_id"] for row in found})
+        for row in found:
+            if row["session_id"] in levels:
+                row |= {"level": levels[row["session_id"]], "level_source": "turn_record"}
+            key = (row["slice"], row["message"])
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
     return rows
 
 
@@ -114,6 +152,9 @@ def main(argv: list[str]) -> None:
         print(f"{slice_}\t{source}\t{n}")
     for slice_, n in sorted(Counter(r["slice"] for r in rows).items()):
         print(f"{slice_}\ttotal\t{n}")
+    levels = Counter((r["slice"], r["level_source"], r["level"]) for r in rows)
+    for (slice_, source, level), n in sorted(levels.items(), key=str):  # str: None sorts too
+        print(f"{slice_}\t{source}\t{level}\t{n}")
 
 
 if __name__ == "__main__":

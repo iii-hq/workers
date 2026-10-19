@@ -20,15 +20,16 @@ import label  # noqa: E402
 G1_RIGHT = 0.90
 G1_LOW = 0.03
 G1_P95_MS = 1500
+G1_LABELLED = 0.90  # R18: G1 is INCOMPLETE until labels cover this share of each G1 slice (the holdout is all labelled)
 G2_RETENTION = 0.9
 G3_SAVING = -0.10
 G3_COST_CAP = 0.10
 G3_HARD_GAIN = 2  # more hard-task A/B passes than at medium, out of the 12 hard runs
 WARM_MS = 300_000
 JUDGES = ("typesafe", "haiku")  # the other arms are baselines: graded, but never the G1 winner
-# USD per million input tokens (provider-anthropic/src/curated.rs), which price a judge's tokens in a row model's units
-INPUT_USD = {"claude-opus-5-5": 4.0, "claude-sonnet-5-5": 2.0, "claude-fable-5-1": 10.0, "claude-haiku-5-5": 0.10}
-JUDGE_MODELS = {"haiku": "claude-haiku-5-5"}  # Jev (typesafe) has no published price
+# the catalog model whose input price (common.INPUT_USD) prices a judge's tokens; R16: Jev (typesafe) has no published
+# price, so it is assumed to cost Haiku 5.5's
+JUDGE_MODELS = {"haiku": "claude-haiku-5-5", "typesafe": "claude-haiku-5-5"}
 SLICES = ("top", "child", "effortless", "effortless-holdout")
 G1_SLICES = ("top", "effortless-holdout")
 HARD_TASKS = ("c", "d")
@@ -82,7 +83,7 @@ def model_id(model: str | None) -> str:
 def modeled_cost(row: dict, picked: str, ratios: dict, flip_safe: set[str], flipped_warm: bool) -> float:
     """The turn's cost at the picked level, plus the cache rewrite of a warm flip on a model that is not flip-safe."""
     model = model_id(row["model"])
-    cost = row["cost_units"] * ratios[model][picked] / ratios[model][row["level"] or "medium"]
+    cost = row["cost_units"] * ratios[model][picked] / ratios[model][row["level"]]
     if flipped_warm and model not in flip_safe:
         cost += row["first_read"] * (common.WEIGHTS["cache_write"] - common.WEIGHTS["cache_read"])
     return cost
@@ -91,9 +92,9 @@ def modeled_cost(row: dict, picked: str, ratios: dict, flip_safe: set[str], flip
 def judge_units(arm: str, tokens: int, model: str) -> float:
     """A verdict's judge tokens in units of the row's model: tokens × the judge's input price over the model's.
 
-    Without both prices (Jev, a model off the catalog) they count 1:1, which overstates a judge cheaper than the model.
+    Without both prices (a model off the catalog) they count 1:1, which overstates a judge cheaper than the model.
     """
-    judge, row = INPUT_USD.get(JUDGE_MODELS.get(arm)), INPUT_USD.get(model)
+    judge, row = common.INPUT_USD.get(JUDGE_MODELS.get(arm)), common.INPUT_USD.get(model)
     return tokens * judge / row if judge and row else float(tokens)
 
 
@@ -124,19 +125,23 @@ def judged(arm: str, corpus: list[dict], verdicts: dict) -> list[dict]:
 
 
 def costs(arm: str, corpus: list[dict], verdicts: dict, ratios: dict, safe: set[str]) -> dict[str, dict]:
-    """Per model id: judged rows, and actual and modeled cost units of the rows with a ratio at both levels."""
+    """Per model id: judged rows, and actual and modeled cost units of the rows with a ratio at both levels.
+
+    A row whose session level is unknown is left out: its cost cannot be scaled from a level, and is never assumed to
+    be medium's (report() counts those rows).
+    """
     turns = judged(arm, corpus, verdicts)
     warm = {f["id"] for f in flips(turns) if f["warm"]}
     picked = {t["id"]: t["level"] for t in turns}
     out = defaultdict(lambda: {"rows": 0, "priced": 0, "actual": 0.0, "modeled": 0.0})
     for row in corpus:
-        if (pick := picked.get(row["id"])) is None:
+        if (pick := picked.get(row["id"])) is None or row["level"] is None:
             continue
         model = model_id(row["model"])
         c = out[model]
         c["rows"] += 1
         levels = ratios.get(model, {})
-        if pick in levels and (row["level"] or "medium") in levels:
+        if pick in levels and row["level"] in levels:
             c["priced"] += 1
             c["actual"] += row["cost_units"]
             cost = modeled_cost(row, pick, ratios, safe, row["id"] in warm)
@@ -165,14 +170,16 @@ def g3(
     if gaps:
         return False, "INCOMPLETE: " + "; ".join(gaps)
     per_model = costs(winner, corpus, verdicts, ratios, safe)
-    priced = [c for model, c in per_model.items() if model in ratios]
+    # R16: the models pool in USD, each one's units at its input price; a model with ratios but no price leaves G3 open
+    pooled = [(c, common.INPUT_USD[m] / 1e6) for m, c in per_model.items() if m in ratios and m in common.INPUT_USD]
+    gaps += [f"{model}: no input price" for model in per_model if model in ratios and model not in common.INPUT_USD]
     gaps += [
         f"{model}: {c['rows'] - c['priced']} rows at a level without a ratio"
         for model, c in per_model.items()
         if model in ratios and c["priced"] < c["rows"]
     ]
-    actual, n = sum(c["actual"] for c in priced), sum(c["priced"] for c in priced)
-    delta = sum(c["modeled"] for c in priced) / actual - 1 if actual else None
+    actual, n = sum(c["actual"] * usd for c, usd in pooled), sum(c["priced"] for c, _ in pooled)
+    delta = sum(c["modeled"] * usd for c, usd in pooled) / actual - 1 if actual else None
     left_out = ", ".join(f"{model} {c['rows']}" for model, c in per_model.items() if model not in ratios)
     cost = "no priced corpus cost" if delta is None else f"modeled cost {delta:+.1%} on {n} rows"
     if delta is None:
@@ -218,8 +225,12 @@ def gates(
     """
     ok = {r["id"]: r["ok"] for r in rows if r.get("ok")}
     in_g1 = {r["id"] for r in rows if r["slice"] in G1_SLICES}
-    # the preregistered population is top plus the holdout: no arm passes while one of them has no labels
-    unlabelled = [s for s in G1_SLICES if not any(r["id"] in ok for r in rows if r["slice"] == s)]
+    # R18: the preregistered population is top plus the holdout, and labels on part of it decide nothing: no arm is
+    # graded until labels cover G1_LABELLED of each
+    cover = {s: [r["id"] in ok for r in rows if r["slice"] == s] for s in G1_SLICES}
+    short = [
+        f"{sum(has)}/{len(has)} {s} rows" for s, has in cover.items() if not has or sum(has) / len(has) < G1_LABELLED
+    ]
     arms = list(dict.fromkeys(arm for _, arm in verdicts))
     lines, passing = [], []
     for arm in [*JUDGES, *(a for a in arms if a not in JUDGES)]:
@@ -229,18 +240,19 @@ def gates(
         if s is None:
             lines.append(f"{name}: no verdicts")
         elif not s["labelled"]:
-            lines.append(f"{name} FAIL: no labelled rows")
+            lines.append(f"{name}{'' if short else ' FAIL'}: no labelled rows")
         else:
-            passed = not unlabelled and s["right"] >= G1_RIGHT and s["low"] <= G1_LOW and s["p95"] <= G1_P95_MS
+            passed = s["right"] >= G1_RIGHT and s["low"] <= G1_LOW and s["p95"] <= G1_P95_MS
             if passed and arm in JUDGES:
                 passing.append((s["right"], -s["low"], arm))
+            grade = "" if short else " PASS" if passed else " FAIL"
             lines.append(
-                f"{name} {'PASS' if passed else 'FAIL'} right {s['right']:.1%} low {s['low']:.1%} p95 {s['p95']} ms"
+                f"{name}{grade} right {s['right']:.1%} low {s['low']:.1%} p95 {s['p95']} ms"
                 f" on {s['labelled']} labelled of {s['rows']} rows"
             )
-    winner = max(passing)[2] if passing else None
-    if unlabelled:
-        head = f"FAIL: no labels for {', '.join(unlabelled)} (label.py --run)."
+    winner = max(passing)[2] if passing and not short else None
+    if short:
+        head = f"INCOMPLETE: labels cover {', '.join(short)} (need {G1_LABELLED:.0%})."
     else:
         head = f"PASS: winner {winner}." if winner else "FAIL: no judge arm passes."
     safe = safe_models(cache or [])
@@ -314,6 +326,20 @@ def report(
             out.append(f"| {arm} | {warm} | {len(changes) - warm} |")
 
     out += ["", "## Modeled cost", ""]
+    unknown = defaultdict(list)
+    for row in corpus:
+        if row["level"] is None:
+            unknown[row["slice"], model_id(row["model"])].append(row["cost_units"])
+    if unknown:
+        out += [
+            "Left out of G3: rows whose session level is unknown, with no turn record or metadata level. They are never"
+            " assumed to run at medium.",
+            "",
+            "| slice | model | rows | units |",
+            "|---|---|--:|--:|",
+            *(f"| {s} | {m} | {len(units)} | {sum(units):,.0f} |" for (s, m), units in sorted(unknown.items())),
+            "",
+        ]
     if ratios is None:
         out.append("Skipped: no ratios.json yet (ab.py --run).")
     elif not (corpus and verdicts):
@@ -321,21 +347,24 @@ def report(
     else:
         safe = safe_models(cache or [])
         out += [
-            "Corpus cost units per model under each arm, against the levels the sessions ran. A row's cost runs to the"
-            " next prompt row of its session, so it holds the wakes and notices its pick governs. Judge tokens are"
-            " priced at the judge's input price over the model's (Haiku from the provider catalog; Jev, with no"
-            " published price, 1:1), and a warm flip pays its cache rewrite unless the model is flip-safe"
-            f" ({', '.join(sorted(safe)) or 'none'}). Rows whose model or level has no ratio are not priced.",
+            "Corpus cost per model under each arm, in USD at the model's input price, against the levels the sessions"
+            " ran; G3 pools the priced models' dollars (R16). A row's cost runs to the next prompt row of its session,"
+            " so it holds the wakes and notices its pick governs. Judge tokens are priced at the judge's input price"
+            " from the provider catalog. Jev priced at Haiku 5.5 input rate (assumption): TypeSafe publishes no price."
+            " A warm flip pays its cache rewrite unless the model is flip-safe"
+            f" ({', '.join(sorted(safe)) or 'none'}). Rows whose model or level has no ratio, or whose model has no"
+            " price, are not priced.",
             "",
-            "| arm | model | rows | priced | actual | modeled | delta |",
+            "| arm | model | rows | priced | actual USD | modeled USD | delta |",
             "|---|---|--:|--:|--:|--:|--:|",
         ]
         for arm in arms:
             for model, c in sorted(costs(arm, corpus, verdicts, ratios, safe).items()):
-                units = "– | – | –"
-                if c["actual"]:
-                    units = f"{c['actual']:.0f} | {c['modeled']:.0f} | {c['modeled'] / c['actual'] - 1:+.1%}"
-                out.append(f"| {arm} | {model} | {c['rows']} | {c['priced']} | {units} |")
+                price, usd = common.INPUT_USD.get(model), "– | – | –"
+                if c["actual"] and price:
+                    actual, modeled = c["actual"] * price / 1e6, c["modeled"] * price / 1e6
+                    usd = f"${actual:,.2f} | ${modeled:,.2f} | {modeled / actual - 1:+.1%}"
+                out.append(f"| {arm} | {model} | {c['rows']} | {c['priced']} | {usd} |")
     return "\n".join(out) + "\n"
 
 

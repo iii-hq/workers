@@ -188,6 +188,39 @@ class ExtractTest(unittest.TestCase):
         got = [(r["slice"], r["message"], r["cost_units"]) for r in self.rows()]
         self.assertEqual(got, [("child", "build it", 10.0), ("top", "do X", 20.0)])
 
+    def test_turn_levels_reads_embedded_records(self):
+        path = self.dir.parent / "state" / "harness_turn.bin"
+        path.parent.mkdir()
+        records = (
+            b'{"s_a":{"options":{"thinking_level":"high"}}}',
+            b'{"console-x":{"options":{"thinking_level":"minimal"}}}',
+            b'{"s_a":{"options":{"thinking_level":"medium"}}}',
+        )
+        path.write_bytes(b"\x00\x93junk".join([b"\xff\x01", *records, b"\x07"]))
+        want = {"s_a": "medium", "console-x": "low"}
+        self.assertEqual(extract.turn_levels(path, {"s_a", "console-x", "s_missing"}), want)
+        # a store holds one map of every session's latest turn, where a record past the first follows a comma
+        records = (
+            b'"s_m":{"options":{"thinking_level":"off"}}',
+            b'"s_n":{"options":{"thinking_level":null}}',
+            b'"s_o":{"options":{"thinking_level":"high"}}',
+        )
+        path.write_bytes(b"{" + b",".join(records) + b"}\x05\x00")
+        self.assertEqual(extract.turn_levels(path, {"s_m", "s_n", "s_o"}), {"s_m": "low", "s_o": "high"})
+        self.assertEqual(extract.turn_levels(path.with_name("missing.bin"), {"s_a"}), {})
+
+    def test_row_level_prefers_turn_record(self):
+        state = self.dir.parent / "state"
+        state.mkdir()
+        (state / "harness_turn.bin").write_bytes(b'{"s1":{"options":{"thinking_level":"high"}}}\x00')
+        self.write("s1", [user("u1", "do X", 0)], thinking_level="medium")
+        self.write("s2", [user("u1", "do Y", 0)], thinking_level="medium")
+        self.write("s3", [user("u1", "do Z", 0)])
+        self.write("s4", [user("u1", "do W", 0)], thinking_level="minimal")  # runs as low
+        got = [(r["session_id"], r["level"], r["level_source"]) for r in self.rows()]
+        want = [("s1", "high", "turn_record"), ("s2", "medium", "metadata"), ("s3", None, None)]
+        self.assertEqual(got, [*want, ("s4", "low", "metadata")])
+
 
 class CommonTest(unittest.TestCase):
     def test_write_jsonl_keeps_the_old_file_when_stopped_mid_write(self):
@@ -508,8 +541,8 @@ class AnalyzeTest(unittest.TestCase):
 
     def test_judge_tokens_at_the_judge_price(self):
         """Judge tokens join the modeled cost in units of the row's model: Haiku's at $0.10 against Opus's $4 per
-        million input tokens; Jev has no published price, so its tokens count 1:1."""
-        row = {"id": "t0", "session_id": "s1", "seq": 0, "model": "claude-code/claude-opus-5-5", "level": None}
+        million input tokens, and Jev's at Haiku's rate too, until TypeSafe publishes a price (R16)."""
+        row = {"id": "t0", "session_id": "s1", "seq": 0, "model": "claude-code/claude-opus-5-5", "level": "medium"}
         row |= {"cost_units": 1000.0, "first_read": 0, "gap_ms": None}
         picks = [verdict_row("t0", "haiku", "medium", tokens=4000), verdict_row("t0", "typesafe", "medium", tokens=40)]
         ratios = {"claude-opus-5-5": {"medium": 1.0}}
@@ -517,12 +550,12 @@ class AnalyzeTest(unittest.TestCase):
         def modeled(arm: str) -> float:
             return analyze.costs(arm, [row], keyed(picks), ratios, set())["claude-opus-5-5"]["modeled"]
 
-        self.assertEqual((modeled("haiku"), modeled("typesafe")), (1000.0 + 100.0, 1000.0 + 40.0))
+        self.assertEqual((modeled("haiku"), modeled("typesafe")), (1000.0 + 100.0, 1000.0 + 1.0))
 
     def test_g1_wants_a_judge_arm_on_labelled_rows(self):
         rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["medium"]} for i in range(20)]
-        rows += [{"id": "t0", "slice": "top", "ok": ["medium"]}, {"id": "t1", "slice": "top"}]
-        rows += [{"id": "c0", "slice": "child", "ok": ["low"]}]
+        rows += [{"id": f"t{i}", "slice": "top", "ok": ["medium"]} for i in range(9)]
+        rows += [{"id": "t9", "slice": "top"}, {"id": "c0", "slice": "child", "ok": ["low"]}]  # top 90% labelled
         haiku = [verdict_row("h0", "haiku", "high", ms=3000)]  # one pick too high, and the one slow call of 20
         haiku += [verdict_row(f"h{i}", "haiku", "medium", ms=700) for i in range(1, 20)]
         typesafe = [verdict_row(f"h{i}", "typesafe", "medium", ms=1600) for i in range(20)]
@@ -548,15 +581,30 @@ class AnalyzeTest(unittest.TestCase):
         passed, text = g1(baseline)  # a baseline that clears the bars is shown, but never wins G1
         self.assertFalse(passed)
         self.assertIn("always-medium (baseline) PASS right 100.0%", text)
-        unlabelled = [verdict_row("t1", "haiku", "medium"), verdict_row("c0", "haiku", "low")]  # child is no G1 slice
+        unlabelled = [verdict_row("t9", "haiku", "medium"), verdict_row("c0", "haiku", "low")]  # child is no G1 slice
         want = (False, "FAIL: no judge arm passes. typesafe: no verdicts; haiku FAIL: no labelled rows")
         self.assertEqual(g1(unlabelled), want)
-        no_top_labels = [r for r in rows if r["id"] != "t0"]  # the holdout alone is not the preregistered population
-        passed, text = g1(typesafe + baseline + haiku, no_top_labels)
+        fewer_top_labels = [r for r in rows if r["id"] != "t0"]  # 8 of 9: labels on part of top decide nothing (R18)
+        passed, text = g1(typesafe + baseline + haiku, fewer_top_labels)
         self.assertFalse(passed)
-        self.assertTrue(text.startswith("FAIL: no labels for top (label.py --run). typesafe FAIL "), text)
-        self.assertIn("haiku FAIL right 95.0% low 0.0% p95 700 ms on 20 labelled of 20 rows", text)
+        self.assertTrue(text.startswith("INCOMPLETE: labels cover 8/9 top rows (need 90%). typesafe right "), text)
+        self.assertIn("haiku right 95.0% low 0.0% p95 700 ms on 20 labelled of 20 rows", text)
         self.assertFalse(g1(haiku, rows[:20])[0])  # nor with no top rows at all, before extract.py
+
+    def test_g1_incomplete_below_label_coverage(self):
+        """R18: G1 grades no arm until labels cover 90% of the top rows."""
+        rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["medium"]} for i in range(20)]
+        top = [{"id": f"t{i}", "slice": "top"} for i in range(10)]
+        haiku = keyed([verdict_row(r["id"], "haiku", "medium", ms=700) for r in rows + top])
+
+        def g1(labelled: int) -> tuple[bool, str]:
+            labels = [dict(r, ok=["medium"]) if i < labelled else r for i, r in enumerate(top)]
+            return analyze.gates(rows + labels, haiku, None, None, None)["G1"]
+
+        arm = "haiku{} right 100.0% low 0.0% p95 700 ms on {} labelled of 30 rows"
+        want = "INCOMPLETE: labels cover 8/10 top rows (need 90%). typesafe: no verdicts; " + arm.format("", 28)
+        self.assertEqual(g1(8), (False, want))
+        self.assertEqual(g1(9), (True, "PASS: winner haiku. typesafe: no verdicts; " + arm.format(" PASS", 29)))
 
     def test_g2_counts_valid_pairs_only(self):
         def pair(model: str, retention: float | None, invalid: str | None = None) -> dict:
@@ -573,12 +621,13 @@ class AnalyzeTest(unittest.TestCase):
         want = (False, "INCOMPLETE: no cache.jsonl yet, so no model is flip-safe")
         self.assertEqual(analyze.gates([], {}, None, None, None)["G2"], want)
 
+    @mock.patch.dict("common.INPUT_USD", {"m": 0.10})  # priced as Haiku, so its judge tokens count 1:1
     def test_g3_value_needs_every_input(self):
         rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["low"]} for i in range(20)]
-        turn = {"slice": "top", "session_id": "s1", "model": "claude-code/m", "level": None, "cost_units": 1000.0}
-        rows.append(dict(turn, id="c0", seq=0, gap_ms=None, first_read=0, ok=["low"]))  # G1 needs a labelled top row
-        rows.append(dict(turn, id="c1", seq=1, gap_ms=60_000, first_read=500))
-        rows.append(dict(turn, id="g0", seq=2, gap_ms=60_000, first_read=500, model="gpt-x"))  # no ratios: left out
+        turn = {"slice": "top", "session_id": "s1", "model": "claude-code/m", "level": "medium", "cost_units": 1000.0}
+        rows.append(dict(turn, id="c0", seq=0, gap_ms=None, first_read=0, ok=["low"]))  # G1 needs labelled top rows
+        rows.append(dict(turn, id="c1", seq=1, gap_ms=60_000, first_read=500, ok=["low"]))
+        rows.append(dict(turn, id="g0", seq=2, gap_ms=60_000, first_read=500, model="gpt-x", ok=["high"]))  # no ratios
         picks = {"c0": "low", "c1": "low", "g0": "high", "ab-m-a": "low", "ab-m-c": "high"}
         picks |= {f"h{i}": "low" for i in range(20)}
         verdicts = [verdict_row(rid, "haiku", level, ms=500, tokens=10) for rid, level in picks.items()]
@@ -618,6 +667,40 @@ class AnalyzeTest(unittest.TestCase):
         self.assertTrue(g3(no_pick)[1].startswith("INCOMPLETE: no haiku verdict for ab-m-c. "))
         xhigh = verdicts + [verdict_row("c1", "haiku", "xhigh")]  # the A/B measured no xhigh cost
         self.assertTrue(g3(xhigh)[1].startswith("INCOMPLETE: m: 1 rows at a level without a ratio. "))
+        with mock.patch.dict(common.INPUT_USD):  # dollars pool models, so a model with no price leaves G3 open
+            del common.INPUT_USD["m"]
+            self.assertTrue(g3()[1].startswith("INCOMPLETE: m: no input price; no priced corpus cost. "))
+
+    def test_g3_skips_unknown_level_rows(self):
+        """A row whose session level is unknown is left out of G3, never assumed medium, and the report counts it."""
+        turn = {"slice": "top", "model": "claude-opus-5-5", "cost_units": 1_000_000.0, "first_read": 0, "gap_ms": None}
+        corpus = [dict(turn, id="t0", session_id="s1", seq=0, level="medium")]
+        corpus.append(dict(turn, id="u0", session_id="s2", seq=0, level=None))
+        picks = [verdict_row("t0", "haiku", "low"), verdict_row("u0", "haiku", "high")]
+        verdicts = keyed([*picks, verdict_row("ab-claude-opus-5-5-a", "haiku", "medium")])
+        ratios = {"claude-opus-5-5": {"low": 0.7, "medium": 1.0, "high": 1.3}}
+        ab = [{"model": "claude-opus-5-5", "level": "medium", "task": "a", "run": 0, "pass": True}]
+        _, text = analyze.g3("haiku", corpus, verdicts, set(), ratios, ab)
+        self.assertTrue(text.startswith("PASS: haiku: modeled cost -30.0% on 1 rows; "), text)  # u0 at medium: +0.0%
+        report = analyze.report(corpus, verdicts, None, ratios, ab)
+        self.assertIn("| top | claude-opus-5-5 | 1 | 1,000,000 |", report)
+
+    def test_g3_pools_models_in_dollars(self):
+        """G3 pools models at their input prices (R16): opus at -20% outweighs sonnet at +20% on equal units."""
+        turn = {"slice": "top", "seq": 0, "level": "medium", "cost_units": 1_000_000.0, "first_read": 0, "gap_ms": None}
+        corpus = [dict(turn, id="o0", session_id="s1", model="claude-opus-5-5")]
+        corpus.append(dict(turn, id="n0", session_id="s2", model="claude-code/claude-sonnet-5-5"))
+        picks = [verdict_row("o0", "haiku", "low"), verdict_row("n0", "haiku", "high")]
+        verdicts = keyed([*picks, verdict_row("ab-claude-opus-5-5-a", "haiku", "medium")])
+        ratios = {"claude-opus-5-5": {"low": 0.8, "medium": 1.0}, "claude-sonnet-5-5": {"medium": 1.0, "high": 1.2}}
+        ab = [{"model": "claude-opus-5-5", "level": "medium", "task": "a", "run": 0, "pass": True}]
+        _, text = analyze.g3("haiku", corpus, verdicts, set(), ratios, ab)
+        pooled = (-0.2 * 4.0 + 0.2 * 2.0) / (4.0 + 2.0)  # -6.67%, where pooling units would give 0%
+        self.assertTrue(text.startswith(f"FAIL: haiku: modeled cost {pooled:+.1%} on 2 rows; "), text)
+        report = analyze.report(corpus, verdicts, None, ratios, ab)
+        self.assertIn("| haiku | claude-opus-5-5 | 1 | 1 | $4.00 | $3.20 | -20.0% |", report)
+        self.assertIn("| haiku | claude-sonnet-5-5 | 1 | 1 | $2.00 | $2.40 | +20.0% |", report)
+        self.assertIn("Jev priced at Haiku 5.5 input rate (assumption)", report)
 
     def test_report_skips_missing_inputs(self):
         tmp = tempfile.TemporaryDirectory()
@@ -639,17 +722,17 @@ class AnalyzeTest(unittest.TestCase):
         text = report()
         self.assertIn("No labels for: top.", text)
         self.assertIn("| always-medium | top | 2 | 0 | – | – | – | 0.0% | 0 | 0 | 0 |", text)
-        self.assertIn("- G1 FAIL: no labels for top (label.py --run). ", text)
-        self.assertIn("always-medium (baseline) FAIL right 0.0% low 100.0%", text)  # eff-h15 wants high
+        self.assertIn("- G1 INCOMPLETE: labels cover 0/2 top rows (need 90%). ", text)
+        self.assertIn("always-medium (baseline) right 0.0% low 100.0%", text)  # eff-h15 wants high
         self.assertIn("- G2 INCOMPLETE: ", text)
         self.assertIn("- G3 INCOMPLETE: no judge arm passes G1; no ratios.json; no ab.jsonl", text)
         self.assertIn("| always-medium | 0 | 0 |", text)  # no flips: the stale low row for t0 is gone
         self.assertIn("Skipped: no ratios.json yet", text)
-        common.write_jsonl(out / "labels.jsonl", [{"id": "t0", "ok": ["low"], "agreed": True}])
+        common.write_jsonl(out / "labels.jsonl", [{"id": rid, "ok": ["low"], "agreed": True} for rid in ("t0", "t1")])
         text = report()
         self.assertNotIn("No labels for", text)
         self.assertIn("- G1 FAIL: no judge arm passes. ", text)
-        self.assertIn("| always-medium | top | 2 | 1 | 0.0% | 0.0% | 100.0% |", text)
+        self.assertIn("| always-medium | top | 2 | 2 | 0.0% | 0.0% | 100.0% |", text)
 
 
 class CacheProbeTest(unittest.TestCase):
