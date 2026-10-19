@@ -187,4 +187,28 @@ export const CONNECTION_CASES: TestCase[] = [
       expectEqual(missing, null, 'an unknown connection resolves to null')
     },
   },
+  {
+    name: 'a redacted password round-trips through getConnection, testConnection and saveConnection',
+    applies: ['pg_db'],
+    async run({ driver, call }) {
+      const got = await call('database::getConnection', { name: driver })
+      const url = String(got.connection.url)
+      expect(url.includes('__redacted__'), `the url password is redacted: ${url}`)
+      const tested = await call('database::testConnection', { connection: got.connection, name: driver })
+      expectEqual(tested.ok, true, `the stored password is used for the test: ${tested.message}`)
+      const unnamed = await call('database::testConnection', { connection: got.connection })
+      expectEqual(unnamed.ok, false, 'without name the placeholder cannot resolve')
+      expectEqual(unnamed.stage, 'config', 'at the config stage')
+      const saved = await call('database::saveConnection', {
+        name: driver,
+        previous_name: driver,
+        connection: got.connection,
+      })
+      expectEqual(saved.saved, true, 'saved in place')
+      const q = await call('database::query', { db: driver, sql: 'SELECT 1 AS one' })
+      expectEqual(Number(q.rows[0].one), 1, 'the stored password was kept')
+      const again = await call('database::getConnection', { name: driver })
+      expectEqual(again.connection.url, got.connection.url, 'still redacted the same way')
+    },
+  },
 ]

@@ -377,7 +377,10 @@ async fn main() -> Result<()> {
                  secret:// values) with one throwaway connection. Configured pools are \
                  untouched; reports ok/driver/latency/server version, the failing stage and \
                  the SSH host key; failures are data, not errors.",
-            ),
+            )
+            // Candidate credentials ride these payloads: no observer may
+            // subscribe to them.
+            .observe(iii_sdk::Observe::auto().allow(false)),
         );
     }
     {
@@ -395,7 +398,10 @@ async fn main() -> Result<()> {
             .description(
                 "Read one stored connection entry for editing: references and templates \
                  intact, literal passwords, passphrases and keys as \"__redacted__\".",
-            ),
+            )
+            // Candidate credentials ride these payloads: no observer may
+            // subscribe to them.
+            .observe(iii_sdk::Observe::auto().allow(false)),
         );
     }
     {
@@ -414,7 +420,10 @@ async fn main() -> Result<()> {
                 "Create, update (previous_name = name) or rename (previous_name = old) a \
                  connection in the database configuration; \"__redacted__\" keeps a stored \
                  value. Returns after the pools reloaded, with the connection's error if any.",
-            ),
+            )
+            // Candidate credentials ride these payloads: no observer may
+            // subscribe to them.
+            .observe(iii_sdk::Observe::auto().allow(false)),
         );
     }
     {

@@ -916,3 +916,62 @@ async fn an_unresolvable_secret_fails_only_its_connection() {
         "{err}"
     );
 }
+
+/// The tunnel reopens its SSH session after the server drops it. Restarts
+/// the bastion container it is given, so it never runs against a shared one:
+/// set `DATABASE_E2E_RESTARTABLE_BASTION` (a container name, restarted with
+/// `sg docker -c "docker restart …"`) and `…_PORT` (its host port), a copy of
+/// the env's bastion on the env's default network.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_ssh_session_reconnects_on_the_next_connection() {
+    let dir = env_or_skip!();
+    let (Ok(container), Ok(port)) = (
+        std::env::var("DATABASE_E2E_RESTARTABLE_BASTION"),
+        std::env::var("DATABASE_E2E_RESTARTABLE_BASTION_PORT"),
+    ) else {
+        eprintln!("skipping: no restartable bastion");
+        return;
+    };
+    let port: u16 = port.parse().unwrap();
+    let st = state(json!({ "tunneled": {
+        "driver": "postgres", "host": "pg", "port": 5432, "user": "shop", "password": PG_PW,
+        "database": "shop", "tls": { "mode": "verify-full", "ca_cert": file(&dir, "tls/ca.crt") },
+        "pool": { "max": 2, "idle_timeout_ms": 1000, "acquire_timeout_ms": 15000 },
+        "ssh": { "host": "127.0.0.1", "port": port, "user": "tunnel",
+                 "private_key": file(&dir, "ssh/id_ed25519") } } }))
+    .await;
+    let instance = "SELECT value FROM server_info WHERE key = 'instance'";
+    assert_eq!(
+        q(&st, "tunneled", instance).await.unwrap().rows[0]["value"],
+        json!("pg-public")
+    );
+
+    let restarted = std::process::Command::new("sg")
+        .args(["docker", "-c", &format!("docker restart {container}")])
+        .output()
+        .unwrap();
+    assert!(restarted.status.success(), "{restarted:?}");
+    // Wait for sshd to listen again.
+    for _ in 0..60 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // A pooled connection that rode the dead session may fail once; a fresh
+    // one reconnects the session.
+    let mut answered = false;
+    for _ in 0..5 {
+        if let Ok(resp) = q(&st, "tunneled", instance).await {
+            assert_eq!(resp.rows[0]["value"], json!("pg-public"));
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(
+        answered,
+        "the tunnel did not come back after the bastion restarted"
+    );
+}
