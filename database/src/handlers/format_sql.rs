@@ -139,8 +139,9 @@ pub fn format(
         ..Default::default()
     };
     let formatted = sqlformat::format(&protected.text, &QueryParams::None, &options);
+    let recased = recase(&formatted, driver, uppercase);
     Ok(restore(
-        &recase(&formatted, driver, uppercase),
+        &restore_comments(&recased, &protected.blocks, &protected.trailing),
         &protected.kept,
     ))
 }
@@ -151,11 +152,27 @@ fn placeholder(n: usize) -> String {
     format!("'{MARK}{n}__'")
 }
 
+/// A multi-line block comment, kept as a one-line comment so the formatter
+/// cannot re-indent its interior.
+fn block_placeholder(n: usize) -> String {
+    format!("/*{MARK}b{n}__*/")
+}
+
+/// A line comment that trailed a `;` on its line. The formatter would move
+/// it to a line of its own after the statement break; it goes back.
+fn trailing_placeholder(n: usize) -> String {
+    format!("/*{MARK}t{n}__*/")
+}
+
 struct Protected {
     /// The input with every literal replaced by a placeholder.
     text: String,
     /// The literals, by placeholder number.
     kept: Vec<String>,
+    /// Multi-line block comments, by [`block_placeholder`] number.
+    blocks: Vec<String>,
+    /// Line comments that trailed a `;`, by [`trailing_placeholder`] number.
+    trailing: Vec<String>,
     /// Deepest parenthesis nesting outside literals and comments.
     max_depth: usize,
 }
@@ -171,11 +188,15 @@ fn protect(sql: &str, driver: Option<DriverKind>) -> Protected {
         return Protected {
             text: sql.to_string(),
             kept: Vec::new(),
+            blocks: Vec::new(),
+            trailing: Vec::new(),
             max_depth: paren_depth(sql),
         };
     }
     let mut out = String::with_capacity(sql.len());
     let mut kept = Vec::new();
+    let mut blocks: Vec<String> = Vec::new();
+    let mut trailing: Vec<String> = Vec::new();
     let mut copied = 0usize;
     let mut i = 0usize;
     let (mut depth, mut max_depth) = (0usize, 0usize);
@@ -256,13 +277,36 @@ fn protect(sql: &str, driver: Option<DriverKind>) -> Protected {
                 i = end;
             }
             b'-' if b.get(i + 1) == Some(&b'-') => {
-                i = sql[i..].find('\n').map_or(b.len(), |p| i + p);
+                let end = sql[i..].find('\n').map_or(b.len(), |p| i + p);
+                if after_semicolon(sql, i) {
+                    out.push_str(&sql[copied..i]);
+                    out.push_str(&trailing_placeholder(trailing.len()));
+                    trailing.push(sql[i..end].to_string());
+                    copied = end;
+                }
+                i = end;
             }
             b'#' if driver == Some(DriverKind::Mysql) => {
-                i = sql[i..].find('\n').map_or(b.len(), |p| i + p);
+                let end = sql[i..].find('\n').map_or(b.len(), |p| i + p);
+                if after_semicolon(sql, i) {
+                    out.push_str(&sql[copied..i]);
+                    out.push_str(&trailing_placeholder(trailing.len()));
+                    trailing.push(sql[i..end].to_string());
+                    copied = end;
+                }
+                i = end;
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                i = sql[i + 2..].find("*/").map_or(b.len(), |p| i + 2 + p + 2);
+                let end = sql[i + 2..].find("*/").map_or(b.len(), |p| i + 2 + p + 2);
+                // Only a closed comment spanning lines: the formatter
+                // re-indents those interiors. One-line comments pass through.
+                if sql[i..end].contains('\n') && sql[i..end].ends_with("*/") {
+                    out.push_str(&sql[copied..i]);
+                    out.push_str(&block_placeholder(blocks.len()));
+                    blocks.push(sql[i..end].to_string());
+                    copied = end;
+                }
+                i = end;
             }
             b'(' => {
                 depth += 1;
@@ -299,8 +343,64 @@ fn protect(sql: &str, driver: Option<DriverKind>) -> Protected {
     Protected {
         text: out,
         kept,
+        blocks,
+        trailing,
         max_depth,
     }
+}
+
+/// Whether only `;` (and spaces) precede position `at` on its line, after
+/// some code: `select 1; -- why`.
+fn after_semicolon(sql: &str, at: usize) -> bool {
+    let line_start = sql[..at].rfind('\n').map_or(0, |p| p + 1);
+    sql[line_start..at].trim_end().ends_with(';')
+}
+
+/// Put the comments back: block comments verbatim where they stand,
+/// trailing line comments at the end of the line before them (the
+/// statement's `;` line), as they were written.
+fn restore_comments(formatted: &str, blocks: &[String], trailing: &[String]) -> String {
+    let mut out = formatted.to_string();
+    if !trailing.is_empty() {
+        let mut lines: Vec<String> = out.split('\n').map(str::to_string).collect();
+        for (n, comment) in trailing.iter().enumerate().rev() {
+            let mark = trailing_placeholder(n);
+            let Some(at) = lines.iter().position(|l| l.contains(&mark)) else {
+                continue;
+            };
+            let alone = lines[at].trim() == mark;
+            let previous = (0..at).rev().find(|&k| !lines[k].trim().is_empty());
+            match previous {
+                Some(k) if alone && lines[k].trim_end().ends_with(';') => {
+                    let joined = format!("{} {comment}", lines[k].trim_end());
+                    lines[k] = joined;
+                    lines.remove(at);
+                    // Last in the text: drop the statement break left behind.
+                    if at == lines.len() {
+                        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+                            lines.pop();
+                        }
+                    }
+                }
+                _ => {
+                    // A line comment runs to the end of its line: never let
+                    // it swallow code the formatter put after it.
+                    let after = lines[at].split_once(&mark).map_or("", |(_, a)| a);
+                    let with = if after.trim().is_empty() {
+                        comment.clone()
+                    } else {
+                        format!("{comment}\n")
+                    };
+                    lines[at] = lines[at].replacen(&mark, &with, 1);
+                }
+            }
+        }
+        out = lines.join("\n");
+    }
+    for (n, comment) in blocks.iter().enumerate().rev() {
+        out = out.replacen(&block_placeholder(n), comment, 1);
+    }
+    out
 }
 
 fn paren_depth(sql: &str) -> usize {
@@ -519,6 +619,55 @@ fn restore(formatted: &str, kept: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_comment_interiors_are_kept_byte_for_byte() {
+        let sql = "/* header\n   keep this\n     indented */\nselect a,\n  /* inner\n     block */ b from t";
+        let out = format(sql, Some(DriverKind::Postgres), true, 2).unwrap();
+        assert!(
+            out.starts_with("/* header\n   keep this\n     indented */\nSELECT"),
+            "{out}"
+        );
+        assert!(out.contains("/* inner\n     block */"), "{out}");
+        // One-line block comments pass through as before.
+        let out = format("select /* x */ 1", None, true, 2).unwrap();
+        assert!(out.contains("/* x */"), "{out}");
+    }
+
+    #[test]
+    fn a_line_comment_after_a_statement_stays_on_its_line() {
+        let out = format(
+            "select a from t where x = 1; -- why\nselect 2 -- trailing\n",
+            Some(DriverKind::Postgres),
+            true,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "SELECT\n  a\nFROM\n  t\nWHERE\n  x = 1; -- why\n\nSELECT\n  2 -- trailing"
+        );
+        let out = format(
+            "select count(*) from orders group by status; -- per status",
+            None,
+            true,
+            2,
+        )
+        .unwrap();
+        assert!(out.ends_with("status; -- per status"), "{out:?}");
+        // mysql `#` comments too; a `--` inside a string is not a comment.
+        let out = format(
+            "select '-- no'; # yes\nselect 2;",
+            Some(DriverKind::Mysql),
+            true,
+            2,
+        )
+        .unwrap();
+        assert!(
+            out.starts_with("SELECT\n  '-- no'; # yes\n\nSELECT"),
+            "{out:?}"
+        );
+    }
 
     #[tokio::test]
     async fn the_handler_needs_a_dialect() {
