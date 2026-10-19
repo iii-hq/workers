@@ -202,6 +202,11 @@ fn fallback_chat_message(kind: Option<ErrorKind>) -> &'static str {
 /// wait — the caller keeps its estimate.
 const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 
+/// Cap on [`RouterClient::model_listed`], a diagnostic lookup on a turn that
+/// is already failing: a stalled catalog must not hold the session for a
+/// whole generation timeout. Past it the answer is unknown.
+const MODEL_LISTED_TIMEOUT_MS: u64 = 5_000;
+
 #[derive(Clone)]
 pub struct RouterClient {
     iii: Arc<IIIClient>,
@@ -694,7 +699,7 @@ impl RouterClient {
                 function_id: "router::models::get".into(),
                 payload,
                 action: None,
-                timeout_ms: Some(self.timeout_ms),
+                timeout_ms: Some(self.timeout_ms.min(MODEL_LISTED_TIMEOUT_MS)),
             })
             .await
             .ok()?;
