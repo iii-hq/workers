@@ -37,7 +37,7 @@ const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation e
 Return ONLY a JSON array (no prose, no code fences). Each element:\n\
 {\"text\": string, \"entities\": [string], \"tags\": [string], \
 \"confidence\": \"extracted\"|\"inferred\", \"kind\": \"memory\"|\"rule\", \
-\"replaces\": number (optional)}\n\
+\"scope\": \"user\"|\"project\", \"replaces\": number (optional)}\n\
 Rules:\n\
 - Only durable content worth remembering across sessions: stable preferences, corrections, \
 identities, project constants, standing instructions.\n\
@@ -68,6 +68,13 @@ forward — style directives, formatting conventions, workflow corrections (\"ne
 em-dashes\", \"always write tests first\"). Write a rule as a direct instruction to the \
 assistant (\"Never use emoji.\"), not as a fact about the user. Facts about the user, \
 projects, or the world are kind \"memory\". When unsure, use \"memory\".\n\
+- scope \"user\" for what holds for the user wherever they work: who they are, their life, \
+health, habits, tastes and plans, and how they want every reply written (language, tone, \
+length, formatting). scope \"project\" for the work at hand: its code, tools, commands, \
+conventions, decisions and people, and what the user does or wants only there (\"The user \
+uses pnpm here.\", \"Never bump versions by hand in this repository.\"). A correction takes \
+the scope of what it now says: an exception that holds only here is \"project\". When \
+unsure, use \"project\".\n\
 - Return [] when nothing qualifies. Most turns have nothing worth keeping.";
 
 /// Name of the auto-managed rule that captured standing instructions
@@ -1595,6 +1602,8 @@ mod tests {
             "already remembered",
             "\"replaces\"",
             "direct instruction to the assistant",
+            "\"scope\"",
+            "When unsure, use \"project\"",
         ] {
             assert!(EXTRACT_SYSTEM.contains(rule), "missing: {rule}");
         }
