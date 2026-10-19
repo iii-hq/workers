@@ -1,0 +1,911 @@
+//! Live tests against real servers: the Database app's test environment
+//! (docker — PostgreSQL 17, MySQL 8.4, an OpenSSH bastion in front of a
+//! private PostgreSQL; the env folder lives in the iii app repo as
+//! `projects/database-app/env`). They exercise what unit tests cannot: TLS
+//! modes and mutual TLS against real servers, SSH tunnels (password and key
+//! auth, host-key pins), every column type of the `type_zoo` tables, raw
+//! browse filters that try to write, `max_rows`, `insertRow` casts, and a
+//! connection whose secret does not resolve next to one that works.
+//!
+//! Skipped unless `DATABASE_E2E_ENV` points at that env folder (its `tls/`
+//! and `ssh/` hold the CA, client certificates and keys). Ports and
+//! credentials are the env's (see its README).
+//!
+//!   DATABASE_E2E_ENV=/path/to/env cargo test --test live -- --test-threads=1
+
+use database::config::WorkerConfig;
+use database::configuration;
+use database::handle::HandleRegistry;
+use database::handlers::{
+    browse, execute, insert_row, list_databases, query, test_connection, AppState,
+};
+use database::runtime::Runtime;
+use database::secrets::{Fetch, SecretCache, SecretError, SecretValue};
+use database::transaction::TxRegistry;
+use iii_helpers::observability::Logger;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tokio::sync::RwLock;
+
+const PG_PW: &str = "shop-e2e-pw";
+const PRIVATE_PG_PW: &str = "shop-private-pw";
+const ED25519_FP: &str = "SHA256:0rGFgr3lbFUjBJmay4CvRxX16hnJLF7mvototEUXoW0";
+
+fn env_dir() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var("DATABASE_E2E_ENV").ok()?);
+    dir.join("tls/ca.crt").exists().then_some(dir)
+}
+
+macro_rules! env_or_skip {
+    () => {
+        match env_dir() {
+            Some(dir) => dir,
+            None => {
+                eprintln!("skipping: DATABASE_E2E_ENV not set");
+                return;
+            }
+        }
+    };
+}
+
+fn file(dir: &std::path::Path, rel: &str) -> String {
+    dir.join(rel).display().to_string()
+}
+
+type Secrets = Arc<Mutex<HashMap<String, String>>>;
+
+fn runtime(secrets: Secrets) -> Arc<Runtime> {
+    let fetch: Fetch = Arc::new(move |key: String| {
+        let secrets = secrets.clone();
+        Box::pin(async move {
+            match secrets.lock().unwrap().get(&key) {
+                Some(v) => Ok(SecretValue::new(v.clone())),
+                None => Err(SecretError::NotFound),
+            }
+        })
+    });
+    Arc::new(Runtime::new(Arc::new(SecretCache::new(fetch))))
+}
+
+async fn state_with(databases: Value, secrets: Secrets) -> AppState {
+    let cfg = WorkerConfig::from_json(&json!({ "databases": databases })).unwrap();
+    let st = AppState {
+        pools: Default::default(),
+        config: Arc::new(RwLock::new(cfg.clone())),
+        handles: Arc::new(HandleRegistry::new()),
+        transactions: TxRegistry::new(),
+        log: Logger::new(),
+        row_changes: None,
+        runtime: runtime(secrets),
+    };
+    configuration::apply_config(&st, cfg, None).await.unwrap();
+    st
+}
+
+async fn state(databases: Value) -> AppState {
+    state_with(databases, Default::default()).await
+}
+
+fn pg(user: &str, password: &str) -> Value {
+    json!({ "driver": "postgres", "host": "127.0.0.1", "port": 55432, "user": user,
+            "password": password, "database": "shop", "tls": { "mode": "disable" } })
+}
+
+fn mysql(user: &str, password: &str) -> Value {
+    json!({ "driver": "mysql", "host": "127.0.0.1", "port": 53306, "user": user,
+            "password": password, "database": "shop", "tls": { "mode": "disable" } })
+}
+
+async fn q(st: &AppState, db: &str, sql: &str) -> Result<query::QueryResp, String> {
+    query::handle(
+        st,
+        serde_json::from_value(json!({ "db": db, "sql": sql })).unwrap(),
+    )
+    .await
+}
+
+async fn exec(st: &AppState, db: &str, sql: &str) {
+    execute::handle(
+        st,
+        serde_json::from_value(json!({ "db": db, "sql": sql })).unwrap(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("{db}: {sql}: {e}"));
+}
+
+async fn probe(st: &AppState, connection: Value) -> test_connection::TestConnectionResp {
+    test_connection::handle(
+        st,
+        serde_json::from_value(json!({ "connection": connection, "timeout_ms": 20000 })).unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+fn copy_sqlite(dir: &std::path::Path) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::copy(dir.join("data/shop.db"), tmp.path().join("shop.db")).unwrap();
+    tmp
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_zoo_decodes_every_column_on_every_driver() {
+    let dir = env_or_skip!();
+    let tmp = copy_sqlite(&dir);
+    let st = state(json!({
+        "pg": pg("shop", PG_PW),
+        "my": mysql("shop", PG_PW),
+        "lite": { "driver": "sqlite", "database": tmp.path().join("shop.db").display().to_string() },
+    }))
+    .await;
+
+    let rows = q(&st, "pg", "SELECT * FROM type_zoo ORDER BY id")
+        .await
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), 3);
+    let r = &rows[0];
+    assert_eq!(r["c_bigint"], json!("9007199254740993"));
+    assert_eq!(r["c_numeric"], json!("12345678.1234"));
+    assert_eq!(r["c_date"], json!("2026-02-28"));
+    assert_eq!(r["c_time"], json!("23:59:59"));
+    assert_eq!(r["c_timetz"], json!("12:30:00+03"));
+    assert_eq!(r["c_interval"], json!("1 day 02:03:04"));
+    assert_eq!(r["c_enum"], json!("shipped"));
+    assert_eq!(r["c_int_array"], json!([1, 2, 3]));
+    assert_eq!(r["c_text_array"], json!(["a", "b c", "ü"]));
+    assert_eq!(r["c_cidr"], json!("10.0.0.0/8"));
+    assert_eq!(r["c_macaddr"], json!("08:00:2b:01:02:03"));
+    assert_eq!(r["c_money"], json!("1234.56"));
+    assert_eq!(r["c_point"], json!("(1.5,-2.25)"));
+    assert!(r["c_jsonb"].is_object());
+    assert!(r["c_tsvector"].as_str().unwrap().contains("'banana'"));
+    assert!(
+        rows[1]
+            .iter()
+            .filter(|(k, _)| k.as_str() != "id"
+                && k.as_str() != "c_serial"
+                && k.as_str() != "c_bool"
+                && k.as_str() != "c_timestamptz")
+            .all(|(_, v)| v.is_null()),
+        "row 2 is all NULL"
+    );
+    // Every shop table browses now (they used to fail on date/enum/array columns).
+    for table in [
+        "products",
+        "customers",
+        "orders",
+        "v_order_totals",
+        "mv_daily_sales",
+    ] {
+        browse::handle(
+            &st,
+            serde_json::from_value(json!({ "db": "pg", "table": table })).unwrap(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("browse {table}: {e}"));
+    }
+
+    let rows = q(&st, "my", "SELECT * FROM type_zoo ORDER BY id")
+        .await
+        .unwrap()
+        .rows;
+    let r = &rows[0];
+    assert_eq!(r["c_time"], json!("23:59:59"));
+    assert_eq!(r["c_date"], json!("2026-02-28"));
+    assert_eq!(r["c_datetime"], json!("2026-10-18T12:00:00.123Z"));
+    assert_eq!(r["c_binary"], json!("AAECAw=="));
+    assert_eq!(r["c_bit"], json!("10100101"));
+    assert_eq!(r["c_bigint_unsigned"], json!("18446744073709551615"));
+    assert_eq!(r["c_decimal"], json!("12345678.1234"));
+    assert_eq!(r["c_set"], json!("wifi,usb"));
+    assert!(r["c_json"].is_object(), "{:?}", r["c_json"]);
+    let cols = q(&st, "my", "SELECT c_enum, c_set FROM type_zoo")
+        .await
+        .unwrap()
+        .columns;
+    assert_eq!(cols[0].ty, "enum");
+    assert_eq!(cols[1].ty, "set");
+
+    let rows = q(&st, "lite", "SELECT * FROM type_zoo ORDER BY id")
+        .await
+        .unwrap()
+        .rows;
+    assert!(rows[0]["c_json"].is_object());
+    assert_eq!(rows[0]["c_integer"], json!(9007199254740993i64));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn raw_filters_never_write_even_as_a_superuser() {
+    let dir = env_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let lite = tmp.path().join("raw.db").display().to_string();
+    let st = state(json!({
+        "pg": pg("postgres", "postgres-e2e"),
+        "my": mysql("root", "root-e2e"),
+        "lite": { "driver": "sqlite", "database": lite, "pool": { "max": 1 } },
+    }))
+    .await;
+    let _ = dir;
+    for db in ["pg", "my", "lite"] {
+        exec(&st, db, "DROP TABLE IF EXISTS iii_wcore_raw").await;
+        exec(
+            &st,
+            db,
+            "CREATE TABLE iii_wcore_raw (id INT PRIMARY KEY, n INT)",
+        )
+        .await;
+        exec(
+            &st,
+            db,
+            "INSERT INTO iii_wcore_raw VALUES (1, 10), (2, 20), (3, 30)",
+        )
+        .await;
+    }
+    exec(&st, "pg", "CREATE SEQUENCE IF NOT EXISTS iii_wcore_seq").await;
+    exec(
+        &st,
+        "pg",
+        "CREATE OR REPLACE FUNCTION iii_wcore_write() RETURNS boolean LANGUAGE sql AS \
+         $$ INSERT INTO iii_wcore_raw VALUES (99, 99) RETURNING true $$",
+    )
+    .await;
+    // CREATE FUNCTION is not allowed over the prepared protocol: text protocol.
+    let root = mysql_async::Pool::new("mysql://root:root-e2e@127.0.0.1:53306/shop");
+    {
+        use mysql_async::prelude::Queryable;
+        let mut c = root.get_conn().await.unwrap();
+        c.query_drop("DROP FUNCTION IF EXISTS iii_wcore_write")
+            .await
+            .unwrap();
+        c.query_drop(
+            "CREATE FUNCTION iii_wcore_write() RETURNS INT DETERMINISTIC MODIFIES SQL DATA \
+             BEGIN INSERT INTO iii_wcore_raw VALUES (99, 99); RETURN 1; END",
+        )
+        .await
+        .unwrap();
+    }
+
+    let browse_raw = |db: &'static str, raw: &'static str| {
+        let st = st.clone();
+        async move {
+            browse::handle(
+                &st,
+                serde_json::from_value(
+                    json!({ "db": db, "table": "iii_wcore_raw", "filters": [{ "raw": raw }] }),
+                )
+                .unwrap(),
+            )
+            .await
+        }
+    };
+    let attempts: &[(&str, &str)] = &[
+        ("pg", "1=1; DELETE FROM iii_wcore_raw"),
+        (
+            "pg",
+            "id IN (WITH d AS (DELETE FROM iii_wcore_raw RETURNING id) SELECT id FROM d)",
+        ),
+        ("pg", "iii_wcore_write()"),
+        ("pg", "nextval('iii_wcore_seq') > 0"),
+        ("pg", "1=1) OR (1=1"),
+        ("my", "1=1; DELETE FROM iii_wcore_raw"),
+        ("my", "iii_wcore_write() = 1"),
+        ("my", "1=1) INTO OUTFILE '/tmp/iii_wcore' -- "),
+        ("my", "id IN (SELECT id FROM (SELECT 1 AS id) x) # )"),
+        ("lite", "1=1; DELETE FROM iii_wcore_raw"),
+        (
+            "lite",
+            "id IN (WITH d AS (DELETE FROM iii_wcore_raw RETURNING id) SELECT id FROM d)",
+        ),
+        ("lite", "1=1) UNION SELECT 1, 2 --"),
+    ];
+    for (db, raw) in attempts {
+        let result = browse_raw(db, raw).await;
+        assert!(
+            result.is_err(),
+            "{db}: raw filter {raw:?} was accepted: {result:?}"
+        );
+    }
+    // The writes that pass the lexer are stopped by the server's read-only
+    // transaction, not by luck.
+    let err = browse_raw("pg", "iii_wcore_write()").await.unwrap_err();
+    assert!(err.contains("read-only transaction"), "{err}");
+    let err = browse_raw("pg", "nextval('iii_wcore_seq') > 0")
+        .await
+        .unwrap_err();
+    assert!(err.contains("read-only transaction"), "{err}");
+    let err = browse_raw("my", "iii_wcore_write() = 1").await.unwrap_err();
+    assert!(err.to_uppercase().contains("READ ONLY"), "{err}");
+    // A legitimate raw filter works, and nothing was written anywhere.
+    for db in ["pg", "my", "lite"] {
+        let page = browse_raw(db, "n >= 20 AND id < 3").await.unwrap();
+        assert_eq!(page.rows.len(), 1, "{db}");
+        let rows = q(
+            &st,
+            db,
+            "SELECT COUNT(*) AS c, MAX(id) AS m FROM iii_wcore_raw",
+        )
+        .await
+        .unwrap()
+        .rows;
+        assert_eq!(
+            rows[0]["c"].to_string().trim_matches('"'),
+            "3",
+            "{db}: {rows:?}"
+        );
+        assert_eq!(rows[0]["m"].to_string().trim_matches('"'), "3", "{db}");
+    }
+    // sqlite's query_only was switched back off: the same (only) pooled
+    // connection still writes.
+    exec(&st, "lite", "INSERT INTO iii_wcore_raw VALUES (4, 40)").await;
+    exec(&st, "pg", "DROP FUNCTION iii_wcore_write()").await;
+    exec(&st, "pg", "DROP SEQUENCE iii_wcore_seq").await;
+    {
+        use mysql_async::prelude::Queryable;
+        let mut c = root.get_conn().await.unwrap();
+        c.query_drop("DROP FUNCTION iii_wcore_write").await.unwrap();
+    }
+    for db in ["pg", "my"] {
+        exec(&st, db, "DROP TABLE iii_wcore_raw").await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn max_rows_stops_reading_and_says_so() {
+    let dir = env_or_skip!();
+    let tmp = copy_sqlite(&dir);
+    let st = state(json!({
+        "pg": pg("shop", PG_PW),
+        "my": mysql("shop", PG_PW),
+        "lite": { "driver": "sqlite", "database": tmp.path().join("shop.db").display().to_string() },
+    }))
+    .await;
+    for db in ["pg", "my", "lite"] {
+        let cut = query::handle(
+            &st,
+            serde_json::from_value(
+                json!({ "db": db, "sql": "SELECT * FROM orders ORDER BY id", "max_rows": 100 }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cut.rows.len(), 100, "{db}");
+        assert!(cut.truncated, "{db}");
+        let all = query::handle(
+            &st,
+            serde_json::from_value(
+                json!({ "db": db, "sql": "SELECT id FROM orders", "max_rows": 5000 }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.rows.len(), 2000, "{db}");
+        assert!(!all.truncated, "{db}");
+        // An explicit LIMIT in the SQL is kept; max_rows still caps.
+        let limited = query::handle(
+            &st,
+            serde_json::from_value(
+                json!({ "db": db, "sql": "SELECT id FROM orders LIMIT 500", "max_rows": 10 }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(limited.rows.len(), 10, "{db}");
+        assert!(limited.truncated, "{db}");
+        // Exactly max_rows rows is not truncated.
+        let exact = query::handle(
+            &st,
+            serde_json::from_value(
+                json!({ "db": db, "sql": "SELECT id FROM orders LIMIT 7", "max_rows": 7 }),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(exact.rows.len(), 7, "{db}");
+        assert!(!exact.truncated, "{db}");
+        // The connection is clean afterwards (no leftover portal or limit).
+        let n = q(&st, db, "SELECT COUNT(*) AS c FROM orders")
+            .await
+            .unwrap();
+        assert_eq!(n.rows[0]["c"].to_string().trim_matches('"'), "2000", "{db}");
+        let all_rows = q(&st, db, "SELECT id FROM orders").await.unwrap();
+        assert_eq!(all_rows.rows.len(), 2000, "{db}: sql_select_limit leaked");
+        assert!(!all_rows.truncated);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_row_casts_values_to_each_column_type() {
+    let _dir = env_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let st = state(json!({
+        "pg": pg("shop", PG_PW),
+        "my": mysql("shop", PG_PW),
+        "lite": { "driver": "sqlite", "database": tmp.path().join("ins.db").display().to_string() },
+    }))
+    .await;
+    let insert = |db: &'static str, values: Value| {
+        let st = st.clone();
+        async move {
+            insert_row::handle(
+                &st,
+                serde_json::from_value(
+                    json!({ "db": db, "table": "iii_wcore_ins", "values": values }),
+                )
+                .unwrap(),
+            )
+            .await
+        }
+    };
+
+    exec(&st, "pg", "DROP TABLE IF EXISTS iii_wcore_ins").await;
+    exec(
+        &st,
+        "pg",
+        "CREATE TABLE iii_wcore_ins (id bigserial PRIMARY KEY, price numeric(10,2), active boolean, \
+         meta jsonb, tags text[], born date, at timestamptz, data bytea, uid uuid, \
+         status order_status DEFAULT 'pending', note text DEFAULT 'none')",
+    )
+    .await;
+    let r = insert(
+        "pg",
+        json!({ "price": "12.5", "active": "true", "meta": { "a": [1, 2] }, "tags": ["x", "y \"z\""],
+                "born": "2026-01-02", "at": "2026-01-02T03:04:05Z", "data": "aGVsbG8",
+                "uid": "6f1c2a8e-3b5d-4c7e-9f10-2a3b4c5d6e7f", "status": "paid" }),
+    )
+    .await
+    .unwrap();
+    let row = r.row.unwrap();
+    assert_eq!(r.affected_rows, 1);
+    assert_eq!(row["id"], json!("1"));
+    assert_eq!(row["price"], json!("12.50"));
+    assert_eq!(row["active"], json!(true));
+    assert_eq!(row["meta"], json!({ "a": [1, 2] }));
+    assert_eq!(row["tags"], json!(["x", "y \"z\""]));
+    assert_eq!(row["born"], json!("2026-01-02"));
+    assert_eq!(row["at"], json!("2026-01-02T03:04:05Z"));
+    assert_eq!(row["data"], json!("aGVsbG8="));
+    assert_eq!(row["status"], json!("paid"));
+    assert_eq!(
+        row["note"],
+        json!("none"),
+        "an omitted column takes its default"
+    );
+    let err = insert("pg", json!({ "price": "not a number" }))
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("DRIVER_ERROR") && err.contains("numeric"),
+        "{err}"
+    );
+    exec(&st, "pg", "DROP TABLE iii_wcore_ins").await;
+
+    exec(&st, "my", "DROP TABLE IF EXISTS iii_wcore_ins").await;
+    exec(
+        &st,
+        "my",
+        "CREATE TABLE iii_wcore_ins (id bigint AUTO_INCREMENT PRIMARY KEY, price decimal(10,2), \
+         active tinyint(1), meta json, born date, data blob, note varchar(16) DEFAULT 'none')",
+    )
+    .await;
+    let r = insert(
+        "my",
+        json!({ "price": "12.5", "active": true, "meta": { "a": 1 }, "born": "2026-01-02", "data": "AAEC" }),
+    )
+    .await
+    .unwrap();
+    let row = r.row.expect("mysql re-selects by last_insert_id");
+    assert_eq!(row["price"], json!("12.50"));
+    assert_eq!(row["active"], json!(1));
+    assert_eq!(row["meta"], json!({ "a": 1 }));
+    assert_eq!(row["born"], json!("2026-01-02"));
+    assert_eq!(row["data"], json!("AAEC"));
+    assert_eq!(row["note"], json!("none"));
+    exec(&st, "my", "DROP TABLE iii_wcore_ins").await;
+
+    exec(
+        &st,
+        "lite",
+        "CREATE TABLE iii_wcore_ins (id INTEGER PRIMARY KEY, price NUMERIC, active BOOLEAN, meta JSON, data BLOB, note TEXT DEFAULT 'none')",
+    )
+    .await;
+    let r = insert(
+        "lite",
+        json!({ "price": "12.5", "active": "false", "meta": { "a": 1 }, "data": "AAEC" }),
+    )
+    .await
+    .unwrap();
+    let row = r.row.unwrap();
+    assert_eq!(row["id"], json!(1));
+    assert_eq!(row["price"], json!(12.5));
+    assert_eq!(row["active"], json!(0));
+    assert_eq!(row["meta"], json!({ "a": 1 }));
+    assert_eq!(row["data"], json!("AAEC"));
+    assert_eq!(row["note"], json!("none"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_modes_and_mutual_tls_against_real_servers() {
+    let dir = env_or_skip!();
+    let st = state(json!({ "pg": pg("shop", PG_PW) })).await;
+    let ca = file(&dir, "tls/ca.crt");
+    let pg_at = |host: &str, mode: &str, extra: Value| {
+        let mut entry = json!({ "driver": "postgres", "host": host, "port": 55432, "user": "shop",
+                                "password": PG_PW, "database": "shop", "tls": { "mode": mode } });
+        if let Value::Object(extra) = extra {
+            for (k, v) in extra {
+                entry["tls"][k] = v;
+            }
+        }
+        entry
+    };
+
+    let ok = probe(
+        &st,
+        pg_at("127.0.0.1", "verify-full", json!({ "ca_cert": ca })),
+    )
+    .await;
+    assert!(ok.ok, "{:?}", ok.message);
+    let bad_name = probe(
+        &st,
+        pg_at("127.0.0.2", "verify-full", json!({ "ca_cert": ca })),
+    )
+    .await;
+    assert!(!bad_name.ok);
+    assert_eq!(
+        serde_json::to_value(bad_name.stage).unwrap(),
+        json!("tls"),
+        "{:?}",
+        bad_name.message
+    );
+    let ca_only = probe(
+        &st,
+        pg_at("127.0.0.2", "verify-ca", json!({ "ca_cert": ca })),
+    )
+    .await;
+    assert!(ca_only.ok, "{:?}", ca_only.message);
+    let untrusted = probe(&st, pg_at("127.0.0.1", "require", json!({}))).await;
+    assert!(!untrusted.ok);
+    assert_eq!(serde_json::to_value(untrusted.stage).unwrap(), json!("tls"));
+    let wrong_ca = probe(
+        &st,
+        pg_at(
+            "127.0.0.1",
+            "verify-ca",
+            json!({ "ca_cert": file(&dir, "tls/other-ca.crt"), "trust_native": false }),
+        ),
+    )
+    .await;
+    assert!(!wrong_ca.ok);
+    // prefer validates like require when the server offers TLS.
+    let prefer = probe(&st, pg_at("127.0.0.1", "prefer", json!({ "ca_cert": ca }))).await;
+    assert!(prefer.ok, "{:?}", prefer.message);
+
+    let mut tls_only = pg_at("127.0.0.1", "disable", json!({}));
+    tls_only["user"] = json!("shop_tls");
+    tls_only["password"] = json!("shop-tls-pw");
+    let refused = probe(&st, tls_only.clone()).await;
+    assert!(!refused.ok);
+    assert_eq!(
+        serde_json::to_value(refused.stage).unwrap(),
+        json!("auth"),
+        "{:?}",
+        refused.message
+    );
+    tls_only["tls"] = json!({ "mode": "verify-full", "ca_cert": ca });
+    assert!(probe(&st, tls_only).await.ok);
+
+    // Mutual TLS: path, PKCS#1, inline PEM.
+    let client_pem = std::fs::read_to_string(dir.join("tls/client.crt")).unwrap();
+    let key_pem = std::fs::read_to_string(dir.join("tls/client.key")).unwrap();
+    for (cert, key) in [
+        (file(&dir, "tls/client.crt"), file(&dir, "tls/client.key")),
+        (
+            file(&dir, "tls/client.crt"),
+            file(&dir, "tls/client.pkcs1.key"),
+        ),
+        (client_pem.clone(), key_pem.clone()),
+    ] {
+        let mut mtls = pg_at(
+            "127.0.0.1",
+            "verify-full",
+            json!({ "ca_cert": ca, "client_cert": cert, "client_key": key }),
+        );
+        mtls["user"] = json!("shop_mtls");
+        mtls.as_object_mut().unwrap().remove("password");
+        let resp = probe(&st, mtls).await;
+        assert!(resp.ok, "{:?}", resp.message);
+    }
+    let mut no_cert = pg_at("127.0.0.1", "verify-full", json!({ "ca_cert": ca }));
+    no_cert["user"] = json!("shop_mtls");
+    no_cert.as_object_mut().unwrap().remove("password");
+    assert!(!probe(&st, no_cert).await.ok);
+
+    // MySQL: verify-full with the CA, REQUIRE SSL users, mutual TLS.
+    let my = |user: &str, password: &str, tls: Value| {
+        json!({ "driver": "mysql", "host": "127.0.0.1", "port": 53306, "user": user,
+                "password": password, "database": "shop", "tls": tls })
+    };
+    let resp = probe(
+        &st,
+        my(
+            "shop",
+            PG_PW,
+            json!({ "mode": "verify-full", "ca_cert": ca }),
+        ),
+    )
+    .await;
+    assert!(resp.ok, "{:?}", resp.message);
+    let resp = probe(
+        &st,
+        my("shop_tls", "shop-tls-pw", json!({ "mode": "disable" })),
+    )
+    .await;
+    assert!(!resp.ok);
+    let resp = probe(
+        &st,
+        my("shop_mtls", "shop-mtls-pw", json!({ "mode": "verify-full", "ca_cert": ca,
+             "client_cert": file(&dir, "tls/client.crt"), "client_key": file(&dir, "tls/client.key") })),
+    )
+    .await;
+    assert!(resp.ok, "{:?}", resp.message);
+    let resp = probe(
+        &st,
+        my(
+            "shop_mtls",
+            "shop-mtls-pw",
+            json!({ "mode": "verify-full", "ca_cert": ca }),
+        ),
+    )
+    .await;
+    assert!(!resp.ok);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_tunnels_with_password_keys_and_host_key_pins() {
+    let dir = env_or_skip!();
+    let ca = file(&dir, "tls/ca.crt");
+    let passphrase = std::fs::read_to_string(dir.join("ssh/PASSPHRASE"))
+        .unwrap()
+        .trim()
+        .to_string();
+    let rsa_pem = std::fs::read_to_string(dir.join("ssh/id_rsa_pem")).unwrap();
+    let secrets: Secrets = Arc::new(Mutex::new(HashMap::from([
+        ("secret://WCORE_SSH_KEY".to_string(), rsa_pem),
+        (
+            "secret://WCORE_SSH_PASSPHRASE".to_string(),
+            passphrase.clone(),
+        ),
+    ])));
+    let st = state_with(json!({ "pg": pg("shop", PG_PW) }), secrets.clone()).await;
+    let private = |ssh: Value| {
+        json!({ "driver": "postgres", "host": "pg-private", "port": 5432, "user": "shop",
+                "password": PRIVATE_PG_PW, "database": "shop",
+                "tls": { "mode": "verify-full", "ca_cert": ca }, "ssh": ssh })
+    };
+    let bastion = |auth: Value| {
+        let mut ssh = json!({ "host": "127.0.0.1", "port": 52222, "user": "tunnel" });
+        for (k, v) in auth.as_object().unwrap() {
+            ssh[k] = v.clone();
+        }
+        ssh
+    };
+
+    // Password, Ed25519, Ed25519 with passphrase, RSA PEM with passphrase
+    // through secret:// references. TLS through the tunnel verifies
+    // `pg-private`, not 127.0.0.1.
+    for auth in [
+        json!({ "password": "tunnel-e2e-pw" }),
+        json!({ "private_key": file(&dir, "ssh/id_ed25519") }),
+        json!({ "private_key": file(&dir, "ssh/id_ed25519_pass"), "passphrase": passphrase }),
+        json!({ "private_key": "secret://WCORE_SSH_KEY", "passphrase": "secret://WCORE_SSH_PASSPHRASE" }),
+    ] {
+        let resp = probe(&st, private(bastion(auth.clone()))).await;
+        assert!(resp.ok, "{auth}: {:?} {:?}", resp.stage, resp.message);
+        let key = resp.ssh_host_key.expect("the tunnel reports the host key");
+        assert_eq!(key.fingerprint, ED25519_FP);
+        assert_eq!(key.algorithm, "ssh-ed25519");
+    }
+
+    let refused = probe(
+        &st,
+        private(bastion(
+            json!({ "private_key": file(&dir, "ssh/id_ed25519_unauthorized") }),
+        )),
+    )
+    .await;
+    assert!(!refused.ok);
+    assert_eq!(serde_json::to_value(refused.stage).unwrap(), json!("ssh"));
+    let wrong_pw = probe(&st, private(bastion(json!({ "password": "nope" })))).await;
+    assert_eq!(serde_json::to_value(wrong_pw.stage).unwrap(), json!("ssh"));
+    assert!(!wrong_pw.message.unwrap().contains("nope"));
+
+    // Host-key pins: the right one passes, a wrong one fails naming both.
+    let pinned = probe(
+        &st,
+        private(bastion(
+            json!({ "password": "tunnel-e2e-pw", "host_key": ED25519_FP }),
+        )),
+    )
+    .await;
+    assert!(pinned.ok, "{:?}", pinned.message);
+    let wrong_pin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let mismatch = probe(
+        &st,
+        private(bastion(
+            json!({ "password": "tunnel-e2e-pw", "host_key": wrong_pin }),
+        )),
+    )
+    .await;
+    assert!(!mismatch.ok);
+    assert_eq!(serde_json::to_value(mismatch.stage).unwrap(), json!("ssh"));
+    let message = mismatch.message.unwrap();
+    assert!(
+        message.contains(wrong_pin) && message.contains(ED25519_FP),
+        "{message}"
+    );
+    assert_eq!(mismatch.ssh_host_key.unwrap().fingerprint, ED25519_FP);
+
+    // The far end unreachable from the bastion is a tcp failure.
+    let mut nowhere = private(bastion(json!({ "password": "tunnel-e2e-pw" })));
+    nowhere["host"] = json!("no-such-host");
+    let resp = probe(&st, nowhere).await;
+    assert!(!resp.ok);
+    assert_eq!(
+        serde_json::to_value(resp.stage).unwrap(),
+        json!("tcp"),
+        "{:?}",
+        resp.message
+    );
+
+    // MySQL through the tunnel (verify-full against `mysql`).
+    let resp = probe(
+        &st,
+        json!({ "driver": "mysql", "host": "mysql", "port": 3306, "user": "shop", "password": PG_PW,
+                "database": "shop", "tls": { "mode": "verify-full", "ca_cert": ca },
+                "ssh": bastion(json!({ "private_key": file(&dir, "ssh/id_ed25519") })) }),
+    )
+    .await;
+    assert!(resp.ok, "{:?}", resp.message);
+
+    // A configured connection behind the bastion: a pool through the tunnel,
+    // and a native-capture-free reload keeps the same pool.
+    let st = state_with(
+        json!({ "private": private(bastion(json!({ "private_key": "secret://WCORE_SSH_KEY",
+                                                   "passphrase": "secret://WCORE_SSH_PASSPHRASE",
+                                                   "host_key": ED25519_FP }))) }),
+        secrets,
+    )
+    .await;
+    for _ in 0..3 {
+        let rows = q(
+            &st,
+            "private",
+            "SELECT value FROM server_info WHERE key = 'instance'",
+        )
+        .await
+        .unwrap()
+        .rows;
+        assert_eq!(rows[0]["value"], json!("pg-private"));
+    }
+    let cfg = st.config.read().await.clone();
+    let before = st.runtime.connector("private").unwrap();
+    configuration::apply_config(&st, cfg, None).await.unwrap();
+    assert!(
+        Arc::ptr_eq(&before, &st.runtime.connector("private").unwrap()),
+        "an unchanged entry keeps its pool and tunnel"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unresolvable_secret_fails_only_its_connection() {
+    let _dir = env_or_skip!();
+    let secrets: Secrets = Arc::new(Mutex::new(HashMap::from([(
+        "secret://WCORE_PG".to_string(),
+        PG_PW.to_string(),
+    )])));
+    let mut missing = pg("shop", "secret://WCORE_MISSING");
+    missing["port"] = json!(55432);
+    let st = state_with(
+        json!({ "good": pg("shop", "secret://WCORE_PG"), "env_ref": pg("shop", "env://WCORE_ENV_PG"), "missing": missing }),
+        secrets.clone(),
+    )
+    .await;
+    assert_eq!(
+        q(&st, "good", "SELECT 1 AS one").await.unwrap().rows[0]["one"],
+        json!(1)
+    );
+    let err = q(&st, "missing", "SELECT 1").await.unwrap_err();
+    assert!(
+        err.contains("CONFIG_ERROR") && err.contains("secret://WCORE_MISSING"),
+        "{err}"
+    );
+    let listed = list_databases::handle(&st, Default::default())
+        .await
+        .unwrap();
+    let missing_info = listed
+        .databases
+        .iter()
+        .find(|d| d.name == "missing")
+        .unwrap();
+    assert!(missing_info
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("secret://WCORE_MISSING"));
+    assert!(missing_info.uses_secrets);
+    assert!(listed
+        .databases
+        .iter()
+        .find(|d| d.name == "good")
+        .unwrap()
+        .error
+        .is_none());
+    assert!(!serde_json::to_string(&listed).unwrap().contains(PG_PW));
+
+    // Storing the secret and re-reading it brings the connection up; the
+    // working one keeps its pool.
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_MISSING".into(), PG_PW.into());
+    secrets
+        .lock()
+        .unwrap()
+        .insert("env://WCORE_ENV_PG".into(), PG_PW.into());
+    let good_before = st.runtime.connector("good").unwrap();
+    st.runtime
+        .secrets
+        .refresh(
+            [
+                "secret://WCORE_MISSING".to_string(),
+                "env://WCORE_ENV_PG".to_string(),
+            ],
+            database::secrets::Refetch::Invalidate,
+        )
+        .await;
+    let cfg = st.config.read().await.clone();
+    configuration::apply_config(&st, cfg, None).await.unwrap();
+    assert_eq!(
+        q(&st, "missing", "SELECT 1 AS one").await.unwrap().rows[0]["one"],
+        json!(1)
+    );
+    assert_eq!(
+        q(&st, "env_ref", "SELECT 1 AS one").await.unwrap().rows[0]["one"],
+        json!(1)
+    );
+    assert!(Arc::ptr_eq(
+        &good_before,
+        &st.runtime.connector("good").unwrap()
+    ));
+
+    // A rotated value rebuilds that connection (a wrong password now fails).
+    secrets
+        .lock()
+        .unwrap()
+        .insert("secret://WCORE_PG".into(), "rotated-wrong".into());
+    st.runtime
+        .secrets
+        .refresh(
+            ["secret://WCORE_PG".to_string()],
+            database::secrets::Refetch::Invalidate,
+        )
+        .await;
+    let cfg = st.config.read().await.clone();
+    configuration::apply_config(&st, cfg, None).await.unwrap();
+    assert!(!Arc::ptr_eq(
+        &good_before,
+        &st.runtime.connector("good").unwrap()
+    ));
+    let err = q(&st, "good", "SELECT 1").await.unwrap_err();
+    assert!(
+        err.contains("auth") && !err.contains("rotated-wrong"),
+        "{err}"
+    );
+}

@@ -329,8 +329,12 @@ fn pg_error(e: &tokio_postgres::Error) -> ConnectError {
     };
     // The Display of a connect error is terse ("error connecting to
     // server: …"); keep its source chain, which says why.
-    let mut message = e.to_string();
-    let mut source = std::error::Error::source(e);
+    let mut message = crate::driver::postgres::pg_error_text(e);
+    let mut source = if e.as_db_error().is_some() {
+        None
+    } else {
+        std::error::Error::source(e)
+    };
     while let Some(s) = source {
         let text = s.to_string();
         if !message.contains(&text) {

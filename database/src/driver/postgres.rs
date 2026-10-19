@@ -185,9 +185,45 @@ pub(crate) fn map_err(e: tokio_postgres::Error) -> DbError {
     DbError::DriverError {
         driver: "postgres".into(),
         code,
-        message: e.to_string(),
+        message: pg_error_text(&e),
         failed_index: None,
     }
+}
+
+/// The server's own words for a database error — message, detail, hint and
+/// the object it concerns — instead of tokio-postgres' bare "db error".
+/// Only what the server reports; bound parameter values are never added.
+pub(crate) fn pg_error_text(e: &tokio_postgres::Error) -> String {
+    let Some(db) = e.as_db_error() else {
+        return e.to_string();
+    };
+    let mut out = db.message().to_string();
+    if let Some(detail) = db.detail() {
+        out.push_str(&format!("; detail: {detail}"));
+    }
+    if let Some(hint) = db.hint() {
+        out.push_str(&format!("; hint: {hint}"));
+    }
+    let mut about: Vec<String> = Vec::new();
+    if let Some(schema) = db.schema() {
+        about.push(format!("schema {schema}"));
+    }
+    if let Some(table) = db.table() {
+        about.push(format!("table {table}"));
+    }
+    if let Some(column) = db.column() {
+        about.push(format!("column {column}"));
+    }
+    if let Some(constraint) = db.constraint() {
+        about.push(format!("constraint {constraint}"));
+    }
+    if let Some(datatype) = db.datatype() {
+        about.push(format!("type {datatype}"));
+    }
+    if !about.is_empty() {
+        out.push_str(&format!(" ({})", about.join(", ")));
+    }
+    out
 }
 
 /// True when the SQL statement is an INSERT — the only statement whose first
