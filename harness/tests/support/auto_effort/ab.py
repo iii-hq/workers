@@ -228,7 +228,7 @@ def main(argv: list[str]) -> None:
             n = sum(item[0] == model for item in todo)
             print(f"{model}: {n} runs, about {n * RUN_UNITS:,} units if a run costs about {RUN_UNITS:,}")
         return
-    trees = args.out_dir / "worktrees"
+    trees = args.out_dir.resolve() / "worktrees"  # absolute: git runs in REPO and fs_scope wants a root
     trees.mkdir(parents=True, exist_ok=True)
     for item in todo:
         row = measure(item, sha, trees, args.data / "session-manager")

@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -808,7 +809,7 @@ class AbTest(unittest.TestCase):
         def ab_main(*args: str) -> list[str]:
             printed = io.StringIO()
             with redirect_stdout(printed):
-                ab.main([str(out), "--sha", "HEAD", *args])
+                ab.main([os.path.relpath(out), "--sha", "HEAD", *args])  # the worktrees still get absolute paths
             return printed.getvalue().splitlines()
 
         data = ("--data", str(sessions.parent))
@@ -838,7 +839,7 @@ class AbTest(unittest.TestCase):
         self.assertEqual([p.split(":")[0] for p in full[1:]], list(ab.MODELS))  # units per model, never summed
         self.assertEqual(after[0], f"72 runs at {'f' * 12}, 69 still to run")  # the pilot's runs are the first three
         self.assertEqual(after[1], "claude-opus-5-5: 33 runs, about 3,300,000 units if a run costs about 100,000")
-        trees = [out / "worktrees" / f"ab-claude-opus-5-5-{level}-a-0" for level in ab.LEVELS]
+        trees = [out.resolve() / "worktrees" / f"ab-claude-opus-5-5-{level}-a-0" for level in ab.LEVELS]
         allow = ["coder::read-file", "coder::search", "coder::tree", "coder::list-folder", "coder::update-file"]
         allow += ["shell::exec", "engine::functions::info"]  # file read and edit, the tests, and contracts
         options = {
