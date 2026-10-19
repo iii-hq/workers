@@ -168,6 +168,9 @@ export interface AssistantMessage extends BaseMessage {
     bank: string
     memories: number
     memoryIds: string[]
+    /** The bank holding each id (a layer's differ from `bank`); empty on
+     * entries from before the annotation. */
+    memoryBanks: string[]
     rules?: number
     truncated?: boolean
     /** Recall ran with the semantic (embedding) signal fused in. */

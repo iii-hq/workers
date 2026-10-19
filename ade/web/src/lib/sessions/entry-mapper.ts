@@ -812,6 +812,7 @@ export function entrySegments(
             memory_bank?: unknown
             memory_recalled?: unknown
             memory_ids?: unknown
+            memory_banks?: unknown
             memory_rules?: unknown
             memory_rules_truncated?: unknown
             memory_retrieval?: unknown
@@ -826,6 +827,11 @@ export function entrySegments(
               typeof md.memory_recalled === 'number' ? md.memory_recalled : 0,
             memoryIds: Array.isArray(md.memory_ids)
               ? md.memory_ids.filter((v): v is string => typeof v === 'string')
+              : [],
+            memoryBanks: Array.isArray(md.memory_banks)
+              ? md.memory_banks.filter(
+                  (v): v is string => typeof v === 'string',
+                )
               : [],
             ...(typeof md.memory_rules === 'number'
               ? { rules: md.memory_rules }

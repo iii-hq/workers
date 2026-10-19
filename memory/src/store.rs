@@ -257,6 +257,12 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
     }
 }
 
+/// How strongly a memory stands with no query: pinned first, then
+/// corroboration, then recency.
+pub(crate) fn strength(m: &Memory) -> (bool, u32, u64) {
+    (m.pinned, m.corroboration, m.updated_at)
+}
+
 impl Store {
     /// Open the root, verify it is writable (a probe file — an unwritable
     /// data dir is boot-fatal; memory must never silently run in RAM), and
@@ -817,18 +823,17 @@ impl Bank {
         scored
     }
 
-    /// The bank's strongest memories with no query: pinned first, then
-    /// corroboration, then recency. The injection floor for turns whose
-    /// query recalls little (identity questions, session openers).
-    pub async fn top_memories(&self, limit: usize) -> Vec<Memory> {
+    /// The bank's strongest live memories that `keep` accepts, with no
+    /// query ([`strength`]). The injection floor for turns whose query
+    /// recalls little (identity questions, session openers).
+    pub async fn top_memories(&self, limit: usize, keep: impl Fn(&Memory) -> bool) -> Vec<Memory> {
         let inner = self.inner.read().await;
-        let mut all: Vec<&Memory> = inner.memories.values().filter(|f| f.is_live()).collect();
-        all.sort_by(|a, b| {
-            b.pinned
-                .cmp(&a.pinned)
-                .then(b.corroboration.cmp(&a.corroboration))
-                .then(b.updated_at.cmp(&a.updated_at))
-        });
+        let mut all: Vec<&Memory> = inner
+            .memories
+            .values()
+            .filter(|f| f.is_live() && keep(f))
+            .collect();
+        all.sort_by_key(|m| std::cmp::Reverse(strength(m)));
         all.into_iter().take(limit).cloned().collect()
     }
 
@@ -1543,7 +1548,7 @@ mod tests {
         for m in [&a, &b, &c, &d] {
             bank.commit(m.clone()).await.unwrap();
         }
-        let top = bank.top_memories(10).await;
+        let top = bank.top_memories(10, |_| true).await;
         let texts: Vec<&str> = top.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(
             texts,

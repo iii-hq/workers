@@ -760,6 +760,30 @@ describe('entrySegments', () => {
     })
   })
 
+  it('reads the bank of each recalled memory from the hook annotations', () => {
+    const item = {
+      ...assistantItem('e-a', [{ type: 'text', text: 'hi' }]),
+      origin: {
+        memory_bank: 'workers-abc123',
+        memory_recalled: 2,
+        memory_ids: ['fp1', 'fp2'],
+        memory_banks: ['workers-abc123', 'main'],
+      },
+    }
+    const [reply] = entrySegments(item, 'sess-1')
+    expect(reply).toMatchObject({
+      memory: {
+        bank: 'workers-abc123',
+        memoryIds: ['fp1', 'fp2'],
+        memoryBanks: ['workers-abc123', 'main'],
+      },
+    })
+    // Recorded before the annotation: the chip falls back to `bank`.
+    const { memory_banks: _, ...older } = item.origin
+    const [old] = entrySegments({ ...item, origin: older }, 'sess-1')
+    expect(old).toMatchObject({ memory: { memoryBanks: [] } })
+  })
+
   it('renders nothing for an empty assistant placeholder', () => {
     expect(entrySegments(assistantItem('e-a', []))).toEqual([])
   })

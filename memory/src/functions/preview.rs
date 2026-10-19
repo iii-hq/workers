@@ -29,6 +29,10 @@ pub struct PreviewMemory {
     pub memory: Memory,
     /// Recall score; 0.0 for memories added by the ambient floor.
     pub score: f32,
+    /// The bank holding it, when not `bank`: the default bank, read under
+    /// a bank the session's directory chose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bank: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -54,37 +58,36 @@ pub struct PreviewResponse {
 
 pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse, MemoryError> {
     let cfg = deps.config().await;
-    let bank_name = crate::scope::request_bank(deps, req.bank).await?;
-    crate::store::validate_name(&bank_name)?;
+    let scope = crate::scope::request_scope(deps, req.bank).await?;
+    let bank_name = scope.bank.as_str();
+    crate::store::validate_name(bank_name)?;
     let store = deps.store().await;
-    let bank = store.bank(&bank_name).await.ok();
     // A deleted bank gives a session no memory at all (`scope`), not the
     // header an unknown one gets.
-    let deleted = bank.is_none() && bank_name != cfg.default_bank && store.is_deleted(&bank_name);
+    let deleted = store.bank(bank_name).await.is_err()
+        && bank_name != cfg.default_bank
+        && store.is_deleted(bank_name);
     let injected = if deleted {
         hooks::Injection::none()
     } else {
         // A hypothetical message has no window: nothing was injected yet.
         let seen = std::collections::HashSet::new();
-        hooks::injection(
-            deps,
-            &cfg,
-            &bank_name,
-            bank.as_deref(),
-            Some(&req.query),
-            &seen,
-        )
-        .await
+        let layer = scope.layer(&cfg.default_bank);
+        hooks::injection(deps, &cfg, bank_name, layer, Some(&req.query), &seen).await
     };
     Ok(PreviewResponse {
-        bank: bank_name,
+        bank: bank_name.to_string(),
         system_prompt_section: injected.section,
         rules: injected.rules,
         rules_truncated: injected.rules_truncated,
         memories: injected
             .memories
             .into_iter()
-            .map(|(memory, score)| PreviewMemory { memory, score })
+            .map(|(memory, score, held)| PreviewMemory {
+                memory,
+                score,
+                bank: (held != bank_name).then_some(held),
+            })
             .collect(),
         message: injected.message,
         retrieval: injected.retrieval.into(),

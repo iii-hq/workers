@@ -8,24 +8,24 @@ Durable cross-session agent memory. Named **banks** hold two kinds of content: *
 iii trigger compose::add worker=memory
 ```
 
-A session works in the bank of its repository (or directory), named `<name>-<6 hex>`; one with no working directory uses the default bank `main`, which materializes on first use. No configuration required; without `llm-router` extraction degrades to explicit `memory::save` calls, and without the harness the worker still serves its full RPC surface.
+A session works in the bank of its repository (or directory), named `<name>-<6 hex>`, and reads the default bank `main` under it: your rules there, and your memories about yourself. One with no working directory uses `main` alone, which materializes on first use. No configuration required; without `llm-router` extraction degrades to explicit `memory::save` calls, and without the harness the worker still serves its full RPC surface.
 
 ## Quickstart
 
-Save something, then see exactly what a turn on that topic would be given:
+Outside a session the CLI works in the default bank `main`, the one every repository's sessions read under their own. Save something about yourself, then see exactly what a turn on that topic would be given:
 
 ```bash
-iii trigger memory::save text="User publishes blog posts on Tuesday mornings" pinned=true tags=blog
+iii trigger memory::save text="User publishes blog posts on Tuesday mornings" pinned=true 'tags=["blog"]' 'entities=["user"]'
 iii trigger memory::recall query="when do I publish articles"
 ```
 
-Give the bank a standing instruction — injected into the system prompt of every session using it:
+Give the bank a standing instruction — injected into the system prompt of every session using it, or reading it under a repository's bank:
 
 ```bash
 iii trigger memory::rule::set name=style content="# Style\nFormal register. No em-dashes."
 ```
 
-With the harness running there is nothing else to wire: chat normally and memory captures in the background. Say "never start replies with the word Certainly" in a conversation and it lands in the bank's auto-managed `learned` rule; state something durable and it appears as a memory after the turn. If memory seems absent, `iii trigger memory::doctor` runs a real save→recall roundtrip and names what is degraded.
+With the harness running there is nothing else to wire: chat normally and memory captures in the background. Say "never start replies with the word Certainly" in a conversation and it lands in the session bank's auto-managed `learned` rule; state something durable and it appears as a memory after the turn. If memory seems absent, `iii trigger memory::doctor` runs a real save→recall roundtrip and names what is degraded.
 
 ## Configuration
 
@@ -49,9 +49,9 @@ All fields hot-reload through the `configuration` worker and are editable in the
 | Seam | What happens |
 |---|---|
 | `harness::hook::pre-generate` (fail-open, priority 100) | Injects the session bank's rules into the system prompt once per session (sent verbatim after that; a later rule change arrives as one appended update message, so the prefix stays append-only) and, on each turn's first step, up to `recall_limit` recalled memories as one appended message, minus any the window already carries from an earlier turn's block (a block compaction dropped no longer counts, so its memories can return). Whether an update is due is read from the window the step sends (its newest `<memory update="rules">` message, else the frozen section), so a lost or compacted-away update is sent again and a delivered one never is |
-| `harness::turn-completed` | Queues one background `router::complete` extraction pass over the turn's new user/assistant messages (at most `extraction_window` non-empty messages, plus the turn's user message), into the bank the turn was injected with. A failed or cancelled turn is extracted too (its own bank, not the next turn's); a sub-agent's turn never is |
+| `harness::turn-completed` | Queues one background `router::complete` extraction pass over the turn's new user/assistant messages (at most `extraction_window` non-empty messages, plus the turn's user message), into the bank the turn was injected with (after a worker restart, the one the hook stamped on the turn's reply). A failed or cancelled turn is extracted too (its own bank, not the next turn's); a sub-agent's turn never is, nor an automation or e2e session's (session `kind` other than `user`) |
 
-Bank selection, one resolver for injection, extraction and agent calls: turn metadata `memory_bank` → session metadata `memory_bank` (`session::set-meta`) → the parent turn's bank, else the parent session's (a sub-agent works in its parent's bank, walked up) → the bank of the turn's `fs_scope.root`: `<name>-<6 hex>`, named after the git repository holding it (its main checkout's folder, so every worktree of a repo shares one bank), else after the directory itself, with a hash of the canonical path so same-named folders never share → configured `default_bank` (no root, or one that does not exist). Memories saved before this rule stay in `main`; read them with `bank: "main"`. A `memory::*` call without `bank` inside a turn acts on that turn's bank; outside a session (CLI, console, other workers) it uses `default_bank`. An invalid name, a deleted bank other than the default, or a parent session that no longer exists means no memory for the session — never another bank — and extraction never brings a deleted bank back. A session-lookup failure injects nothing new (the section the session already has stays) and makes extraction retry. An unknown bank gets the ambient header while extraction is on (extraction creates the bank after a turn) and nothing while it is off.
+Bank selection, one resolver for injection, extraction and agent calls: turn metadata `memory_bank` → session metadata `memory_bank` (`session::set-meta`) → the parent turn's bank, else the parent session's (a sub-agent works in its parent's bank, walked up) → the bank of the turn's `fs_scope.root`: `<name>-<6 hex>`, named after the git repository holding it (its main checkout's folder, so every worktree of a repo shares one bank), else after the directory itself, with a hash of the canonical path so same-named folders never share → configured `default_bank` (no root, or one that does not exist). A bank the root chose reads `default_bank` under it (a sub-agent working in it too): its rules first, labelled with its name (`learned (main)`) so two `learned` rules never merge, under the one `max_rule_chars` budget, and its memories whose entities include `user` in the same recall and ambient floor. The hook, `memory::preview` and `memory::recall` without `bank` read it alike; a memory recalled from it carries its `bank`, and the hook's `memory_banks` annotation names the bank of each injected id. Extraction lists those memories as already remembered, so a restatement reinforces one where it lives and a correction supersedes it there. A bank named by metadata or by `bank` is read alone. Project facts saved in `main` before directory banks are not read under them; read them with `bank: "main"`. A `memory::*` call without `bank` inside a turn acts on that turn's bank; outside a session (CLI, console, other workers) it uses `default_bank`. An invalid name, a deleted bank other than the default, or a parent session that no longer exists means no memory for the session — never another bank — and extraction never brings a deleted bank back. A session-lookup failure injects nothing new (the section the session already has stays) and makes extraction retry. An unknown bank gets the ambient header while extraction is on (extraction creates the bank after a turn) and nothing while it is off.
 
 Switching a running session's bank does not rewrite what it already saw: the new bank's section arrives as an appended update that overrides the frozen one, while the earlier bank's section and recalled memories stay visible in the transcript. Start a new session when the two contexts must not mix. Turning `inject_rules` and `inject_memories` both off works the same way: a running session keeps its section and is told once that no memory section applies.
 

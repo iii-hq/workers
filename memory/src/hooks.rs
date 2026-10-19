@@ -123,6 +123,10 @@ pub struct ExtractJobInput {
     /// runs (the worker never saw the turn, or the job predates this).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bank: Option<String>,
+    /// The turn's directory chose `bank`: `default_bank` is read under it
+    /// (`scope::Resolved::layer`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub derived: bool,
     /// The turn ran without memory (an invalid or deleted bank): the job
     /// only steps the cursor past it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -189,7 +193,7 @@ pub async fn pre_generate(
             return Ok(keep_told_section(&input));
         }
     };
-    let Some(bank_name) = bank_name else {
+    let Some(scope) = bank_name else {
         // An invalid or deleted bank: no memory section applies.
         apply_rules(&input, "", &mut mutations, &mut annotations);
         return Ok(HookResponse {
@@ -198,15 +202,21 @@ pub async fn pre_generate(
             annotations: Some(annotations),
         });
     };
-    let bank = deps.store().await.bank(&bank_name).await.ok();
+    let layer = scope.layer(&cfg.default_bank);
+    let bank_name = scope.bank;
+    // Persisted on the step's assistant entry: a turn this process never
+    // saw (a restart) reads both back (`scope::stamped_bank`).
     annotations.insert("memory_bank".into(), json!(bank_name));
+    if let Some(layer) = layer {
+        annotations.insert("memory_layer".into(), json!(layer));
+    }
 
     // Recall only on the step that opens the turn: the appended message is
     // persisted and replayed on later steps, so re-recalling would stack copies.
     let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
     let query = (input.step == 0).then_some(query.as_str());
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
-    let injected = injection(deps, &cfg, &bank_name, bank.as_deref(), query, &seen).await;
+    let injected = injection(deps, &cfg, &bank_name, layer, query, &seen).await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -226,15 +236,18 @@ pub async fn pre_generate(
         let ids: Vec<&str> = injected
             .memories
             .iter()
-            .map(|(m, _)| m.id.as_str())
+            .map(|(m, ..)| m.id.as_str())
             .collect();
+        let banks: Vec<&str> = injected.memories.iter().map(|(.., b)| b.as_str()).collect();
         mutations.append_messages.push(user_text_message(body));
         // A message carrying only the rules reminder recalled nothing.
         if !ids.is_empty() {
             annotations.insert("memory_recalled".into(), json!(ids.len()));
             // Ids (not texts) so chat surfaces can render "which memories
-            // fed this turn" chips and fetch details on demand.
+            // fed this turn" chips and fetch details on demand, each from
+            // the bank holding it (a layer's differ).
             annotations.insert("memory_ids".into(), json!(ids));
+            annotations.insert("memory_banks".into(), json!(banks));
         }
     }
 
@@ -255,8 +268,9 @@ pub(crate) struct Injection {
     pub rules: usize,
     pub rules_truncated: bool,
     /// The memories the appended message carries, in order, with their
-    /// recall score (0.0 for ambient-floor fill-ins).
-    pub memories: Vec<(Memory, f32)>,
+    /// recall score (0.0 for ambient-floor fill-ins) and the bank holding
+    /// them.
+    pub memories: Vec<(Memory, f32, String)>,
     /// The appended `<memory>` message, when a memory fits the budget.
     pub message: Option<String>,
     /// `none` (no recall ran), `bm25-entity`, or `bm25-entity-semantic`.
@@ -307,23 +321,39 @@ pub(crate) fn rules_section(
     (section, rules.len(), truncated)
 }
 
-/// Build what a turn on `bank_name` is given; `query` is the user message
-/// to recall for (`None`: no recall, as on a turn's later steps), `seen`
-/// the memory texts the window already carries ([`injected_in_window`]).
+/// Build what a turn on `bank_name` is given, with `layer` read under it
+/// (`scope::Resolved::layer`): the layer's rules first, labelled with its
+/// name so two `learned` rules never read as one, and its memories about
+/// the user in the same recall and floor. `query` is the user message to
+/// recall for (`None`: no recall, as on a turn's later steps), `seen` the
+/// memory texts the window already carries ([`injected_in_window`]).
 pub(crate) async fn injection(
     deps: &Deps,
     cfg: &WorkerConfig,
     bank_name: &str,
-    bank: Option<&Bank>,
+    layer: Option<&str>,
     query: Option<&str>,
     seen: &HashSet<String>,
 ) -> Injection {
-    let rules = bank
-        .filter(|_| cfg.inject_rules)
-        .and_then(|b| b.list_rules().ok())
-        .unwrap_or_default();
+    let store = deps.store().await;
+    let bank = store.bank(bank_name).await.ok();
+    let layer = match layer {
+        Some(name) => store.bank(name).await.ok().map(|b| (name, b)),
+        None => None,
+    };
+    let rules_of = |b: &Bank| {
+        if cfg.inject_rules {
+            b.list_rules().unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+    let rules = turn_rules(
+        layer.as_ref().map(|(name, b)| (*name, rules_of(b))),
+        bank.as_deref().map(rules_of).unwrap_or_default(),
+    );
     let (section, rules_count, rules_truncated) =
-        rules_section(cfg, bank_name, bank.is_some(), &rules);
+        rules_section(cfg, bank_name, bank.is_some() || layer.is_some(), &rules);
     let mut out = Injection {
         section,
         rules: rules_count,
@@ -335,8 +365,15 @@ pub(crate) async fn injection(
         .map(crate::store::cap_query);
     // On the turn's opening step, like recall: the message is persisted.
     let reminder = query.as_ref().and_then(|_| rules_reminder(&rules));
-    let bank = bank.filter(|_| cfg.inject_memories);
-    let (Some(bank), Some(query)) = (bank, query) else {
+    // The turn's bank whole, then the layer's memories about the user.
+    let sources: Vec<(&Bank, bool)> = bank
+        .as_deref()
+        .map(|b| (b, false))
+        .into_iter()
+        .chain(layer.as_ref().map(|(_, b)| (b.as_ref(), true)))
+        .filter(|_| cfg.inject_memories)
+        .collect();
+    let Some(query) = query.filter(|_| !sources.is_empty()) else {
         out.message = append_reminder(None, bank_name, reminder);
         return out;
     };
@@ -348,23 +385,42 @@ pub(crate) async fn injection(
         "bm25-entity"
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
-    let hits = bank
-        .recall(
-            &query,
-            qv,
-            query_model,
-            cfg.recall_limit,
-            cfg.decay_half_life_days,
-            false,
-        )
-        .await;
+    let (mut hits, mut top, mut own) = (Vec::new(), Vec::new(), HashSet::new());
+    for (b, layered) in sources {
+        let keep = |m: &Memory| !layered || crate::scope::in_layer(m);
+        // The layer's memories about the user may rank past the limit.
+        let fetch = if layered {
+            usize::MAX
+        } else {
+            cfg.recall_limit
+        };
+        let found = b
+            .recall(
+                &query,
+                qv,
+                query_model,
+                fetch,
+                cfg.decay_half_life_days,
+                false,
+            )
+            .await;
+        let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
+        let strongest = b.top_memories(cfg.recall_limit, keep).await;
+        if !layered {
+            own.extend(found.iter().map(|(m, _)| m.id.clone()));
+            own.extend(strongest.iter().map(|m| m.id.clone()));
+        }
+        hits.extend(found);
+        top.extend(strongest);
+    }
+    let hits = merge_ranked(hits, cfg.recall_limit);
     let mut scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
     // Ambient floor: lexical recall misses identity questions and session
     // openers entirely (their words never appear in memory texts), so pad
     // thin results with the bank's strongest memories — still bounded by
     // the same count and token budget.
     let hits: Vec<Memory> = hits.into_iter().map(|(m, _)| m).collect();
-    let top = bank.top_memories(cfg.recall_limit).await;
+    top.sort_by_key(|m| std::cmp::Reverse(crate::store::strength(m)));
     // After the floor, so the floor never walks the bank turn by turn; a
     // slot this frees stays free.
     let memories = unseen(apply_ambient_floor(hits, top, cfg.recall_limit), seen);
@@ -376,13 +432,50 @@ pub(crate) async fn injection(
             .filter(|m| ids.contains(&m.id))
             .map(|m| {
                 let score = scores.remove(&m.id).unwrap_or(0.0);
-                (m, score)
+                let held = match &layer {
+                    Some((name, _)) if !own.contains(&m.id) => name,
+                    _ => bank_name,
+                };
+                (m, score, held.to_string())
             })
             .collect();
         out.message = Some(body);
     }
     out.message = append_reminder(out.message.take(), bank_name, reminder);
     out
+}
+
+/// A turn's rules, under one `max_rule_chars` budget: the layer's first,
+/// labelled with its name so two `learned` rules never read as one, then
+/// the bank's own.
+fn turn_rules(
+    layer: Option<(&str, Vec<crate::types::Rule>)>,
+    own: Vec<crate::types::Rule>,
+) -> Vec<crate::types::Rule> {
+    let Some((name, rules)) = layer else {
+        return own;
+    };
+    rules
+        .into_iter()
+        .map(|r| crate::types::Rule {
+            name: format!("{} ({name})", r.name),
+            ..r
+        })
+        .chain(own)
+        .collect()
+}
+
+/// Hits from a turn's bank, then from its layer, as one ranking: deduped
+/// by id (the first copy wins), by score, capped at `limit`.
+// ponytail: raw scores across banks — BM25 idf is per bank, so a small
+// bank's hits can outrank a big one's; normalize per bank if layered
+// recall ranks badly.
+pub(crate) fn merge_ranked(mut hits: Vec<(Memory, f32)>, limit: usize) -> Vec<(Memory, f32)> {
+    let mut seen = HashSet::new();
+    hits.retain(|(m, _)| seen.insert(m.id.clone()));
+    hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+    hits.truncate(limit);
+    hits
 }
 
 /// A plain user-role text message for `append_messages`.
@@ -559,10 +652,13 @@ pub async fn turn_completed(
     if !cfg.extraction_enabled || input.session_id.is_empty() || is_sub_agent(&input) {
         return Ok(AckResponse { ok: true });
     }
-    let until = match input.turn_id.as_deref() {
+    let (until, stamped) = match input.turn_id.as_deref() {
         Some(turn_id) => extract::turn_end(&deps.iii, &input.session_id, turn_id).await,
-        None => None,
+        None => (None, None),
     };
+    // Not seen by this process (a restart): the bank the hook stamped on
+    // the turn's reply.
+    let bank = bank.or(stamped.map(Some));
     let Some(job) = plan_extraction(&input, bank, until) else {
         return Ok(AckResponse { ok: true });
     };
@@ -607,7 +703,7 @@ fn is_sub_agent(input: &TurnCompletedInput) -> bool {
 /// or the skip could swallow the next turn too.
 pub(crate) fn plan_extraction(
     input: &TurnCompletedInput,
-    bank: Option<Option<String>>,
+    bank: Option<Option<crate::scope::Resolved>>,
     until: Option<String>,
 ) -> Option<ExtractJobInput> {
     if input.session_id.is_empty() || is_sub_agent(input) {
@@ -617,9 +713,11 @@ pub(crate) fn plan_extraction(
     if skip && until.is_none() {
         return None;
     }
+    let bank = bank.flatten();
     Some(ExtractJobInput {
         session_id: input.session_id.clone(),
-        bank: if skip { None } else { bank.flatten() },
+        derived: bank.as_ref().is_some_and(|b| b.derived),
+        bank: bank.map(|b| b.bank),
         skip,
         until,
     })
@@ -980,12 +1078,24 @@ mod tests {
     fn any_finished_turn_is_extracted_into_the_bank_it_was_injected_with() {
         // Failed or cancelled included: the next turn's pass would otherwise
         // sweep it into that turn's bank.
-        let job =
-            plan_extraction(&finished(), Some(Some("blog".into())), Some("e9".into())).unwrap();
+        let blog = Some(Some(crate::scope::Resolved::named("blog")));
+        let job = plan_extraction(&finished(), blog, Some("e9".into())).unwrap();
         assert_eq!(
-            (job.bank.as_deref(), job.skip, job.until.as_deref()),
-            (Some("blog"), false, Some("e9"))
+            (
+                job.bank.as_deref(),
+                job.derived,
+                job.skip,
+                job.until.as_deref()
+            ),
+            (Some("blog"), false, false, Some("e9"))
         );
+        // A directory's bank keeps its layer through the queue.
+        let repo = crate::scope::Resolved {
+            bank: "w-abc123".into(),
+            derived: true,
+        };
+        let job = plan_extraction(&finished(), Some(Some(repo)), None).unwrap();
+        assert_eq!((job.bank.as_deref(), job.derived), (Some("w-abc123"), true));
         // Not seen by this process (a restart): the job resolves it.
         let job = plan_extraction(&finished(), None, None).unwrap();
         assert_eq!((job.bank, job.skip), (None, false));
@@ -1005,7 +1115,8 @@ mod tests {
             parent: Some(json!({ "session_id": "p", "turn_id": "pt" })),
             ..finished()
         };
-        assert!(plan_extraction(&child, Some(Some("blog".into())), Some("e9".into())).is_none());
+        let blog = Some(Some(crate::scope::Resolved::named("blog")));
+        assert!(plan_extraction(&child, blog, Some("e9".into())).is_none());
         let detached = TurnCompletedInput {
             parent_session_id: Some("p".into()),
             ..finished()
@@ -1119,6 +1230,61 @@ Formal."
         let out = apply_ambient_floor(hits, top, 6);
         let ids: Vec<&str> = out.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["fp1", "fp2", "fp3"]);
+    }
+
+    #[test]
+    fn a_layers_rules_come_first_labelled_under_one_budget() {
+        let learned = |line: &str| {
+            rule(
+                "learned",
+                &format!("{}- {line}\n", crate::extract::LEARNED_HEADER),
+            )
+        };
+        let rules = turn_rules(
+            Some(("main", vec![learned("Never use emoji.")])),
+            vec![learned("Use pnpm."), rule("style", &"s".repeat(300))],
+        );
+        let (section, truncated) = build_rules_section(&rules, 220);
+        let theirs = section
+            .find("## learned (main)\n- Never use emoji.")
+            .unwrap();
+        let own = section.find("## learned\n- Use pnpm.").unwrap();
+        assert!(theirs < own, "{section}");
+        assert!(truncated, "one budget across both banks: {section}");
+        assert!(section.contains("## style [omitted"), "{section}");
+        let reminder = rules_reminder(&rules[..2]).unwrap();
+        assert!(
+            reminder.contains("- Never use emoji.\n- Use pnpm."),
+            "{reminder}"
+        );
+
+        let alone = turn_rules(None, vec![learned("Use pnpm.")]);
+        assert_eq!(alone[0].name, "learned");
+    }
+
+    #[test]
+    fn a_layers_hits_join_the_turns_banks_in_one_ranking() {
+        let hits = vec![
+            (memory("fp1", "own"), 0.4),
+            (memory("fp2", "held by both banks"), 0.2),
+            (memory("fp3", "the layer's"), 0.9),
+            (memory("fp2", "held by both banks"), 0.8),
+            (memory("fp4", "ranked out"), 0.1),
+        ];
+        let merged: Vec<(String, f32)> = merge_ranked(hits, 3)
+            .into_iter()
+            .map(|(m, s)| (m.id, s))
+            .collect();
+        assert_eq!(
+            merged,
+            vec![
+                ("fp3".into(), 0.9),
+                ("fp1".into(), 0.4),
+                ("fp2".into(), 0.2)
+            ],
+            "by score, the first copy of a memory both hold, capped"
+        );
+        assert!(merge_ranked(Vec::new(), 3).is_empty());
     }
 
     #[test]
