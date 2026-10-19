@@ -84,6 +84,51 @@ pub(crate) fn reject_tx_control_sql(sql: &str) -> Result<(), DbError> {
     Ok(())
 }
 
+/// The first keyword of a statement, uppercased, past whitespace and comments.
+pub(crate) fn first_keyword(sql: &str) -> String {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, tail)| tail);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, tail)| tail);
+        } else {
+            break;
+        }
+    }
+    rest.chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
+/// Server-side prepared statements (`PREPARE` / `EXECUTE` / `DEALLOCATE`)
+/// live in the postgres session and would outlive the call on a pooled
+/// connection — the reset on recycle cannot drop them without breaking the
+/// driver's own statements. `database::prepareStatement` is the surface for
+/// that. Refused on every driver: mysql cannot run them over the prepared
+/// protocol and sqlite has no such statements, so nothing valid is lost.
+pub(crate) fn reject_session_prepared_sql(sql: &str) -> Result<(), DbError> {
+    reject_session_prepared_at(0, sql)
+}
+
+/// [`reject_session_prepared_sql`] for statement `index` of a batch.
+pub(crate) fn reject_session_prepared_at(index: usize, sql: &str) -> Result<(), DbError> {
+    if matches!(
+        first_keyword(sql).as_str(),
+        "PREPARE" | "EXECUTE" | "DEALLOCATE"
+    ) {
+        return Err(DbError::InvalidParam {
+            index,
+            reason: "PREPARE / EXECUTE / DEALLOCATE would outlive this call on a pooled \
+                     connection; use database::prepareStatement + database::runStatement"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pools: Arc<RwLock<HashMap<String, Pool>>>,
@@ -231,5 +276,36 @@ impl AppState {
             db: db.to_string(),
             available,
         })
+    }
+}
+
+#[cfg(test)]
+mod keyword_tests {
+    #[test]
+    fn first_keyword_skips_comments() {
+        assert_eq!(
+            super::first_keyword("  -- x\n /* y */ prepare p AS SELECT 1"),
+            "PREPARE"
+        );
+        assert_eq!(super::first_keyword("SELECT 1"), "SELECT");
+        assert_eq!(super::first_keyword(""), "");
+    }
+
+    #[test]
+    fn session_prepared_statements_are_refused() {
+        for sql in [
+            "PREPARE p AS SELECT 1",
+            "/* x */ execute p",
+            "DEALLOCATE ALL",
+        ] {
+            assert!(super::reject_session_prepared_sql(sql).is_err(), "{sql}");
+        }
+        assert!(super::reject_session_prepared_sql("SELECT 'PREPARE'").is_ok());
+        assert!(super::reject_session_prepared_sql("DO $$ BEGIN EXECUTE 'x'; END $$").is_ok());
+        let err = super::reject_session_prepared_at(2, "prepare q as select 1").unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::DbError::InvalidParam { index: 2, .. }
+        ));
     }
 }

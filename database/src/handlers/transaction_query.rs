@@ -64,6 +64,7 @@ pub async fn handle(state: &AppState, req: TxQueryReq) -> Result<QueryResp, Stri
                 .into(),
         }));
     }
+    crate::handlers::reject_session_prepared_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let lock = match state.transactions.lock(&req.transaction_id).await {

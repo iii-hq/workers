@@ -101,6 +101,7 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
                     .into(),
             }));
         }
+        crate::handlers::reject_session_prepared_at(i, &s.sql).map_err(err_to_str)?;
         let params = JsonParam::from_json_slice(&s.params).map_err(err_to_str)?;
         stmts.push(TxStatement { sql: s.sql, params });
     }

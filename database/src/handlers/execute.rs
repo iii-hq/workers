@@ -73,6 +73,7 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
         }));
     }
     crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
+    crate::handlers::reject_session_prepared_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let result = match &pool {
