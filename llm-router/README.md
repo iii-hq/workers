@@ -108,14 +108,15 @@ these embed-only surfaces last, alphabetically, found through
 registered provider either has no embed surface (Anthropic only, say) or is
 not configured for good (provider-openai with no API key). Configuring that
 provider later moves callers to its vector space: memory re-embeds into the
-model the reply reports. Three cases block the fallback with
+model the reply reports. One rule blocks the fallback with
 `router/provider_unavailable`, since another embedder would put the caller's
 vectors in another space, so the caller retries later: a registered provider
 whose `embed` has answered before (its registry record keeps an `embeds` flag)
-has no live function (down or restarting); a registered provider's `embed` is
-live again; a declaring embedder has not registered yet. A down provider never
-seen embedding does not block: the registry keeps every record, so a removed
-chat-only provider must not hold the fallback for good.
+is not found and was live in the last 15 minutes (its registration, its last
+answered embed, or the router's own start), whatever else of it is live
+(restarting, partly re-registered, or the router just restarted). After that
+window it no longer blocks: the registry keeps every record, so a removed
+provider must not hold the fallback for good.
 
 `router::chat` accepts an optional structured prompt next to the flat
 `system_prompt`: `system_sections` (ordered `{text, cache_boundary}` blocks)
