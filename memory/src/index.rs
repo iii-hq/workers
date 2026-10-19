@@ -12,12 +12,12 @@ use crate::types::Memory;
 
 const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
-/// Weight of one query-token hit on an entity handle.
-const ENTITY_WEIGHT: f32 = 0.6;
-/// Weight of `ln(1 + corroboration)`.
-const CORROBORATION_WEIGHT: f32 = 0.3;
-/// Flat bonus for pinned memories that matched at all.
-const PINNED_BONUS: f32 = 0.75;
+/// Relevance multiplier per query-token hit on an entity handle.
+const ENTITY_BOOST: f32 = 0.3;
+/// Relevance multiplier per unit of `ln(1 + corroboration)`.
+const CORROBORATION_BOOST: f32 = 0.3;
+/// Relevance multiplier for pinned memories.
+const PINNED_BOOST: f32 = 0.25;
 /// How much recency can move a score: ±`RECENCY_WEIGHT / 2` around neutral
 /// (fresh ×1.2, very old ×0.8). Hindsight uses 0.2; 0.4 measured best on the
 /// recall eval (durable-old hit@1 0.5 -> 1.0) without adding traps.
@@ -147,8 +147,8 @@ impl Bm25Index {
 }
 
 /// Fused recall score for one candidate: its query relevance (BM25 plus the
-/// weighted semantic similarity, when any) with entity overlap,
-/// corroboration, and pin bonus added, then a mild recency multiplier
+/// weighted semantic similarity, when any) scaled by entity overlap,
+/// corroboration, and pin boosts, then a mild recency multiplier
 /// (±`RECENCY_WEIGHT / 2`). Superseded memories are excluded by the caller.
 pub fn fused_score(
     relevance: f32,
@@ -163,10 +163,16 @@ pub fn fused_score(
         .flat_map(|e| tokenize(e))
         .filter(|t| query_tokens.contains(t))
         .count() as f32;
-    let base = relevance
-        + ENTITY_WEIGHT * entity_hits
-        + CORROBORATION_WEIGHT * (1.0 + memory.corroboration as f32).ln()
-        + if memory.pinned { PINNED_BONUS } else { 0.0 };
+    // History seeds carry zero relevance; a tiny floor keeps the boosts
+    // and recency ordering them.
+    let base = relevance.max(1e-6)
+        * (1.0 + ENTITY_BOOST * entity_hits)
+        * (1.0 + CORROBORATION_BOOST * (1.0 + memory.corroboration as f32).ln())
+        * if memory.pinned {
+            1.0 + PINNED_BOOST
+        } else {
+            1.0
+        };
     let age_days = (now_ms.saturating_sub(memory.updated_at)) as f32 / 86_400_000.0;
     let half_life = half_life_days.max(1) as f32;
     // Freshness in (0, 1], neutral (0.5) at the half-life, folded in as a
@@ -345,6 +351,8 @@ mod scoring_tests {
         let base = fused_score(1.0, &plain, &q, now, 30);
         assert!(fused_score(1.0, &pinned, &q, now, 30) > base);
         assert!(fused_score(1.0, &corroborated, &q, now, 30) > base);
+        // History seeds (zero relevance) still order by the boosts.
+        assert!(fused_score(0.0, &pinned, &q, now, 30) > fused_score(0.0, &plain, &q, now, 30));
     }
 
     #[test]
