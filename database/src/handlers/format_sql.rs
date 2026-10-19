@@ -520,6 +520,31 @@ fn restore(formatted: &str, kept: &[String]) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn the_handler_needs_a_dialect() {
+        let state = AppState {
+            pools: Default::default(),
+            config: Default::default(),
+            handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
+            transactions: crate::transaction::TxRegistry::new(),
+            log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
+            runtime: Default::default(),
+        };
+        let req = |v: serde_json::Value| serde_json::from_value(v).unwrap();
+        let err = handle(&state, req(serde_json::json!({ "sql": "select 'a\\' x" })))
+            .await
+            .unwrap_err();
+        assert!(err.contains("needs `db` or `driver`"), "{err}");
+        let ok = handle(
+            &state,
+            req(serde_json::json!({ "sql": "select 1", "driver": "postgres" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.sql, "SELECT\n  1");
+    }
+
     #[test]
     fn formats_keywords_and_keeps_comments_and_statements() {
         let out = format(
