@@ -104,11 +104,18 @@ fn item(name: &str, db: &DatabaseConfig) -> MentionItem {
     MentionItem {
         id: name.to_string(),
         label: name.to_string(),
-        hint: Some(db.driver.to_string()),
-        description: Some(location(db)),
+        // Chat surfaces show a mention as `@<hint>` (kanban's is the ticket
+        // key): the connection's name, not its driver.
+        hint: Some(name.to_string()),
+        description: Some(description(db)),
         icon: Some(ICON.into()),
         color: palette_color(db.display.as_ref().and_then(|d| d.color.as_deref())),
     }
+}
+
+/// `postgres · host:port/db` (`sqlite · path`).
+fn description(db: &DatabaseConfig) -> String {
+    format!("{} · {}", db.driver, location(db))
 }
 
 pub async fn search(state: &AppState, req: MentionSearchRequest) -> MentionSearchResponse {
@@ -193,8 +200,8 @@ pub async fn get(state: &AppState, req: MentionGetRequest) -> Option<MentionView
     Some(MentionView {
         id: name.to_string(),
         label: name.to_string(),
-        hint: Some(db.driver.to_string()),
-        description: Some(location(db)),
+        hint: Some(name.to_string()),
+        description: Some(description(db)),
         icon: Some(ICON.into()),
         color: palette_color(db.display.as_ref().and_then(|d| d.color.as_deref())),
         fields,
@@ -276,8 +283,13 @@ mod tests {
         .await;
         assert_eq!(by_host.items[0].id, "shop_mysql");
         assert_eq!(
+            shop.items[1].hint.as_deref(),
+            Some("shop_pg"),
+            "the pill reads @shop_pg"
+        );
+        assert_eq!(
             shop.items[1].description.as_deref(),
-            Some("db.example:5432/shop")
+            Some("postgres · db.example:5432/shop")
         );
         assert_eq!(shop.items[1].color.as_deref(), Some("blue"));
     }

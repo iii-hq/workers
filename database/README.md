@@ -323,7 +323,7 @@ Stored in the [`state`](https://github.com/iii-hq/workers/tree/main/state) worke
 
 ### Chat mentions
 
-The worker is a [mention provider](../crates/mention-contract) named `database`: `@database(id="<connection>")` in a chat renders as a pill with a preview card (driver, server, SSH, folder, status) and reaches the agent as a summary saying which `db` to pass (`database::query {db: "<connection>", sql}`, `database::listTables {db: "<connection>"}`). `database::mention::search` / `database::mention::get` are internal; agents read the connection through `database::listTables` (the provider's `details`).
+The worker is a [mention provider](../crates/mention-contract) named `database`: `@database(id="<connection>")` in a chat renders as a pill reading `@<connection>` (the item's `hint` is the connection name; `description` is `<driver> · host:port/db`) with a preview card (driver, server, SSH, folder, status) and reaches the agent as a summary saying which `db` to pass (`database::query {db: "<connection>", sql}`, `database::listTables {db: "<connection>"}`). `database::mention::search` / `database::mention::get` are internal; agents read the connection through `database::listTables` (the provider's `details`).
 
 ## Cell values
 
