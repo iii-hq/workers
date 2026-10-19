@@ -6,8 +6,9 @@ sends the task on a new e2e session scoped to that tree, waits for the turn, che
 is the session's last assistant text and its cost the summed units of all its assistant messages, read from the session
 file under --data. --pilot runs each task once on claude-opus-5-5 at medium (R13). Every call writes
 out_dir/ab_prompts.jsonl, the A/B prompts for judge.py --rows (R4); without --run it prints the run count and an
-estimated cost. A --run rewrites ab.jsonl after each run and ratios.json at the end. It skips the runs ab.jsonl holds
-without an error, so a --run after --pilot adds the rest and an errored run goes again; 3 errored runs in a row stop it.
+estimated cost. A --run rewrites ab.jsonl after each run and ratios.json at the end. It skips the runs ab.jsonl holds,
+except those that errored before spending (spent()), so a --run after --pilot adds the rest and only those go again;
+3 errored runs in a row stop it. An errored run is a fail.
 """
 
 import argparse
@@ -57,16 +58,19 @@ TURN_S = 1800  # a turn still running after this is stopped, so it stops spendin
 RUN_UNITS = 100_000  # ponytail: between the corpus's child tasks and opus top turns; the pilot measures it
 
 
-def ratios(rows: list[dict]) -> dict[str, dict[str, float]]:
-    """Mean cost_units per (model, level), passing and failing runs alike, over the model's medium mean.
+def spent(row: dict) -> bool:
+    """Whether a run is a cost sample, kept and never re-run: no error, or an error after it spent (R17). Timeouts
+    cluster at high effort, so dropping or replacing them would bias the ratios low. One that spent nothing, a turn
+    that never started, is no sample and goes again."""
+    return not row.get("error") or row["cost_units"] > 0
 
-    A run with an error counts when it spent (R17): timeouts cluster at high effort, so leaving them out would bias the
-    ratios. One that spent nothing, a turn that never started, is no cost sample.
-    """
+
+def ratios(rows: list[dict]) -> dict[str, dict[str, float]]:
+    """Mean cost_units per (model, level) over the spent() runs, passing and failing alike, over the model's medium
+    mean."""
     costs = defaultdict(list)
-    for row in rows:
-        if not row.get("error") or row["cost_units"] > 0:
-            costs[row["model"], row["level"]].append(row["cost_units"])
+    for row in filter(spent, rows):
+        costs[row["model"], row["level"]].append(row["cost_units"])
     means = {key: statistics.fmean(cost) for key, cost in costs.items()}
     out = {}
     for (model, level), mean in means.items():
@@ -189,7 +193,8 @@ def measure(item: tuple[str, str, str, int], sha: str, trees: Path, sessions: Pa
             "options": options,
         }
         steps, error = converse(payload, sessions)
-        passed = check(task, extract.text(steps[-1]) if steps else "", tree)
+        # an errored run is a fail: a stopped or failed turn did not finish the task, whatever its tree or text holds
+        passed = not error and check(task, extract.text(steps[-1]) if steps else "", tree)
     finally:
         try:
             shutil.rmtree(tree)
@@ -242,7 +247,7 @@ def main(argv: list[str]) -> None:
         items = [(m, lv, t, r) for m in MODELS for t in TASKS for r in range(RUNS) for lv in LEVELS]
     path = args.out_dir / "ab.jsonl"
     rows = common.read_jsonl(path) if path.exists() else []
-    done = {run_key(row) for row in rows if not row["error"]}
+    done = {run_key(row) for row in filter(spent, rows)}
     todo = [item for item in items if item not in done]
     if not args.run:
         print(f"{len(items)} runs at {sha[:12]}, {len(todo)} still to run")
@@ -255,7 +260,7 @@ def main(argv: list[str]) -> None:
     errored = 0  # runs in a row with an error: a broken setup (a wrong --data, a down stack) must not pay for all
     for item in todo:
         row = measure(item, sha, trees, args.data / "session-manager")
-        rows = [old for old in rows if run_key(old) != item] + [row]  # a retry replaces the errored row
+        rows = [old for old in rows if run_key(old) != item] + [row]  # a retry replaces a row that spent nothing
         common.write_jsonl(path, rows)  # after each run, so a stopped --run keeps what it paid for
         outcome = f"{'pass' if row['pass'] else 'fail'}, {row['cost_units']:,.0f} units, {row['steps']} steps"
         print(f"{' '.join(map(str, item))}: {outcome}" + (f"; {row['error']}" if row["error"] else ""), flush=True)

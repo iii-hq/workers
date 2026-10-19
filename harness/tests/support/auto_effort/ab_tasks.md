@@ -64,9 +64,10 @@ models are never added together.
   session, and no hook of the user's repository runs. A linked worktree would share the user's `.git` (stash, refs,
   hooks) and reach every branch, the checks included.
 - Some runs carry an `error`: the turn failed, was cancelled or was stopped, or a send or status call failed.
-  - Such a run is still a cost sample for `ratios` when it spent (`cost_units > 0`): timeouts cluster at high effort,
-    so leaving them out would bias the ratios. One that spent nothing is not (R17).
-  - The next `--run` runs it again and replaces its row.
+  - Such a run is a fail (`pass` is false), whatever its tree or answer holds: the turn did not finish the task.
+  - When it spent (`cost_units > 0`), it stays in `ab.jsonl` as a cost sample for `ratios` and is never re-run:
+    timeouts cluster at high effort, so dropping or replacing them would bias the ratios low (R17).
+  - When it spent nothing, it is no cost sample. The next `--run` runs it again and replaces its row.
   - Rows without an error are never re-run. Delete `ab.jsonl` to start over.
 - The stack is the template stack (`iii trigger -n my-project`) with `harness`, `llm-router`, `provider-anthropic`,
   `session-manager` and `ide`.
@@ -191,7 +192,8 @@ A decoy that passes proves that the check accepts an outcome that did not do the
   `python3 -I ab.py <out_dir> --sha <sha> --data <stack data dir> --pilot --run`. Its four runs, opus at `medium` on
   tasks a-d, go through the read, edit and exec paths once each (R13).
   - If any pilot run has an `error`, the A/B stops until the plumbing (the stack, `--data`, the functions or the tree)
-    is fixed. Then run the pilot again.
+    is fixed. Then delete `ab.jsonl` and run the pilot again: a run that errored after spending is never re-run, and
+    a broken setup's runs are no samples of an arm.
   - If the pilot fails task a or task b, the easy tasks at `medium`, the A/B stops for investigation. Every arm shares
     the setup, so the full run waits too. A fail on c or d, the hard tasks, does not stop it.
   - If the pilot's mean cost is over 200,000 units a run (twice the estimate), re-estimate the full run and ask again.
@@ -199,10 +201,12 @@ A decoy that passes proves that the check accepts an outcome that did not do the
 - The full run is paid and needs the user's OK. It is the same command without `--pilot`.
   - Stop it when either model's summed `cost_units` passes twice its approved estimate. Ctrl-C stops the running turn
     and keeps the rows of finished runs.
-  - Runs with an error go again on the next `--run`, once. If an arm still has runs with an error after that, report
-    instead of retrying.
+  - Runs that errored before spending (`cost_units == 0`) go again on the next `--run`, once. If an arm still has such
+    runs after that, report instead of retrying. A run that errored after spending is kept as a cost sample and a fail,
+    and never goes again.
 - Any `--run`, pilot or full, stops by itself after 3 runs in a row with an error, so a broken setup does not pay for
-  every run. Fix the setup before the next `--run`.
+  every run. Fix the setup, and delete the errored rows it wrote (the last rows of `ab.jsonl`), before the next
+  `--run`: a spent one would otherwise stay as a sample.
 - A turn that has not ended after 1,800 s is stopped, and its run is recorded with the error.
 
 ## Held-out exposure

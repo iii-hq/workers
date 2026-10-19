@@ -1072,20 +1072,23 @@ class AbTest(unittest.TestCase):
         inputs = {"a": 700, "b": 1000, "c": 1300, "d": 1600}
         answers = {"a": "It returns None.", "b": "Done.", "c": "Fixed."}
         answers["d"] = "send.rs asks reasoning_fields_omitted, then calls inherit_prior_reasoning"
-        sends, stops, built, failing = [], [], [], {"d"}  # d's first turn fails after one step; its retry completes
+        # c's first send is refused before anything is spent, so it goes again; d's turn writes its answer, then fails
+        # after spending, so it stays a cost sample and a fail (R17) and is never re-run
+        sends, stops, built, unsent, failing = [], [], [], {"c"}, {"d"}
 
         def stack(fn: str, payload: dict, timeout_s: float) -> dict:
-            """A send writes its session file: one function step, then the answer unless the turn fails."""
+            """A send writes its session file: one function step, then the answer."""
             if fn == "harness::stop":
                 stops.append(payload)
                 return {"stopping": False}
             if fn == "harness::send":
+                if tasks[payload["message"]] in unsent:
+                    unsent.clear()
+                    raise common.TriggerError("transport", "no engine")
                 sends.append(payload)
                 sid, task = f"s{len(sends)}", tasks[payload["message"]]
                 usage = {"input": inputs[task], "output": 0, "cache_read": 0, "cache_write": 0}
-                steps = assistant("a1", 10, usage=usage)
-                if task not in failing:
-                    steps += assistant("a2", 20, answers[task], usage)
+                steps = assistant("a1", 10, usage=usage) + assistant("a2", 20, answers[task], usage)
                 written = [meta(sid, "e2e"), user("u1", payload["message"], 0), *steps]
                 (sessions / f"{sid}.jsonl").write_text("".join(line(d) + "\n" for d in written), encoding="utf-8")
                 return {"accepted": True, "session_id": sid, "turn_id": "t1"}
@@ -1125,7 +1128,7 @@ class AbTest(unittest.TestCase):
             self.assertEqual(call.call_count, 0)
             ab_main("--pilot", "--run", *data)
             first = common.read_jsonl(out / "ab.jsonl")
-            ab_main("--pilot", "--run", *data)  # only the run that errored goes again
+            ab_main("--pilot", "--run", *data)  # only the run that errored before spending goes again
             after = ab_main()
         with (
             mock.patch.object(ab, "git", return_value="f" * 40),  # cat-file finds ab.py in the sha's tree
@@ -1155,25 +1158,26 @@ class AbTest(unittest.TestCase):
         }
         self.assertEqual(sends[0], want)
         got = [(s["model"], s["options"]["thinking_level"], tasks[s["message"]]) for s in sends]
-        self.assertEqual(got, [("claude-opus-5-5", "medium", task) for task in "abcdd"])
+        self.assertEqual(got, [("claude-opus-5-5", "medium", task) for task in "abdc"])
         # every run, a retry too, gets a tree of its own name under out_dir/trees, and none is left behind
         self.assertEqual([tree.parent for tree in built], [out.resolve() / "trees"] * 5)
         self.assertEqual(len({tree.name for tree in built}), 5)
         self.assertTrue(built[0].name.startswith("ab-claude-opus-5-5-medium-a-0-"), built[0])
         self.assertEqual(list((out / "trees").iterdir()), [])  # nor task c's test hash beside its tree
-        self.assertEqual(stops, [{"session_id": "s4", "turn_id": "t1"}])  # the failed turn
+        self.assertEqual(stops, [{"session_id": "s3", "turn_id": "t1"}])  # d's failed turn; c's send made none
         keys = ["model", "level", "task", "run", "pass", "cost_units", "steps", "error"]
         self.assertEqual(list(first[0]), keys)
         got = [(r["task"], r["pass"], r["cost_units"], r["steps"], r["error"]) for r in first]
         want = [
             ("a", True, 1400.0, 2, None),
             ("b", False, 2000.0, 2, None),  # the tree's common.py still defines units
-            ("c", False, 2600.0, 2, None),  # test_p95 fails on the planted bug
-            ("d", False, 1600.0, 1, "failed (overloaded)"),
+            ("c", False, 0.0, 0, "transport: no engine"),
+            ("d", False, 3200.0, 2, "failed (overloaded)"),  # a fail although its answer passes task d's check
         ]
         self.assertEqual(got, want)
-        retried = [(r["task"], r["pass"], r["error"]) for r in common.read_jsonl(out / "ab.jsonl")]
-        self.assertEqual(retried, [("a", True, None), ("b", False, None), ("c", False, None), ("d", True, None)])
+        retried = [(r["task"], r["pass"], r["cost_units"], r["error"]) for r in common.read_jsonl(out / "ab.jsonl")]
+        want = [("a", True, 1400.0, None), ("b", False, 2000.0, None), ("d", False, 3200.0, "failed (overloaded)")]
+        self.assertEqual(retried, [*want, ("c", False, 2600.0, None)])  # test_p95 fails on the planted bug
         ratios = json.loads((out / "ratios.json").read_text(encoding="utf-8"))
         self.assertEqual(ratios, {"claude-opus-5-5": {"medium": 1.0}})  # the pilot runs at medium only
         prompts = common.read_jsonl(out / "ab_prompts.jsonl")
