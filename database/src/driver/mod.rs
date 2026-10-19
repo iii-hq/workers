@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 pub mod mysql;
+pub(crate) mod pg_decode;
 pub mod postgres;
 pub mod sqlite;
 

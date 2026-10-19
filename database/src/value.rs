@@ -94,7 +94,7 @@ impl RowValue {
             RowValue::Text(s) => Value::String(s.clone()),
             RowValue::Bytes(b) => Value::String(B64.encode(b)),
             RowValue::Timestamp(t) => {
-                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
             }
             RowValue::Decimal(s) => Value::String(s.clone()),
             RowValue::Json(v) => v.clone(),
@@ -116,7 +116,7 @@ impl RowValue {
             RowValue::Text(s) => Value::String(s),
             RowValue::Bytes(b) => Value::String(B64.encode(&b)),
             RowValue::Timestamp(t) => {
-                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
             }
             RowValue::Decimal(s) => Value::String(s),
             RowValue::Json(v) => v,

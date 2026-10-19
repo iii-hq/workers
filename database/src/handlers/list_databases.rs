@@ -86,6 +86,10 @@ pub struct DatabaseInfo {
 pub struct ListDatabasesResp {
     pub databases: Vec<DatabaseInfo>,
     pub count: usize,
+    /// The configuration entry this worker reads its connections from —
+    /// `database`, or `<namespace>-<container>` under compose
+    /// (`III_CONFIG_NAME`). Filter `configuration::on-updated` on it.
+    pub config_id: String,
 }
 
 pub async fn handle(state: &AppState, _req: ListDatabasesReq) -> Result<ListDatabasesResp, String> {
@@ -150,7 +154,11 @@ pub async fn handle(state: &AppState, _req: ListDatabasesReq) -> Result<ListData
     // HashMap iteration order is nondeterministic; sort so output is stable.
     databases.sort_by(|a, b| a.name.cmp(&b.name));
     let count = databases.len();
-    Ok(ListDatabasesResp { databases, count })
+    Ok(ListDatabasesResp {
+        databases,
+        count,
+        config_id: crate::configuration::config_id().to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -297,7 +305,7 @@ mod tests {
             .map(|k| k.as_str())
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["count", "databases"]);
+        assert_eq!(keys, ["config_id", "count", "databases"]);
         assert!(json["databases"].is_array());
         assert!(json["count"].is_number());
     }

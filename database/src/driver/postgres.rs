@@ -6,7 +6,6 @@ use crate::driver::{
 use crate::error::DbError;
 use crate::pool::PostgresPool;
 use crate::value::{JsonParam, RowValue};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use postgres_types::{ToSql, Type};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -163,133 +162,20 @@ impl ToSql for PgBind {
     postgres_types::to_sql_checked!();
 }
 
+/// Decode one cell. Never fails the query: every type has a decoding (see
+/// `pg_decode`), and a cell that cannot even be read comes back NULL with a
+/// warning rather than taking the result set down.
 fn pg_cell_to_row_value(
     row: &tokio_postgres::Row,
     idx: usize,
     ty: &Type,
 ) -> Result<RowValue, DbError> {
-    macro_rules! get {
-        ($t:ty) => {{
-            let v: Option<$t> = row.try_get(idx).map_err(map_err)?;
-            v
-        }};
-    }
-    use tokio_postgres::types::Type as T;
-    Ok(match *ty {
-        T::BOOL => match get!(bool) {
-            Some(b) => RowValue::Bool(b),
-            None => RowValue::Null,
-        },
-        T::INT2 => match get!(i16) {
-            Some(i) => RowValue::Int(i as i64),
-            None => RowValue::Null,
-        },
-        T::INT4 => match get!(i32) {
-            Some(i) => RowValue::Int(i as i64),
-            None => RowValue::Null,
-        },
-        T::INT8 => match get!(i64) {
-            Some(i) => RowValue::BigInt(i),
-            None => RowValue::Null,
-        },
-        T::FLOAT4 => match get!(f32) {
-            Some(f) => RowValue::Float(f as f64),
-            None => RowValue::Null,
-        },
-        T::FLOAT8 => match get!(f64) {
-            Some(f) => RowValue::Float(f),
-            None => RowValue::Null,
-        },
-        T::TEXT | T::VARCHAR | T::BPCHAR | T::NAME => match get!(String) {
-            Some(s) => RowValue::Text(s),
-            None => RowValue::Null,
-        },
-        // `String: FromSql` accepts only the text-family OIDs
-        // (postgres-types-0.2/src/lib.rs:729), so decoding a uuid cell as
-        // String failed with WrongType and took the whole query down — the
-        // same class as the `"char"` and NUMERIC arms in this function.
-        // Decode as Uuid and surface the canonical lowercase-hyphenated text.
-        T::UUID => match get!(uuid::Uuid) {
-            Some(u) => RowValue::Text(u.to_string()),
-            None => RowValue::Null,
-        },
-        // The internal one-byte "char" (OID 18) — what pg_catalog uses for
-        // relkind/contype/attidentity. It is NOT text-family: `String`'s
-        // FromSql rejects it (so the `_` fallback below fails with "error
-        // deserializing column N"), and tokio-postgres decodes it as i8.
-        T::CHAR => match get!(i8) {
-            Some(c) => RowValue::Text(((c as u8) as char).to_string()),
-            None => RowValue::Null,
-        },
-        T::BYTEA => match get!(Vec<u8>) {
-            Some(b) => RowValue::Bytes(b),
-            None => RowValue::Null,
-        },
-        // postgres-types' chrono FromSql impls bind by exact OID:
-        // `DateTime<Utc>` declares `accepts!(TIMESTAMPTZ)` and `NaiveDateTime`
-        // declares `accepts!(TIMESTAMP)`. Decoding TIMESTAMP (no tz) as
-        // `DateTime<Utc>` fails at runtime with WrongType. Split the arms:
-        // TIMESTAMP → NaiveDateTime, then assume UTC for the wire envelope
-        // so RowValue::Timestamp keeps its DateTime<Utc> shape.
-        T::TIMESTAMPTZ => match get!(DateTime<Utc>) {
-            Some(t) => RowValue::Timestamp(t),
-            None => RowValue::Null,
-        },
-        T::TIMESTAMP => match get!(NaiveDateTime) {
-            Some(n) => RowValue::Timestamp(Utc.from_utc_datetime(&n)),
-            None => RowValue::Null,
-        },
-        T::JSON | T::JSONB => match get!(JsonValue) {
-            Some(v) => RowValue::Json(v),
-            None => RowValue::Null,
-        },
-        T::NUMERIC => {
-            // Layered decode:
-            //   1. rust_decimal::Decimal — fast, well-tested, handles 99% of
-            //      real-world NUMERIC values (96-bit / ~28 sig digits).
-            //   2. Custom binary parser fallback — for values rust_decimal
-            //      rejects: NaN, ±Infinity, and arbitrary-precision NUMERIC
-            //      beyond 96 bits (rust_decimal-1.41/src/postgres/driver.rs:91
-            //      returns `Err(ConversionTo)` for special signs and line 109
-            //      returns `Err(ExceedsMaximumPossibleValue)` for overflow).
-            //   3. Null on parse failure.
-            //
-            // The reviewer originally suggested `get!(String)` as the
-            // fallback, but `String: FromSql::accepts` is gated to TEXT-
-            // family OIDs (postgres-types-0.2/src/lib.rs:729) and rejects
-            // NUMERIC at runtime — confirmed earlier in this branch. The
-            // custom parser sidesteps that by accepting NUMERIC directly
-            // and stringifying the binary digits.
-            match row.try_get::<_, Option<rust_decimal::Decimal>>(idx) {
-                Ok(Some(d)) => RowValue::Decimal(d.to_string()),
-                Ok(None) => RowValue::Null,
-                Err(e) => {
-                    tracing::debug!(
-                        column = idx,
-                        error = %e,
-                        "NUMERIC outside rust_decimal range; falling back to binary parser"
-                    );
-                    match row.try_get::<_, Option<PgNumericText>>(idx) {
-                        Ok(Some(t)) => RowValue::Decimal(t.0),
-                        Ok(None) => RowValue::Null,
-                        Err(e) => {
-                            tracing::warn!(
-                                column = idx,
-                                error = %e,
-                                "NUMERIC binary parser also failed; surfacing Null"
-                            );
-                            RowValue::Null
-                        }
-                    }
-                }
-            }
-        }
-        _ => {
-            // Unknown / unmapped type — fall back to text representation.
-            match row.try_get::<_, Option<String>>(idx).map_err(map_err)? {
-                Some(s) => RowValue::Text(s),
-                None => RowValue::Null,
-            }
+    Ok(match row.try_get::<_, Option<super::pg_decode::Raw>>(idx) {
+        Ok(Some(raw)) => super::pg_decode::decode(ty, raw.0),
+        Ok(None) => RowValue::Null,
+        Err(e) => {
+            tracing::warn!(column = idx, r#type = %ty.name(), error = %e, "postgres cell unreadable; returning NULL");
+            RowValue::Null
         }
     })
 }
@@ -607,27 +493,6 @@ pub async fn run_prepared(
     })
 }
 
-/// Fallback NUMERIC decoder used when `rust_decimal` rejects a value
-/// (NaN, ±Infinity, or precision beyond 96 bits). Captures the raw
-/// Postgres binary numeric format and stringifies it directly so the
-/// caller sees a precision-preserving decimal/special-value string.
-struct PgNumericText(String);
-
-impl<'a> postgres_types::FromSql<'a> for PgNumericText {
-    fn from_sql(
-        _ty: &Type,
-        raw: &'a [u8],
-    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        stringify_pg_numeric_binary(raw)
-            .map(PgNumericText)
-            .map_err(|e| -> Box<dyn std::error::Error + Sync + Send> { e.into() })
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        *ty == Type::NUMERIC
-    }
-}
-
 /// Postgres binary NUMERIC layout (network byte order, all 16-bit fields):
 ///
 ///   u16 ndigits     — number of base-10000 digit groups
@@ -640,7 +505,7 @@ impl<'a> postgres_types::FromSql<'a> for PgNumericText {
 /// back from, which uses the same layout) and the Postgres source at
 /// `src/backend/utils/adt/numeric.c`. The custom stringifier handles every
 /// shape rust_decimal rejects so callers see a value rather than an error.
-fn stringify_pg_numeric_binary(raw: &[u8]) -> Result<String, &'static str> {
+pub(crate) fn stringify_pg_numeric_binary(raw: &[u8]) -> Result<String, &'static str> {
     if raw.len() < 8 {
         return Err("numeric: header too short");
     }
