@@ -58,6 +58,8 @@ import {
   RefreshCw,
   Table2,
 } from 'lucide-react'
+import { TEST_STAGE_LABELS } from '../configuration/connection'
+import { ConnectionIcon } from '../lib/connection-icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ALL,
@@ -65,7 +67,7 @@ import {
   MIN_VERSION_HINT,
   probe,
 } from '../lib/capabilities'
-import { DB } from '../lib/rpc'
+import { DB, dbEndpoint } from '../lib/rpc'
 import { ChangesPanel } from './ChangesPanel'
 import {
   type DbInfo,
@@ -303,10 +305,16 @@ export function DatabasePage({
       if (dbs.some((d) => d.name === targetDb)) setSelectedDb(targetDb)
       return
     }
-    if (!tables.some((t) => t.name === context.table)) return
+    // A connection without a table (a mention, say): showing it is all.
+    if (!context.table) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    const table = context.table
+    if (!tables.some((t) => t.name === table)) return
     appliedContextRef.current = panelContext.id
     setTrail([])
-    setSelectedTable(context.table)
+    setSelectedTable(table)
     setMode('data')
     if (narrow) setDrilled(true)
   }, [panelContext, activeDb, dbs, tables, narrow])
@@ -355,9 +363,10 @@ export function DatabasePage({
 
   // A configured database without a `url` (redacted in the worker's config
   // response) still counts as configured — fall back to its name, not to the
-  // "nothing here" copy.
+  // "nothing here" copy. Structured entries describe themselves as
+  // host:port/db (or the file).
   const subtitle = activeDb
-    ? (activeDb.url ?? activeDb.name)
+    ? dbEndpoint(activeDb)
     : dbsRead.error
       ? 'Worker not connected'
       : 'No database configured'
@@ -370,7 +379,13 @@ export function DatabasePage({
     <PageShell ref={shellRef} className="db-ui-shell">
       {dialog}
       <PageHeader
-        icon={<Database size={16} />}
+        icon={
+          activeDb ? (
+            <ConnectionIcon name={activeDb.icon} color={activeDb.color} />
+          ) : (
+            <Database size={16} />
+          )
+        }
         title="Database"
         description={subtitle}
         actions={
@@ -383,6 +398,11 @@ export function DatabasePage({
                   value: db.name,
                   label: db.name,
                   title: db.url,
+                  // The connection's state where it is chosen: one that the
+                  // worker could not open says why before it is picked.
+                  description: db.error
+                    ? `Unavailable · ${db.error}`
+                    : `${driverLabel(db.driver)} · ${dbEndpoint(db)}`,
                 }))}
                 onChange={async (next) => {
                   if (next === activeDb.name) return
@@ -437,6 +457,23 @@ export function DatabasePage({
           className={`db-ui-browser${narrow ? ' narrow' : ''}`}
           ref={rootRef}
         >
+          {activeDb?.error ? (
+            // The pool could not be built (an unresolvable secret, an
+            // unreachable host): every read below would fail with less
+            // context than the worker's own reason.
+            <div className="db-pad db-ui-conn-error">
+              <StatusPanel
+                variant="alert"
+                icon={<CircleAlert size={18} />}
+                headline={
+                  activeDb.errorStage
+                    ? `${activeDb.name} is unavailable · ${TEST_STAGE_LABELS[activeDb.errorStage] ?? activeDb.errorStage}`
+                    : `${activeDb.name} is unavailable`
+                }
+                detail={activeDb.error}
+              />
+            </div>
+          ) : null}
           <div className="db-ui-modesbar">
             <SegmentedControl<PanelMode>
               value={mode}
@@ -595,6 +632,11 @@ export function DatabasePage({
                       ref={sqlPanelRef}
                       host={host}
                       db={activeDb.name}
+                      driver={activeDb.driver}
+                      canFormat={caps.has(DB.formatSql)}
+                      // `max_rows` shipped with formatSql: a worker that has
+                      // one honours the other.
+                      canLimit={caps.has(DB.formatSql)}
                       seedSql={seedSql}
                       tables={tables.map((t) => t.name)}
                       starterSql={starterSql}
@@ -630,6 +672,12 @@ export function DatabasePage({
                         db={activeDb.name}
                         driver={activeDb.driver}
                         table={selectedTable}
+                        kind={tables.find((t) => t.name === selectedTable)?.kind}
+                        canInsert={caps.has(DB.insertRow)}
+                        canSuggest={caps.has(DB.distinctValues)}
+                        // Raw filters shipped with distinctValues; an older
+                        // worker would ignore `raw` and fail on the empty column.
+                        canRawFilter={caps.has(DB.distinctValues)}
                         initialFilters={arrival}
                         onFollow={follow}
                         enabled

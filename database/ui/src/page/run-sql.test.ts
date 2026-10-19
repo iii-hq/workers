@@ -1,6 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { describe, expect, it } from 'vitest'
-import { commonSchema, ddlInfo, runAdhocSql } from './db-data'
+import { commonSchema, ddlInfo, resultSummary, runAdhocSql } from './db-data'
 
 /** Host stub that records the one call the dispatcher makes. */
 function fakeHost(respond: (fn: string) => unknown) {
@@ -38,6 +38,26 @@ describe('runAdhocSql', () => {
     expect(calls[0].payload.sql).toBe('drop table completion_log')
     expect(out.write).toEqual({ affectedRows: 1, lastInsertId: null, echo: 'dropped table completion_log' })
     expect(out.result.rows).toEqual([])
+  })
+
+  it('caps reads at the row limit and reports the server time and the cut', async () => {
+    const { host, calls } = fakeHost(() => ({ ...EMPTY_QUERY, row_count: 100, truncated: true, elapsed_ms: 7 }))
+    const out = await runAdhocSql(host, 'pg', 'select * from orders', { maxRows: 100 })
+    expect(calls[0].payload).toEqual({ db: 'pg', sql: 'select * from orders', max_rows: 100 })
+    expect(out.serverMs).toBe(7)
+    expect(out.truncatedAt).toBe(100)
+  })
+
+  it('sends no cap without a limit, and never caps a write', async () => {
+    const { host, calls } = fakeHost((fn) =>
+      fn === 'database::query' ? EMPTY_QUERY : { affected_rows: 2, last_insert_id: null, elapsed_ms: 3 },
+    )
+    await runAdhocSql(host, 'pg', 'select 1', { maxRows: null })
+    const write = await runAdhocSql(host, 'pg', 'update t set a = 1', { maxRows: 100 })
+    expect(calls[0].payload).toEqual({ db: 'pg', sql: 'select 1' })
+    expect(calls[1].payload).toEqual({ db: 'pg', sql: 'update t set a = 1' })
+    expect(write.serverMs).toBe(3)
+    expect(write.truncatedAt).toBeUndefined()
   })
 
   it('turns RETURNING rows into a drawable grid', async () => {
@@ -90,5 +110,31 @@ describe('commonSchema', () => {
     expect(commonSchema(['public.a', 'plain'])).toBe('')
     expect(commonSchema(['shipments', 'ledger'])).toBe('')
     expect(commonSchema([])).toBe('')
+  })
+})
+
+describe('resultSummary', () => {
+  const read = (n: number, extra: Record<string, unknown> = {}) => ({
+    result: { rows: [], row_count: n, columns: [] },
+    durationMs: 40,
+    ...extra,
+  })
+
+  it('prefers the worker’s own timing and says when the limit cut the result', () => {
+    expect(resultSummary(read(1))).toBe('1 row in 40 ms')
+    expect(resultSummary(read(12, { serverMs: 4 }))).toBe('12 rows in 4 ms')
+    expect(resultSummary(read(100, { serverMs: 4, truncatedAt: 100 }))).toBe('100 rows in 4 ms · truncated at 100')
+  })
+
+  it('describes writes by what they did', () => {
+    expect(
+      resultSummary({
+        ...read(0, { serverMs: 2 }),
+        write: { affectedRows: 3, lastInsertId: null, echo: null },
+      }),
+    ).toBe('3 affected in 2 ms')
+    expect(
+      resultSummary({ ...read(0), write: { affectedRows: 0, lastInsertId: null, echo: 'dropped table x' } }),
+    ).toBe('dropped table x in 40 ms')
   })
 })
