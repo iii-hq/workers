@@ -108,10 +108,11 @@ impl ExtractedItem {
 const MAX_KNOWN: usize = 12;
 
 /// What the bank already holds about an excerpt: lexical recall over its
-/// message text, with the memories about the user of the `layer` read
-/// under it, so a restated one is reinforced and a corrected one
-/// superseded where it lives instead of copied into this bank. A bank that
-/// does not exist yet holds nothing. Returns the ids the layer holds too.
+/// message text, then up to half as many of the memories about the user of
+/// the `layer` read under it, so a restated one is reinforced and a
+/// corrected one superseded where it lives instead of copied into this
+/// bank. A bank that does not exist yet holds nothing. Returns the ids the
+/// layer holds too.
 async fn known_memories(
     store: &Store,
     bank_name: &str,
@@ -119,38 +120,36 @@ async fn known_memories(
     query: &str,
     half_life_days: u64,
 ) -> (Vec<Memory>, HashSet<String>) {
-    let mut hits = match store.bank(bank_name).await {
-        Ok(bank) => {
-            bank.recall(query, None, "", MAX_KNOWN, half_life_days, false)
-                .await
-        }
+    let mut known: Vec<Memory> = match store.bank(bank_name).await {
+        Ok(bank) => bank
+            .recall(query, None, "", MAX_KNOWN, half_life_days, false)
+            .await
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect(),
         Err(_) => Vec::new(),
     };
-    let own: HashSet<String> = hits.iter().map(|(m, _)| m.id.clone()).collect();
     let layer = match layer {
         Some(name) => store.bank(name).await.ok(),
         None => None,
     };
-    if let Some(layer) = layer {
-        let found = layer
-            .recall(query, None, "", usize::MAX, half_life_days, false)
-            .await;
-        hits.extend(
-            found
-                .into_iter()
-                .filter(|(m, _)| crate::scope::in_layer(m))
-                .take(MAX_KNOWN),
-        );
-    }
-    let known: Vec<Memory> = crate::hooks::merge_ranked(hits, MAX_KNOWN)
+    let Some(layer) = layer else {
+        return (known, HashSet::new());
+    };
+    // After the bank's own, never in place of them: BM25 idf is per bank,
+    // so a small layer's scores would push out a fact this bank must be
+    // able to correct.
+    let own: HashSet<String> = known.iter().map(|m| m.id.clone()).collect();
+    let extra: Vec<Memory> = layer
+        .recall(query, None, "", usize::MAX, half_life_days, false)
+        .await
         .into_iter()
         .map(|(m, _)| m)
+        .filter(|m| crate::scope::in_layer(m) && !own.contains(&m.id))
+        .take(MAX_KNOWN / 2)
         .collect();
-    let layered = known
-        .iter()
-        .filter(|m| !own.contains(&m.id))
-        .map(|m| m.id.clone())
-        .collect();
+    let layered = extra.iter().map(|m| m.id.clone()).collect();
+    known.extend(extra);
     (known, layered)
 }
 
@@ -523,7 +522,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             }
             None => None,
         };
-        let (memory, event) = match existing {
+        let (mut memory, event) = match existing {
             // Known memory re-observed: reinforce, never duplicate. A pinned
             // or tombstoned record is left exactly as it is.
             Some(existing) if existing.is_live() && !existing.pinned => {
@@ -540,6 +539,14 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
                 ItemEvent::Created,
             ),
         };
+        // Written into the layer, it must stay read where the fact it
+        // corrects was, whatever entities the model returned.
+        // ponytail: a repository-scoped override of a fact about the user
+        // ("here we use pnpm") still lands in the layer and reads in every
+        // repository; route it here once memories carry a scope.
+        if at_name != bank_name {
+            crate::scope::into_layer(&mut memory.entities);
+        }
         match at.commit(memory.clone()).await {
             Ok(CommitKind::Created | CommitKind::Updated) => {
                 deps.emitter.item(event, at_name, &memory).await;
@@ -1563,6 +1570,59 @@ mod tests {
             "a bank not created yet still knows its layer's"
         );
         assert_eq!(layered.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_layer_never_pushes_a_banks_own_memories_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let mut own = HashSet::new();
+        for n in 1..=MAX_KNOWN {
+            let m = known(&format!(
+                "Deploy step {n} of the release runs from the ops folder."
+            ));
+            own.insert(m.id.clone());
+            repo.commit(m).await.unwrap();
+        }
+        // A small bank: its idf, so its scores, beat the bigger bank's.
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        for n in 1..=MAX_KNOWN {
+            let m = Memory {
+                entities: vec!["user".into()],
+                ..known(&format!("The user deploy habit {n}."))
+            };
+            main.commit(m).await.unwrap();
+        }
+
+        let (ms, layered) = known_memories(&store, "w-abc123", Some("main"), "deploy", 60).await;
+        let first: HashSet<String> = ms[..MAX_KNOWN].iter().map(|m| m.id.clone()).collect();
+        assert_eq!(first, own, "every own memory stays listed, first");
+        assert_eq!(
+            layered.len(),
+            MAX_KNOWN / 2,
+            "the layer adds at most half as many"
+        );
+        assert_eq!(ms.len(), MAX_KNOWN + MAX_KNOWN / 2);
+    }
+
+    #[tokio::test]
+    async fn a_correction_written_into_the_layer_stays_read_under_a_directory_bank() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        let mut porto = Memory {
+            entities: vec!["porto".into()],
+            ..known("The user lives in Porto.")
+        };
+        crate::scope::into_layer(&mut porto.entities);
+        crate::scope::into_layer(&mut porto.entities);
+        assert_eq!(porto.entities, ["porto", "user"], "tagged once");
+        main.commit(porto.clone()).await.unwrap();
+
+        let (ms, layered) = known_memories(&store, "w-abc123", Some("main"), "Porto", 60).await;
+        assert_eq!(ms.iter().map(|m| &m.id).collect::<Vec<_>>(), [&porto.id]);
+        assert!(layered.contains(&porto.id));
     }
 
     #[test]

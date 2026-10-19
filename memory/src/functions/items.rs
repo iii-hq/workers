@@ -99,6 +99,13 @@ fn save_transition(existing: Option<Memory>, input: SaveInput) -> (Memory, ItemE
     }
 }
 
+/// A save into the default bank that names no entities is the user's own
+/// (the memory page's add field, the CLI): about the user, so it is read
+/// under every directory bank too.
+fn about_the_user(entities: &[String], bank: &str, default_bank: &str) -> bool {
+    entities.is_empty() && bank == default_bank
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveRequest {
     /// Target bank; omitted: the calling session's bank, else the configured default.
@@ -107,6 +114,8 @@ pub struct SaveRequest {
     /// The memory, one self-contained sentence.
     pub text: String,
     /// Entity handles (people/projects/tools) used as a retrieval signal.
+    /// None into the default bank: `user`, read under every repository's
+    /// bank.
     #[serde(default)]
     pub entities: Vec<String>,
     /// Topical labels for filtering within the bank (organization, not
@@ -146,6 +155,9 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
     labels.extend(crate::redact::drop_secrets(&mut entities));
     labels.extend(crate::redact::drop_secrets(&mut tags));
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
+    if about_the_user(&entities, &bank_name, &deps.config().await.default_bank) {
+        crate::scope::into_layer(&mut entities);
+    }
     let store = deps.store().await;
     let (bank, bank_created) = store.ensure_bank(&bank_name, None).await?;
     if bank_created {
@@ -509,6 +521,13 @@ pub async fn supersede(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_entityless_save_into_the_default_bank_is_about_the_user() {
+        assert!(about_the_user(&[], "main", "main"));
+        assert!(!about_the_user(&["ledger-sync".into()], "main", "main"));
+        assert!(!about_the_user(&[], "w-abc123", "main"));
+    }
 
     fn record(id: &str, revision: u64, live: bool, pinned: bool) -> Memory {
         Memory {

@@ -166,6 +166,13 @@ pub(crate) fn in_layer(memory: &Memory) -> bool {
     memory.entities.iter().any(|e| e == LAYER_ENTITY)
 }
 
+/// Tags `entities` with [`LAYER_ENTITY`] unless one already is.
+pub(crate) fn into_layer(entities: &mut Vec<String>) {
+    if !entities.iter().any(|e| e == LAYER_ENTITY) {
+        entities.push(LAYER_ENTITY.to_string());
+    }
+}
+
 /// The resolver over injected lookups, so tests need no engine: `recorded`
 /// is the bank a turn was injected with ([`turn_bank`]), `lookup` a
 /// session's metadata object (`None`: no such session), `from_root` the
