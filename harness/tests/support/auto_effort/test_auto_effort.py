@@ -10,6 +10,9 @@ from unittest import mock
 
 import common
 import extract
+import label
+
+HERE = Path(__file__).resolve().parent
 
 
 def line(d: dict) -> str:
@@ -41,6 +44,12 @@ def assistant(eid: str, ts: int, text: str = "", usage: dict | None = None) -> l
 def fake_run(returncode: int, stdout: str = "", stderr: str = ""):
     done = subprocess.CompletedProcess([], returncode, stdout, stderr)
     return mock.patch.object(common.subprocess, "run", return_value=done)
+
+
+def reply(text: str) -> dict:
+    """A router::complete result whose assistant message holds one text block."""
+    message = {"role": "assistant", "content": [{"type": "text", "text": text}]}
+    return {"message": message, "provider": "anthropic", "model": "claude-opus-5-5"}
 
 
 class ExtractTest(unittest.TestCase):
@@ -160,3 +169,54 @@ class TriggerTest(unittest.TestCase):
         with fake_run(1, stderr=no_engine), self.assertRaises(common.TriggerError) as err:
             common.trigger("f", {}, 1)
         self.assertEqual(err.exception.code, "transport")
+
+
+class LabelTest(unittest.TestCase):
+    def test_parse_label_orders_levels(self):
+        self.assertEqual(label.parse_label('{"ok":["high","medium"]}'), ["medium", "high"])
+
+    def test_parse_label_rejects_unknown(self):
+        self.assertIsNone(label.parse_label('{"ok":["max"]}'))
+        self.assertIsNone(label.parse_label('{"ok":[]}'))
+
+    def test_needs_adjudication(self):
+        self.assertTrue(label.needs_adjudication(["low"], ["medium", "high"]))
+        self.assertFalse(label.needs_adjudication(["low", "medium"], ["low"]))
+
+    def test_effortless_rows(self):
+        rows = label.effortless_rows()
+        self.assertEqual((len(rows), sum(r["holdout"] for r in rows)), (75, 20))
+        self.assertTrue(all(r["ok"] and set(r["ok"]) <= set(common.LEVELS) for r in rows))
+        self.assertTrue(all(r["ok"] == sorted(r["ok"], key=common.LEVELS.index) for r in rows))  # cheapest first
+        by_id = {r["id"]: r for r in rows}
+        h12, o01 = by_id["eff-h12"], by_id["eff-o01"]  # the case file lists h12's ok as ["high","medium"]
+        fields = ("slice", "holdout", "model", "level", "ok")
+        want = ["effortless", True, "claude-sonnet-5-5", "medium", ["medium", "high"]]
+        self.assertEqual([h12[k] for k in fields], want)
+        self.assertEqual((h12["message"], bool(h12["context"])), ("the second one", True))
+        self.assertEqual([o01[k] for k in ("holdout", "model", "context")], [False, "claude-opus-5-5", ""])
+
+    def test_effort_question_criteria_are_levels(self):
+        question = json.loads((HERE / "effort_question.json").read_text(encoding="utf-8"))
+        self.assertEqual(tuple(question["criteria"]), common.LEVELS)
+        rubric = (HERE / "rubric.md").read_text(encoding="utf-8")
+        self.assertTrue(all(text in rubric for text in question["criteria"].values()))
+
+    def test_label_row_adjudicates_disagreement(self):
+        row = {"id": "r1", "model": "claude-sonnet-5-5", "context": "", "message": "do X"}
+        agree = [reply('{"ok":["low","medium"]}'), reply('```json\n{"ok":["low"]}\n```')]
+        with mock.patch.object(common, "trigger", side_effect=agree) as call:
+            self.assertEqual(label.label_row(row, "rubric"), {"id": "r1", "ok": ["low", "medium"], "agreed": True})
+        fn, payload = call.call_args.args
+        request = (fn, payload["model"], payload["provider"], payload["thinking_level"], payload["system_prompt"])
+        self.assertEqual(request, ("router::complete", "claude-opus-5-5", "anthropic", "medium", "rubric"))
+        [message] = payload["messages"]
+        shape = (message["role"], message["content"][0]["type"], type(message["timestamp"]))
+        self.assertEqual(shape, ("user", "text", int))
+        sent = json.loads(message["content"][0]["text"])
+        self.assertEqual(sent, {"model": "claude-sonnet-5-5", "context": "", "message": "do X"})
+        split = [reply('{"ok":["low"]}'), reply('{"ok":["medium","high"]}'), reply('{"ok":["medium"]}')]
+        with mock.patch.object(common, "trigger", side_effect=split) as call:
+            self.assertEqual(label.label_row(row, "rubric"), {"id": "r1", "ok": ["medium"], "agreed": False})
+        third = json.loads(call.call_args.args[1]["messages"][0]["content"][0]["text"])
+        self.assertEqual(third["answers"], [["low"], ["medium", "high"]])

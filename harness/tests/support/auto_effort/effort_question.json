@@ -1,0 +1,10 @@
+{
+  "task": "Choose the reasoning effort an agentic assistant should use for the next user message. It reads files, runs tools and edits things, not only code. Pick the cheapest that still does the job well. Judge the scope and the amount of work, not whether it is code: \"go through my whole drive and clean it up\" is a big tool-heavy job. Effort is relative to current_model: a stronger model needs less for the same job. Opus at medium does about what Sonnet does at high, so for one task pick one step lower on Opus than on Sonnet. A short follow-up (\"yes\", \"go\", \"ok\", in any language) keeps the current effort. When the message answers a question in the assistant's last reply (picks an option), judge only the work that answer starts, not its length and not the work before the question: yes/no to one small action, or picking a value for one setting (a log level, a colour), is low; picking which way to build something starts that build, so judge the build; approving a whole plan takes the effort of that plan; a plain yes to \"Then I will build X\" means judge X. Pushing back on or adding to a plan under discussion continues that work: keep its effort, never low. Thanks or a closing remark with no new request is low. A question about how to do something that needs no tools is low. \"think hard\", \"ultrathink\" or \"be thorough\" means at least high; \"quick question\" means low.",
+  "instructions": "Which effort fits the next message?",
+  "criteria": {
+    "low": "quick answer, no tools, no planning",
+    "medium": "normal work: a few tool calls or edits",
+    "high": "hard or large multi-step job: many tool calls, costly mistakes",
+    "xhigh": "very hard: a long investigation or research-level work"
+  }
+}

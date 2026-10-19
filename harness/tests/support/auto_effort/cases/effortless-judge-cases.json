@@ -1,0 +1,988 @@
+{
+ "about": "Labelled prompts for /effortless bench. `ok` lists every effort a careful person would accept for the message on `current.model`; the first is the cheapest acceptable. `context` is what the judge sees of the conversation (the last user message and the end of the assistant's reply). Cases marked holdout were written before the judge prompts were tuned on the rest and are never tuned against; report both sets.",
+ "cases": [
+  {
+   "id": "t01",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "what does the -r flag do in cp?",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "t02",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "rename the variable usr to user in auth.ts",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "t03",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "fix the typo in the README title, it says 'Instalation'",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "t04",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "thanks, that worked!",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "t05",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "what time zone is CET in UTC terms?",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "t06",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "vad heter kommandot för att lista git-grenar?",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "t07",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "bump the version in package.json to 2.4.1",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "t08",
+   "kind": "trivial",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "show me the last 5 commits",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "n01",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "add a dark mode toggle to the settings page, it should persist in localStorage",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "n02",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "write unit tests for the parseDate helper in utils/date.ts",
+   "ok": [
+    "medium"
+   ]
+  },
+  {
+   "id": "n03",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "explain how the caching layer in src/cache works",
+   "ok": [
+    "medium",
+    "low"
+   ]
+  },
+  {
+   "id": "n04",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "the login button does nothing on mobile safari, can you look?",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "n05",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "add pagination to the /api/orders endpoint, 50 per page",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "n06",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "skriv en kort produkttext för vår nya proteinpulver-smak, mango, max 60 ord",
+   "ok": [
+    "low",
+    "medium"
+   ]
+  },
+  {
+   "id": "n07",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "convert this component from a class to hooks",
+   "ok": [
+    "medium"
+   ]
+  },
+  {
+   "id": "n08",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "make the footer sticky and match the header colors",
+   "ok": [
+    "low",
+    "medium"
+   ]
+  },
+  {
+   "id": "n09",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "draft an email to our supplier asking to move the delivery to next Friday",
+   "ok": [
+    "low",
+    "medium"
+   ]
+  },
+  {
+   "id": "n10",
+   "kind": "normal",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "why is this test flaky? it passes locally but fails in CI about 1 in 5 runs",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "b01",
+   "kind": "big",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "migrate the whole app from REST to GraphQL, keep the old endpoints working until clients move",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "b02",
+   "kind": "big",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "we're leaking memory in production, heap grows ~200MB/hour. find it",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "b03",
+   "kind": "big",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "review the entire repo for security issues before we go public",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "b04",
+   "kind": "big",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "design the database schema and sync protocol for offline-first multi-device editing",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "b05",
+   "kind": "big",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "refactor the payment module into separate services, there are 40 files touching it",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "b06",
+   "kind": "big",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "race condition: two workers sometimes process the same job twice. only under load. fix it properly",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "s01",
+   "kind": "short-but-big",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "clean up my whole drive",
+   "ok": [
+    "high",
+    "medium"
+   ]
+  },
+  {
+   "id": "s02",
+   "kind": "short-but-big",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "migrate everything to typescript",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "s03",
+   "kind": "short-but-big",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "make it production ready",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "s04",
+   "kind": "short-but-big",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "gör om hela sajten mobilanpassad",
+   "ok": [
+    "high",
+    "medium"
+   ]
+  },
+  {
+   "id": "s05",
+   "kind": "short-but-big",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "fix all failing tests",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "a01",
+   "kind": "answer",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "context": "user: we need a pricing section on the landing page\nassistant: Three ways to build it:\nA) a static three-column table, 20 minutes\nB) a dynamic section pulling plans from Stripe with a monthly/yearly toggle, currency detection and a comparison drawer\nC) skip it and link to a separate page\nWhich one?",
+   "message": "B",
+   "ok": [
+    "high",
+    "medium"
+   ]
+  },
+  {
+   "id": "a02",
+   "kind": "answer",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "context": "user: tidy up the old branches\nassistant: Done. The branch feature/old-nav is merged and stale. Should I archive it?",
+   "message": "yes",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "a03",
+   "kind": "answer",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "context": "user: the importer is slow\nassistant: Two options: 1) add an index on orders.created_at (one migration), or 2) rewrite the importer as a streaming pipeline with batching, retries and a progress bar. Which do you want?",
+   "message": "2",
+   "ok": [
+    "high",
+    "medium"
+   ]
+  },
+  {
+   "id": "a04",
+   "kind": "answer",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "context": "user: set up the logger\nassistant: Should the log level default to info or debug?",
+   "message": "info",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "a05",
+   "kind": "answer",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "context": "user: plan the auth work\nassistant: Plan: 1) passwordless email codes, 2) device keys signing every request, 3) account recovery, 4) migrate existing users. Want me to build all four now?",
+   "message": "ja kör alla fyra",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "a06",
+   "kind": "answer",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "context": "user: what font for the headings?\nassistant: Inter or Söhne would both fit. Inter is free. Which one?",
+   "message": "inter",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "a07",
+   "kind": "answer",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "context": "user: the dashboard is slow\nassistant: I found the cause: every widget refetches all data on each render. Should I rewrite the data layer to a shared cache with subscriptions? It touches about 25 components.",
+   "message": "do it",
+   "ok": [
+    "high",
+    "medium"
+   ]
+  },
+  {
+   "id": "f01",
+   "kind": "follow-up",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "context": "user: refactor the sync engine\nassistant: Step 1 of 3 done (extracted the queue). Continue with step 2?",
+   "message": "go",
+   "ok": [
+    "high"
+   ]
+  },
+  {
+   "id": "f02",
+   "kind": "follow-up",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "context": "user: rename x to count\nassistant: Renamed in 3 places. Also rename it in the tests?",
+   "message": "yes",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "f03",
+   "kind": "follow-up",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "context": "user: add the export button\nassistant: Added the button. Next I'll wire it to the CSV writer.",
+   "message": "continue",
+   "ok": [
+    "medium"
+   ]
+  },
+  {
+   "id": "f04",
+   "kind": "follow-up",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "context": "user: hunt down the memory leak\nassistant: Narrowed it to the websocket handlers. Keep going?",
+   "message": "kör",
+   "ok": [
+    "high"
+   ]
+  },
+  {
+   "id": "o01",
+   "kind": "model-relative",
+   "current": {
+    "model": "opus",
+    "effort": "medium"
+   },
+   "message": "add pagination to the /api/orders endpoint, 50 per page",
+   "ok": [
+    "low",
+    "medium"
+   ]
+  },
+  {
+   "id": "o02",
+   "kind": "model-relative",
+   "current": {
+    "model": "opus",
+    "effort": "medium"
+   },
+   "message": "we're leaking memory in production, heap grows ~200MB/hour. find it",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "o03",
+   "kind": "model-relative",
+   "current": {
+    "model": "opus",
+    "effort": "high"
+   },
+   "message": "rename the variable usr to user in auth.ts",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "o04",
+   "kind": "model-relative",
+   "current": {
+    "model": "opus",
+    "effort": "low"
+   },
+   "message": "refactor the payment module into separate services, there are 40 files touching it",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "x01",
+   "kind": "non-code",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "go through all my Notion tasks and tell me what's overdue",
+   "ok": [
+    "medium",
+    "low"
+   ]
+  },
+  {
+   "id": "x02",
+   "kind": "non-code",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "research the top 5 competitors in Nordic sports nutrition and compare pricing, with sources",
+   "ok": [
+    "high",
+    "medium"
+   ]
+  },
+  {
+   "id": "x03",
+   "kind": "non-code",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "summarize this meeting note in 3 bullets",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "x04",
+   "kind": "non-code",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "plan our next three product drops with deadlines, assets and who does what",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "x05",
+   "kind": "non-code",
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "translate this paragraph to Swedish",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "m01",
+   "kind": "meta",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "what effort are you using?",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "m02",
+   "kind": "meta",
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "how much effort should I use for a big refactor?",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "m03",
+   "kind": "meta",
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "think really hard about this: why does our churn spike every March? here's 2 years of data in data/churn.csv",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "h01",
+   "kind": "trivial",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "what's the shortcut to comment a line in VS Code?",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "h02",
+   "kind": "trivial",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "delete the unused import on line 3 of main.py",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "h03",
+   "kind": "trivial",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "ok perfect, thank you so much",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "h04",
+   "kind": "normal",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "add input validation to the signup form: email format, password min 8 chars, show errors inline",
+   "ok": [
+    "medium"
+   ]
+  },
+  {
+   "id": "h05",
+   "kind": "normal",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "the CSV export puts dates in the wrong timezone, fix it",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "h06",
+   "kind": "normal",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "write a README section explaining how to run the project locally",
+   "ok": [
+    "low",
+    "medium"
+   ]
+  },
+  {
+   "id": "h07",
+   "kind": "big",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "our checkout drops ~3% of orders silently, nothing in the logs. figure out why",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "h08",
+   "kind": "big",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "port the whole iOS app's networking layer to async/await, ~60 files",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "h09",
+   "kind": "short-but-big",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "rewrite the backend in Go",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "h10",
+   "kind": "short-but-big",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "audit all our dependencies",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "h11",
+   "kind": "answer",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "no",
+   "ok": [
+    "low"
+   ],
+   "context": "user: clean up the logs folder\nassistant: Removed 40 old log files. Should I also delete the archived ones from 2024?"
+  },
+  {
+   "id": "h12",
+   "kind": "answer",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "the second one",
+   "ok": [
+    "high",
+    "medium"
+   ],
+   "context": "user: we need search\nassistant: Options: 1) a simple LIKE query on titles, 2) full-text search with Postgres tsvector, ranking, highlighting and a background reindex job. Which?"
+  },
+  {
+   "id": "h13",
+   "kind": "answer",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "blue",
+   "ok": [
+    "low"
+   ],
+   "context": "user: style the primary button\nassistant: Should the primary button be blue or green?"
+  },
+  {
+   "id": "h14",
+   "kind": "answer",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "yes all of it",
+   "ok": [
+    "high",
+    "medium"
+   ],
+   "context": "user: plan the migration\nassistant: Plan: move 12 services to the new queue, add retries, backfill old jobs, update dashboards. Start now?"
+  },
+  {
+   "id": "h15",
+   "kind": "follow-up",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "next",
+   "ok": [
+    "high"
+   ],
+   "context": "user: migrate the services one by one\nassistant: Service 3 of 12 migrated and tests pass. Moving on to service 4."
+  },
+  {
+   "id": "h16",
+   "kind": "model-relative",
+   "holdout": true,
+   "current": {
+    "model": "opus",
+    "effort": "medium"
+   },
+   "message": "write tests for the parseDate helper",
+   "ok": [
+    "low",
+    "medium"
+   ]
+  },
+  {
+   "id": "h17",
+   "kind": "non-code",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "write a polite reply declining the meeting on Thursday",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "h18",
+   "kind": "non-code",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "medium"
+   },
+   "message": "analyse last quarter's sales in sales.xlsx and tell me which products are dropping and why",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "h19",
+   "kind": "meta",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "low"
+   },
+   "message": "ultrathink: is our caching strategy going to survive 10x traffic? look at src/cache and the infra config",
+   "ok": [
+    "high",
+    "xhigh"
+   ]
+  },
+  {
+   "id": "h20",
+   "kind": "meta",
+   "holdout": true,
+   "current": {
+    "model": "sonnet",
+    "effort": "high"
+   },
+   "message": "quick question, no need to dig: is redis single-threaded?",
+   "ok": [
+    "low"
+   ]
+  },
+  {
+   "id": "a08",
+   "kind": "answer",
+   "current": {
+    "model": "opus",
+    "effort": "medium"
+   },
+   "context": "user: the shapes could build something, a park scene, while the contact question appears\nassistant: The shapes stop being confetti: they scatter in, then move into place and build a small park scene. One question before I build it: how literal should the scene be?\n1. Flat and abstract (my pick): the logo is the trunk, a circle the crown, a bar the bench, a circle on a rectangle a person.\n2. Slightly drawn: plus a ground line, a second tree and a lamp post.\n3. Turns into a photo: the scene builds, then cross-fades into a project photo.\nI'll start on 1 unless you pick otherwise.",
+   "message": "The same shapes, 100%",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "a09",
+   "kind": "answer",
+   "current": {
+    "model": "opus",
+    "effort": "high"
+   },
+   "context": "user: a handoff button: write the handoff, open a new chat with it and archive this one, or clear and auto-send it. One click.\nassistant: I checked what the mod can do. Run the handoff, catch the text, /clear, auto-send: yes. Open a new chat and archive the old one: no, the mod API has no access to the app's chat list. So option 2 works fully. First question: what should write the handoff by default?",
+   "message": "Yes, but it can probably archive the one you're at and create a new one, but not show the new one directly. It can create it and show you that this one is archived, and then you can get to the next session. Maybe a button in the UI that opens that session.",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  },
+  {
+   "id": "a10",
+   "kind": "answer",
+   "current": {
+    "model": "opus",
+    "effort": "high"
+   },
+   "context": "user: anything more before you build the rate-limit band?\nassistant: Two things to settle first. 1. Which band wins when several apply: setup, judge down, running hot, cold, swamped. 2. What Running hot does: shows at 80% of the 5h or weekly limit, text with reset time, a Save mode button that caps Auto at medium until the reset, embers theme with rising sparks. Is that OK? Then I'll build Judge down and Running hot.",
+   "message": "yes",
+   "ok": [
+    "medium",
+    "high"
+   ]
+  }
+ ]
+}

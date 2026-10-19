@@ -1,0 +1,115 @@
+"""Label harness prompts with the efforts that would do the job: python3 -I label.py <out_dir> [--run]
+
+Without --run it prints the call count and estimated input tokens. Prompts already in labels.jsonl are skipped,
+so a re-run labels only the rest; delete labels.jsonl to label again from scratch.
+"""
+
+import json
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common  # noqa: E402
+import extract  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+RUBRIC = HERE / "rubric.md"
+CASES = HERE / "cases" / "effortless-judge-cases.json"
+MODELS = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+
+
+def parse_label(text: str) -> list[str] | None:
+    """The `ok` levels of a {"ok": [...]} reply, ordered as in LEVELS; None when empty or unknown."""
+    try:
+        ok = json.loads(text[text.find("{") : text.rfind("}") + 1])["ok"]
+        if isinstance(ok, list) and ok and set(ok) <= set(common.LEVELS):
+            return sorted(set(ok), key=common.LEVELS.index)
+    except (ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def needs_adjudication(a: list[str], b: list[str]) -> bool:
+    return a[0] != b[0]
+
+
+def effortless_rows() -> list[dict]:
+    cases = json.loads(CASES.read_text(encoding="utf-8"))["cases"]
+    return [
+        {
+            "id": "eff-" + case["id"],
+            "slice": "effortless",
+            "holdout": bool(case.get("holdout")),
+            "model": MODELS[case["current"]["model"]],
+            "level": case["current"]["effort"],
+            "context": case.get("context") or "",
+            "message": case["message"],
+            "ok": sorted(case["ok"], key=common.LEVELS.index),  # some cases list a preferred level first
+        }
+        for case in cases
+    ]
+
+
+def labeller_input(row: dict, **extra) -> str:
+    fields = {"model": row["model"], "context": row["context"], "message": row["message"], **extra}
+    return json.dumps(fields, ensure_ascii=False)
+
+
+def ask(rubric: str, text: str) -> list[str] | None:
+    message = {"role": "user", "content": [{"type": "text", "text": text}], "timestamp": int(time.time() * 1000)}
+    payload = {
+        "model": "claude-opus-5-5",
+        "provider": "anthropic",
+        "thinking_level": "medium",
+        "system_prompt": rubric,
+        "messages": [message],
+    }
+    reply = common.trigger("router::complete", payload, timeout_s=300)
+    return parse_label(extract.text(reply.get("message") or {}))
+
+
+def label_row(row: dict, rubric: str) -> dict | None:
+    """Two labellers; a third call settles a disagreement on the cheapest level. None when no `ok` came back."""
+    text = labeller_input(row)
+    a, b = ask(rubric, text), ask(rubric, text)
+    if a and b and not needs_adjudication(a, b):
+        return {"id": row["id"], "ok": sorted(set(a) | set(b), key=common.LEVELS.index), "agreed": True}
+    ok = ask(rubric, labeller_input(row, answers=[a, b]))
+    return {"id": row["id"], "ok": ok, "agreed": False} if ok else None
+
+
+def main(argv: list[str]) -> None:
+    args = [a for a in argv if a != "--run"]
+    if len(args) != 1:
+        sys.exit("usage: python3 -I label.py <out_dir> [--run]")
+    out = Path(args[0])
+    rows = common.read_jsonl(out / "prompts.jsonl")
+    path = out / "labels.jsonl"
+    labels = {r["id"]: r for r in common.read_jsonl(path)} if path.exists() else {}
+    todo = [row for row in rows if row["id"] not in labels]
+    rubric = RUBRIC.read_text(encoding="utf-8")
+    if "--run" not in argv:
+        n = len(todo)
+        # ponytail: chars/4 estimate; router::count_tokens when it must be exact
+        tokens = sum(len(rubric) + len(labeller_input(row)) for row in todo) // 4
+        print(f"{n} prompts × 2–3 calls ({2 * n}–{3 * n} calls), about {2 * tokens:,}–{3 * tokens:,} input tokens")
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        for row in todo:
+            try:
+                result = label_row(row, rubric)
+            except common.TriggerError as err:
+                result = None
+                print(f"{row['id']}: {err}", file=sys.stderr)
+            if result:
+                labels[row["id"]] = result
+                f.write(json.dumps(result) + "\n")
+                f.flush()
+    labelled = [labels[row["id"]] for row in rows if row["id"] in labels]
+    agreed = sum(r["agreed"] for r in labelled)
+    print(f"{len(labelled)} of {len(rows)} prompts labelled, {agreed} agreed ({agreed / max(len(labelled), 1):.0%})")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
