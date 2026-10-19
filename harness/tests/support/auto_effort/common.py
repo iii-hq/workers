@@ -1,0 +1,48 @@
+"""Shared constants and helpers for the auto-effort phase 0 scripts."""
+
+import json
+import subprocess
+from pathlib import Path
+
+LEVELS = ("low", "medium", "high", "xhigh")
+WEIGHTS = {"input": 1, "cache_write": 1.25, "cache_read": 0.1, "output": 5}
+
+
+class TriggerError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+def units(usage: dict | None) -> float:
+    """Uncached-input-token equivalents of one usage record."""
+    usage = usage or {}
+    return float(sum(weight * (usage.get(key) or 0) for key, weight in WEIGHTS.items()))
+
+
+def trigger(fn: str, payload: dict, timeout_s: float) -> dict:
+    timeout_ms = str(round(timeout_s * 1000))
+    argv = ["iii", "trigger", "-n", "my-project", "--timeout-ms", timeout_ms, fn, "--json", json.dumps(payload)]
+    done = subprocess.run(argv, capture_output=True, encoding="utf-8")
+    if done.returncode == 0:
+        return json.loads(done.stdout) if done.stdout.strip() else {}
+    stderr = done.stderr.strip()
+    try:
+        error = json.loads(stderr.removeprefix("Error: "))
+    except ValueError:
+        error = None
+    if done.returncode == 1 and isinstance(error, dict) and "code" in error:
+        raise TriggerError(error["code"], error.get("message", ""))
+    raise TriggerError("transport", stderr)
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(raw) for raw in f if raw.strip()]
+
+
+def write_jsonl(path: Path, rows: list[dict]) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
