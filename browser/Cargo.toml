@@ -78,7 +78,7 @@ ipnet = "2"
 # (that is all the archives use; no zopfli compressor), through flate2's
 # pure-Rust backend, named here so it never depends on another crate's
 # feature choice.
-zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 jpeg-encoder = "0.7.1"
