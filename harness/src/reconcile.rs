@@ -116,7 +116,7 @@ pub async fn reconcile(
     }
     let schema = schema_for(deps, function_id).await?;
     let compiled = JSONSchema::compile(&schema).ok()?;
-    let untyped = parse_untyped(&schema, arguments);
+    let untyped = parse_untyped(&schema, &compiled, arguments);
     let base = untyped.as_ref().map_or(arguments, |r| &r.arguments);
     let repaired = repair(
         deps,
@@ -197,13 +197,17 @@ async fn schema_for(deps: &Deps, function_id: &str) -> Option<Value> {
 /// JSON object or array is parsed in place. The validator cannot flag it —
 /// any value passes — but a model calling a native tool with no type hint
 /// writes objects that way. A scalar string is left alone: `"5"` may be
-/// meant as a string.
+/// meant as a string. A call the parse would turn from valid to invalid
+/// (an `allOf` that still wants a string) keeps its arguments.
 // ponytail: top-level properties only; walk nested untyped fields if a
 // target ever needs it.
-pub fn parse_untyped(schema: &Value, arguments: &Value) -> Option<Reconciled> {
+pub fn parse_untyped(
+    schema: &Value,
+    compiled: &JSONSchema,
+    arguments: &Value,
+) -> Option<Reconciled> {
     const ANNOTATIONS: [&str; 5] = ["description", "title", "default", "examples", "$comment"];
     let properties = schema.get("properties")?.as_object()?;
-    let mut current = arguments.as_object()?.clone();
     let mut changes = Vec::new();
     for (name, value) in arguments.as_object()? {
         let untyped = match properties.get(name) {
@@ -215,7 +219,6 @@ pub fn parse_untyped(schema: &Value, arguments: &Value) -> Option<Reconciled> {
             continue;
         };
         if parsed.is_object() || parsed.is_array() {
-            current.insert(name.clone(), parsed.clone());
             changes.push(Change {
                 path: format!("/{}", name.replace('~', "~0").replace('/', "~1")),
                 kind: ChangeKind::Parsed,
@@ -224,8 +227,20 @@ pub fn parse_untyped(schema: &Value, arguments: &Value) -> Option<Reconciled> {
             });
         }
     }
-    (!changes.is_empty()).then_some(Reconciled {
-        arguments: Value::Object(current),
+    if changes.is_empty() {
+        return None;
+    }
+    let mut current = arguments.clone();
+    for change in &changes {
+        if let Some(slot) = current.pointer_mut(&change.path) {
+            *slot = change.to.clone();
+        }
+    }
+    if !compiled.is_valid(&current) && compiled.is_valid(arguments) {
+        return None;
+    }
+    Some(Reconciled {
+        arguments: current,
         changes,
     })
 }
@@ -985,8 +1000,10 @@ mod tests {
             },
             "required": ["key", "scope", "value"]
         });
+        let compiled = compile(&schema);
         let reconciled = parse_untyped(
             &schema,
+            &compiled,
             &json!({ "scope": "s", "key": "{\"a\":1}", "value": "{\"item\":\"KAN-1\"}", "expected": "[1]" }),
         )
         .expect("untyped strings parsed");
@@ -998,12 +1015,17 @@ mod tests {
 
         // Scalars and plain strings stay strings; typed properties are untouched.
         assert_eq!(
-            parse_untyped(&schema, &json!({ "scope": "s", "key": "k", "value": "5" })),
+            parse_untyped(
+                &schema,
+                &compiled,
+                &json!({ "scope": "s", "key": "k", "value": "5" })
+            ),
             None
         );
         assert_eq!(
             parse_untyped(
                 &schema,
+                &compiled,
                 &json!({ "scope": "s", "key": "k", "value": "hello" })
             ),
             None
@@ -1011,8 +1033,23 @@ mod tests {
         assert_eq!(
             parse_untyped(
                 &schema,
+                &compiled,
                 &json!({ "scope": "s", "key": "k", "value": { "a": 1 } })
             ),
+            None
+        );
+    }
+
+    #[test]
+    fn keeps_a_valid_call_the_parse_would_break() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "value": true },
+            "allOf": [{ "properties": { "value": { "type": "string" } } }]
+        });
+        let compiled = compile(&schema);
+        assert_eq!(
+            parse_untyped(&schema, &compiled, &json!({ "value": "{\"a\":1}" })),
             None
         );
     }
