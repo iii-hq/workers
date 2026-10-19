@@ -85,6 +85,17 @@ pub(crate) fn root_bank(root: &Path) -> Option<String> {
     Some(format!("{slug}-{hash:06x}"))
 }
 
+/// Whether `bank` has [`root_bank`]'s shape, `<slug>-<6 lowercase hex>`.
+// ponytail: by name — a hand-named `notes-c0ffee` previews layered too;
+// record the root in bank.yaml if that ever misleads.
+pub(crate) fn directory_shaped(bank: &str) -> bool {
+    bank.rsplit_once('-').is_some_and(|(slug, hex)| {
+        !slug.is_empty()
+            && hex.len() == 6
+            && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
 /// FNV-1a: stable across builds, unlike `DefaultHasher`, so a bank name
 /// never moves on an upgrade.
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -996,6 +1007,24 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let bank = root_bank(&dir).unwrap();
             assert!(validate_name(&bank).is_ok(), "{name:?} → {bank:?}");
+            assert!(directory_shaped(&bank), "{name:?} → {bank:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_slug_and_six_lowercase_hex_look_like_a_directorys_bank() {
+        assert!(directory_shaped("workers-7c6923"));
+        for bank in [
+            "main",
+            "blog",
+            "blog-old",
+            "notes-2024",
+            "x-ABC123",
+            "-abc123",
+            "abc123",
+            "w-abc12",
+        ] {
+            assert!(!directory_shaped(bank), "{bank}");
         }
     }
 }

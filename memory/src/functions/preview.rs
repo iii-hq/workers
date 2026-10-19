@@ -16,8 +16,9 @@ use crate::types::Memory;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PreviewRequest {
-    /// Bank to preview; omitted: the calling session's bank, else the
-    /// configured default.
+    /// Bank to preview; a directory's bank (`<name>-<6 hex>`) reads
+    /// `default_bank` under it, as its turns do. Omitted: the calling
+    /// session's bank, else the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// The hypothetical user message (what someone would type in chat).
@@ -58,7 +59,10 @@ pub struct PreviewResponse {
 
 pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse, MemoryError> {
     let cfg = deps.config().await;
-    let scope = crate::scope::request_scope(deps, req.bank).await?;
+    let explicit = req.bank.is_some();
+    let mut scope = crate::scope::request_scope(deps, req.bank).await?;
+    // A directory's bank named by the console previews as its turns read it.
+    scope.derived |= explicit && crate::scope::directory_shaped(&scope.bank);
     let bank_name = scope.bank.as_str();
     crate::store::validate_name(bank_name)?;
     let store = deps.store().await;

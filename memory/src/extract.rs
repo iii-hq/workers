@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 use crate::deps::Deps;
 use crate::events::ItemEvent;
 use crate::hooks::ExtractJobInput;
-use crate::store::{CommitKind, Store};
+use crate::store::{Bank, CommitKind, Store};
 use crate::types::{fingerprint, local_date, now_ms, Confidence, Memory, Provenance};
 
 const EXTRACT_SYSTEM: &str = "You extract durable memories from a conversation excerpt.\n\
@@ -93,11 +93,19 @@ struct ExtractedItem {
     /// The number of the already-remembered memory this one corrects.
     #[serde(default)]
     replaces: Option<usize>,
+    /// "user": holds for the user wherever they work; anything else, a
+    /// missing scope included, is the project's.
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 impl ExtractedItem {
     fn is_rule(&self) -> bool {
         self.kind.as_deref() == Some("rule")
+    }
+
+    fn is_user(&self) -> bool {
+        self.scope.as_deref() == Some("user")
     }
 }
 
@@ -109,10 +117,10 @@ const MAX_KNOWN: usize = 12;
 
 /// What the bank already holds about an excerpt: lexical recall over its
 /// message text, then up to half as many of the memories about the user of
-/// the `layer` read under it, so a restated one is reinforced and a
-/// corrected one superseded where it lives instead of copied into this
-/// bank. A bank that does not exist yet holds nothing. Returns the ids the
-/// layer holds too.
+/// the `layer` read under it, so a restated one is reinforced where it lives
+/// instead of copied into this bank, and a corrected one superseded there
+/// unless the correction holds only here ([`placement`]). A bank that does
+/// not exist yet holds nothing. Returns the ids the layer holds too.
 async fn known_memories(
     store: &Store,
     bank_name: &str,
@@ -176,6 +184,16 @@ fn correction_target(known: &[Memory], replaces: Option<usize>) -> Option<&Memor
     known
         .get(replaces?.checked_sub(1)?)
         .filter(|m| m.is_live() && !m.pinned)
+}
+
+/// Where an extracted memory goes under a layer, and whether it retires its
+/// correction target: what holds for the user wherever they work goes up
+/// into the layer unless it corrects this bank's own; a correction retires
+/// its target only in the bank it lands in, so one repository's exception
+/// never retires what every other repository still reads.
+fn placement(user: bool, target_in_layer: Option<bool>) -> (bool, bool) {
+    let up = user && target_in_layer != Some(false);
+    (up, target_in_layer == Some(up))
 }
 
 /// Words that flip a statement: texts that differ in them never state the
@@ -256,11 +274,14 @@ fn stated_by_user(rule: &str, user_words: &BTreeSet<String>) -> bool {
 }
 
 /// Append new standing instructions to the learned rule, skipping any whose
-/// content fingerprint already appears (re-observation is a no-op). Returns
-/// the merged content and how many lines were actually added.
-fn merge_learned(existing: &str, additions: &[String]) -> (String, usize) {
+/// content fingerprint already appears (re-observation is a no-op). `held`:
+/// the learned rule of the other bank the turn reads; a line it holds is not
+/// learned again. Returns the merged content and how many lines were
+/// actually added.
+fn merge_learned(existing: &str, held: &str, additions: &[String]) -> (String, usize) {
     let mut seen: std::collections::HashSet<String> = existing
         .lines()
+        .chain(held.lines())
         .filter_map(|l| l.strip_prefix("- "))
         .map(fingerprint)
         .collect();
@@ -393,31 +414,15 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
     .await;
 
     let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
-    let reply = deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: "router::complete".into(),
-            payload: json!({
-                "model": model,
-                "system_prompt": format!(
-                    "{EXTRACT_SYSTEM}\n- Return at most {} memories and {MAX_RULES_PER_TURN} \
-            rules, the most durable first.",
-                    cfg.max_memories_per_turn
-                ),
-                "messages": [{
-                    "role": "user",
-                    "content": [{ "type": "text", "text": extraction_input(&known, &transcript) }],
-                    "timestamp": now_ms() as i64,
-                }],
-                "max_output_tokens": 2048,
-            }),
-            action: None,
-            timeout_ms: Some(cfg.extraction_timeout_ms),
-        })
-        .await
-        .map_err(|e| format!("router::complete: {e}"))?;
-
-    let items = reply_items(&reply, session_id)?;
+    let items = extract_items(
+        &deps.iii,
+        &model,
+        cfg.max_memories_per_turn,
+        cfg.extraction_timeout_ms,
+        extraction_input(&known, &transcript),
+        session_id,
+    )
+    .await?;
     if items.is_empty() {
         // Nothing to write: the span is done, advance past it.
         if let Some(id) = newest_id {
@@ -434,11 +439,24 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
     if created {
         deps.emitter.bank("created", bank_name).await;
     }
-    // The bank a known memory lives in: the layer's, or this one.
-    let layer = match layer_name.filter(|_| !layered.is_empty()) {
-        Some(name) => store.bank(name).await.ok().map(|b| (name, b)),
+    // The layer, when a known memory lives there or an item goes up into it.
+    let writes_up = items
+        .iter()
+        .any(|i| i.is_user() && (cfg.rule_learning_enabled || !i.is_rule()));
+    let layer = match layer_name.filter(|_| writes_up || !layered.is_empty()) {
+        Some(name) => {
+            let (b, created) = store
+                .ensure_bank(name, None)
+                .await
+                .map_err(|e| e.to_string())?;
+            if created {
+                deps.emitter.bank("created", name).await;
+            }
+            Some((name, b))
+        }
         None => None,
     };
+    // The bank a known memory lives in: the layer's, or this one.
     let home = |id: &str| match &layer {
         Some((name, b)) if layered.contains(id) => (*name, b),
         _ => (bank_name, &bank),
@@ -452,12 +470,16 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         items.into_iter().partition(ExtractedItem::is_rule);
     if cfg.rule_learning_enabled && !rules.is_empty() {
         // Redacted like memories, so a re-observed rule fingerprints the
-        // same as its stored (redacted) line.
-        let additions: Vec<String> = rules
+        // same as its stored (redacted) line. A rule for the user wherever
+        // they work goes up into the layer's `learned`.
+        let additions: Vec<(bool, String)> = rules
             .into_iter()
-            .map(|r| crate::redact::redact(r.text.trim()).text)
-            .filter(|t| t.len() >= 3 && t.len() <= 500)
-            .filter(|t| {
+            .map(|r| {
+                let up = layer.is_some() && r.is_user();
+                (up, crate::redact::redact(r.text.trim()).text)
+            })
+            .filter(|(_, t)| t.len() >= 3 && t.len() <= 500)
+            .filter(|(_, t)| {
                 let backed = stated_by_user(t, &user_words);
                 if !backed {
                     tracing::info!(session_id, bank = %bank_name, "dropped a learned rule no user line states");
@@ -466,18 +488,45 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             })
             .take(MAX_RULES_PER_TURN)
             .collect();
-        let existing = bank
-            .list_rules()
-            .ok()
-            .and_then(|rs| rs.into_iter().find(|r| r.name == LEARNED_RULE))
-            .map(|r| r.content)
-            .unwrap_or_default();
-        let (merged, added) = merge_learned(&existing, &additions);
-        if added > 0 {
-            match bank.set_rule(LEARNED_RULE, &merged) {
+        let learned = |b: &Bank| -> String {
+            b.list_rules()
+                .ok()
+                .and_then(|rs| rs.into_iter().find(|r| r.name == LEARNED_RULE))
+                .map(|r| r.content)
+                .unwrap_or_default()
+        };
+        let lines = |up: bool| -> Vec<String> {
+            additions
+                .iter()
+                .filter(|(u, _)| *u == up)
+                .map(|(_, t)| t.clone())
+                .collect()
+        };
+        let own_now = learned(&bank);
+        // Read even when nothing opened the layer: a project line it holds
+        // is still not learned again here.
+        let up_now = match (&layer, layer_name) {
+            (Some((_, b)), _) => learned(b),
+            (None, Some(name)) => store
+                .bank(name)
+                .await
+                .map(|b| learned(&b))
+                .unwrap_or_default(),
+            (None, None) => String::new(),
+        };
+        // A line either bank holds is never learned again: the turn reads both.
+        let own = merge_learned(&own_now, &up_now, &lines(false));
+        let up = layer
+            .as_ref()
+            .map(|(name, b)| (*name, b, merge_learned(&up_now, &own.0, &lines(true))));
+        for (name, b, (merged, added)) in std::iter::once((bank_name, &bank, own)).chain(up) {
+            if added == 0 {
+                continue;
+            }
+            match b.set_rule(LEARNED_RULE, &merged) {
                 Ok(()) => {
-                    deps.emitter.bank("rules-changed", bank_name).await;
-                    tracing::info!(session_id, bank = %bank_name, added, "extraction pass learned rules");
+                    deps.emitter.bank("rules-changed", name).await;
+                    tracing::info!(session_id, bank = %name, added, "extraction pass learned rules");
                 }
                 Err(e) => tracing::warn!(error = %e, "learned rule write failed"),
             }
@@ -498,18 +547,24 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         let id = fingerprint(text);
         let now = now_ms();
         let target = correction_target(&known, item.replaces).cloned();
-        // A correction lands in the bank of what it corrects, and
-        // supersedes it there; a rewording, where its twin lives.
-        let (mut at_name, mut at) = match &target {
-            Some(old) => home(&old.id),
-            None => (bank_name, &bank),
+        let item_user = item.is_user();
+        let (up, retires) = placement(
+            layer.is_some() && item_user,
+            target.as_ref().map(|t| layered.contains(&t.id)),
+        );
+        // A memory about the user wherever they work goes up into the layer
+        // ([`placement`]); a correction retires its target only where it
+        // lands.
+        let (mut at_name, mut at) = match &layer {
+            Some((n, b)) if up => (*n, b),
+            _ => (bank_name, &bank),
         };
         let existing = match at.get(&id).await {
             Some(m) => Some(m),
             // A rewording of a fact the bank holds is that fact observed
-            // again. Not for a correction: it differs from its target on
-            // purpose.
-            None if target.is_none() => {
+            // again. Not for a correction retiring its target: it differs
+            // from it on purpose.
+            None if !retires => {
                 let nearby = bank.lexical(text, 5, false).await;
                 let candidates = known.iter().chain(nearby.iter().map(|(m, _)| m));
                 match near_twin(text, candidates).map(|m| m.id.clone()) {
@@ -539,12 +594,10 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
                 ItemEvent::Created,
             ),
         };
-        // Written into the layer, it must stay read where the fact it
-        // corrects was, whatever entities the model returned.
-        // ponytail: a repository-scoped override of a fact about the user
-        // ("here we use pnpm") still lands in the layer and reads in every
-        // repository; route it here once memories carry a scope.
-        if at_name != bank_name {
+        // Written into the layer, it must stay read under every directory
+        // bank, whatever entities the model returned; so must a memory
+        // about the user written into the default bank itself.
+        if at_name != bank_name || (item_user && bank_name == cfg.default_bank) {
             crate::scope::into_layer(&mut memory.entities);
         }
         match at.commit(memory.clone()).await {
@@ -560,7 +613,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         }
         // A correction retires what it corrects: a tombstone pointing at
         // the corrected memory, recoverable like any supersede.
-        let old = match target {
+        let old = match target.filter(|_| retires) {
             Some(old) => at.get(&old.id).await,
             None => None,
         };
@@ -1056,6 +1109,39 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     }
 }
 
+/// One extraction call: the production prompt over `input`, its items.
+async fn extract_items(
+    iii: &IIIClient,
+    model: &str,
+    max_memories: usize,
+    timeout_ms: u64,
+    input: String,
+    session_id: &str,
+) -> Result<Vec<ExtractedItem>, String> {
+    let reply = iii
+        .trigger(TriggerRequest {
+            function_id: "router::complete".into(),
+            payload: json!({
+                "model": model,
+                "system_prompt": format!(
+                    "{EXTRACT_SYSTEM}\n- Return at most {max_memories} memories and \
+            {MAX_RULES_PER_TURN} rules, the most durable first."
+                ),
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "type": "text", "text": input }],
+                    "timestamp": now_ms() as i64,
+                }],
+                "max_output_tokens": 2048,
+            }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await
+        .map_err(|e| format!("router::complete: {e}"))?;
+    reply_items(&reply, session_id)
+}
+
 /// The items of a `router::complete` reply. A provider failure (rate limit,
 /// expired auth, overload) comes back as Ok with the error text as content:
 /// read as "nothing to save", it would advance the cursor past the turn, so
@@ -1239,7 +1325,7 @@ mod tests {
     #[test]
     fn merge_learned_never_touches_existing_lines() {
         let existing = "# Learned\nintro\n- Keep me exactly.\n";
-        let (merged, added) = merge_learned(existing, &["New line.".into()]);
+        let (merged, added) = merge_learned(existing, "", &["New line.".into()]);
         assert_eq!(added, 1);
         assert!(merged.contains("- Keep me exactly.\n"));
         assert!(merged.contains("intro"));
@@ -1264,6 +1350,7 @@ mod tests {
     fn merge_learned_appends_and_dedups() {
         let (first, added) = merge_learned(
             "",
+            "",
             &["Never use em-dashes.".into(), "Always write tests.".into()],
         );
         assert_eq!(added, 2);
@@ -1272,19 +1359,20 @@ mod tests {
         assert!(first.contains("- Always write tests.\n"));
 
         // Re-observation (case/whitespace-insensitive) is a no-op.
-        let (second, added) = merge_learned(&first, &["never  use em-dashes.".into()]);
+        let (second, added) = merge_learned(&first, "", &["never  use em-dashes.".into()]);
         assert_eq!(added, 0);
         assert_eq!(second, first);
 
         // A genuinely new line appends without disturbing hand edits.
         let edited = first.replace("Always write tests.", "Always write tests first.");
-        let (third, added) = merge_learned(&edited, &["Prefer short names.".into()]);
+        let (third, added) = merge_learned(&edited, "", &["Prefer short names.".into()]);
         assert_eq!(added, 1);
         assert!(third.contains("Always write tests first."));
         assert!(third.ends_with("- Prefer short names.\n"));
 
         // Duplicates WITHIN one pass collapse to a single line.
         let (batch, added) = merge_learned(
+            "",
             "",
             &["Prefer short names.".into(), "prefer  short names.".into()],
         );
@@ -1476,6 +1564,7 @@ mod tests {
             confidence: None,
             kind: None,
             replaces: None,
+            scope: None,
         };
         new_memory(item, "s", None, 1)
     }
@@ -1517,6 +1606,64 @@ mod tests {
         assert_eq!(items[0].replaces, Some(2));
         let items = parse_items(r#"[{"text":"The user lives in Porto."}]"#).unwrap();
         assert_eq!(items[0].replaces, None);
+    }
+
+    #[test]
+    fn parse_reads_scope() {
+        let raw = r#"[
+            {"text": "a", "scope": "user"},
+            {"text": "b", "scope": "project"},
+            {"text": "c"},
+            {"text": "d", "scope": "global"},
+            {"text": "e", "scope": "User"},
+            {"text": "f", "scope": 1}
+        ]"#;
+        let items = parse_items(raw).unwrap();
+        assert_eq!(
+            texts(&items),
+            ["a", "b", "c", "d", "e"],
+            "a numeric scope is malformed"
+        );
+        let user: Vec<bool> = items.iter().map(ExtractedItem::is_user).collect();
+        assert_eq!(user, [true, false, false, false, false]);
+    }
+
+    #[test]
+    fn a_memory_about_the_user_goes_up_unless_it_corrects_this_banks_own() {
+        for (user, target_in_layer, want) in [
+            (true, None, (true, false)),
+            (false, None, (false, false)),
+            (true, Some(true), (true, true)),
+            // A project exception to the user's fact: here, and it stands.
+            (false, Some(true), (false, false)),
+            (true, Some(false), (false, true)),
+            (false, Some(false), (false, true)),
+        ] {
+            assert_eq!(
+                placement(user, target_in_layer),
+                want,
+                "{user} {target_in_layer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_either_bank_holds_is_never_learned_again() {
+        let held = "# Learned\n- Never use emoji.\n";
+        let (merged, added) =
+            merge_learned("", held, &["never  use emoji.".into(), "Use pnpm.".into()]);
+        assert_eq!(added, 1);
+        assert!(merged.starts_with(LEARNED_HEADER));
+        assert!(merged.ends_with("- Use pnpm.\n"));
+        assert!(!merged.to_lowercase().contains("emoji"), "{merged}");
+        // Its own lines and a duplicate within the batch still collapse.
+        let (again, added) = merge_learned(
+            &merged,
+            held,
+            &["use  pnpm.".into(), "Be terse.".into(), "be terse.".into()],
+        );
+        assert_eq!(added, 1);
+        assert!(again.ends_with("- Use pnpm.\n- Be terse.\n"), "{again}");
     }
 
     #[test]
@@ -1826,6 +1973,7 @@ mod tests {
             confidence: Some("inferred".into()),
             kind: None,
             replaces: None,
+            scope: None,
         };
         let m = new_memory(item, "s_1", Some("e_9"), 42);
         assert_eq!(m.text, "user prefers tea");
@@ -1851,3 +1999,6 @@ mod tests {
         assert_eq!(content_text(Some(&plain)), "just a string");
     }
 }
+
+#[cfg(test)]
+mod scope_eval;

@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to preview; omitted: the calling session's bank, else the configured default.",
+        "description": "Bank to preview; a directory's bank (`<name>-<6 hex>`) reads `default_bank` under it, as its turns do. Omitted: the calling session's bank, else the configured default.",
         "type": [
           "string",
           "null"
