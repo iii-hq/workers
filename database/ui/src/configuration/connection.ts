@@ -360,12 +360,24 @@ export function looksLikeKeyPath(value: string): boolean {
  */
 export function connectionProblems(db: JsonObject): { field: string; message: string }[] {
   const out: { field: string; message: string }[] = []
+  const blank = (v: JsonValue | undefined) => typeof v !== 'string' || v.trim() === ''
+  if (connectionShape(db) === 'structured') {
+    const driver = connectionDriver(db)
+    if (driver === 'postgres' || driver === 'mysql') {
+      if (blank(db.host)) out.push({ field: 'host', message: 'Required.' })
+      if (blank(db.user)) out.push({ field: 'user', message: 'Required.' })
+    } else if (driver === 'sqlite' && blank(db.database)) {
+      out.push({ field: 'database', message: 'Required: the path of the database file.' })
+    }
+  }
   const tls = isObject(db.tls) ? db.tls : {}
   if ((tls.client_cert !== undefined) !== (tls.client_key !== undefined)) {
     out.push({ field: 'tls', message: 'Mutual TLS needs both the client certificate and its key.' })
   }
   if (isObject(db.ssh)) {
     const ssh = db.ssh
+    if (blank(ssh.host)) out.push({ field: 'ssh.host', message: 'Required.' })
+    if (blank(ssh.user)) out.push({ field: 'ssh.user', message: 'Required.' })
     if (ssh.password === undefined && ssh.private_key === undefined) {
       out.push({ field: 'ssh', message: 'The tunnel needs a password or a private key.' })
     }

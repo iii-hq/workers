@@ -301,13 +301,22 @@ describe('what the worker will refuse', () => {
       connectionProblems({
         driver: 'postgres',
         tls: { client_cert: '/c.crt' },
+        host: 'db',
         ssh: { host: 'b', user: 'u', passphrase: 'secret://P', host_key: 'SHA256:nope' },
         folder: 'relative/queries',
       }).map((p) => p.field),
-    ).toEqual(['tls', 'ssh', 'ssh.passphrase', 'ssh.host_key', 'folder'])
+    ).toEqual(['user', 'tls', 'ssh', 'ssh.passphrase', 'ssh.host_key', 'folder'])
+    const blank = { driver: 'mysql', host: ' ', ssh: { host: '', user: '', password: 'secret://P' } }
+    expect(connectionProblems(blank).map((p) => p.field)).toEqual(['host', 'user', 'ssh.host', 'ssh.user'])
+    expect(connectionProblems({ driver: 'sqlite' })).toEqual([
+      { field: 'database', message: 'Required: the path of the database file.' },
+    ])
+    expect(connectionProblems({ url: 'postgres://db/app' })).toEqual([])
     expect(
       connectionProblems({
         driver: 'postgres',
+        host: 'db',
+        user: 'app',
         tls: { client_cert: '/c.crt', client_key: 'secret://K' },
         ssh: { host: 'b', user: 'u', private_key: 'secret://K2', host_key: `SHA256:${'b'.repeat(43)}` },
         folder: '/srv/q',
