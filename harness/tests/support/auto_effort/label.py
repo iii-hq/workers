@@ -1,6 +1,6 @@
 """Label harness prompts with the efforts that would do the job: python3 -I label.py <out_dir> [--run]
 
-Without --run it prints the call count and estimated input tokens. Prompts already in labels.jsonl are skipped,
+Without --run it prints the call count, estimated tokens and their cost. Prompts already in labels.jsonl are skipped,
 so a re-run labels only the rest; delete labels.jsonl to label again from scratch. A --run logs every reply and
 prompt that yields no label to stderr, and stops once 5 prompts in a row got none.
 """
@@ -18,16 +18,27 @@ HERE = Path(__file__).resolve().parent
 RUBRIC = HERE / "rubric.md"
 CASES = HERE / "cases" / "effortless-judge-cases.json"
 MODELS = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+LABELLER = "claude-opus-5-5"
+OUTPUT_TOKENS = 800  # a labeller call's output, thinking included, for the estimate
 
 
 def parse_label(text: str) -> list[str] | None:
-    """The `ok` levels of a {"ok": [...]} reply, ordered as in LEVELS; None when empty or unknown."""
-    try:
-        ok = json.loads(text[text.find("{") : text.rfind("}") + 1])["ok"]
-        if isinstance(ok, list) and ok and set(ok) <= set(common.LEVELS):
-            return sorted(set(ok), key=common.LEVELS.index)
-    except (ValueError, KeyError, TypeError):
-        pass
+    """The `ok` levels of a {"ok": [...]} reply, ordered as in LEVELS; None when empty or unknown.
+
+    The whole reply is tried as JSON first, then the value at each `{` in turn: the first object holding "ok" counts,
+    whatever prose or braces surround it.
+    """
+    decoder = json.JSONDecoder()
+    for at in (None, *(i for i, char in enumerate(text) if char == "{")):
+        try:
+            found = json.loads(text) if at is None else decoder.raw_decode(text, at)[0]
+        except ValueError:
+            continue
+        if isinstance(found, dict) and "ok" in found:
+            ok = found["ok"]
+            if isinstance(ok, list) and ok and all(level in common.LEVELS for level in ok):
+                return sorted(set(ok), key=common.LEVELS.index)
+            return None
     return None
 
 
@@ -60,7 +71,7 @@ def labeller_input(row: dict, **extra) -> str:
 def ask(rubric: str, text: str) -> list[str] | None:
     message = {"role": "user", "content": [{"type": "text", "text": text}], "timestamp": int(time.time() * 1000)}
     payload = {
-        "model": "claude-opus-5-5",
+        "model": LABELLER,
         "provider": "anthropic",
         "thinking_level": "medium",
         "system_prompt": rubric,
@@ -99,7 +110,12 @@ def main(argv: list[str]) -> None:
         n = len(todo)
         # ponytail: chars/4 estimate; router::count_tokens when it must be exact
         tokens = sum(len(rubric) + len(labeller_input(row)) for row in todo) // 4
-        print(f"{n} prompts × 2–3 calls ({2 * n}–{3 * n} calls), about {2 * tokens:,}–{3 * tokens:,} input tokens")
+        usd = common.INPUT_USD[LABELLER] / 1e6  # per input token; an output token costs 5 times as much
+        low, high = ((k * tokens + 5 * k * n * OUTPUT_TOKENS) * usd for k in (2, 3))
+        print(
+            f"{n} prompts × 2–3 calls ({2 * n}–{3 * n} calls), about {2 * tokens:,}–{3 * tokens:,} input tokens and"
+            f" {2 * n * OUTPUT_TOKENS:,}–{3 * n * OUTPUT_TOKENS:,} output tokens, about ${low:,.2f}–${high:,.2f}"
+        )
         return
     misses = 0  # prompts in a row without a label: a run that keeps failing stops before it pays for the rest
     with open(path, "a", encoding="utf-8") as f:

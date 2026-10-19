@@ -53,8 +53,11 @@ def evaluation(row: dict, question: dict) -> dict:
 
 
 def verdict(answer: dict | None, error: str | None, current: str | None) -> dict:
-    """An error, no answer or confidence below 0.5 keeps the current level, medium when unknown."""
+    """An error, no answer, a choice outside LEVELS or confidence below 0.5 keeps the current level, medium when
+    unknown."""
     confidence = (answer or {}).get("confidence")
+    if answer and not error and answer.get("choice") not in common.LEVELS:
+        error = "invalid_choice"
     if error or not answer or (confidence is not None and confidence < 0.5):
         return {"level": current or "medium", "confidence": confidence, "kept": True, "error": error}
     return {"level": answer["choice"], "confidence": confidence, "kept": False, "error": None}

@@ -120,9 +120,9 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual([(r["seq"], r["gap_ms"]) for r in self.rows()], [(0, None), (1, 301_000)])
 
     def test_truncates_long_message(self):
-        self.write("s1", [user("u1", "x" * 5000, 0)])
+        self.write("s1", [user("u1", "a" * 4000 + "b" * 1000, 0)])
         [row] = self.rows()
-        self.assertEqual(len(row["message"]), 4000)
+        self.assertEqual(row["message"], "a" * 4000)  # the head, as effortless cuts it
 
     def test_context_shape(self):
         lines = [
@@ -146,6 +146,7 @@ class ExtractTest(unittest.TestCase):
             entry("append", "a1", 0, 10, empty),
             entry("entry", "a1", 1, 10, dict(empty, usage={})),
             entry("entry", "a1", 2, 10, final),
+            entry("entry", "a1", 1, 10, dict(empty, usage={})),  # a stale revision written late loses to rev 2
         ]
         self.write("s1", lines)
         [row] = self.rows()
@@ -248,6 +249,15 @@ class CommonTest(unittest.TestCase):
             common.trigger("f", {}, 1)
         self.assertEqual(err.exception.code, "transport")
 
+    def test_trigger_timeout_is_transport(self):
+        """A hung iii trigger is killed 30 s past the call's own timeout, as a transport error."""
+        hung = subprocess.TimeoutExpired(["iii"], 31)
+        with mock.patch.object(common.subprocess, "run", side_effect=hung) as run:
+            with self.assertRaises(common.TriggerError) as err:
+                common.trigger("f", {}, 1)
+        self.assertEqual((err.exception.code, err.exception.message), ("transport", "iii trigger timed out"))
+        self.assertEqual(run.call_args.kwargs["timeout"], 31)
+
 
 class LabelTest(unittest.TestCase):
     def test_parse_label_orders_levels(self):
@@ -256,6 +266,10 @@ class LabelTest(unittest.TestCase):
     def test_parse_label_rejects_unknown(self):
         self.assertIsNone(label.parse_label('{"ok":["max"]}'))
         self.assertIsNone(label.parse_label('{"ok":[]}'))
+
+    def test_parse_label_takes_the_first_object_with_ok(self):
+        self.assertEqual(label.parse_label('Answer: {"ok":["low"]} (note: {x})'), ["low"])
+        self.assertEqual(label.parse_label('{"why": "a {brace}"} so {"ok": ["high"]}'), ["high"])
 
     def test_needs_adjudication(self):
         self.assertTrue(label.needs_adjudication(["low"], ["medium", "high"]))
@@ -314,6 +328,7 @@ class LabelTest(unittest.TestCase):
         call.assert_not_called()  # no --run, no call
         counts = [p.split(", about")[0] for p in printed.getvalue().splitlines()]
         self.assertEqual(counts, ["8 prompts × 2–3 calls (16–24 calls)", "7 prompts × 2–3 calls (14–21 calls)"])
+        self.assertIn(" input tokens and 12,800–19,200 output tokens, about $", printed.getvalue())  # 800 a call
         timeout, ok, prose = common.TriggerError("timeout", "too slow"), reply('{"ok":["low"]}'), reply("y" * 300)
         failed = {"message": {"content": [], "stop_reason": "error", "error_message": "rate limited"}}
         # p0 is skipped; p1 throws, p2 is labelled; then p3 throws and p4..p7 get no usable reply: five misses in a row
@@ -362,6 +377,26 @@ class JudgeTest(unittest.TestCase):
     def test_error_counts_as_kept(self):
         v = judge.verdict(None, "timeout", None)
         self.assertEqual((v["level"], v["kept"], v["error"]), ("medium", True, "timeout"))
+
+    def test_choice_outside_levels_is_kept(self):
+        for answer in ({"choice": "none", "confidence": 0.9}, {"confidence": 0.9}):
+            v = judge.verdict(answer, None, "high")
+            self.assertEqual((v["level"], v["kept"], v["error"]), ("high", True, "invalid_choice"))
+
+    def test_effort_question_content(self):
+        self.assertEqual(self.question["instructions"], "Which effort fits the next message?")
+        self.assertEqual(self.question["criteria"]["xhigh"], "very hard: a long investigation or research-level work")
+
+    def test_evaluation_cuts_message(self):
+        row = dict(self.row, message="a" * 4000 + "b" * 1000)
+        state = json.loads(judge.evaluation(row, self.question)["state"])
+        self.assertEqual(state["next_message"], "a" * 4000)
+
+    def test_haiku_trigger_error_is_kept(self):
+        down = common.TriggerError("transport", "no engine")
+        with mock.patch.object(common, "trigger", side_effect=down):
+            v = judge.judged("haiku", self.row, self.question, "system")
+        self.assertEqual((v["level"], v["kept"], v["error"], v["tokens"]), ("medium", True, "transport", 0))
 
     def test_followup_keeps_without_call(self):
         self.assertTrue(judge.keeps_effort("ok", "user: x\nassistant: done."))
@@ -910,6 +945,30 @@ class AbTest(unittest.TestCase):
         with open(pkg / "test_auto_effort.py", "a", encoding="utf-8") as f:
             f.write("\n")
         self.assertFalse(ab.check("c", "", repo))  # the tests pass, but the test file changed
+
+    def test_check_b(self):
+        """Task b's check runs the whole suite in the tree: it fails on the untouched package, and passes once units is
+        renamed in common.py and its callers."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        tree = Path(tmp.name) / "tree"
+        pkg = tree / ab.PKG
+        shutil.copytree(HERE, pkg, ignore=shutil.ignore_patterns("__pycache__"))
+        # the copy holds no A/B tests, as the real --sha tree does not: a check("b") there that ran the whole suite
+        # would run itself again without end, so a broken check fails this test instead of forking without end
+        test = pkg / "test_auto_effort.py"
+        text = test.read_text(encoding="utf-8").replace("class AbTest(unittest.TestCase):", "class AbTest:")
+        test.write_text(text, encoding="utf-8")
+        for path in cache_probe.FILES:  # the cache probe's tests read them from the repository
+            (tree / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(cache_probe.REPO / path, tree / path)
+        self.assertFalse(ab.check("b", "", tree))
+        for source in pkg.glob("*.py"):
+            text = source.read_text(encoding="utf-8").replace("common.units(", "common.cost_units_of(")
+            if source.name == "common.py":
+                text = text.replace("def units(", "def cost_units_of(")
+            source.write_text(text, encoding="utf-8")
+        self.assertTrue(ab.check("b", "", tree))
 
     def test_run_tree_is_standalone(self):
         """R15: a run's tree is a repo of its own holding sha's files in one commit: no other branch is reachable."""

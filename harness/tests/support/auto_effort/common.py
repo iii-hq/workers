@@ -27,7 +27,10 @@ def units(usage: dict | None) -> float:
 def trigger(fn: str, payload: dict, timeout_s: float) -> dict:
     timeout_ms = str(round(timeout_s * 1000))
     argv = ["iii", "trigger", "-n", "my-project", "--timeout-ms", timeout_ms, fn, "--json", json.dumps(payload)]
-    done = subprocess.run(argv, capture_output=True, encoding="utf-8")
+    try:  # a CLI still running 30 s past its own --timeout-ms is stuck, and must not hang the run
+        done = subprocess.run(argv, capture_output=True, encoding="utf-8", timeout=timeout_s + 30)
+    except subprocess.TimeoutExpired:
+        raise TriggerError("transport", "iii trigger timed out") from None
     if done.returncode == 0:
         return json.loads(done.stdout) if done.stdout.strip() else {}
     stderr = done.stderr.strip()
