@@ -96,6 +96,8 @@ def ask_haiku(row: dict, question: dict, system: str) -> tuple[dict | None, str 
         "provider": "anthropic",
         "system_prompt": system,
         "max_output_tokens": 160,
+        # Haiku 5.5 thinks adaptively by default and spends all 160 tokens on it, leaving no text; effortless asks low.
+        "thinking_level": "low",
         "messages": [message],
     }
     try:

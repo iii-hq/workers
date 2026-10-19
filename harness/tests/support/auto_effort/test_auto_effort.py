@@ -398,6 +398,13 @@ class JudgeTest(unittest.TestCase):
             v = judge.judged("haiku", self.row, self.question, "system")
         self.assertEqual((v["level"], v["kept"], v["error"], v["tokens"]), ("medium", True, "transport", 0))
 
+    def test_haiku_asks_low_thinking(self):
+        reply = {"message": {"content": [{"type": "text", "text": '{"effort":"high","sure":0.8}'}]}, "usage": {}}
+        with mock.patch.object(common, "trigger", return_value=reply) as call:
+            v = judge.judged("haiku", self.row, self.question, "system")
+        self.assertEqual(call.call_args.args[1]["thinking_level"], "low")
+        self.assertEqual((v["level"], v["kept"]), ("high", False))
+
     def test_followup_keeps_without_call(self):
         self.assertTrue(judge.keeps_effort("ok", "user: x\nassistant: done."))
 
@@ -446,8 +453,9 @@ class JudgeTest(unittest.TestCase):
             "provider": "anthropic",
             "system_prompt": "system",
             "max_output_tokens": 160,
+            "thinking_level": "low",
         }
-        self.assertEqual((fn, payload), ("router::complete", want))  # no thinking_level
+        self.assertEqual((fn, payload), ("router::complete", want))
         text = [{"type": "text", "text": evaluation["state"]}]
         self.assertEqual((message["role"], message["content"], type(message["timestamp"])), ("user", text, int))
 
