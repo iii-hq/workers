@@ -331,8 +331,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         .await
         .map_err(|e| format!("router::complete: {e}"))?;
 
-    let text = assistant_text(&reply);
-    let items = parse_items(&text)?;
+    let items = reply_items(&reply, session_id)?;
     if items.is_empty() {
         // Nothing to write: the span is done, advance past it.
         if let Some(id) = newest_id {
@@ -638,16 +637,15 @@ async fn fetch_span(
     Ok(span.finish())
 }
 
-/// The dated excerpt of a span (its newest `window` entries), the span's
-/// newest entry id, and the kept message text length (excluding the
-/// per-line date prefix).
-fn excerpt(entries: Vec<Entry>, window: usize) -> (String, Option<String>, usize) {
+/// The dated excerpt of a span (its [`keep_window`]), the span's newest
+/// entry id, and the kept message text length (excluding the per-line date
+/// prefix).
+fn excerpt(mut entries: Vec<Entry>, window: usize) -> (String, Option<String>, usize) {
     let newest_id = entries.last().map(|(id, ..)| id.clone());
-    let start = entries.len().saturating_sub(window);
+    keep_window(&mut entries, window);
     let mut content_len = 0;
     let lines: Vec<String> = entries
         .into_iter()
-        .skip(start)
         .filter_map(|(_, role, text, ts)| {
             let line = transcript_line(&role, &text, ts)?;
             content_len += text.trim().len();
@@ -660,9 +658,38 @@ fn excerpt(entries: Vec<Entry>, window: usize) -> (String, Option<String>, usize
 /// One transcript entry: `(entry_id, role, text, timestamp_ms)`.
 type Entry = (String, String, String, u64);
 
+/// Keep the newest `window` entries with text, the newest entry (a span's
+/// end, even an empty one), and the newest user line before them when none
+/// of them is one: on a long agentic turn the tool steps (empty or one-line
+/// narration) would otherwise push out the request that started it.
+fn keep_window(entries: &mut Vec<Entry>, window: usize) {
+    let has_text = |e: &Entry| !e.2.trim().is_empty();
+    let is_user = |e: &Entry| e.1 == "user" && has_text(e);
+    let mut texted = 0;
+    let cut = entries
+        .iter()
+        .rposition(|e| {
+            texted += usize::from(has_text(e));
+            texted > window
+        })
+        .map_or(0, |i| i + 1);
+    let pin = if entries[cut..].iter().any(is_user) {
+        None
+    } else {
+        entries[..cut].iter().rposition(is_user)
+    };
+    let last = entries.len().saturating_sub(1);
+    let mut i = 0;
+    entries.retain(|e| {
+        let keep = (i >= cut && has_text(e)) || i == last || Some(i) == pin;
+        i += 1;
+        keep
+    });
+}
+
 /// What one pass reads off a root → leaf walk: the entries after the cursor
-/// `since`, through `until` (the end of the job's turn), or the newest
-/// `window` of them when the cursor is never seen (no cursor yet, a branch
+/// `since`, through `until` (the end of the job's turn), or their
+/// [`keep_window`] when the cursor is never seen (no cursor yet, a branch
 /// switch). Stopping at `until` keeps a late job from sweeping the NEXT
 /// turn into its own, maybe different, bank.
 struct Span<'a> {
@@ -702,7 +729,7 @@ impl<'a> Span<'a> {
         // Bound RAM on long sessions: everything at or before the stored
         // cursor is already extracted, so once the cursor id streams past
         // only what follows it is kept; without a cursor only the window
-        // tail is ever read.
+        // is ever read.
         if let Some(since) = self.since {
             if let Some(pos) = self.entries.iter().position(|(id, ..)| id == since) {
                 self.since_seen = true;
@@ -713,8 +740,7 @@ impl<'a> Span<'a> {
                 return;
             }
         }
-        let excess = self.entries.len().saturating_sub(self.window);
-        self.entries.drain(..excess);
+        keep_window(&mut self.entries, self.window);
     }
 
     /// Later pages can change nothing: the turn's end is in, and the cursor
@@ -812,10 +838,16 @@ fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
     }
     // Redacted before it reaches the extraction model: a secret it never
     // sees is one it cannot copy into a memory.
-    // Redact before the cut: a key crossing the 2000-char clamp would
-    // otherwise reach the model half-visible.
-    let redacted = crate::redact::redact(trimmed).text;
-    let excerpt = &redacted[..clamp_char_boundary(&redacted, 2_000)];
+    // Redact before the cut: a key crossing it would otherwise reach the
+    // model half-visible.
+    let mut excerpt = crate::redact::redact(trimmed).text;
+    // Over 2000 chars, keep the head and the tail: a pasted log usually
+    // ends with what to do about it.
+    if excerpt.len() > 2_000 {
+        let head = clamp_char_boundary(&excerpt, 1_000);
+        let tail = clamp_char_boundary(&excerpt, excerpt.len() - 1_000);
+        excerpt.replace_range(head..tail, " … ");
+    }
     Some(format!(
         "{role} [{}]: {excerpt}",
         local_date(ts, "%Y-%m-%d %A")
@@ -876,20 +908,63 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     }
 }
 
-fn assistant_text(reply: &Value) -> String {
-    content_text(reply.pointer("/message/content"))
+/// The items of a `router::complete` reply. A provider failure (rate limit,
+/// expired auth, overload) comes back as Ok with the error text as content:
+/// read as "nothing to save", it would advance the cursor past the turn, so
+/// it is an error and the queue retries.
+fn reply_items(reply: &Value, session_id: &str) -> Result<Vec<ExtractedItem>, String> {
+    let message = &reply["message"];
+    match message["stop_reason"].as_str() {
+        Some("error") => {
+            return Err(format!(
+                "router::complete: provider error {}: {}",
+                message["error_kind"].as_str().unwrap_or("unknown"),
+                message["error_message"].as_str().unwrap_or("")
+            ))
+        }
+        Some("length") => {
+            tracing::warn!(
+                session_id,
+                "extraction reply hit max_output_tokens; keeping its whole items"
+            );
+        }
+        _ => {}
+    }
+    parse_items(&content_text(message.get("content")))
 }
 
-/// Parse the model reply. Tolerates code fences and stray prose around the
-/// array, rejects everything else.
+/// Parse the model reply item by item: one malformed item is skipped, not
+/// the reply. The array is the first `[` that opens an object list or `[]`,
+/// so prose quoting a known memory's number (`[2]`) is not mistaken for it,
+/// and anything after the array is ignored. An array cut short (the reply
+/// hit max_output_tokens) keeps the items that closed.
 fn parse_items(raw: &str) -> Result<Vec<ExtractedItem>, String> {
-    let trimmed = raw.trim();
-    let candidate = match (trimmed.find('['), trimmed.rfind(']')) {
-        (Some(start), Some(end)) if end > start => &trimmed[start..=end],
-        _ => return Ok(Vec::new()),
+    let start = raw
+        .match_indices('[')
+        .map(|(i, _)| i)
+        .find(|&i| matches!(raw[i + 1..].trim_start().chars().next(), Some('{' | ']')));
+    let Some(start) = start else {
+        return Ok(Vec::new());
     };
-    serde_json::from_str::<Vec<ExtractedItem>>(candidate)
-        .map_err(|e| format!("unparseable extraction reply: {e}"))
+    let array = &raw[start..];
+    let values = match Vec::<Value>::deserialize(&mut serde_json::Deserializer::from_str(array)) {
+        Ok(values) => values,
+        Err(e) if e.is_eof() => array
+            .rmatch_indices('}')
+            .find_map(|(end, _)| serde_json::from_str(&format!("{}]", &array[..=end])).ok())
+            .ok_or_else(|| format!("truncated extraction reply: {e}"))?,
+        Err(e) => return Err(format!("unparseable extraction reply: {e}")),
+    };
+    Ok(values
+        .into_iter()
+        .filter_map(|v| match serde_json::from_value::<ExtractedItem>(v) {
+            Ok(item) => Some(item),
+            Err(e) => {
+                tracing::warn!(error = %e, "skipping a malformed extracted item");
+                None
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -931,6 +1006,78 @@ mod tests {
     #[test]
     fn parse_rejects_non_array_json_objects() {
         assert!(parse_items(r#"{"text": "not a list"}"#).unwrap().is_empty());
+    }
+
+    fn texts(items: &[ExtractedItem]) -> Vec<&str> {
+        items.iter().map(|i| i.text.as_str()).collect()
+    }
+
+    #[test]
+    fn parse_skips_references_to_known_memories() {
+        assert!(parse_items("Nothing new; [2] covers it.")
+            .unwrap()
+            .is_empty());
+        let raw =
+            "[2] is close, but this is new: [{\"text\": \"The user lives in Porto.\"}] (see [1])";
+        assert_eq!(
+            texts(&parse_items(raw).unwrap()),
+            ["The user lives in Porto."]
+        );
+    }
+
+    #[test]
+    fn parse_skips_a_malformed_item_not_the_reply() {
+        let raw = r#"[
+            {"text": "The user lives in Porto."},
+            {"text": "x", "replaces": "2"},
+            {"text": "y", "entities": "user"},
+            "not an item",
+            {"text": "ledger-sync uses pnpm.", "replaces": 1}
+        ]"#;
+        let items = parse_items(raw).unwrap();
+        assert_eq!(
+            texts(&items),
+            ["The user lives in Porto.", "ledger-sync uses pnpm."]
+        );
+        assert_eq!(items[1].replaces, Some(1));
+    }
+
+    #[test]
+    fn parse_keeps_the_whole_items_of_a_truncated_array() {
+        let raw = r#"[{"text": "Uses {braces}.", "tags": ["x"]}, {"text": "Cut } sho"#;
+        assert_eq!(texts(&parse_items(raw).unwrap()), ["Uses {braces}."]);
+        assert!(
+            parse_items(r#"[{"text": "Cut sho"#).is_err(),
+            "nothing whole arrived: retry"
+        );
+        assert!(
+            parse_items(r#"[{"text": "a"} {"text": "b"}]"#).is_err(),
+            "broken, not cut: retry"
+        );
+    }
+
+    #[test]
+    fn a_provider_error_is_a_failure_not_an_empty_reply() {
+        let reply = |stop: &str, text: &str| {
+            json!({ "message": {
+                "stop_reason": stop,
+                "error_kind": "rate_limited",
+                "error_message": "429 Too Many Requests",
+                "content": [{ "type": "text", "text": text }],
+            }})
+        };
+        let err = reply_items(&reply("error", "429 Too Many Requests"), "s").unwrap_err();
+        assert!(err.contains("rate_limited"), "{err}");
+        assert!(
+            reply_items(&reply("error", r#"[{"text": "x y z"}]"#), "s").is_err(),
+            "error text is never read as items"
+        );
+        let cut = r#"[{"text": "The user lives in Porto."}, {"text": "The us"#;
+        assert_eq!(
+            texts(&reply_items(&reply("length", cut), "s").unwrap()),
+            ["The user lives in Porto."]
+        );
+        assert!(reply_items(&reply("end", "[]"), "s").unwrap().is_empty());
     }
 
     #[test]
@@ -990,24 +1137,94 @@ mod tests {
     }
 
     fn entry(id: &str) -> Entry {
-        (id.into(), "user".into(), format!("text of {id}"), 1)
+        said(id, "user", &format!("text of {id}"))
     }
 
-    /// Walk `ids` as two pages, like `session::messages` root → leaf.
+    fn said(id: &str, role: &str, text: &str) -> Entry {
+        (id.into(), role.into(), text.into(), 1)
+    }
+
+    /// Walk `entries` as two pages, like `session::messages` root → leaf.
+    fn walk_entries(
+        mut entries: Vec<Entry>,
+        since: Option<&str>,
+        until: Option<&str>,
+        window: usize,
+    ) -> (Vec<Entry>, bool) {
+        let mut span = Span::new(since, until, window);
+        let second = entries.split_off(entries.len() / 2);
+        span.push(entries);
+        if !span.done() {
+            span.push(second);
+        }
+        span.finish()
+    }
+
     fn walk(
         ids: &[&str],
         since: Option<&str>,
         until: Option<&str>,
         window: usize,
     ) -> (Vec<String>, bool) {
-        let mut span = Span::new(since, until, window);
-        let (a, b) = ids.split_at(ids.len() / 2);
-        span.push(a.iter().map(|id| entry(id)));
-        if !span.done() {
-            span.push(b.iter().map(|id| entry(id)));
-        }
-        let (entries, until_seen) = span.finish();
+        let entries = ids.iter().map(|id| entry(id)).collect();
+        let (entries, until_seen) = walk_entries(entries, since, until, window);
         (entries.into_iter().map(|e| e.0).collect(), until_seen)
+    }
+
+    #[test]
+    fn a_long_agentic_turn_keeps_the_users_request() {
+        // The request, 14 tool-only steps, the reply, a closing tool-only
+        // step: 17 entries for a window of 12.
+        let mut turn = vec![said("u", "user", "Rename the billing module to ledger.")];
+        turn.extend((1..=14).map(|i| said(&format!("a{i}"), "assistant", "")));
+        turn.push(said("r", "assistant", "Done: billing is now ledger."));
+        turn.push(said("end", "assistant", ""));
+        for since in [Some("c"), None] {
+            let mut entries = vec![said("c", "assistant", "An earlier reply.")];
+            entries.extend(turn.iter().cloned());
+            let (span, until_seen) = walk_entries(entries, since, Some("end"), 12);
+            assert!(until_seen);
+            let (transcript, newest_id, _) = excerpt(span, 12);
+            assert_eq!(
+                newest_id.as_deref(),
+                Some("end"),
+                "the cursor still lands on the turn's (empty) end"
+            );
+            for line in ["Rename the billing module", "Done: billing"] {
+                assert!(transcript.contains(line), "{since:?}: {transcript}");
+            }
+        }
+    }
+
+    #[test]
+    fn narrated_steps_never_push_out_the_users_request() {
+        let mut entries = vec![
+            said("u0", "user", "An older request."),
+            said("u", "user", "Fix the flaky login test."),
+        ];
+        entries.extend((1..=15).map(|i| {
+            said(
+                &format!("a{i}"),
+                "assistant",
+                &format!("Now let me check {i}."),
+            )
+        }));
+        let (span, _) = walk_entries(entries, None, Some("a15"), 12);
+        let ids: Vec<&str> = span.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(ids.len(), 13, "the window plus the newest request: {ids:?}");
+        assert_eq!((ids[0], ids[1], ids[12]), ("u", "a4", "a15"));
+        let (transcript, newest_id, _) = excerpt(span, 12);
+        assert!(transcript.starts_with("user ["), "{transcript}");
+        assert_eq!(transcript.lines().count(), 13);
+        assert_eq!(newest_id.as_deref(), Some("a15"));
+
+        // A request inside the window needs no extra slot.
+        let mut entries = vec![said("u0", "user", "An older request.")];
+        entries.extend((1..=11).map(|i| said(&format!("a{i}"), "assistant", "Checking.")));
+        entries.push(said("u", "user", "Now the signup test."));
+        let (transcript, ..) = excerpt(entries, 12);
+        assert_eq!(transcript.lines().count(), 12);
+        assert!(!transcript.contains("An older request."));
     }
 
     #[test]
@@ -1292,6 +1509,11 @@ mod tests {
         let long = format!("{} {key}", "x".repeat(1_990));
         let cut = transcript_line("user", &long, day1).unwrap();
         assert!(!cut.contains("sk-ant-api03"), "{cut}");
+        // A long paste keeps its head and its tail, where the ask usually is.
+        let paste = format!("{}Why does this fail?", "log line\n".repeat(400));
+        let line = transcript_line("user", &paste, day1).unwrap();
+        assert!(line.contains("]: log line\n") && line.contains(" … "));
+        assert!(line.ends_with("Why does this fail?") && line.len() < 2_100);
         assert!(transcript_line("user", "   ", day1).is_none());
     }
 

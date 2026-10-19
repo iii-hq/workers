@@ -65,7 +65,8 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub extraction_model: String,
 
-    /// How many recent user/assistant messages the extraction call reads.
+    /// How many recent non-empty user/assistant messages the extraction
+    /// call reads, plus the turn's user message when they leave it out.
     #[serde(default = "default_extraction_window")]
     pub extraction_window: usize,
 
