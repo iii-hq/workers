@@ -553,17 +553,20 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
     };
     let first_turn = row.first_at == 0;
     let legacy = row.is_legacy();
+    let mut fork_unread = false;
     if !legacy && row.folded_sessions.is_none() {
         // A session this version started. Nothing folded yet is a real zero,
         // except for a fork: the history it copied was counted in its source.
-        let copied = match metrics::forked_usage(deps, session_id).await {
-            Ok(copied) => copied,
+        match metrics::forked_usage(deps, session_id).await {
+            Ok(copied) => {
+                row.folded_sessions =
+                    Some(copied.iter().map(|u| Observed::read(u, None)).collect());
+            }
             Err(e) => {
                 tracing::debug!(session_id = %session_id, error = %e, "fork history unreadable");
-                None
+                fork_unread = true;
             }
-        };
-        row.folded_sessions = Some(copied.iter().map(|u| Observed::read(u, None)).collect());
+        }
     }
     let prev = row.folded_sessions.clone().unwrap_or_default();
     row.turns += 1;
@@ -578,57 +581,64 @@ pub async fn report(deps: &Deps, record: &TurnRecord, outcome: &str, error_kind:
         }
     }
 
-    // ponytail: `harness::metrics` re-reads the session tree's usage on every
-    // root turn so the machine row can take its delta. It reads the usage
-    // projection only (no context, no traces); if it ever shows up in a
-    // turn's latency, fold per-step usage instead.
-    let observed = match metrics::handle(
-        deps,
-        SessionMetricsRequestV1 {
-            root_session_id: session_id.clone(),
-            omit_context: true,
-            omit_traces: true,
-            subtree: false,
-        },
-    )
-    .await
-    {
-        Ok(m) => Some(
-            m.by_session
-                .iter()
-                .map(|u| Observed::read(u, session_of(&prev, &u.session_id)))
-                .collect::<Vec<_>>(),
-        ),
-        Err(e) => {
-            tracing::debug!(session_id = %session_id, error = %e, "usage metrics unavailable");
-            None
-        }
-    };
-    let provider = record.options.provider.clone().unwrap_or_default();
-    let add = fold_for(
-        first_turn,
-        legacy,
-        observed.as_deref(),
-        &prev,
-        (&provider, &record.options.model),
-    );
+    if fork_unread {
+        // An empty baseline would count a fork's copied history again. This
+        // user turn is not counted; the next turn reads the history again as
+        // the session's first.
+        row.first_at = 0;
+    } else {
+        // ponytail: `harness::metrics` re-reads the session tree's usage on every
+        // root turn so the machine row can take its delta. It reads the usage
+        // projection only (no context, no traces); if it ever shows up in a
+        // turn's latency, fold per-step usage instead.
+        let observed = match metrics::handle(
+            deps,
+            SessionMetricsRequestV1 {
+                root_session_id: session_id.clone(),
+                omit_context: true,
+                omit_traces: true,
+                subtree: false,
+            },
+        )
+        .await
+        {
+            Ok(m) => Some(
+                m.by_session
+                    .iter()
+                    .map(|u| Observed::read(u, session_of(&prev, &u.session_id)))
+                    .collect::<Vec<_>>(),
+            ),
+            Err(e) => {
+                tracing::debug!(session_id = %session_id, error = %e, "usage metrics unavailable");
+                None
+            }
+        };
+        let provider = record.options.provider.clone().unwrap_or_default();
+        let add = fold_for(
+            first_turn,
+            legacy,
+            observed.as_deref(),
+            &prev,
+            (&provider, &record.options.model),
+        );
 
-    match update_machine(deps, timeout_ms, |m| m.fold_and_claim(&add)).await {
-        Ok((before, after)) => {
-            if let Some(now) = observed {
-                row.folded_sessions = Some(merged(&prev, &now));
+        match update_machine(deps, timeout_ms, |m| m.fold_and_claim(&add)).await {
+            Ok((before, after)) => {
+                if let Some(now) = observed {
+                    row.folded_sessions = Some(merged(&prev, &now));
+                }
+                announce(deps, &before, &after, timeout_ms).await;
             }
-            announce(deps, &before, &after, timeout_ms).await;
-        }
-        Err(e) => {
-            // The session row keeps its old `folded_sessions`, so the next turn folds
-            // this turn's model usage in; this user turn is not counted.
-            if first_turn {
-                // Not counted as a session yet: the next fold that lands
-                // counts it.
-                row.first_at = 0;
+            Err(e) => {
+                // The session row keeps its old `folded_sessions`, so the next turn folds
+                // this turn's model usage in; this user turn is not counted.
+                if first_turn {
+                    // Not counted as a session yet: the next fold that lands
+                    // counts it.
+                    row.first_at = 0;
+                }
+                tracing::debug!(error = %e, "machine usage row not updated");
             }
-            tracing::debug!(error = %e, "machine usage row not updated");
         }
     }
 
