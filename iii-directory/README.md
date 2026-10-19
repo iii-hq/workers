@@ -144,7 +144,7 @@ local_skills_folder: skills/iii        # project-scoped overrides (whole-namespa
 agents_folder: agents                  # direct <id>.md agent profiles
 agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
-# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle; null disables it
+# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle, also router::embed's local fallback (loads on first use in every mode); null disables both
 function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 
 # TUNABLE — hot-reload live on `configuration:updated`.
@@ -753,9 +753,9 @@ There is **no** `directory::skills::register` — see
 ### Local embeddings — `provider::minilm::embed`
 
 The MiniLM model that ranks `directory::search_functions` candidates also
-serves `router::embed`, so a stack with no embeddings API (Anthropic only, for
-example) still gets vectors, with no key and no extra process. The memory
-worker's semantic recall is one caller.
+serves `router::embed` on a stack where no registered provider has an embed
+surface (Anthropic only, for example), with no key and no extra process. The
+memory worker's semantic recall is one caller.
 
 - **Request and response.** `{model?, input[1..512]}` →
   `{model: "sentence-transformers/all-MiniLM-L6-v2@<revision>", embeddings}`:
@@ -771,8 +771,11 @@ worker's semantic recall is one caller.
   The router then moves on.
 - **Not a declared provider.** It never declares itself to the router, so it
   lists no models and no model picker shows it. `router::embed` tries it only
-  after every registered provider, so an OpenAI or llama.cpp embeddings setup
-  keeps its vectors.
+  when every registered provider is up and has no embed surface, so an OpenAI
+  or llama.cpp embeddings setup keeps its vectors, even while that provider
+  restarts. A registered provider whose embeddings endpoint fails (llama-server
+  started without `--embeddings`, say) returns its error instead of falling
+  back here.
 - **Access.** Agents cannot call it directly: the root permissions deny
   `provider::*`.
 
