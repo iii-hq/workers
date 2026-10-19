@@ -7,7 +7,8 @@
 //! below are ones every hand-written client filter gets wrong at least once:
 //!
 //! * **LIKE metacharacters.** `contains "50%"` must match a literal percent,
-//!   not every row. Values are escaped and the clause carries `ESCAPE '\'`.
+//!   not every row. Values are escaped and the clause carries `ESCAPE '\'`
+//!   (`'\\'` on mysql, where a backslash escapes inside literals too).
 //! * **`IS NULL` is not `= ''`.** They are separate operators, because
 //!   conflating them silently changes the answer.
 //! * **Case-insensitivity is not portable.** Postgres expresses it as
@@ -248,6 +249,53 @@ pub fn compile_where(
     filters: &[FilterSpec],
     start_param: usize,
 ) -> Result<WhereClause, DbError> {
+    compile_where_typed(driver, filters, start_param, None)
+}
+
+/// A postgres type spelling from the catalog that can follow `::` (letters,
+/// digits, spaces, `_ . " [ ] ( ) ,`).
+pub(crate) fn castable_pg_type(ty: &str) -> bool {
+    !ty.is_empty()
+        && ty.len() <= 200
+        && ty
+            .chars()
+            .all(|c| c.is_alphanumeric() || " _.\"[](),".contains(c))
+        && !ty.contains("--")
+}
+
+fn is_pg_text_type(ty: &str) -> bool {
+    let t = ty.to_ascii_lowercase();
+    t == "text"
+        || t == "name"
+        || t == "citext"
+        || t.starts_with("character")
+        || t.starts_with("varchar")
+        || t.starts_with("char")
+}
+
+/// The text form a value is bound as when cast server-side.
+fn as_cast_text(value: &Value) -> Value {
+    match value {
+        Value::Null | Value::String(_) => value.clone(),
+        Value::Number(n) => Value::String(n.to_string()),
+        Value::Bool(b) => Value::String(b.to_string()),
+        other => Value::String(other.to_string()),
+    }
+}
+
+/// [`compile_where`] with the columns' catalog types (postgres). Each value
+/// is then bound as text and cast to its column's type (`$n::text::<type>`)
+/// — postgres parses it with the type's own input function, exactly — and a
+/// pattern operator on a non-text column compares the column's text form.
+/// Without types, a JSON number bound to a NUMERIC (or a string to a date,
+/// uuid or inet) parameter went over the wire in the wrong binary format:
+/// errors at best, a garbage bound that matched every row at worst.
+pub fn compile_where_typed(
+    driver: DriverKind,
+    filters: &[FilterSpec],
+    start_param: usize,
+    column_types: Option<&std::collections::HashMap<String, String>>,
+) -> Result<WhereClause, DbError> {
     let mut ph = Placeholders::new(driver, start_param);
     let mut parts: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
@@ -271,6 +319,13 @@ pub fn compile_where(
         };
         if f.column.trim().is_empty() {
             return Err(invalid("filter is missing a column"));
+        }
+        // With the catalog at hand, a column the table does not have is the
+        // caller's mistake, said plainly — not a database error later.
+        if let Some(types) = column_types {
+            if !types.contains_key(&f.column) {
+                return Err(invalid(format!("the table has no column `{}`", f.column)));
+            }
         }
         // Check operands by position, not by count. Counting accepts
         // `{op: equals, value2: 5}` — one operand supplied for a one-operand
@@ -312,6 +367,28 @@ pub fn compile_where(
 
         let col = quote_ident(driver, &f.column);
         let sensitive = f.case_sensitive.unwrap_or(false);
+        // The column's catalog type, when there is one to cast to.
+        let cast_to = match (driver, column_types) {
+            (DriverKind::Postgres, Some(types)) => types
+                .get(&f.column)
+                .map(String::as_str)
+                .filter(|ty| castable_pg_type(ty)),
+            _ => None,
+        };
+        let text_col = match cast_to {
+            Some(ty) if !is_pg_text_type(ty) => format!("CAST({col} AS TEXT)"),
+            _ => col.clone(),
+        };
+        let bind = |params: &mut Vec<Value>, ph: &mut Placeholders, v: &Value| match cast_to {
+            Some(ty) => {
+                params.push(as_cast_text(v));
+                format!("{}::text::{ty}", ph.take())
+            }
+            None => {
+                params.push(v.clone());
+                ph.take()
+            }
+        };
 
         let part = match op {
             FilterOp::IsNull => format!("{col} IS NULL"),
@@ -319,16 +396,13 @@ pub fn compile_where(
             FilterOp::IsTrue => format!("{col} = TRUE"),
             FilterOp::IsFalse => format!("{col} = FALSE"),
             // NULL *or* empty string — the distinction from is_null is the point.
-            FilterOp::IsEmpty => format!("({col} IS NULL OR {col} = '')"),
+            FilterOp::IsEmpty => format!("({col} IS NULL OR {text_col} = '')"),
 
             FilterOp::In | FilterOp::NotIn => {
                 let marks: Vec<String> = f
                     .values
                     .iter()
-                    .map(|v| {
-                        params.push(v.clone());
-                        ph.take()
-                    })
+                    .map(|v| bind(&mut params, &mut ph, v))
                     .collect();
                 let list = marks.join(", ");
                 if op == FilterOp::In {
@@ -359,7 +433,13 @@ pub fn compile_where(
                 };
                 params.push(Value::String(pattern));
                 let p = ph.take();
-                let expr = format!("{col} {op} {p} ESCAPE '{LIKE_ESCAPE}'");
+                // mysql reads a backslash in a string literal as an escape
+                // itself: `'\'` there is an unterminated literal.
+                let escape = match driver {
+                    DriverKind::Mysql => "'\\\\'",
+                    _ => "'\\'",
+                };
+                let expr = format!("{text_col} {op} {p} ESCAPE {escape}");
                 if negate {
                     // A NULL never matches LIKE, so a naive NOT LIKE drops
                     // NULL rows the user would expect to see in "does not
@@ -371,10 +451,16 @@ pub fn compile_where(
             }
 
             FilterOp::Between => {
-                params.push(f.value.clone().expect("arity checked"));
-                let lo = ph.take();
-                params.push(f.value2.clone().expect("arity checked"));
-                let hi = ph.take();
+                let lo = bind(
+                    &mut params,
+                    &mut ph,
+                    f.value.as_ref().expect("arity checked"),
+                );
+                let hi = bind(
+                    &mut params,
+                    &mut ph,
+                    f.value2.as_ref().expect("arity checked"),
+                );
                 format!("{col} BETWEEN {lo} AND {hi}")
             }
 
@@ -388,8 +474,11 @@ pub fn compile_where(
                     FilterOp::Lte => "<=",
                     other => unreachable!("{other:?} handled above"),
                 };
-                params.push(f.value.clone().expect("arity checked"));
-                let p = ph.take();
+                let p = bind(
+                    &mut params,
+                    &mut ph,
+                    f.value.as_ref().expect("arity checked"),
+                );
                 format!("{col} {sym} {p}")
             }
         };
@@ -667,6 +756,14 @@ mod tests {
         // Without escaping this pattern would match every row.
         assert_eq!(w.params[0], json!("%50\\%%"));
         assert!(w.sql.contains("ESCAPE '\\'"), "got: {}", w.sql);
+        // mysql: a lone backslash would escape the closing quote.
+        let w = compile_where(
+            DriverKind::Mysql,
+            &[spec("code", FilterOp::Contains, Some(json!("50%")))],
+            1,
+        )
+        .unwrap();
+        assert!(w.sql.ends_with("ESCAPE '\\\\'"), "got: {}", w.sql);
     }
 
     #[test]
@@ -1073,5 +1170,64 @@ mod tests {
         assert!(compile_where(DriverKind::Mysql, &[raw(r#"note = "a\" ) x""#)], 1).is_err());
         // sqlite has no backslash escapes at all.
         assert!(compile_where(DriverKind::Sqlite, &[raw(r"note = 'a\'")], 1).is_ok());
+    }
+
+    #[test]
+    fn postgres_values_are_cast_to_the_column_type_from_the_catalog() {
+        let types: std::collections::HashMap<String, String> = [
+            ("total", "numeric(10,2)"),
+            ("placed_at", "timestamp with time zone"),
+            ("id", "uuid"),
+            ("name", "character varying(255)"),
+            ("ip", "inet"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let mut between = spec("placed_at", FilterOp::Between, Some(json!("2026-01-01")));
+        between.value2 = Some(json!("2026-02-01"));
+        let mut any_of = spec("id", FilterOp::In, None);
+        any_of.values = vec![json!("6f1c2a8e-3b5d-4c7e-9f10-2a3b4c5d6e7f")];
+        let filters = [
+            spec("total", FilterOp::Gt, Some(json!(100))),
+            between,
+            any_of,
+            spec("ip", FilterOp::Contains, Some(json!("192.168"))),
+            spec("name", FilterOp::Contains, Some(json!("an"))),
+        ];
+        let c = compile_where_typed(DriverKind::Postgres, &filters, 1, Some(&types)).unwrap();
+        assert!(
+            c.sql.contains(r#""total" > $1::text::numeric(10,2)"#),
+            "{}",
+            c.sql
+        );
+        assert!(
+            c.sql.contains(
+                "BETWEEN $2::text::timestamp with time zone AND $3::text::timestamp with time zone"
+            ),
+            "{}",
+            c.sql
+        );
+        assert!(c.sql.contains(r#""id" IN ($4::text::uuid)"#), "{}", c.sql);
+        assert!(
+            c.sql.contains(r#"CAST("ip" AS TEXT) ILIKE $5"#),
+            "{}",
+            c.sql
+        );
+        assert!(c.sql.contains(r#""name" ILIKE $6"#), "{}", c.sql);
+        // Numbers travel as their exact text.
+        assert_eq!(c.params[0], json!("100"));
+        // A column the catalog does not list is refused up front.
+        let err = compile_where_typed(
+            DriverKind::Postgres,
+            &[spec("nope", FilterOp::Equals, Some(json!(1)))],
+            1,
+            Some(&types),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no column `nope`"), "{err}");
+        // Untyped (or other drivers): unchanged.
+        let plain = compile_where(DriverKind::Mysql, &filters[..1], 1).unwrap();
+        assert_eq!(plain.sql, "`total` > ?");
     }
 }

@@ -127,11 +127,31 @@ pub async fn describe_table(
 
     // Only postgres has a namespace above the table, so only there does a dot
     // in the name mean a schema qualifier.
-    let (schema, table) = match (&req.schema, driver) {
+    let (mut schema, table) = match (&req.schema, driver) {
         (Some(s), _) => (Some(s.clone()), req.table.clone()),
         (None, DriverKind::Postgres) => catalog::split_qualified(&req.table),
         (None, _) => (None, req.table.clone()),
     };
+    // An unqualified postgres name means what it means in SQL: the table the
+    // search_path finds (`orders` is `public.orders`, not `analytics.orders`).
+    // A name no search_path schema has still resolves to its own schema.
+    if driver == DriverKind::Postgres && schema.is_none() {
+        let rows = catalog::run(
+            state,
+            &db,
+            "SELECT n.nspname AS table_schema FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE c.relname = $1 AND c.relkind IN ('r', 'p', 'v', 'm') \
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY pg_table_is_visible(c.oid) DESC, n.nspname LIMIT 1",
+            vec![serde_json::Value::String(table.clone())],
+            req.timeout_ms,
+        )
+        .await?;
+        schema = rows
+            .first()
+            .and_then(|r| catalog::str_at(r, "table_schema"));
+    }
 
     let filter = TableFilter {
         schema: schema.clone(),

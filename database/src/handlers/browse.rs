@@ -98,7 +98,33 @@ pub async fn handle(state: &AppState, req: BrowseTableReq) -> Result<BrowseTable
     let offset = (req.page as u64) * (page_size as u64);
 
     let target = filter::quote_table(driver, req.schema.as_deref(), &req.table);
-    let where_clause = filter::compile_where(driver, &req.filters, 1).map_err(err_to_str)?;
+    // Postgres binds each value as text cast to its column's type, so the
+    // filter needs the catalog's types (one catalog read, only with filters).
+    let column_types = if driver == DriverKind::Postgres
+        && req.filters.iter().any(|f| !f.disabled && f.raw.is_none())
+    {
+        let described = super::schema::describe_table(
+            state,
+            super::schema::DescribeTableReq {
+                db: Some(db.clone()),
+                table: req.table.clone(),
+                schema: req.schema.clone(),
+                timeout_ms: req.timeout_ms,
+            },
+        )
+        .await?;
+        Some(
+            described
+                .columns
+                .into_iter()
+                .map(|c| (c.name, c.ty))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+    } else {
+        None
+    };
+    let where_clause = filter::compile_where_typed(driver, &req.filters, 1, column_types.as_ref())
+        .map_err(err_to_str)?;
     // Caller-written SQL rides in the WHERE: on sqlite run it under
     // `query_only` too (postgres and mysql reads are read-only transactions
     // already).
