@@ -776,9 +776,10 @@ memory worker's semantic recall is one caller.
   callers to its vector space (memory re-embeds into the model the reply
   reports). An OpenAI or llama.cpp embeddings setup keeps its vectors, even
   while that provider restarts, once it has answered an embed: the router
-  remembers that and waits for it. A registered provider whose embeddings
-  endpoint fails (llama-server started without `--embeddings`, say) returns its
-  error instead of falling back here.
+  remembers that and waits for it while it was live in the last 15 minutes
+  (one removed for longer no longer holds the fallback). A registered
+  provider whose embeddings endpoint fails (llama-server started without
+  `--embeddings`, say) returns its error instead of falling back here.
 - **Access.** Agents cannot call it directly: the root permissions deny
   `provider::*`.
 

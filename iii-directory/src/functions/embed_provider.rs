@@ -4,7 +4,8 @@
 //! it lists no models and no model picker shows it; the router tries it
 //! only when every registered provider has no embed surface or is not
 //! configured for good (no API key), and none whose embed answered before
-//! is down (llm-router README, embed-only providers). Such stacks
+//! is missing within 15 minutes of last being live (llm-router README,
+//! embed-only providers). Such stacks
 //! (Anthropic only, say) get semantic recall without a key or another
 //! process; configuring a keyless provider later moves callers to its
 //! vector space (memory re-embeds). Agents cannot call it: the root
