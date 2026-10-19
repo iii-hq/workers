@@ -51,6 +51,15 @@ pub struct SaveConnectionReq {
     /// The entry (url or structured form). `"__redacted__"` keeps the stored
     /// value of that field.
     pub connection: Value,
+    /// Sensitive values sent apart from `connection`, in the same shape
+    /// (`password`, `url`, `tls.client_key`, `ssh.password`,
+    /// `ssh.private_key`, `ssh.passphrase`) and merged over it. Traces record
+    /// a call's payload with keys like `password` redacted but not
+    /// `passphrase`, `client_key` or a url's password; a key named
+    /// `credentials` is redacted whole, so literals sent here stay out of
+    /// them. Prefer `secret://` references, which are safe anywhere.
+    #[serde(default)]
+    pub credentials: Option<Value>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -100,6 +109,92 @@ pub(crate) fn sanitize_serde_error(e: &serde_json::Error) -> String {
         }
     }
     out
+}
+
+/// Credential paths `credentials` may carry.
+const CREDENTIAL_PATHS: [&[&str]; 6] = [
+    &["password"],
+    &["url"],
+    &["tls", "client_key"],
+    &["ssh", "password"],
+    &["ssh", "private_key"],
+    &["ssh", "passphrase"],
+];
+
+/// Merge a `credentials` object (same shape as an entry, sensitive fields
+/// only) over `entry`. Anything else in it is refused, by path, so a client
+/// cannot hide a whole entry from traces by sending it there.
+pub(crate) fn merge_credentials(
+    entry: &mut Value,
+    credentials: Option<Value>,
+) -> Result<(), String> {
+    let Some(credentials) = credentials else {
+        return Ok(());
+    };
+    if credentials.is_null() {
+        return Ok(());
+    }
+    fn walk(
+        prefix: &mut Vec<String>,
+        value: &Value,
+        out: &mut Vec<(Vec<String>, Value)>,
+    ) -> Result<(), String> {
+        match value {
+            Value::Object(map) => {
+                for (k, v) in map {
+                    prefix.push(k.clone());
+                    walk(prefix, v, out)?;
+                    prefix.pop();
+                }
+                Ok(())
+            }
+            leaf => {
+                out.push((prefix.clone(), leaf.clone()));
+                Ok(())
+            }
+        }
+    }
+    if !credentials.is_object() {
+        return Err("`credentials` must be an object".into());
+    }
+    let mut leaves = Vec::new();
+    walk(&mut Vec::new(), &credentials, &mut leaves)?;
+    for (path, value) in leaves {
+        let allowed = CREDENTIAL_PATHS
+            .iter()
+            .any(|p| p.len() == path.len() && p.iter().zip(&path).all(|(a, b)| *a == b));
+        if !allowed {
+            return Err(format!(
+                "`credentials.{}` is not a credential field (password, url, tls.client_key, \
+                 ssh.password, ssh.private_key, ssh.passphrase)",
+                path.join(".")
+            ));
+        }
+        if !value.is_string() {
+            return Err(format!("`credentials.{}` must be a string", path.join(".")));
+        }
+        let Some(obj) = entry.as_object_mut() else {
+            return Err("`connection` must be an object".into());
+        };
+        match path.as_slice() {
+            [field] => {
+                obj.insert(field.clone(), value);
+            }
+            [parent, field] => {
+                let child = obj
+                    .entry(parent.clone())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                match child.as_object_mut() {
+                    Some(child) => {
+                        child.insert(field.clone(), value);
+                    }
+                    None => return Err(format!("`connection.{parent}` must be an object")),
+                }
+            }
+            _ => unreachable!("credential paths are one or two levels deep"),
+        }
+    }
+    Ok(())
 }
 
 /// Parse and validate one entry as a connection named `name`.
@@ -200,6 +295,7 @@ pub async fn save(state: &AppState, req: SaveConnectionReq) -> Result<SaveConnec
     };
 
     let mut entry = req.connection;
+    merge_credentials(&mut entry, req.credentials).map_err(config_error)?;
     redaction::restore_entry(&mut entry, stored.as_ref()).map_err(config_error)?;
     parse_entry(&req.name, &entry).map_err(config_error)?;
 
@@ -297,6 +393,42 @@ mod tests {
         .unwrap_err();
         let msg = sanitize_serde_error(&err);
         assert!(!msg.contains("hunter2"), "{msg}");
+    }
+
+    #[test]
+    fn credentials_merge_over_the_entry_and_nothing_else_rides_along() {
+        let mut entry = json!({ "driver": "postgres", "host": "db", "user": "u", "ssh": { "host": "b", "user": "t" } });
+        merge_credentials(
+            &mut entry,
+            Some(json!({ "password": "pw", "tls": { "client_key": "KEY" }, "ssh": { "passphrase": "pp" } })),
+        )
+        .unwrap();
+        assert_eq!(entry["password"], "pw");
+        assert_eq!(entry["tls"]["client_key"], "KEY");
+        assert_eq!(entry["ssh"]["passphrase"], "pp");
+        assert_eq!(entry["ssh"]["host"], "b", "siblings are kept");
+        let err = merge_credentials(&mut entry, Some(json!({ "host": "evil" }))).unwrap_err();
+        assert!(
+            err.contains("`credentials.host` is not a credential field"),
+            "{err}"
+        );
+        let err = merge_credentials(&mut entry, Some(json!({ "ssh": { "port": 2 } }))).unwrap_err();
+        assert!(err.contains("credentials.ssh.port"), "{err}");
+        assert!(merge_credentials(&mut entry, Some(json!({ "password": 5 }))).is_err());
+        merge_credentials(&mut entry, None).unwrap();
+    }
+
+    #[test]
+    fn the_sdk_trace_redaction_hides_the_credentials_key_whole() {
+        // What the SDK records for an invocation's input (iii-helpers'
+        // redaction): `credentials` is redacted as one value.
+        let payload = json!({ "connection": { "driver": "postgres", "ssh": { "passphrase": "LEAK1" } },
+                              "credentials": { "ssh": { "passphrase": "SAFE" }, "url": "postgres://u:SAFE@h/db" } });
+        let (recorded, _) = iii_helpers::observability::redact_and_truncate(&payload, None);
+        assert!(!recorded.contains("SAFE"), "{recorded}");
+        // The contract field names alone are not all redacted — the reason
+        // `credentials` exists.
+        assert!(recorded.contains("LEAK1"), "{recorded}");
     }
 
     #[test]

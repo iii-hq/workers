@@ -26,12 +26,14 @@ databases:
   #     needs: GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*
   # analytics:
   #   url: postgres://user:pass@localhost:5432/analytics
+  #   tls: { mode: disable }      # a local server without TLS (default: require)
   #   capture: native
   # events:
   #   url: sqlite:./data/events.db
   #   capture: native
   # orders:
   #   url: mysql://user:pass@localhost:3306/orders
+  #   tls: { mode: disable }
   #   capture: native
 
   # The structured form (what connection editors write), mutually exclusive

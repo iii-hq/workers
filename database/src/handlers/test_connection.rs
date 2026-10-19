@@ -44,6 +44,13 @@ pub struct TestConnectionReq {
     /// The stored connection `"__redacted__"` values come from.
     #[serde(default)]
     pub name: Option<String>,
+    /// Sensitive values apart from `connection` (same shape: `password`,
+    /// `url`, `tls.client_key`, `ssh.password`, `ssh.private_key`,
+    /// `ssh.passphrase`), merged over it. A key named `credentials` is
+    /// redacted whole in traces; `passphrase`, `client_key` and a url's
+    /// password inside `connection` are not.
+    #[serde(default)]
+    pub credentials: Option<Value>,
     /// Legacy: a connection url to probe (`postgres://…`, `mysql://…`,
     /// `sqlite:…`) when `connection` is absent.
     #[serde(default)]
@@ -135,6 +142,9 @@ pub async fn handle(
         Ok(entry) => entry,
         Err(resp) => return Ok(*resp),
     };
+    if let Err(e) = super::connections::merge_credentials(&mut entry, req.credentials.clone()) {
+        return Ok(TestConnectionResp::failed("unknown", Stage::Config, e));
+    }
     let label = req.name.clone().unwrap_or_else(|| "candidate".into());
     let driver_hint = entry
         .get("driver")

@@ -71,6 +71,7 @@ databases:
       acquire_timeout_ms: 5000
   analytics:
     url: ${ANALYTICS_URL:postgres://localhost/analytics}
+    tls: { mode: disable }    # a local server without TLS; see "TLS" below
     pool: { max: 5 }
 history_max_entries: 200 # console query history caps, defaults shown
 history_max_bytes: 262144 # 0 disables recording
@@ -117,6 +118,8 @@ databases:
 
 The worker resolves them through `secrets::resolve` as consumer **`database`**, so each secret must list `database` in its consumers (`secrets::set` / `secrets::access`). Resolved values are cached (re-read every 5 minutes, failures after 10 s), wiped from memory when replaced, and never logged, returned or written to the configuration. When a secret is rotated, deleted or re-shared, `secrets::changed` makes the worker re-read it and rebuild **only** the connections whose resolved values changed. The worker depends on the `secrets` worker (`iii.worker.yaml`).
 
+**Literal credentials and traces.** A worker's trace spans record each call's payload, redacting keys that look sensitive (`password`, `private_key`, `secret`, `credential`, …) but not `passphrase`, `client_key` or a password inside `url`. A literal sent to `database::testConnection` or `database::saveConnection` in those fields would therefore be readable in the engine's traces. Send credentials as `secret://` / `env://` references (safe anywhere), or put the literals in the request's **`credentials`** object — the same shape as the entry, sensitive fields only (`password`, `url`, `tls.client_key`, `ssh.password`, `ssh.private_key`, `ssh.passphrase`), merged over `connection` by the worker — which traces redact whole. Responses never carry a credential (`getConnection` returns literals as `"__redacted__"`), and no client can observe these three functions.
+
 An unresolvable reference fails only its connection, with a message that names the reference and what to do (`secret://X did not resolve: database is not allowed to read secret X; add database to the secret's consumers`), never a value.
 
 ### Hot reload
@@ -148,6 +151,8 @@ databases:
 | `require` (default) | yes | yes | no | error |
 | `verify-ca` | yes | yes | no | error |
 | `verify-full` | yes | yes | yes | error |
+
+> **Upgrading from 0.5.21 or earlier.** On postgres, `require` (the default when an entry has no `tls` block) used to fall back to plaintext when the server offered no TLS: tokio-postgres connected with `sslmode=prefer` underneath. It now refuses, as the mode always claimed — that fallback is exactly what a man in the middle exploits. An entry that never set `tls` and talks to a server without TLS (typically a local or docker postgres) now fails with `pool connection failed (tls)`; add `tls: { mode: disable }` (trusted network) or `tls: { mode: prefer }` (the old behaviour), or write `?sslmode=disable` into the url. MySQL already refused plaintext under `require`. SQLite and the built-in default (`sqlite:./data/iii.db`) are unaffected.
 
 `require` and `verify-ca` perform the same checks (libpq names them apart because libpq's `require` skips the chain; this worker never does). On postgres, a `sslmode` written into the url still wins over `tls.mode`; otherwise `require` really requires TLS (tokio-postgres alone would fall back to plaintext). `verify-full` is the production default for managed services (RDS, Neon, Supabase).
 
@@ -266,9 +271,9 @@ const { rows } = await iii.trigger({
 |---|---|
 | `database::listDatabases` | Configured connections: `{ databases, count, config_id }`. Each entry: `name`, `driver`, credential-redacted `url`, `host`, `port`, `user`, `database`, `display`, `folder`, `ssh` (`host`, `port`, `user`, `host_key_pinned`), `pool`, `tls` (`mode`, `ca_cert_present`, `client_cert_present`, `trust_native`), `uses_secrets`, and `error` / `error_stage` when the connection could not be built. Config only — no secrets, no health checks. |
 | `database::getConnection` | `{ name }` → `{ name, connection }`: the entry as stored, `${VAR}` templates and `secret://` references intact; a literal password, passphrase, inline private/client key or url password comes back as `"__redacted__"`. |
-| `database::saveConnection` | `{ name, previous_name?, connection }` → `{ name, saved, error?, error_stage? }`. Creates (`previous_name` absent; a taken name is refused), updates (`previous_name` = `name`) or renames (`previous_name` = the old name). A field still holding `"__redacted__"` keeps its stored value. Read-modify-write of the whole configuration through `configuration::set` (raw, so other entries' templates survive); returns after the pools reloaded, with the saved connection's build error, if any (it is saved either way). |
+| `database::saveConnection` | `{ name, previous_name?, connection, credentials? }` → `{ name, saved, error?, error_stage? }`. Creates (`previous_name` absent; a taken name is refused), updates (`previous_name` = `name`) or renames (`previous_name` = the old name). A field still holding `"__redacted__"` keeps its stored value. Read-modify-write of the whole configuration through `configuration::set` (raw, so other entries' templates survive); returns after the pools reloaded, with the saved connection's build error, if any (it is saved either way). |
 | `database::deleteConnection` | `{ name }` → `{ deleted }`. The last connection cannot be removed. |
-| `database::testConnection` | Probe a candidate entry before saving: `{ connection, name?, timeout_ms? }` (legacy `{ url, tls }` still works; `name` resolves `"__redacted__"` from the stored entry). One throwaway connection (and tunnel); secrets resolve like a saved connection's. Returns `{ ok, driver, latency_ms, server_version?, message?, stage?, ssh_host_key? }` — `stage` is where it failed: `config`, `secrets`, `ssh`, `tcp`, `tls`, `auth` or `database`. Failures are data, not errors. |
+| `database::testConnection` | Probe a candidate entry before saving: `{ connection, credentials?, name?, timeout_ms? }` (legacy `{ url, tls }` still works; `name` resolves `"__redacted__"` from the stored entry). One throwaway connection (and tunnel); secrets resolve like a saved connection's. Returns `{ ok, driver, latency_ms, server_version?, message?, stage?, ssh_host_key? }` — `stage` is where it failed: `config`, `secrets`, `ssh`, `tcp`, `tls`, `auth` or `database`. Failures are data, not errors. |
 
 ### Reading the schema
 
