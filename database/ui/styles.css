@@ -2338,6 +2338,9 @@
   gap: 8px;
   font-size: 12px;
 }
+[data-iii-ui="database"] .db-cfg-hostkey.mismatch {
+  color: var(--color-alert-strong);
+}
 @container db-config (max-width: 620px) {
   [data-iii-ui="database"] .db-cfg-overview,
   [data-iii-ui="database"] .db-cfg-detail {

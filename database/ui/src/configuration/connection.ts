@@ -463,12 +463,38 @@ export function connectionSummary(db: JsonObject): string {
 
 /* ---------------- test connection ---------------- */
 
+/** Entry fields the worker accepts apart, in `credentials`. */
+const CREDENTIAL_PATHS: ReadonlyArray<readonly [string] | readonly [string, string]> = [
+  ['password'],
+  ['tls', 'client_key'],
+  ['ssh', 'password'],
+  ['ssh', 'private_key'],
+  ['ssh', 'passphrase'],
+]
+
+/** A url whose userinfo carries a literal password. */
+function urlHasLiteralPassword(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    const password = decodeURIComponent(parsed.password)
+    return password !== '' && password !== REDACTED && valueKind(password) === 'literal'
+  } catch {
+    return false
+  }
+}
+
 /**
  * The `database::testConnection` request for a draft entry. A worker that
  * knows structured entries takes the whole entry (`connection`); `name` goes
  * along only when the draft still holds the `__redacted__` sentinel, which
  * the worker can fill from the stored entry of that name. An older worker
  * only understands `{url, tls}`.
+ *
+ * Literal credentials (a typed password, a pasted key, a passphrase, a url
+ * with a password) travel in `credentials`, which the worker merges back:
+ * traces redact a key named `credentials` whole, while `passphrase`,
+ * `client_key` and a url's password inside `connection` would be recorded.
+ * References (`secret://`, `env://`) and the sentinel stay in place.
  */
 export function testConnectionPayload(
   name: string,
@@ -477,9 +503,32 @@ export function testConnectionPayload(
   timeoutMs = 8000,
 ): Record<string, unknown> {
   if (!structured) return { url: str(db.url), tls: db.tls ?? undefined, timeout_ms: timeoutMs }
-  const payload: Record<string, unknown> = { connection: db, timeout_ms: timeoutMs }
+  const connection: JsonObject = JSON.parse(JSON.stringify(db))
+  const credentials: JsonObject = {}
+  for (const path of CREDENTIAL_PATHS) {
+    const parent = path.length === 1 ? connection : asObjectOrNull(connection[path[0]])
+    const key = path[path.length - 1]
+    if (!parent || valueKind(parent[key]) !== 'literal') continue
+    if (path.length === 1) {
+      credentials[key] = parent[key] as JsonValue
+    } else {
+      const bucket = (credentials[path[0]] ??= {}) as JsonObject
+      bucket[key] = parent[key] as JsonValue
+    }
+    delete parent[key]
+  }
+  if (typeof connection.url === 'string' && urlHasLiteralPassword(connection.url)) {
+    credentials.url = connection.url
+    delete connection.url
+  }
+  const payload: Record<string, unknown> = { connection, timeout_ms: timeoutMs }
+  if (Object.keys(credentials).length > 0) payload.credentials = credentials
   if (JSON.stringify(db).includes(`"${REDACTED}"`)) payload.name = name
   return payload
+}
+
+function asObjectOrNull(value: JsonValue | undefined): JsonObject | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null
 }
 
 export const TEST_STAGE_LABELS: Readonly<Record<string, string>> = {

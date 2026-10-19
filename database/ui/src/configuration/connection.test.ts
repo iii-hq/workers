@@ -116,7 +116,10 @@ describe('url ↔ fields', () => {
       ok: true,
       fields: { driver: 'sqlite', database: '/var/lib/app.db' },
     })
-    expect(parseConnectionUrl('sqlite::memory:')).toEqual({ ok: true, fields: { driver: 'sqlite', database: ':memory:' } })
+    expect(parseConnectionUrl('sqlite::memory:')).toEqual({
+      ok: true,
+      fields: { driver: 'sqlite', database: ':memory:' },
+    })
   })
 
   it('refuses what the fields could not hold without loss', () => {
@@ -224,6 +227,34 @@ describe('test connection payload', () => {
       name: 'shop',
       timeout_ms: 8000,
     })
+  })
+
+  it('moves literal credentials out of the entry into `credentials`', () => {
+    const entry = {
+      driver: 'postgres',
+      host: 'db',
+      password: 'hunter2',
+      tls: { mode: 'require', client_cert: '/c.pem', client_key: 'KEYPEM' },
+      ssh: { host: 'b', user: 't', private_key: 'secret://K', passphrase: 'pp' },
+    }
+    const payload = testConnectionPayload('shop', entry, true)
+    expect(payload.credentials).toEqual({
+      password: 'hunter2',
+      tls: { client_key: 'KEYPEM' },
+      ssh: { passphrase: 'pp' },
+    })
+    expect(payload.connection).toEqual({
+      driver: 'postgres',
+      host: 'db',
+      tls: { mode: 'require', client_cert: '/c.pem' },
+      ssh: { host: 'b', user: 't', private_key: 'secret://K' },
+    })
+    // The draft itself is untouched.
+    expect(entry.password).toBe('hunter2')
+    const url = testConnectionPayload('shop', { url: 'postgres://u:pw@db/app' }, true)
+    expect(url).toEqual({ connection: {}, credentials: { url: 'postgres://u:pw@db/app' }, timeout_ms: 8000 })
+    const ref = testConnectionPayload('shop', { url: 'postgres://u:${PGPASS}@db/app' }, true)
+    expect(ref.credentials).toBeUndefined()
   })
 
   it('falls back to {url, tls} for a worker without structured entries', () => {

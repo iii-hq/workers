@@ -517,7 +517,9 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
     }
   }, [fromSchema, props.host])
   const structured =
-    fromSchema ?? probed ?? names.some((name) => isObjectValue(databases[name]) && asObject(databases[name]).driver !== undefined)
+    fromSchema ??
+    probed ??
+    names.some((name) => isObjectValue(databases[name]) && asObject(databases[name]).driver !== undefined)
   // Async completions (a secret stored, a url converted) must apply to the
   // draft as it is when they land, not as it was when they started.
   const valueRef = useRef(value)
@@ -1690,6 +1692,24 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
                         presented ? (
                           pinned === presented.fingerprint ? (
                             <span className="db-cfg-test-ok">Matches the key the server presented</span>
+                          ) : pinned ? (
+                            // A pinned key that no longer matches is what a
+                            // man in the middle looks like: say so, and make
+                            // re-pinning a deliberate act.
+                            <span className="db-cfg-hostkey mismatch" role="alert">
+                              <span className="db-cfg-technical">
+                                The server presented a different key: {presented.algorithm} {presented.fingerprint}.
+                                Replace the pin only if the server’s key was rotated on purpose.
+                              </span>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setField('ssh.host_key', presented.fingerprint)}
+                              >
+                                Replace pin
+                              </Button>
+                            </span>
                           ) : (
                             <span className="db-cfg-hostkey">
                               <span className="db-cfg-technical">
