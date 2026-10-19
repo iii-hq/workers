@@ -1045,11 +1045,18 @@ test('keeps meaningful native Monaco YAML and JSON punctuation at AA contrast in
         .locator('.wk-code .view-line span:not(:has(span))')
         .filter({ hasText: /^[\s:{}[\],]+$/ })
         .filter({ hasText: /[:{}[\],]/ })
-      const text = (await punctuation.allTextContents()).join('')
-      for (const symbol of language === 'json'
-        ? [':', ',', '[', ']', '{', '}']
-        : [':', ',', '[', ']'])
-        expect(text).toContain(symbol)
+      const symbols =
+        language === 'json'
+          ? [':', ',', '[', ']', '{', '}']
+          : [':', ',', '[', ']']
+      // Bracket colouring splits brackets out before the language tokenizer
+      // loads; wait until every symbol is its own token.
+      await expect
+        .poll(async () => {
+          const text = (await punctuation.allTextContents()).join('')
+          return symbols.filter((symbol) => !text.includes(symbol))
+        })
+        .toEqual([])
       for (let index = 0; index < (await punctuation.count()); index++) {
         const token = punctuation.nth(index)
         await expect(token).toBeVisible()
