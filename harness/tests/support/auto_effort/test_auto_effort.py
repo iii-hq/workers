@@ -6,13 +6,15 @@ import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 import common
 import extract
 import label
+
+import judge
 
 HERE = Path(__file__).resolve().parent
 
@@ -245,3 +247,135 @@ class LabelTest(unittest.TestCase):
         self.assertIn("p6: no label", lines)
         self.assertIn("no label in reply (rate limited): ''", lines)
         self.assertIn(f"no label in reply (end): {'y' * 200!r}", lines)
+
+
+def judge_reply(rid: str, choice: str, confidence: float) -> dict:
+    """A judge::evaluate ok reply for one evaluation."""
+    answer = {"choice": choice, "probabilities": {choice: confidence}, "confidence": confidence}
+    result = {"answers": {"effort": answer}, "usage": {"input_tokens": 90, "output_tokens": 3}}
+    return {"status": "ok", "model": "jev", "results": {rid: result}}
+
+
+class JudgeTest(unittest.TestCase):
+    question = json.loads(judge.QUESTION.read_text(encoding="utf-8"))
+    row = {"id": "r1", "model": "claude-opus-5-5", "level": "medium", "context": "", "message": "fix the parser"}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = Path(tmp.name)
+
+    def judge_main(self, *args: str) -> list[str]:
+        printed = io.StringIO()
+        with redirect_stdout(printed):
+            judge.main([str(self.out), *args])
+        return printed.getvalue().splitlines()
+
+    def test_low_confidence_keeps_current(self):
+        v = judge.verdict({"choice": "low", "confidence": 0.4}, None, "high")
+        self.assertEqual((v["level"], v["kept"]), ("high", True))
+
+    def test_error_counts_as_kept(self):
+        v = judge.verdict(None, "timeout", None)
+        self.assertEqual((v["level"], v["kept"], v["error"]), ("medium", True, "timeout"))
+
+    def test_followup_keeps_without_call(self):
+        self.assertTrue(judge.keeps_effort("ok", "user: x\nassistant: done."))
+
+    def test_followup_answering_question_is_judged(self):
+        self.assertFalse(judge.keeps_effort("sim", "user: x\nassistant: Should I refactor X?"))
+
+    def test_payload_shape(self):
+        e = judge.evaluation(self.row, self.question)
+        effort = e["questions"]["effort"]
+        self.assertEqual((e["id"], effort["type"], set(effort["criteria"])), ("r1", "choice", set(common.LEVELS)))
+        self.assertIsInstance(e["state"], str)
+        keys = ["task", "current_model", "current_effort", "recent_conversation", "next_message"]
+        self.assertEqual(list(json.loads(e["state"])), keys)
+
+    def test_paid_arms_read_replies(self):
+        fields = ("id", "arm", "level", "confidence", "kept", "error", "tokens")
+        followup = dict(self.row, message="ok")
+        down = common.TriggerError("transport", "no engine")
+        replies = [judge_reply("r1", "low", 0.8), {"status": "error", "code": "deadline"}, down]
+        with mock.patch.object(common, "trigger", side_effect=replies) as call:
+            got = [judge.judged("typesafe", r, self.question, "") for r in (self.row, followup, self.row, self.row)]
+        self.assertEqual(list(got[0]), ["id", "arm", "level", "confidence", "kept", "error", "ms", "tokens"])
+        expect = [
+            ("r1", "typesafe", "low", 0.8, False, None, 93),
+            ("r1", "typesafe", "medium", None, True, None, 0),  # the follow-up makes no call
+            ("r1", "typesafe", "medium", None, True, "deadline", 0),
+            ("r1", "typesafe", "medium", None, True, "transport", 0),
+        ]
+        self.assertEqual([tuple(v[k] for k in fields) for v in got], expect)
+        self.assertEqual(got[1]["ms"], 0)
+        evaluation = judge.evaluation(self.row, self.question)
+        request = {"timeout_ms": 3000, "provider": "typesafe", "evaluations": [evaluation]}
+        self.assertEqual(call.call_args_list[0].args, ("judge::evaluate", request))
+        haiku = dict(reply('{"effort": "high", "sure": 0.7} (one edit {small})'), usage={"input": 900, "output": 10})
+        with mock.patch.object(common, "trigger", side_effect=[haiku, reply("high, I think")]) as call:
+            got = [judge.judged("haiku", self.row, self.question, "system") for _ in range(2)]
+        expect = [
+            ("r1", "haiku", "high", 0.7, False, None, 910),
+            ("r1", "haiku", "medium", None, True, "invalid_response", 0),
+        ]
+        self.assertEqual([tuple(v[k] for k in fields) for v in got], expect)
+        fn, payload = call.call_args_list[0].args
+        [message] = payload.pop("messages")
+        want = {
+            "model": "claude-haiku-5-5",
+            "provider": "anthropic",
+            "system_prompt": "system",
+            "max_output_tokens": 160,
+        }
+        self.assertEqual((fn, payload), ("router::complete", want))  # no thinking_level
+        text = [{"type": "text", "text": evaluation["state"]}]
+        self.assertEqual((message["role"], message["content"], type(message["timestamp"])), ("user", text, int))
+
+    def test_verdicts_upsert_by_id_and_arm(self):
+        rows = self.out / "ab_prompts.jsonl"
+        common.write_jsonl(rows, [dict(self.row, level="high"), dict(self.row, id="r2", level=None)])
+        common.write_jsonl(self.out / "prompts.jsonl", [dict(self.row, id="p1")])
+        path = self.out / "verdicts.jsonl"
+        stale = {"id": "r1", "arm": "keep", "level": "low", "confidence": None, "kept": True, "error": None}
+        other = dict(stale, arm="haiku", ms=700, tokens=900)
+        common.write_jsonl(path, [dict(stale, ms=0, tokens=0), other])
+        with mock.patch.object(common, "trigger") as call:
+            self.judge_main("--arm", "always-low", "keep", "--rows", str(rows), "--run")
+            self.judge_main("--arm", "keep", "--rows", str(rows), "--run")
+            self.judge_main("--arm", "always-high", "--run")  # default rows: prompts.jsonl plus the effortless cases
+        call.assert_not_called()
+        verdicts = common.read_jsonl(path)
+        got = [(v["id"], v["arm"], v["level"], v["kept"]) for v in verdicts[:5]]
+        expect = [
+            ("r1", "keep", "high", True),
+            ("r1", "haiku", "low", True),
+            ("r1", "always-low", "low", False),
+            ("r2", "always-low", "low", False),
+            ("r2", "keep", "medium", True),
+        ]
+        self.assertEqual(got, expect)
+        self.assertEqual(verdicts[1], other)
+        high = [v["id"] for v in verdicts[5:] if v["arm"] == "always-high"]
+        self.assertEqual((len(verdicts), len(high), high[0], "eff-h12" in high), (81, 76, "p1", True))
+        self.assertEqual({(v["ms"], v["tokens"]) for v in verdicts[:1] + verdicts[2:]}, {(0, 0)})
+
+    def test_dry_run_then_stop_after_five_failed_calls_in_a_row(self):
+        rows = [dict(self.row, id=f"r{i}") for i in range(12)]
+        rows[7]["message"] = "ok"  # a follow-up makes no call, so it neither counts nor resets
+        common.write_jsonl(self.out / "rows.jsonl", rows)
+        path = self.out / "verdicts.jsonl"
+        common.write_jsonl(path, [{"id": "r0", "arm": "typesafe", "level": "low"}])
+        down = common.TriggerError("transport", "no engine")
+        replies = [down] * 4 + [judge_reply("r4", "low", 0.9)] + [down] * 5
+        with mock.patch.object(common, "trigger", side_effect=replies) as call:
+            printed = self.judge_main("--arm", "typesafe", "keep", "--rows", str(self.out / "rows.jsonl"))
+            self.assertEqual(call.call_count, 0)
+            with self.assertRaises(SystemExit) as stop:
+                self.judge_main("--arm", "typesafe", "--rows", str(self.out / "rows.jsonl"), "--run")
+        counts = [p.split(", about")[0] for p in printed]
+        self.assertEqual(counts, ["typesafe: 12 rows, 11 calls", "keep: 12 rows, 0 calls"])
+        # r0-r3 fail, r4 answers, then r5, r6, r8, r9 and r10 fail; r11 is never asked
+        self.assertEqual(call.call_count, 10)
+        self.assertIn("5 calls in a row", str(stop.exception))
+        self.assertEqual(common.read_jsonl(path), [{"id": "r0", "arm": "typesafe", "level": "low"}])
