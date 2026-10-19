@@ -78,7 +78,7 @@ Every task ends with `\nFunctions: <the Functions text of your task, long-run re
 
 ## Finish
 
-1. One `state::compare-and-set` to the exact result scope and key in your task, with no `expected`. `swapped:false`: if `current.item` is your key, stop; otherwise write the same value under `<your key>.dup` (no `expected`) and stop. The document, at most 2 KB not counting `new_items` and `loose_ends`:
+1. One `state::compare-and-set` to the exact result scope and key in your task, with no `expected` and the document below as `value`: a JSON object, never a string that holds one. `swapped:false`: if `current.item` is your key, stop; otherwise write the same value under `<your key>.dup` (no `expected`) and stop. The document, at most 2 KB not counting `new_items` and `loose_ends`:
    ```json
    {"item":"KAN-12","outcome":"verified|accepted|unverified|blocked|failed|stuck","summary":"≤60 words","commit":"<newest sha or null>","result_from":{"scope":"<the phase scope of the last code or work document with status done>","key":"code|work"},"reasons":["<from the last check>"],"evidence":["<check>: <observed>"],"new_items":[…],"loose_ends":[…],"question":"only when blocked"}
    ```
