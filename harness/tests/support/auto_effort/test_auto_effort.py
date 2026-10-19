@@ -1,10 +1,12 @@
 """Unit tests for the auto-effort phase 0 scripts. Synthetic lines only: corpus text never enters the repo."""
 
 import hashlib
+import io
 import json
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -48,7 +50,7 @@ def fake_run(returncode: int, stdout: str = "", stderr: str = ""):
 
 def reply(text: str) -> dict:
     """A router::complete result whose assistant message holds one text block."""
-    message = {"role": "assistant", "content": [{"type": "text", "text": text}]}
+    message = {"role": "assistant", "content": [{"type": "text", "text": text}], "stop_reason": "end"}
     return {"message": message, "provider": "anthropic", "model": "claude-opus-5-5"}
 
 
@@ -220,3 +222,26 @@ class LabelTest(unittest.TestCase):
             self.assertEqual(label.label_row(row, "rubric"), {"id": "r1", "ok": ["medium"], "agreed": False})
         third = json.loads(call.call_args.args[1]["messages"][0]["content"][0]["text"])
         self.assertEqual(third["answers"], [["low"], ["medium", "high"]])
+
+    def test_run_logs_misses_and_stops_after_five_in_a_row(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out = Path(tmp.name)
+        rows = [{"id": f"p{i}", "model": "m", "context": "", "message": "x"} for i in range(8)]
+        common.write_jsonl(out / "prompts.jsonl", rows)
+        timeout, ok, prose = common.TriggerError("timeout", "too slow"), reply('{"ok":["low"]}'), reply("y" * 300)
+        failed = {"message": {"content": [], "stop_reason": "error", "error_message": "rate limited"}}
+        # p0 throws, p1 is labelled; then p2 throws and p3..p6 get no usable reply: five misses in a row
+        replies = [timeout, ok, ok, timeout, failed, *[prose] * 11]
+        log = io.StringIO()
+        with mock.patch.object(common, "trigger", side_effect=replies) as call, redirect_stderr(log):
+            with self.assertRaises(SystemExit) as stop:
+                label.main([str(out), "--run"])
+        self.assertEqual(call.call_count, len(replies))  # p7 is never asked
+        self.assertEqual(common.read_jsonl(out / "labels.jsonl"), [{"id": "p1", "ok": ["low"], "agreed": True}])
+        self.assertIn("5 prompts in a row", str(stop.exception))
+        lines = log.getvalue().splitlines()
+        self.assertIn("p0: timeout: too slow", lines)
+        self.assertIn("p6: no label", lines)
+        self.assertIn("no label in reply (rate limited): ''", lines)
+        self.assertIn(f"no label in reply (end): {'y' * 200!r}", lines)

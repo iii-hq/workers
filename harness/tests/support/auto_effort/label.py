@@ -1,7 +1,8 @@
 """Label harness prompts with the efforts that would do the job: python3 -I label.py <out_dir> [--run]
 
 Without --run it prints the call count and estimated input tokens. Prompts already in labels.jsonl are skipped,
-so a re-run labels only the rest; delete labels.jsonl to label again from scratch.
+so a re-run labels only the rest; delete labels.jsonl to label again from scratch. A --run logs every reply and
+prompt that yields no label to stderr, and stops once 5 prompts in a row got none.
 """
 
 import json
@@ -65,8 +66,13 @@ def ask(rubric: str, text: str) -> list[str] | None:
         "system_prompt": rubric,
         "messages": [message],
     }
-    reply = common.trigger("router::complete", payload, timeout_s=300)
-    return parse_label(extract.text(reply.get("message") or {}))
+    reply = common.trigger("router::complete", payload, timeout_s=300).get("message") or {}
+    answer = extract.text(reply)
+    ok = parse_label(answer)
+    if ok is None:  # a provider failure comes back as a reply with stop_reason "error", not as a TriggerError
+        cause = reply.get("error_message") or reply.get("stop_reason")
+        print(f"no label in reply ({cause}): {answer[:200]!r}", file=sys.stderr)
+    return ok
 
 
 def label_row(row: dict, rubric: str) -> dict | None:
@@ -95,17 +101,23 @@ def main(argv: list[str]) -> None:
         tokens = sum(len(rubric) + len(labeller_input(row)) for row in todo) // 4
         print(f"{n} prompts × 2–3 calls ({2 * n}–{3 * n} calls), about {2 * tokens:,}–{3 * tokens:,} input tokens")
         return
+    misses = 0  # prompts in a row without a label: a run that keeps failing stops before it pays for the rest
     with open(path, "a", encoding="utf-8") as f:
         for row in todo:
             try:
-                result = label_row(row, rubric)
+                result, why = label_row(row, rubric), "no label"
             except common.TriggerError as err:
-                result = None
-                print(f"{row['id']}: {err}", file=sys.stderr)
-            if result:
-                labels[row["id"]] = result
-                f.write(json.dumps(result) + "\n")
-                f.flush()
+                result, why = None, err
+            if result is None:
+                print(f"{row['id']}: {why}", file=sys.stderr)
+                misses += 1
+                if misses == 5:
+                    sys.exit(f"stopped: {misses} prompts in a row got no label")
+                continue
+            misses = 0
+            labels[row["id"]] = result
+            f.write(json.dumps(result) + "\n")
+            f.flush()
     labelled = [labels[row["id"]] for row in rows if row["id"] in labels]
     agreed = sum(r["agreed"] for r in labelled)
     print(f"{len(labelled)} of {len(rows)} prompts labelled, {agreed} agreed ({agreed / max(len(labelled), 1):.0%})")
