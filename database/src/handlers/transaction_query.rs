@@ -114,6 +114,8 @@ pub async fn handle(state: &AppState, req: TxQueryReq) -> Result<QueryResp, Stri
                 rows,
                 row_count,
                 columns: qr.columns,
+                truncated: false,
+                elapsed_ms: qr.elapsed_ms,
             })
         }
         Err(e) => {

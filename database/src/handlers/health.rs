@@ -131,6 +131,8 @@ async fn rows(
             params: vec![],
             timeout_ms,
             record_history: false,
+            max_rows: None,
+            query_only: false,
         },
     )
     .await?

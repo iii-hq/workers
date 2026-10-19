@@ -16,9 +16,11 @@ pub async fn query(
     pool: &PostgresPool,
     sql: &str,
     params: &[JsonParam],
-    timeout_ms: u64,
+    opts: crate::driver::ReadOptions,
 ) -> Result<QueryResult, DbError> {
+    let timeout_ms = opts.timeout_ms;
     let mut client = pool.acquire().await?;
+    let started = std::time::Instant::now();
     let bound = bind_params(params);
     let bound_refs: Vec<&(dyn ToSql + Sync)> =
         bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
@@ -26,8 +28,10 @@ pub async fn query(
     // `database::query` is the READ surface a narrowed agent policy grants;
     // a read-only transaction makes the server enforce it (writes fail with
     // 25006 read_only_sql_transaction) — this also catches data-modifying
-    // CTEs (`WITH ... INSERT`) that keyword classification misses. Dropped
-    // on timeout (implicit rollback); committed after rows are collected.
+    // CTEs (`WITH ... INSERT`) and writing functions (`nextval`) that keyword
+    // classification misses. The extended protocol also refuses a second
+    // statement (`; DELETE …`). Dropped on timeout (implicit rollback);
+    // committed after rows are collected.
     let work = async {
         let tx = client
             .build_transaction()
@@ -35,35 +39,39 @@ pub async fn query(
             .start()
             .await
             .map_err(map_err)?;
-        let rows = tx
-            .query(sql, bound_refs.as_slice())
-            .await
-            .map_err(map_err)?;
+        let stmt = tx.prepare(sql).await.map_err(map_err)?;
+        let (rows, truncated) = match opts.max_rows {
+            None => (
+                tx.query(&stmt, bound_refs.as_slice())
+                    .await
+                    .map_err(map_err)?,
+                false,
+            ),
+            Some(max) => {
+                // A portal asks the server for max+1 rows and no more: the
+                // rest of the result is never computed or sent, and the SQL
+                // is never rewritten.
+                let portal = tx
+                    .bind(&stmt, bound_refs.as_slice())
+                    .await
+                    .map_err(map_err)?;
+                let fetch = i32::try_from(max.saturating_add(1)).unwrap_or(i32::MAX);
+                let mut rows = tx.query_portal(&portal, fetch).await.map_err(map_err)?;
+                let truncated = rows.len() as u64 > max;
+                rows.truncate(max as usize);
+                (rows, truncated)
+            }
+        };
         tx.commit().await.map_err(map_err)?;
-        Ok::<_, DbError>(rows)
+        Ok::<_, DbError>((column_meta(stmt.columns()), rows, truncated))
     };
-    let rows = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
+    let (columns, rows, truncated) = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
         .await
         .map_err(|_| DbError::QueryTimeout {
             db: "(pg)".into(),
             timeout_ms,
         })??;
-
-    if rows.is_empty() {
-        return Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-        });
-    }
-
-    let columns: Vec<ColumnMeta> = rows[0]
-        .columns()
-        .iter()
-        .map(|c| ColumnMeta {
-            name: c.name().to_string(),
-            ty: c.type_().name().to_string(),
-        })
-        .collect();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
 
     let mut out_rows: Vec<Row> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -76,6 +84,8 @@ pub async fn query(
     Ok(QueryResult {
         columns,
         rows: out_rows,
+        truncated,
+        elapsed_ms,
     })
 }
 
@@ -375,8 +385,7 @@ async fn run_write(
         return Ok(ExecuteResult {
             affected_rows: n,
             last_insert_id: None,
-            returned_rows: vec![],
-            returned_columns: vec![],
+            ..Default::default()
         });
     }
 
@@ -419,6 +428,7 @@ async fn run_write(
         last_insert_id,
         returned_rows: returned,
         returned_columns: column_meta(stmt.columns()),
+        elapsed_ms: 0,
     })
 }
 
@@ -445,13 +455,16 @@ pub async fn execute(
 ) -> Result<ExecuteResult, DbError> {
     warn_returning_option_ignored(returning);
     let client = pool.acquire().await?;
+    let started = std::time::Instant::now();
     // Prepare explicitly — not deadpool's `prepare_cached`: a cached plan
     // outlives the call, and a later statement that recreates a table with
     // a different shape would hit `0A000 cached plan must not change result
     // type`. `client.query(&str)` prepares internally anyway, so this is one
     // round trip fewer, not one more.
     let stmt = client.prepare(sql).await.map_err(map_err)?;
-    run_write(&client, &stmt, sql, params).await
+    let mut result = run_write(&client, &stmt, sql, params).await?;
+    result.elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(result)
 }
 
 pub async fn transaction(
@@ -589,6 +602,8 @@ pub async fn run_prepared(
     Ok(QueryResult {
         columns,
         rows: out_rows,
+        truncated: false,
+        elapsed_ms: 0,
     })
 }
 
@@ -744,7 +759,10 @@ mod tests {
             &p,
             "SELECT 1::int AS a, 'x'::text AS b, true AS c, NULL::int AS d",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -762,7 +780,10 @@ mod tests {
             &p,
             "SELECT $1::int + $2::int AS sum",
             &[JsonParam::Int(2), JsonParam::Int(3)],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -772,9 +793,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pg_query_jsonb_round_trips_as_value() {
         let Some(p) = fresh_pool().await else { return };
-        let r = query(&p, "SELECT '{\"k\":1}'::jsonb AS j", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT '{\"k\":1}'::jsonb AS j",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         match &r.rows[0].0[0] {
             RowValue::Json(v) => assert_eq!(v["k"], 1),
             other => panic!("expected Json, got {other:?}"),
@@ -784,9 +813,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pg_query_bigint_returns_string() {
         let Some(p) = fresh_pool().await else { return };
-        let r = query(&p, "SELECT 9007199254740993::bigint AS big", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT 9007199254740993::bigint AS big",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             &r.rows[0].0[0],
             RowValue::BigInt(9_007_199_254_740_993)
@@ -811,7 +848,10 @@ mod tests {
                     -0.001::numeric          AS negf, \
                     0::numeric               AS zero",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -852,7 +892,10 @@ mod tests {
                     '-Infinity'::numeric                           AS ninf, \
                     100000000000000000000000000000::numeric        AS big",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -993,7 +1036,10 @@ mod tests {
                 '2026-04-29 12:00:00'::timestamp        AS naive, \
                 '2026-04-29 12:00:00+00'::timestamptz   AS with_tz",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1025,7 +1071,10 @@ mod tests {
             &p,
             "SELECT '550E8400-E29B-41D4-A716-446655440000'::uuid AS u, NULL::uuid AS none",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1130,9 +1179,17 @@ mod tests {
             assert!(r.last_insert_id.is_some(), "{sql}");
         }
         // Exactly three rows landed — each statement ran once.
-        let q = query(&p, "SELECT COUNT(*) FROM db_w_ml", &[], 30_000)
-            .await
-            .unwrap();
+        let q = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_ml",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&q.rows[0].0[0], RowValue::BigInt(3)));
     }
 
@@ -1337,9 +1394,17 @@ mod tests {
 
         // The single pooled connection is not stuck in an aborted
         // transaction, and both first steps were rolled back.
-        let q = query(&p, "SELECT COUNT(*) FROM db_w_poison", &[], 30_000)
-            .await
-            .unwrap();
+        let q = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_poison",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&q.rows[0].0[0], RowValue::BigInt(0)), "{q:?}");
         let _ = execute(&p, "DROP TABLE db_w_poison", &[], &[]).await;
     }
@@ -1417,9 +1482,17 @@ mod tests {
         ];
         let err = transaction(&p, stmts, None).await.unwrap_err();
         assert!(matches!(err, DbError::DriverError { .. }));
-        let r = query(&p, "SELECT COUNT(*) FROM db_w_tx2", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_tx2",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&r.rows[0].0[0], RowValue::BigInt(0)));
     }
 
@@ -1459,9 +1532,17 @@ mod tests {
         tx_rollback(&mut client).await.unwrap();
         drop(client);
 
-        let rows = query(&p, "SELECT COUNT(*) FROM db_w_aborted_tx", &[], 30_000)
-            .await
-            .unwrap();
+        let rows = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_aborted_tx",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&rows.rows[0].0[0], RowValue::BigInt(0)));
     }
 

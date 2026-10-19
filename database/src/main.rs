@@ -10,10 +10,13 @@ use database::handlers::{
     commit_transaction::{self, CommitTxReq},
     connections::{self, DeleteConnectionReq, GetConnectionReq, SaveConnectionReq},
     diagram::{self, SchemaDiagramReq},
+    distinct_values::{self, DistinctValuesReq},
     execute::{self, ExecuteReq},
     execute_batch::{self, ExecuteBatchReq},
     explain::{self, ExplainReq},
+    format_sql::{self, FormatSqlReq},
     health::{self, HealthReq, TerminateReq},
+    insert_row::{self, InsertRowReq},
     list_databases::{self, ListDatabasesReq},
     prepare::{self, PrepareReq},
     query::{self, QueryReq},
@@ -763,6 +766,63 @@ async fn main() -> Result<()> {
                  but one catalog query per aspect across the whole database \
                  instead of one call per table. Use this to reason about \
                  relationships; set include_indexes only when you need them.",
+            ),
+        );
+    }
+
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::distinctValues",
+            RegisterFunction::new_async(move |req: DistinctValuesReq| {
+                let st = st.clone();
+                async move {
+                    distinct_values::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "List the distinct values of one column, most frequent first, with their row \
+                 counts — for a filter's value picker. `search` narrows by a case-insensitive \
+                 substring of the text form.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::insertRow",
+            RegisterFunction::new_async(move |req: InsertRowReq| {
+                let st = st.clone();
+                async move {
+                    insert_row::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Insert one row from a {column: value} map; values are cast to each column's \
+                 catalog type (numbers and dates as strings, bytea/blob as base64) and the \
+                 inserted row comes back. Columns left out take their default.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::formatSql",
+            RegisterFunction::new_async(move |req: FormatSqlReq| {
+                let st = st.clone();
+                async move {
+                    format_sql::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Pretty-print SQL for a driver's dialect: keywords cased, clauses indented, \
+                 statements and comments kept. Pure text; nothing runs.",
             ),
         );
     }

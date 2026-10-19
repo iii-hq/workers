@@ -84,8 +84,19 @@ impl FilterOp {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct FilterSpec {
+    /// The column (ignored with `raw`).
+    #[serde(default)]
     pub column: String,
-    pub op: FilterOp,
+    /// The operator (ignored with `raw`; required otherwise).
+    #[serde(default)]
+    pub op: Option<FilterOp>,
+    /// A SQL boolean expression in the driver's dialect (`price > 10 AND
+    /// name ILIKE 'a%'`), ANDed with the other filters inside its own
+    /// parentheses. One expression only: no `;`, no comments, no unbalanced
+    /// parentheses, no placeholders — and it runs in a read-only transaction
+    /// (sqlite: `query_only`), so it can never write.
+    #[serde(default)]
+    pub raw: Option<String>,
     #[serde(default)]
     pub value: Option<Value>,
     /// Upper bound for `between`.
@@ -247,6 +258,17 @@ pub fn compile_where(
         if f.disabled {
             continue;
         }
+        if let Some(raw) = &f.raw {
+            check_raw_filter(driver, raw)?;
+            parts.push(format!("({})", raw.trim()));
+            continue;
+        }
+        let Some(op) = f.op else {
+            return Err(invalid(format!(
+                "filter on `{}` needs `op` (or `raw` for a SQL expression)",
+                f.column
+            )));
+        };
         if f.column.trim().is_empty() {
             return Err(invalid("filter is missing a column"));
         }
@@ -255,7 +277,7 @@ pub fn compile_where(
         // operator — and the compiler then unwraps the `value` that is not
         // there. The request body is caller-controlled, so that is a panic
         // reachable from the wire.
-        let arity = f.op.arity();
+        let arity = op.arity();
         if arity >= 1 && f.value.is_none() {
             return Err(invalid(format!("filter on `{}` needs `value`", f.column)));
         }
@@ -265,7 +287,7 @@ pub fn compile_where(
                 f.column
             )));
         }
-        if f.op.is_set() && f.values.is_empty() {
+        if op.is_set() && f.values.is_empty() {
             // `IN ()` is a syntax error on every driver, and silently
             // dropping the filter would quietly widen the result set.
             return Err(invalid(format!(
@@ -281,7 +303,7 @@ pub fn compile_where(
         // that never consult it. Accepting `{op: equals, case_sensitive: true}`
         // and quietly doing nothing is the failure the module header warns
         // about, just in a different place.
-        if f.case_sensitive.is_some() && !(driver == DriverKind::Postgres && f.op.is_like()) {
+        if f.case_sensitive.is_some() && !(driver == DriverKind::Postgres && op.is_like()) {
             return Err(invalid(
                 "case_sensitive applies only to postgres pattern operators; \
                  elsewhere it is determined by the column collation",
@@ -291,7 +313,7 @@ pub fn compile_where(
         let col = quote_ident(driver, &f.column);
         let sensitive = f.case_sensitive.unwrap_or(false);
 
-        let part = match f.op {
+        let part = match op {
             FilterOp::IsNull => format!("{col} IS NULL"),
             FilterOp::IsNotNull => format!("{col} IS NOT NULL"),
             FilterOp::IsTrue => format!("{col} = TRUE"),
@@ -309,7 +331,7 @@ pub fn compile_where(
                     })
                     .collect();
                 let list = marks.join(", ");
-                if f.op == FilterOp::In {
+                if op == FilterOp::In {
                     format!("{col} IN ({list})")
                 } else {
                     // NOT IN drops NULLs on every driver, because `NULL <> x`
@@ -325,12 +347,12 @@ pub fn compile_where(
             | FilterOp::EndsWith => {
                 let raw = as_text(f.value.as_ref().expect("arity checked"), &f.column)?;
                 let escaped = escape_like(&raw);
-                let pattern = match f.op {
+                let pattern = match op {
                     FilterOp::StartsWith => format!("{escaped}%"),
                     FilterOp::EndsWith => format!("%{escaped}"),
                     _ => format!("%{escaped}%"),
                 };
-                let negate = f.op == FilterOp::NotContains;
+                let negate = op == FilterOp::NotContains;
                 let op = match (driver, sensitive) {
                     (DriverKind::Postgres, false) => "ILIKE",
                     _ => "LIKE",
@@ -357,7 +379,7 @@ pub fn compile_where(
             }
 
             _ => {
-                let sym = match f.op {
+                let sym = match op {
                     FilterOp::Equals => "=",
                     FilterOp::NotEquals => "<>",
                     FilterOp::Gt => ">",
@@ -378,6 +400,177 @@ pub fn compile_where(
         sql: parts.join(" AND "),
         params,
     })
+}
+
+/// Longest raw filter accepted.
+pub const MAX_RAW_FILTER_LEN: usize = 4_096;
+
+/// Check that a raw filter is ONE boolean expression that stays inside the
+/// parentheses it is wrapped in: no statement separator, no comment (which
+/// could swallow the closing parenthesis, or on mysql `/*! … */` run code),
+/// no parenthesis closing below its own level, no placeholder. Quoting is
+/// lexed the way the driver lexes it — including postgres dollar quotes,
+/// mysql backticks and sqlite brackets — so nothing hides inside a span the
+/// server reads differently; a backslash inside a quoted span is refused
+/// where its meaning depends on server settings.
+///
+/// This is the outer wall. The inner one is the server: the filter runs in a
+/// read-only transaction (postgres, mysql) or under `query_only` (sqlite),
+/// through the extended / prepared protocol that takes a single statement.
+pub fn check_raw_filter(driver: DriverKind, raw: &str) -> Result<(), DbError> {
+    let refuse = |why: &str| invalid(format!("raw filter refused: {why}"));
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err(refuse("it is empty"));
+    }
+    if text.len() > MAX_RAW_FILTER_LEN {
+        return Err(refuse(&format!(
+            "longer than {MAX_RAW_FILTER_LEN} characters"
+        )));
+    }
+    if text.contains('\0') {
+        return Err(refuse("it contains a NUL byte"));
+    }
+    let b = text.as_bytes();
+    let mut i = 0usize;
+    let mut depth = 0usize;
+    // Inside a quoted span closed by `close`, doubling it escapes it.
+    let quoted = |i: &mut usize, close: u8, backslash: Backslash| -> Result<(), DbError> {
+        let open_at = *i;
+        *i += 1;
+        while *i < b.len() {
+            let c = b[*i];
+            if c == b'\\' {
+                match backslash {
+                    Backslash::Escape => {
+                        *i += 2;
+                        continue;
+                    }
+                    Backslash::Refuse => {
+                        return Err(refuse(
+                            "a backslash inside a quoted value is ambiguous here (its meaning \
+                             depends on server settings); use another character",
+                        ))
+                    }
+                    Backslash::Literal => {}
+                }
+            }
+            if c == close {
+                if *i + 1 < b.len() && b[*i + 1] == close {
+                    *i += 2;
+                    continue;
+                }
+                *i += 1;
+                return Ok(());
+            }
+            *i += 1;
+        }
+        let _ = open_at;
+        Err(refuse("a quoted value or identifier is not closed"))
+    };
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            b'\'' => {
+                // Postgres E'…' strings take backslash escapes; plain ones
+                // depend on standard_conforming_strings. MySQL strings take
+                // them unless NO_BACKSLASH_ESCAPES. SQLite never does.
+                let e_string = driver == DriverKind::Postgres
+                    && i > 0
+                    && matches!(b[i - 1], b'e' | b'E')
+                    && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'));
+                let backslash = match driver {
+                    DriverKind::Sqlite => Backslash::Literal,
+                    DriverKind::Postgres if e_string => Backslash::Escape,
+                    _ => Backslash::Refuse,
+                };
+                quoted(&mut i, b'\'', backslash)?;
+            }
+            b'"' => {
+                // An identifier on postgres/sqlite (no escapes); a string on
+                // mysql unless ANSI_QUOTES — refuse backslashes there.
+                let backslash = if driver == DriverKind::Mysql {
+                    Backslash::Refuse
+                } else {
+                    Backslash::Literal
+                };
+                quoted(&mut i, b'"', backslash)?;
+            }
+            b'`' if driver != DriverKind::Postgres => quoted(&mut i, b'`', Backslash::Literal)?,
+            b'[' if driver == DriverKind::Sqlite => quoted(&mut i, b']', Backslash::Literal)?,
+            // Inside an identifier (`a$b`) a `$` is just a character, as the
+            // postgres lexer reads it — never the start of a dollar quote.
+            b'$' if driver == DriverKind::Postgres
+                && i > 0
+                && (b[i - 1].is_ascii_alphanumeric()
+                    || b[i - 1] == b'_'
+                    || b[i - 1] == b'$'
+                    || b[i - 1] >= 0x80) =>
+            {
+                i += 1;
+            }
+            b'$' if driver == DriverKind::Postgres => {
+                // `$1` is a placeholder; `$tag$ … $tag$` a dollar quote.
+                if b.get(i + 1).is_some_and(|d| d.is_ascii_digit()) {
+                    return Err(refuse("placeholders ($1) are not allowed; write the value"));
+                }
+                let tag_end = b[i + 1..]
+                    .iter()
+                    .position(|&d| !(d.is_ascii_alphanumeric() || d == b'_'))
+                    .map(|p| i + 1 + p);
+                match tag_end {
+                    Some(end) if b[end] == b'$' => {
+                        let tag = &text[i..=end];
+                        let body_start = end + 1;
+                        match text[body_start..].find(tag) {
+                            Some(close) => i = body_start + close + tag.len(),
+                            None => return Err(refuse("a dollar-quoted value is not closed")),
+                        }
+                    }
+                    _ => i += 1,
+                }
+            }
+            b';' => return Err(refuse("`;` would start another statement")),
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                return Err(refuse("comments (`--`) are not allowed"))
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                return Err(refuse("comments (`/* */`) are not allowed"))
+            }
+            b'#' if driver == DriverKind::Mysql => {
+                return Err(refuse("comments (`#`) are not allowed"))
+            }
+            b'?' if driver != DriverKind::Postgres => {
+                return Err(refuse("placeholders (?) are not allowed; write the value"))
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                if depth == 0 {
+                    return Err(refuse("a `)` closes a parenthesis the filter did not open"));
+                }
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if depth != 0 {
+        return Err(refuse("a `(` is never closed"));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Backslash {
+    /// Escapes the next character.
+    Escape,
+    /// An ordinary character.
+    Literal,
+    /// Meaning depends on server settings: refuse.
+    Refuse,
 }
 
 /// Compile sorts into an `ORDER BY` body (no leading keyword). Column names
@@ -446,7 +639,8 @@ mod tests {
     fn spec(column: &str, op: FilterOp, value: Option<Value>) -> FilterSpec {
         FilterSpec {
             column: column.into(),
-            op,
+            op: Some(op),
+            raw: None,
             value,
             value2: None,
             values: Vec::new(),
@@ -718,6 +912,7 @@ mod tests {
         // Half-built filters are the normal state of a chip being edited;
         // disabling one must not turn the whole request into an error.
         let mut half = spec("", FilterOp::Equals, None);
+        half.op = None;
         half.disabled = true;
         let c = compile_where(DriverKind::Sqlite, &[half], 1).unwrap();
         assert_eq!(c.sql, "");
@@ -739,5 +934,127 @@ mod tests {
             compile_order_by(DriverKind::Sqlite, &s).unwrap(),
             r#""label" ASC"#
         );
+    }
+
+    fn raw(text: &str) -> FilterSpec {
+        FilterSpec {
+            column: String::new(),
+            op: None,
+            raw: Some(text.into()),
+            value: None,
+            value2: None,
+            values: Vec::new(),
+            case_sensitive: None,
+            disabled: false,
+        }
+    }
+
+    const ALL: [DriverKind; 3] = [DriverKind::Postgres, DriverKind::Mysql, DriverKind::Sqlite];
+
+    #[test]
+    fn a_raw_filter_is_anded_in_its_own_parentheses() {
+        let c = compile_where(
+            DriverKind::Postgres,
+            &[
+                spec("a", FilterOp::Equals, Some(json!(1))),
+                raw("price > 10 OR name = 'x'"),
+            ],
+            1,
+        )
+        .unwrap();
+        assert_eq!(c.sql, r#""a" = $1 AND (price > 10 OR name = 'x')"#);
+        // `column`/`op` are ignored with `raw`.
+        let mut with_op = raw("n > 1");
+        with_op.op = Some(FilterOp::IsNull);
+        with_op.column = "ignored".into();
+        assert_eq!(
+            compile_where(DriverKind::Sqlite, &[with_op], 1)
+                .unwrap()
+                .sql,
+            "(n > 1)"
+        );
+    }
+
+    #[test]
+    fn raw_filters_that_could_leave_their_parentheses_are_refused() {
+        for driver in ALL {
+            for bad in [
+                "1=1; DELETE FROM t",
+                "1=1) OR (1=1",
+                "1=1) UNION SELECT * FROM secrets WHERE (1=1",
+                "x = 1 -- ) trailing",
+                "x = 1 /* ) */",
+                "((x = 1)",
+                "x = 'unterminated",
+                ")",
+                "",
+                "   ",
+            ] {
+                assert!(
+                    compile_where(driver, &[raw(bad)], 1).is_err(),
+                    "{driver:?} accepted {bad:?}"
+                );
+            }
+        }
+        // Dialect-specific comment / placeholder spellings.
+        assert!(compile_where(DriverKind::Mysql, &[raw("x = 1 # )")], 1).is_err());
+        assert!(compile_where(DriverKind::Mysql, &[raw("x = ?")], 1).is_err());
+        assert!(compile_where(DriverKind::Sqlite, &[raw("x = ?")], 1).is_err());
+        assert!(compile_where(DriverKind::Postgres, &[raw("x = $1")], 1).is_err());
+        // pg's `#` is XOR, not a comment.
+        assert!(compile_where(DriverKind::Postgres, &[raw("(a # b) = 0")], 1).is_ok());
+    }
+
+    #[test]
+    fn quoting_is_lexed_like_the_server_lexes_it() {
+        // Parens, semicolons and dashes inside quotes are data.
+        for driver in ALL {
+            assert!(
+                compile_where(driver, &[raw("name = 'a); DELETE --'")], 1).is_ok(),
+                "{driver:?}"
+            );
+            assert!(
+                compile_where(driver, &[raw("name = 'it''s'")], 1).is_ok(),
+                "{driver:?}"
+            );
+        }
+        assert!(compile_where(DriverKind::Postgres, &[raw(r#""we;ird)" = 1"#)], 1).is_ok());
+        assert!(compile_where(DriverKind::Mysql, &[raw("`we;ird)` = 1")], 1).is_ok());
+        assert!(compile_where(DriverKind::Sqlite, &[raw("[we;ird)] = 1")], 1).is_ok());
+        // A sqlite bracket identifier cannot be used to hide a quote: the
+        // quote inside it is part of the identifier, and the `)` after it is
+        // code.
+        assert!(compile_where(
+            DriverKind::Sqlite,
+            &[raw("[x'] = 1 ) ; DELETE FROM t --'")],
+            1
+        )
+        .is_err());
+        // Postgres dollar quotes: what is inside is data; a quote inside one
+        // does not open a string that could hide a `)`.
+        assert!(compile_where(DriverKind::Postgres, &[raw("note = $$a);--$$")], 1).is_ok());
+        assert!(compile_where(
+            DriverKind::Postgres,
+            &[raw("note = $q$ ' $q$ ) OR (1=1")],
+            1
+        )
+        .is_err());
+        // `$` inside an identifier is not a dollar quote: `a$b$ ) $b$` is an
+        // identifier followed by a stray `)`.
+        assert!(compile_where(DriverKind::Postgres, &[raw("a$b$ ) $b$ = 1")], 1).is_err());
+        assert!(compile_where(DriverKind::Postgres, &[raw("price$usd > 1")], 1).is_ok());
+        // E-strings take backslash escapes on postgres.
+        assert!(compile_where(DriverKind::Postgres, &[raw(r"note = E'a\') x'")], 1).is_ok());
+        // Where a backslash's meaning depends on server settings, refuse it.
+        assert!(compile_where(
+            DriverKind::Postgres,
+            &[raw(r"note = 'a\' ) OR (1=1 --'")],
+            1
+        )
+        .is_err());
+        assert!(compile_where(DriverKind::Mysql, &[raw(r"note = 'a\' ) OR (1=1'")], 1).is_err());
+        assert!(compile_where(DriverKind::Mysql, &[raw(r#"note = "a\" ) x""#)], 1).is_err());
+        // sqlite has no backslash escapes at all.
+        assert!(compile_where(DriverKind::Sqlite, &[raw(r"note = 'a\'")], 1).is_ok());
     }
 }

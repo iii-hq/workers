@@ -14,23 +14,37 @@ pub async fn query(
     pool: &MysqlPool,
     sql: &str,
     params: &[JsonParam],
-    timeout_ms: u64,
+    opts: crate::driver::ReadOptions,
 ) -> Result<QueryResult, DbError> {
+    let timeout_ms = opts.timeout_ms;
     let mut conn = pool.acquire().await?;
+    let started = std::time::Instant::now();
     let bound = bind_params(params);
 
     // mysql_async's `exec_iter` resolves once the server returns column
-    // metadata; row payloads are streamed lazily by `collect()`. Wrapping
-    // only `exec_iter` would leave row collection unbounded — a slow-row
-    // query (e.g., per-row SLEEP, or a slow scan) would silently bypass
-    // `timeout_ms`. Wrap the whole prepare→stream pipeline.
+    // metadata; row payloads are streamed lazily. Wrapping only `exec_iter`
+    // would leave row collection unbounded — a slow-row query (e.g.,
+    // per-row SLEEP, or a slow scan) would silently bypass `timeout_ms`.
+    // Wrap the whole prepare→stream pipeline.
     let work = async {
+        if let Some(max) = opts.max_rows {
+            // The server stops a top-level SELECT after max+1 rows without
+            // the SQL being rewritten (an explicit LIMIT in it still wins;
+            // the client cap below covers that). Session-scoped; the pool
+            // resets the connection when it comes back.
+            conn.query_drop(format!(
+                "SET SESSION sql_select_limit = {}",
+                max.saturating_add(1)
+            ))
+            .await
+            .map_err(map_err)?;
+        }
         // `database::query` is the READ surface a narrowed agent policy
         // grants; the server enforces it: SET TRANSACTION READ ONLY applies
         // to the statement's implicit transaction, so a write fails with
         // ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION instead of landing. The
         // flag is consumed by that transaction — the pooled conn reverts to
-        // normal afterwards.
+        // normal afterwards. A prepared statement is always one statement.
         conn.query_drop("SET TRANSACTION READ ONLY")
             .await
             .map_err(map_err)?;
@@ -43,15 +57,44 @@ pub async fn query(
                 ty: sql_type_name(c),
             })
             .collect();
-        let raw_rows: Vec<mysql_async::Row> = result.collect().await.map_err(map_err)?;
-        Ok::<_, DbError>((cols, raw_rows))
+        let (raw_rows, truncated) = match opts.max_rows {
+            None => (
+                result
+                    .collect::<mysql_async::Row>()
+                    .await
+                    .map_err(map_err)?,
+                false,
+            ),
+            Some(max) => {
+                let mut rows = Vec::new();
+                let mut truncated = false;
+                while let Some(row) = result.next().await.map_err(map_err)? {
+                    if rows.len() as u64 >= max {
+                        truncated = true;
+                        break;
+                    }
+                    rows.push(row);
+                }
+                // Whatever the server still sends is read off the wire and
+                // dropped, never materialized.
+                drop(result);
+                (rows, truncated)
+            }
+        };
+        if opts.max_rows.is_some() {
+            let _ = conn
+                .query_drop("SET SESSION sql_select_limit = DEFAULT")
+                .await;
+        }
+        Ok::<_, DbError>((cols, raw_rows, truncated))
     };
-    let (cols, raw_rows) = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
+    let (cols, raw_rows, truncated) = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
         .await
         .map_err(|_| DbError::QueryTimeout {
             db: "(mysql)".into(),
             timeout_ms,
         })??;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
 
     let mut out_rows: Vec<Row> = Vec::with_capacity(raw_rows.len());
     for row in raw_rows {
@@ -61,6 +104,8 @@ pub async fn query(
     Ok(QueryResult {
         columns: cols,
         rows: out_rows,
+        truncated,
+        elapsed_ms,
     })
 }
 
@@ -233,8 +278,10 @@ pub async fn execute(
         );
     }
     let mut conn = pool.acquire().await?;
+    let started = std::time::Instant::now();
     let bound = bind_params(params);
     conn.exec_drop(sql, bound).await.map_err(map_err)?;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
     let affected = conn.affected_rows();
     // mysql_async's last_insert_id() is sticky per-connection: an UPDATE on
     // a pool-reused connection that previously ran an INSERT will still
@@ -250,6 +297,7 @@ pub async fn execute(
         last_insert_id,
         returned_rows: vec![],
         returned_columns: vec![],
+        elapsed_ms,
     })
 }
 
@@ -405,8 +453,7 @@ pub async fn tx_execute(
     Ok(ExecuteResult {
         affected_rows: affected,
         last_insert_id,
-        returned_rows: vec![],
-        returned_columns: vec![],
+        ..Default::default()
     })
 }
 
@@ -430,6 +477,8 @@ pub async fn run_prepared(
     Ok(QueryResult {
         columns: cols,
         rows: out_rows,
+        truncated: false,
+        elapsed_ms: 0,
     })
 }
 
@@ -455,9 +504,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn my_query_returns_int_text_null() {
         let Some(p) = pool().await else { return };
-        let r = query(&p, "SELECT 1 AS a, 'x' AS b, NULL AS c", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT 1 AS a, 'x' AS b, NULL AS c",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(r.columns.len(), 3);
         assert!(matches!(
             &r.rows[0].0[0],
@@ -474,7 +531,10 @@ mod tests {
             &p,
             "SELECT ? + ? AS sum",
             &[JsonParam::Int(40), JsonParam::Int(2)],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -581,9 +641,17 @@ mod tests {
         ];
         let err = transaction(&p, stmts, None).await.unwrap_err();
         assert!(matches!(err, DbError::DriverError { .. }));
-        let r = query(&p, "SELECT COUNT(*) AS c FROM db_w_tx2", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT COUNT(*) AS c FROM db_w_tx2",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             &r.rows[0].0[0],
             RowValue::Int(0) | RowValue::BigInt(0)
@@ -608,7 +676,10 @@ mod tests {
             &p,
             "SELECT SLEEP(2), n FROM (SELECT 1 AS n UNION SELECT 2 UNION SELECT 3) AS t",
             &[],
-            500,
+            crate::driver::ReadOptions {
+                timeout_ms: 500,
+                ..Default::default()
+            },
         )
         .await;
         let elapsed = start.elapsed();

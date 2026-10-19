@@ -38,6 +38,8 @@ pub async fn handle(state: &AppState, req: RunReq) -> Result<QueryResp, String> 
         rows,
         row_count,
         columns: result.columns,
+        truncated: false,
+        elapsed_ms: result.elapsed_ms,
     })
 }
 

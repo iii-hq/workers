@@ -126,6 +126,8 @@ pub async fn run(
             timeout_ms,
             // Catalog reads are the page's plumbing, not the user's queries.
             record_history: false,
+            max_rows: None,
+            query_only: false,
         },
     )
     .await?;

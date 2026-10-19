@@ -52,6 +52,9 @@ pub struct ExecuteResp {
     /// The rows the SQL's `RETURNING` clause produced (or a `SELECT`/`VALUES`
     /// sent here). Empty without such a clause.
     pub returned_rows: Vec<serde_json::Map<String, Value>>,
+    /// Time the database spent running the statement (pool acquisition
+    /// excluded), in milliseconds.
+    pub elapsed_ms: u64,
 }
 
 pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, String> {
@@ -89,6 +92,7 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
         affected_rows: result.affected_rows,
         last_insert_id: result.last_insert_id,
         returned_rows,
+        elapsed_ms: result.elapsed_ms,
     })
 }
 
