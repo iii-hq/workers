@@ -78,10 +78,10 @@ Every task ends with `\nFunctions: <the Functions text of your task, long-run re
 
 ## Finish
 
-1. One `state::compare-and-set` to the exact result scope and key in your task, with no `expected`. `swapped:false`: if `current.item` is your key, stop; otherwise write the same value under `<your key>.dup` (no `expected`) and stop. The document, at most 2 KB not counting `result`, `new_items` and `loose_ends`:
+1. One `state::compare-and-set` to the exact result scope and key in your task, with no `expected`. `swapped:false`: if `current.item` is your key, stop; otherwise write the same value under `<your key>.dup` (no `expected`) and stop. The document, at most 2 KB not counting `new_items` and `loose_ends`:
    ```json
-   {"item":"KAN-12","outcome":"verified|accepted|unverified|blocked|failed|stuck","summary":"≤60 words","commit":"<newest sha or null>","result":<the last code or work document's result, or null>,"reasons":["<from the last check>"],"evidence":["<check>: <observed>"],"new_items":[…],"loose_ends":[…],"question":"only when blocked"}
+   {"item":"KAN-12","outcome":"verified|accepted|unverified|blocked|failed|stuck","summary":"≤60 words","commit":"<newest sha or null>","result_from":{"scope":"<the phase scope of the last code or work document with status done>","key":"code|work"},"reasons":["<from the last check>"],"evidence":["<check>: <observed>"],"new_items":[…],"loose_ends":[…],"question":"only when blocked"}
    ```
-   Merge `new_items` and `loose_ends` from every phase document, without duplicates.
+   `result_from` names where the ticket's result is; set it to `null` when no code or work document has status `done`. Never copy that document's `result` into yours, not even in part: readers fetch it with `state::get` from `result_from`. Merge `new_items` and `loose_ends` from every phase document, without duplicates.
 2. Comment on the ticket: `<outcome>: <summary>` (≤40 words). If it fails, continue.
 3. End your turn with exactly one line, `<KEY> <outcome>: written`.

@@ -135,17 +135,17 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
 - **kanban** with the default columns: ids `backlog`, `todo`, `in_progress` and `done`, and `done_status: done`.
 - **state** with the defaults: the kv adapter (redis won't work), `store_method: file_based` and `triggers_enabled: true`.
 - **harness** with `max_depth` of at least 3 and `max_children` of at least `concurrency`. The defaults, 3 and 8, are enough.
-- **Approval rules.** These functions must run without a prompt:
+- **Approval rules**, only when the project runs the `approval-gate` worker (a project without it prompts for nothing, so skip this). These functions must run without a prompt:
 
   | Who | Functions |
   |---|---|
   | the harness | `state::barrier` |
-  | orchestrator | `harness::spawn`, `harness::metrics`, `harness::stop`, `state::compare-and-set`, `kanban::ticket::list`, `kanban::project::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, plus `directory::agents::get` with `judges=` |
+  | orchestrator | `harness::spawn`, `harness::metrics`, `harness::stop`, `state::compare-and-set`, `state::get`, `kanban::ticket::list`, `kanban::project::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, plus `directory::agents::get` with `judges=` |
   | leads | `harness::spawn`, `harness::status`, `harness::stop`, `engine::register_trigger`, `engine::unregister_trigger`, `harness::triggers::list`, `state::list`, `state::compare-and-set`, `kanban::comment::create` |
   | phase sub-agents | `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, `engine::register_trigger` (long runs), `coder::read-file`, plus whatever the work needs. `deepwork-impl` also needs `coder::create-file` and `coder::update-file`. Checkers, and the worker of the plain flow's synthesis ticket, also need `state::get` |
 
   A phase call that waits for approval parks its ticket as `blocked`. If every lead in a wave waits for approval, the run ends as `blocked`.
-- **`harness::stop`.** The repository rules (`iii-permissions.yaml`) deny it with a `'!harness::stop'` line. To allow it, remove that line and add `- harness::stop`. An allow above the deny line is not enough, because the console makes every deny rule session-wide. If you keep the deny, leads that time out are parked as `stuck`.
+- **`harness::stop`.** With `approval-gate`, the repository rules (`iii-permissions.yaml`) may deny it with a `'!harness::stop'` line. To allow it, remove that line and add `- harness::stop`. An allow above the deny line is not enough, because the console makes every deny rule session-wide. If you keep the deny, leads that time out are parked as `stuck`.
 - **Project creation.** The repository rules allow a `kanban::project::create` whose `lead` is `deepwork` (rule `deepwork-run-project`). With older rules, add that rule or pass `project=`. If the create is refused, the run goes on without a project.
 - **Trust.** Any agent that can create or update kanban tickets can add a subtask to the run ticket. That subtask then runs with the orchestrator's permissions.
 

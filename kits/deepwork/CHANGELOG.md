@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- A lead no longer copies its ticket's result into the document it writes for the orchestrator. Copies of large results came back `null` or cut down to a pointer, so the synthesis and the final report lost them. The lead's document carries `result_from` (the scope and key of the phase document with status `done`), and the orchestrator, the synthesis card's Inputs and the report read the result there with `state::get`, which the orchestrator now preloads. The synthesis runs when at least two done tickets have a `result_from`.
+- With `plan_only=on` the run's last line is exactly `plan on <R>: <n> tickets; start with args: resume=<R>`.
+- The README's approval rules apply only to a project that runs the `approval-gate` worker.
+
 ## 0.4.1
 
 - The tests, code and work phases follow the long-run recipe too, so a ticket no longer fails at its first build in a fresh worktree. 0.4.0 kept them on `shell::exec`, capped at 120 s, and the leads' child deny list blocked `engine::register_trigger`, so a cold Cargo build was killed before any test ran. The deny list no longer includes it, the recipe now names a cold first build and any command that hit the cap, and `deepwork-worker` (the base of `deepwork-impl`) preloads `shell::exec_bg`, `shell::status`, `shell::kill` and `engine::register_trigger`. A Verify line that is a long run keeps its command, args and `cwd`.
