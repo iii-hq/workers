@@ -157,9 +157,11 @@ struct Inner {
     rebuild: tokio::sync::Mutex<()>,
     /// One model load at a time (a catalog rebuild and the embed surface).
     load: tokio::sync::Mutex<()>,
-    /// The last failed load and the bundle's [`bundle_stamp`] it saw: the
-    /// failure stands, without re-hashing 90 MB per call, until a file's
-    /// length or mtime changes (someone re-provisioned the bundle).
+    /// The last load that failed verification (a size or SHA-256 mismatch)
+    /// and the bundle's [`bundle_stamp`] it saw: the failure stands, without
+    /// re-hashing 90 MB per call, until a file's length or mtime changes
+    /// (someone re-provisioned the bundle). Any other load error (I/O, ORT
+    /// init, a failed task) is retried on the next call.
     failed_load: Mutex<Option<(BundleStamp, String)>>,
 }
 
@@ -611,7 +613,9 @@ async fn ensure_model(inner: &Inner) -> Result<Arc<LoadedModel>, SemanticUnavail
             )))
         })
         .inspect_err(|error| {
-            *inner.failed_load.lock().expect("failed load") = Some((stamp, error.0.clone()));
+            if error.0.starts_with(ARTIFACT_MISMATCH) {
+                *inner.failed_load.lock().expect("failed load") = Some((stamp, error.0.clone()));
+            }
         })?;
     let model = Arc::new(model);
     *inner.model.write().expect("semantic model") = Some(model.clone());
@@ -967,6 +971,10 @@ fn minilm_artifact_contract_matches(path: &Path) -> bool {
     })
 }
 
+/// Prefixes [`verify_artifacts`]' size or SHA-256 mismatch, the one load
+/// failure that lasts as long as the bundle files stay as they are.
+const ARTIFACT_MISMATCH: &str = "artifact failed verification";
+
 fn verify_artifacts(root: &Path, files: &[(&str, u64, &str)]) -> Result<(), SemanticUnavailable> {
     for (name, expected_size, expected_sha256) in files {
         let artifact = root.join(name);
@@ -978,7 +986,7 @@ fn verify_artifacts(root: &Path, files: &[(&str, u64, &str)]) -> Result<(), Sema
             || sha256(&artifact)? != *expected_sha256
         {
             return Err(unavailable(format!(
-                "artifact failed verification: {}",
+                "{ARTIFACT_MISMATCH}: {}",
                 artifact.display()
             )));
         }
@@ -1230,8 +1238,9 @@ mod tests {
         assert!(encode_chunked(&texts, EMBED_CHUNK, |_| Err(unavailable("boom"))).is_err());
     }
 
+    #[cfg(minilm)]
     #[tokio::test]
-    async fn a_failed_load_stands_until_the_bundle_changes() {
+    async fn a_failed_verification_stands_until_the_bundle_changes() {
         let dir = tempfile::tempdir().unwrap();
         for (name, _, _) in MINILM_FILES {
             let path = dir.path().join(name);
@@ -1262,6 +1271,15 @@ mod tests {
             .unwrap();
         let reloaded = ensure_model(&semantic.inner).await.err().unwrap();
         assert_ne!(reloaded.0, "cached", "a touched file reloads");
+    }
+
+    #[tokio::test]
+    async fn any_other_load_failure_is_retried() {
+        // An unreadable bundle (here: none) fails on I/O, not verification.
+        let dir = tempfile::tempdir().unwrap();
+        let semantic = SemanticSearch::new(Some(dir.path().into()));
+        assert!(ensure_model(&semantic.inner).await.is_err());
+        assert!(semantic.inner.failed_load.lock().unwrap().is_none());
     }
 
     #[test]
