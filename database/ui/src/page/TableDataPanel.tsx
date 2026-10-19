@@ -1,10 +1,13 @@
 /**
- * Paged read-only view of one table.
+ * Paged view of one table.
  *
  * Reads go through `database::browseTable`, which takes typed filters and
  * sorts and returns the page plus a total honouring the same filters — one
  * call where this used to make two and build its own SQL. The page no longer
  * writes `SELECT`, and neither does an agent asking the same question.
+ *
+ * The grid stays read-only; the one write is New row (tables only), a form
+ * that inserts through `database::insertRow`.
  *
  * The grid is the shared `ResultGrid`, so cells render the same way as in the
  * SQL panel and the chat family.
@@ -26,8 +29,8 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { copyText } from '@iii-dev/console-ui/format'
-import { CircleAlert, Table2, X } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { CircleAlert, Plus, Table2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cellText, rowAsTsv } from '../lib/grid-cursor'
 import { type FilterSpec, isComplete, PAGE_SIZE } from '../lib/rpc'
 import { CellInspector } from './CellInspector'
@@ -35,10 +38,12 @@ import { ColumnStatsPanel } from './ColumnStatsPanel'
 import {
   browseTableRef,
   type DbDriver,
+  distinctValuesRef,
   type TableSort,
   tableColumns,
 } from './db-data'
-import { FilterBar } from './FilterBar'
+import { FilterBar, type SuggestFn } from './FilterBar'
+import { NewRowDialog } from './NewRowDialog'
 import { Pagination } from './pagination'
 import { RowDetail } from './RowDetail'
 import { ResultGrid } from './result-grid'
@@ -68,7 +73,18 @@ interface TableDataPanelProps {
    * sort, and the cursor.
    */
   refreshToken?: number
+  /** Views never offer New row. */
+  kind?: 'table' | 'view'
+  /** `database::insertRow` is registered. */
+  canInsert?: boolean
+  /** The worker takes raw SQL filter chips. */
+  canRawFilter?: boolean
+  /** `database::distinctValues` is registered. */
+  canSuggest?: boolean
 }
+
+const SUGGESTIONS = 12
+const INSERTED_NOTE_MS = 4000
 
 /** The modifier key, written the way this keyboard has it. */
 const MOD =
@@ -87,8 +103,19 @@ export function TableDataPanel({
   onFollow,
   initialFilters,
   refreshToken,
+  kind,
+  canInsert,
+  canRawFilter,
+  canSuggest,
 }: TableDataPanelProps) {
   const [page, setPage] = useState(0)
+  const [newRowOpen, setNewRowOpen] = useState(false)
+  const [insertedNote, setInsertedNote] = useState<string | null>(null)
+  useEffect(() => {
+    if (!insertedNote) return
+    const timer = setTimeout(() => setInsertedNote(null), INSERTED_NOTE_MS)
+    return () => clearTimeout(timer)
+  }, [insertedNote])
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [sort, setSort] = useState<TableSort | null>(null)
   const [selectedRow, setSelectedRow] = useState<number | null>(null)
@@ -127,6 +154,15 @@ export function TableDataPanel({
   }, [host, db, driver, table, refreshToken])
   const pageRead = useDatabaseRead(enabled, pageFetcher)
   const columnsRead = useDatabaseRead(enabled, columnsFetcher)
+
+  const suggest = useCallback<SuggestFn>(
+    (column, search) =>
+      distinctValuesRef(host, db, table, column, {
+        search: search || undefined,
+        limit: SUGGESTIONS,
+      }).then((r) => r.values),
+    [host, db, table],
+  )
 
   const columnInfo = useMemo(() => columnsRead.data ?? [], [columnsRead.data])
   const primaryKeys = useMemo(
@@ -186,17 +222,41 @@ export function TableDataPanel({
     return hasMore ? page + 2 : page + 1
   }, [total, hasMore, page, pageSize])
 
+  const dialect = driver === 'unknown' ? 'unknown' : driver
+  const filterBar = (
+    <FilterBar
+      columns={columnInfo}
+      filters={filters}
+      onChange={changeFilters}
+      allowRaw={canRawFilter}
+      dialect={dialect}
+      suggest={canSuggest ? suggest : undefined}
+    />
+  )
+  const insertable = kind === 'table' && canInsert === true
+  const newRow = insertable ? (
+    <NewRowDialog
+      host={host}
+      db={db}
+      table={table}
+      columns={columnInfo}
+      dialect={dialect}
+      open={newRowOpen}
+      onOpenChange={setNewRowOpen}
+      onInserted={() => {
+        setInsertedNote(`Row inserted into ${table}`)
+        pageRead.refresh()
+      }}
+    />
+  ) : null
+
   if (pageRead.error) {
     // The filter bar stays: when a filter itself caused the failure, hiding
     // it traps the user with no way to edit or remove the offending chip.
     return (
       <div className="db-data">
         <div className="db-data-main">
-          <FilterBar
-            columns={columnInfo}
-            filters={filters}
-            onChange={changeFilters}
-          />
+          {filterBar}
           <div className="db-pad">
             <StatusPanel
               variant="alert"
@@ -227,11 +287,7 @@ export function TableDataPanel({
     return (
       <div className="db-data">
         <div className="db-data-main">
-          <FilterBar
-            columns={columnInfo}
-            filters={filters}
-            onChange={changeFilters}
-          />
+          {filterBar}
           <EmptyState
             icon={Table2}
             title={filtering ? 'No matching rows' : 'Empty table'}
@@ -240,8 +296,19 @@ export function TableDataPanel({
                 ? `no rows in ${table} match the ${applied.length} filter${applied.length === 1 ? '' : 's'} above`
                 : `${table} has no rows`
             }
+            action={
+              insertable
+                ? { label: 'New row', onClick: () => setNewRowOpen(true) }
+                : undefined
+            }
           />
+          {insertedNote ? (
+            <span className="db-sr-only" role="status">
+              {insertedNote}
+            </span>
+          ) : null}
         </div>
+        {newRow}
       </div>
     )
   }
@@ -253,23 +320,33 @@ export function TableDataPanel({
   return (
     <div className="db-data">
       <div className="db-data-main">
-        <FilterBar
-          columns={columnInfo}
-          filters={filters}
-          onChange={changeFilters}
-        />
+        {filterBar}
         <Toolbar
           aria-label="table data"
           className="db-bar db-data-bar"
           end={
-            onOpenInSql ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onOpenInSql(table)}
-              >
-                Open in SQL
-              </Button>
+            insertable || onOpenInSql ? (
+              <>
+                {insertable ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setNewRowOpen(true)}
+                  >
+                    <Plus size={16} aria-hidden />
+                    New row
+                  </Button>
+                ) : null}
+                {onOpenInSql ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onOpenInSql(table)}
+                  >
+                    Open in SQL
+                  </Button>
+                ) : null}
+              </>
             ) : undefined
           }
         >
@@ -289,7 +366,15 @@ export function TableDataPanel({
               ? `${total.toLocaleString()} row${total === 1 ? '' : 's'}`
               : '… rows'}
             {filtering ? ' matching' : ''}
+            {typeof result.elapsed_ms === 'number'
+              ? ` · ${result.elapsed_ms} ms`
+              : ''}
           </span>
+          {insertedNote ? (
+            <span className="db-data-note" role="status">
+              {insertedNote}
+            </span>
+          ) : null}
           {/* The audible twin of the counts: rows and page after each load,
               silence while loading. */}
           <span className="db-sr-only" role="status">
@@ -455,6 +540,7 @@ export function TableDataPanel({
           </Tabs>
         </div>
       ) : null}
+      {newRow}
     </div>
   )
 }

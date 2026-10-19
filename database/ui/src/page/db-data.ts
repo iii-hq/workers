@@ -68,6 +68,8 @@ export interface ColumnInfo {
   fk?: ForeignKeyRef
   /** Display-only rendering of `fk`. */
   fkTarget?: string
+  /** The column's default as the catalog spells it, when it has one. */
+  defaultValue?: string | null
 }
 
 export interface IndexInfo {
@@ -106,6 +108,10 @@ export interface AdhocResult {
 }
 
 /** Split a schema-qualified name for the worker, which takes them apart. */
+export function splitTableRef(table: string): { schema: string | null; name: string } {
+  return splitRef(table)
+}
+
 function splitRef(table: string): { schema: string | null; name: string } {
   if (!table.includes('.')) return { schema: null, name: table }
   const [schema, ...rest] = table.split('.')
@@ -153,7 +159,20 @@ export async function tableColumns(host: Host, db: string, _driver: DbDriver, ta
     fkTarget: c.foreign_key
       ? `${qualify(c.foreign_key.schema, c.foreign_key.table)}.${c.foreign_key.column}`
       : undefined,
+    defaultValue: c.default_value ?? null,
   }))
+}
+
+/** A column's frequent values, for the filter bar's suggestions. */
+export async function distinctValuesRef(
+  host: Host,
+  db: string,
+  table: string,
+  column: string,
+  opts: { search?: string; limit?: number } = {},
+): Promise<rpc.DistinctValues> {
+  const { schema, name } = splitRef(table)
+  return rpc.distinctValues(host, db, name, schema, column, opts)
 }
 
 export async function tableIndexes(host: Host, db: string, _driver: DbDriver, table: string): Promise<IndexInfo[]> {

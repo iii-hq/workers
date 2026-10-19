@@ -635,6 +635,12 @@ export function DatabasePage({
                         db={activeDb.name}
                         driver={activeDb.driver}
                         table={selectedTable}
+                        kind={tables.find((t) => t.name === selectedTable)?.kind}
+                        canInsert={caps.has(DB.insertRow)}
+                        canSuggest={caps.has(DB.distinctValues)}
+                        // Raw filters shipped with distinctValues; an older
+                        // worker would ignore `raw` and fail on the empty column.
+                        canRawFilter={caps.has(DB.distinctValues)}
                         initialFilters={arrival}
                         onFollow={follow}
                         enabled
