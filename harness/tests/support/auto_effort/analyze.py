@@ -95,27 +95,41 @@ def safe_models(cache: list[dict]) -> set[str]:
 
 
 def judged(arm: str, corpus: list[dict], verdicts: dict) -> list[dict]:
-    """The corpus turns the arm judged, at the level it picked."""
-    return [dict(r, level=verdicts[r["id"], arm]["level"]) for r in corpus if (r["id"], arm) in verdicts]
+    """The corpus turns the arm judged, in session order, each at the level it would run at under Auto.
+
+    A kept verdict holds the level the session ran at (judge.verdict), but Auto keeps the level of the turn before,
+    so a kept turn inherits the previous judged turn's level; only a session's first judged turn keeps its own.
+    """
+    out = []
+    for row in sorted(corpus, key=lambda r: (r["session_id"], r["seq"])):
+        if (verdict := verdicts.get((row["id"], arm))) is None:
+            continue
+        level = verdict["level"]
+        if verdict["kept"] and out and out[-1]["session_id"] == row["session_id"]:
+            level = out[-1]["level"]
+        out.append(dict(row, level=level))
+    return out
 
 
 def costs(arm: str, corpus: list[dict], verdicts: dict, ratios: dict, safe: set[str]) -> dict[str, dict]:
     """Per model id: judged rows, and actual and modeled cost units of the rows with a ratio at both levels."""
-    warm = {f["id"] for f in flips(judged(arm, corpus, verdicts)) if f["warm"]}
+    turns = judged(arm, corpus, verdicts)
+    warm = {f["id"] for f in flips(turns) if f["warm"]}
+    picked = {t["id"]: t["level"] for t in turns}
     out = defaultdict(lambda: {"rows": 0, "priced": 0, "actual": 0.0, "modeled": 0.0})
     for row in corpus:
-        verdict = verdicts.get((row["id"], arm))
-        if verdict is None:
+        if (pick := picked.get(row["id"])) is None:
             continue
         model = model_id(row["model"])
         c = out[model]
         c["rows"] += 1
         levels = ratios.get(model, {})
-        if verdict["level"] in levels and (row["level"] or "medium") in levels:
+        if pick in levels and (row["level"] or "medium") in levels:
             c["priced"] += 1
             c["actual"] += row["cost_units"]
+            cost = modeled_cost(row, pick, ratios, safe, row["id"] in warm)
             # ponytail: judge tokens count 1:1 as the session model's input; a price table if it decides G3
-            c["modeled"] += modeled_cost(row, verdict["level"], ratios, safe, row["id"] in warm) + verdict["tokens"]
+            c["modeled"] += cost + verdicts[row["id"], arm]["tokens"]
     return out
 
 
@@ -193,6 +207,8 @@ def gates(
     """
     ok = {r["id"]: r["ok"] for r in rows if r.get("ok")}
     in_g1 = {r["id"] for r in rows if r["slice"] in G1_SLICES}
+    # the preregistered population is top plus the holdout: no arm passes while one of them has no labels
+    unlabelled = [s for s in G1_SLICES if not any(r["id"] in ok for r in rows if r["slice"] == s)]
     arms = list(dict.fromkeys(arm for _, arm in verdicts))
     lines, passing = [], []
     for arm in [*JUDGES, *(a for a in arms if a not in JUDGES)]:
@@ -204,7 +220,7 @@ def gates(
         elif not s["labelled"]:
             lines.append(f"{name} FAIL: no labelled rows")
         else:
-            passed = s["right"] >= G1_RIGHT and s["low"] <= G1_LOW and s["p95"] <= G1_P95_MS
+            passed = not unlabelled and s["right"] >= G1_RIGHT and s["low"] <= G1_LOW and s["p95"] <= G1_P95_MS
             if passed and arm in JUDGES:
                 passing.append((s["right"], -s["low"], arm))
             lines.append(
@@ -212,7 +228,10 @@ def gates(
                 f" on {s['labelled']} labelled of {s['rows']} rows"
             )
     winner = max(passing)[2] if passing else None
-    head = f"PASS: winner {winner}." if winner else "FAIL: no judge arm passes."
+    if unlabelled:
+        head = f"FAIL: no labels for {', '.join(unlabelled)} (label.py --run)."
+    else:
+        head = f"PASS: winner {winner}." if winner else "FAIL: no judge arm passes."
     safe = safe_models(cache or [])
     corpus = [r for r in rows if r["slice"] in ("top", "child")]
     return {
@@ -272,8 +291,8 @@ def report(
         out.append("Skipped: needs prompts.jsonl and verdicts.jsonl.")
     else:
         out += [
-            "Level changes between consecutive judged turns of a session; warm means under"
-            f" {WARM_MS // 1000} s since the previous assistant message.",
+            "Level changes between consecutive judged turns of a session, where a kept turn stays at the level of the"
+            f" judged turn before it; warm means under {WARM_MS // 1000} s since the previous assistant message.",
             "",
             "| arm | warm | cold |",
             "|---|--:|--:|",

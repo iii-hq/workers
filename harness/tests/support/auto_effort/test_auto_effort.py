@@ -430,15 +430,33 @@ class AnalyzeTest(unittest.TestCase):
         self.assertEqual([f["warm"] for f in got], [True, False])
         self.assertEqual([(f["id"], f["from"], f["to"]) for f in got], [("t1", "medium", "low"), ("t2", "low", "high")])
 
+    def test_kept_turn_runs_at_the_previous_level(self):
+        """A kept verdict holds the session's level, but Auto would keep the level of the judged turn before."""
+
+        def kept(rid: str, level: str) -> dict:
+            return dict(verdict_row(rid, "haiku", level), kept=True)
+
+        turn = {"slice": "top", "model": "m", "cost_units": 10_000, "first_read": 50_000, "gap_ms": 60_000}
+        s1 = [dict(turn, id=f"t{i}", session_id="s1", seq=i, level="medium") for i in range(3)]
+        s2 = [dict(turn, id=f"u{i}", session_id="s2", seq=i, level="high") for i in range(4)]
+        verdicts = [verdict_row("t0", "haiku", "low"), kept("t1", "medium"), verdict_row("t2", "haiku", "low")]
+        verdicts += [kept("u0", "high"), verdict_row("u1", "haiku", "low"), kept("u2", "high"), kept("u3", "high")]
+        got = analyze.flips(analyze.judged("haiku", [*reversed(s1 + s2)], keyed(verdicts)))
+        # s1 stays at low; s2 starts at its own level, not at s1's last, and u3 inherits u2's inherited low
+        self.assertEqual(got, [{"id": "u1", "from": "high", "to": "low", "warm": True}])
+        c = analyze.costs("haiku", s1, keyed(verdicts), {"m": {"low": 0.7, "medium": 1.0}}, set())["m"]
+        self.assertEqual((c["actual"], c["modeled"]), (30_000, 21_000))  # 0.7 × actual and no warm-flip penalty
+
     def test_g1_wants_a_judge_arm_on_labelled_rows(self):
         rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["medium"]} for i in range(20)]
-        rows += [{"id": "t0", "slice": "top"}, {"id": "c0", "slice": "child", "ok": ["low"]}]
+        rows += [{"id": "t0", "slice": "top", "ok": ["medium"]}, {"id": "t1", "slice": "top"}]
+        rows += [{"id": "c0", "slice": "child", "ok": ["low"]}]
         haiku = [verdict_row("h0", "haiku", "high", ms=3000)]  # one pick too high, and the one slow call of 20
         haiku += [verdict_row(f"h{i}", "haiku", "medium", ms=700) for i in range(1, 20)]
         typesafe = [verdict_row(f"h{i}", "typesafe", "medium", ms=1600) for i in range(20)]
         baseline = [verdict_row(f"h{i}", "always-medium", "medium") for i in range(20)]
 
-        def g1(verdicts: list[dict]) -> tuple[bool, str]:
+        def g1(verdicts: list[dict], rows: list[dict] = rows) -> tuple[bool, str]:
             return analyze.gates(rows, keyed(verdicts), None, None, None)["G1"]
 
         passed, text = g1(typesafe + baseline + haiku)
@@ -452,9 +470,15 @@ class AnalyzeTest(unittest.TestCase):
         passed, text = g1(baseline)  # a baseline that clears the bars is shown, but never wins G1
         self.assertFalse(passed)
         self.assertIn("always-medium (baseline) PASS right 100.0%", text)
-        unlabelled = [verdict_row("t0", "haiku", "medium"), verdict_row("c0", "haiku", "low")]  # child is no G1 slice
+        unlabelled = [verdict_row("t1", "haiku", "medium"), verdict_row("c0", "haiku", "low")]  # child is no G1 slice
         want = (False, "FAIL: no judge arm passes. typesafe: no verdicts; haiku FAIL: no labelled rows")
         self.assertEqual(g1(unlabelled), want)
+        no_top_labels = [r for r in rows if r["id"] != "t0"]  # the holdout alone is not the preregistered population
+        passed, text = g1(typesafe + baseline + haiku, no_top_labels)
+        self.assertFalse(passed)
+        self.assertTrue(text.startswith("FAIL: no labels for top (label.py --run). typesafe FAIL "), text)
+        self.assertIn("haiku FAIL right 95.0% low 0.0% p95 700 ms on 20 labelled of 20 rows", text)
+        self.assertFalse(g1(haiku, rows[:20])[0])  # nor with no top rows at all, before extract.py
 
     def test_g2_counts_valid_pairs_only(self):
         def pair(model: str, retention: float | None, invalid: str | None = None) -> dict:
@@ -474,7 +498,7 @@ class AnalyzeTest(unittest.TestCase):
     def test_g3_value_needs_every_input(self):
         rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["low"]} for i in range(20)]
         turn = {"slice": "top", "session_id": "s1", "model": "claude-code/m", "level": None, "cost_units": 1000.0}
-        rows.append(dict(turn, id="c0", seq=0, gap_ms=None, first_read=0))
+        rows.append(dict(turn, id="c0", seq=0, gap_ms=None, first_read=0, ok=["low"]))  # G1 needs a labelled top row
         rows.append(dict(turn, id="c1", seq=1, gap_ms=60_000, first_read=500))
         rows.append(dict(turn, id="g0", seq=2, gap_ms=60_000, first_read=500, model="gpt-x"))  # no ratios: left out
         picks = {"c0": "low", "c1": "low", "g0": "high", "ab-m-a": "low", "ab-m-c": "high"}
@@ -533,7 +557,7 @@ class AnalyzeTest(unittest.TestCase):
         text = report()
         self.assertIn("No labels for: top.", text)
         self.assertIn("| always-medium | top | 2 | 0 | – | – | – | 0.0% | 0 | 0 | 0 |", text)
-        self.assertIn("- G1 FAIL: no judge arm passes. ", text)
+        self.assertIn("- G1 FAIL: no labels for top (label.py --run). ", text)
         self.assertIn("always-medium (baseline) FAIL right 0.0% low 100.0%", text)  # eff-h15 wants high
         self.assertIn("- G2 INCOMPLETE: ", text)
         self.assertIn("- G3 INCOMPLETE: no judge arm passes G1; no ratios.json; no ab.jsonl", text)
@@ -542,4 +566,5 @@ class AnalyzeTest(unittest.TestCase):
         common.write_jsonl(out / "labels.jsonl", [{"id": "t0", "ok": ["low"], "agreed": True}])
         text = report()
         self.assertNotIn("No labels for", text)
+        self.assertIn("- G1 FAIL: no judge arm passes. ", text)
         self.assertIn("| always-medium | top | 2 | 1 | 0.0% | 0.0% | 100.0% |", text)
