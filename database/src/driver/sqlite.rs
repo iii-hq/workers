@@ -57,7 +57,16 @@ fn read(
     max_rows: Option<u64>,
     started: std::time::Instant,
 ) -> Result<QueryResult, DbError> {
-    // `prepare` refuses a second statement after the first (`; DELETE …`).
+    // rusqlite's `prepare` compiles the first statement and ignores the
+    // rest; refuse a second one instead of silently dropping it.
+    if has_second_statement(sql) {
+        return Err(DbError::DriverError {
+            driver: "sqlite".into(),
+            code: Some("MULTI_STATEMENT".into()),
+            message: "database::query runs one statement; send each statement separately".into(),
+            failed_index: None,
+        });
+    }
     let mut stmt = c
         .prepare(sql)
         .map_err(|e| enrich_schema_err(c, sql, map_err(e)))?;
@@ -347,6 +356,69 @@ fn with_failed_index(e: DbError, idx: usize) -> DbError {
 /// String-literal edge cases (e.g. a `;` inside a quoted string) are not
 /// handled — for v1.0, false positives are an acceptable price for
 /// preventing silent statement-drop in `Connection::execute`.
+/// Whether SQL holds anything but whitespace and comments after its first
+/// top-level `;` — lexed like sqlite (quotes, brackets, comments), so a `;`
+/// inside a literal does not count.
+pub(crate) fn has_second_statement(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    let mut i = 0usize;
+    let mut ended = false;
+    while i < b.len() {
+        let c = b[i];
+        let skip_to = |close: &[u8], from: usize| -> usize {
+            sql[from..]
+                .find(std::str::from_utf8(close).unwrap_or(""))
+                .map_or(b.len(), |p| from + p + close.len())
+        };
+        match c {
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                i = sql[i..].find('\n').map_or(b.len(), |p| i + p + 1);
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i = skip_to(b"*/", i + 2);
+                continue;
+            }
+            c if c.is_ascii_whitespace() => {
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if ended {
+            if c == b';' {
+                i += 1;
+                continue;
+            }
+            return true;
+        }
+        match c {
+            b'\'' | b'"' | b'`' => {
+                // Doubled quotes stay inside.
+                let mut j = i + 1;
+                while j < b.len() {
+                    if b[j] == c {
+                        if b.get(j + 1) == Some(&c) {
+                            j += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j + 1;
+            }
+            b'[' => i = skip_to(b"]", i + 1),
+            b';' => {
+                ended = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
 fn looks_like_multi_statement(sql: &str) -> bool {
     let trimmed = sql.trim_end_matches(|c: char| c.is_whitespace() || c == ';');
     trimmed.contains(';')
@@ -895,6 +967,22 @@ pub async fn run_prepared(
 
     *conn_slot = Some(returned);
     result
+}
+
+#[cfg(test)]
+mod second_statement_tests {
+    use super::has_second_statement;
+
+    #[test]
+    fn only_a_real_second_statement_counts() {
+        assert!(has_second_statement("SELECT 1; ATTACH 'x' AS y"));
+        assert!(has_second_statement("SELECT 1;SELECT 2"));
+        assert!(has_second_statement("SELECT 1; ; SELECT 2"));
+        assert!(!has_second_statement("SELECT 1;"));
+        assert!(!has_second_statement("SELECT 1; -- done\n ;; /* end */"));
+        assert!(!has_second_statement("SELECT 'a;b', \"c;d\", [e;f] FROM t"));
+        assert!(!has_second_statement("SELECT 'it''s; fine'"));
+    }
 }
 
 #[cfg(test)]

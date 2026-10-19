@@ -14,6 +14,38 @@ pub struct SqlitePool {
     acquire_timeout: Duration,
 }
 
+/// Pragmas no call may set on a pooled connection: they corrupt the schema
+/// (`writable_schema`, `schema_version`), switch integrity checks off for
+/// every later caller of the connection (`ignore_check_constraints`,
+/// `trusted_schema`, `legacy_alter_table`), or point sqlite at directories
+/// (`temp_store_directory`, `data_store_directory`). Reading them is fine.
+const DENIED_PRAGMAS: [&str; 7] = [
+    "writable_schema",
+    "schema_version",
+    "ignore_check_constraints",
+    "trusted_schema",
+    "legacy_alter_table",
+    "temp_store_directory",
+    "data_store_directory",
+];
+
+fn authorize(ctx: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::{AuthAction, Authorization};
+    match ctx.action {
+        AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value: Some(_),
+        } if DENIED_PRAGMAS
+            .iter()
+            .any(|denied| pragma_name.eq_ignore_ascii_case(denied)) =>
+        {
+            Authorization::Deny
+        }
+        _ => Authorization::Allow,
+    }
+}
+
 /// A held connection from the pool. Closures run synchronously; callers wrap
 /// in `tokio::task::spawn_blocking`.
 #[derive(Debug)]
@@ -75,6 +107,12 @@ impl SqlitePool {
         // through the worker.
         let manager = manager.with_init(|c| {
             c.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+            // No double-quoted-string fallback: an unknown "column" is an
+            // error ("no such column"), not a string literal that silently
+            // matches or sorts nothing.
+            c.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DML, false)?;
+            c.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DDL, false)?;
+            c.authorizer(Some(authorize));
             Ok(())
         });
         let inner = R2Pool::builder()

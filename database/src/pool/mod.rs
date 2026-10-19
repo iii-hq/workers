@@ -157,3 +157,53 @@ mod tests {
         assert!(!other.exists(), "no file may be created");
     }
 }
+
+#[cfg(test)]
+mod sqlite_guard_tests {
+    use super::SqlitePool;
+
+    async fn run(pool: &SqlitePool, sql: &'static str) -> rusqlite::Result<()> {
+        let conn = pool.acquire().await.unwrap();
+        tokio::task::spawn_blocking(move || conn.with(|c| c.execute_batch(sql)))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn schema_corrupting_pragmas_are_refused_and_reads_still_work() {
+        let pool = SqlitePool::new(
+            "sqlite::memory:",
+            &crate::config::PoolConfig {
+                max: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for sql in [
+            "PRAGMA writable_schema = ON",
+            "PRAGMA main.writable_schema = 1",
+            "PRAGMA ignore_check_constraints = 1",
+            "PRAGMA schema_version = 1",
+            "PRAGMA trusted_schema = ON",
+        ] {
+            assert!(run(&pool, sql).await.is_err(), "{sql} must be refused");
+        }
+        run(&pool, "PRAGMA writable_schema").await.unwrap();
+        run(&pool, "PRAGMA foreign_keys = ON").await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn double_quoted_strings_are_identifiers_only() {
+        let pool = SqlitePool::new(
+            "sqlite::memory:",
+            &crate::config::PoolConfig {
+                max: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        run(&pool, "CREATE TABLE t (a INT)").await.unwrap();
+        let err = run(&pool, "SELECT \"nope_col\" FROM t").await.unwrap_err();
+        assert!(err.to_string().contains("no such column"), "{err}");
+    }
+}
