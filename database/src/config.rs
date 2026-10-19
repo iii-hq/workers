@@ -1371,4 +1371,174 @@ databases:
         let c = cfg(yaml);
         assert!(matches!(c.databases["p"].driver, DriverKind::Sqlite));
     }
+
+    fn entry_err(yaml: &str) -> String {
+        WorkerConfig::from_yaml(&format!("databases:\n  x:\n{yaml}")).unwrap_err()
+    }
+
+    fn entry_ok(yaml: &str) -> DatabaseConfig {
+        WorkerConfig::from_yaml(&format!("databases:\n  x:\n{yaml}"))
+            .unwrap()
+            .databases
+            .remove("x")
+            .unwrap()
+    }
+
+    #[test]
+    fn url_and_structured_form_are_mutually_exclusive() {
+        let err = entry_err(
+            "    url: postgres://u@h/db\n    driver: postgres\n    host: h\n    user: u\n",
+        );
+        assert!(err.contains("mutually exclusive"), "{err}");
+        let err = entry_err("    url: postgres://u@h/db\n    password: hunter2\n");
+        assert!(
+            err.contains("`password` belongs to the structured form"),
+            "{err}"
+        );
+        assert!(!err.contains("hunter2"), "{err}");
+        let err = entry_err("    pool: { max: 2 }\n");
+        assert!(err.contains("set either `url` or `driver`"), "{err}");
+    }
+
+    #[test]
+    fn the_structured_form_parses_with_defaults() {
+        let db = entry_ok(
+            "    driver: mysql\n    host: db.example\n    user: app\n    password: secret://P\n    database: shop\n    display: { icon: server, color: \"#F29111\" }\n    folder: /srv/queries\n",
+        );
+        assert_eq!(db.driver, DriverKind::Mysql);
+        assert_eq!(db.server_endpoint(), Some(("db.example".into(), 3306)));
+        assert_eq!(db.database_name().as_deref(), Some("shop"));
+        assert_eq!(db.display_url(), "mysql://***@db.example:3306/shop");
+        assert!(db.uses_secrets());
+        assert_eq!(db.tls.mode, TlsMode::Require);
+        // The serialized form keeps `driver` and drops what is unset.
+        let json = serde_json::to_value(&db).unwrap();
+        assert_eq!(json["driver"], "mysql");
+        assert!(
+            json.get("url").is_none() && json.get("port").is_none() && json.get("ssh").is_none()
+        );
+
+        let lite = entry_ok("    driver: sqlite\n    database: /tmp/x.db\n");
+        assert_eq!(lite.sqlite_url().as_deref(), Some("sqlite:/tmp/x.db"));
+    }
+
+    #[test]
+    fn structured_entries_name_the_missing_or_misplaced_field() {
+        assert!(entry_err("    driver: postgres\n    user: u\n").contains("`host` is required"));
+        assert!(entry_err("    driver: postgres\n    host: h\n").contains("`user` is required"));
+        assert!(
+            entry_err("    driver: postgres\n    host: h\n    user: u\n    port: 0\n")
+                .contains("`port`")
+        );
+        assert!(entry_err("    driver: sqlite\n").contains("`database` (the file path)"));
+        assert!(
+            entry_err("    driver: sqlite\n    database: a.db\n    host: h\n")
+                .contains("does not apply to sqlite")
+        );
+        assert!(entry_err("    driver: oracle\n    host: h\n").contains("unknown variant"));
+    }
+
+    #[test]
+    fn sensitive_fields_refuse_the_placeholder_and_malformed_references() {
+        let err = entry_err(
+            "    driver: postgres\n    host: h\n    user: u\n    password: __redacted__\n",
+        );
+        assert!(
+            err.contains("`password` holds the redaction placeholder"),
+            "{err}"
+        );
+        let err = entry_err("    url: \"postgres://u:__redacted__@h/db\"\n");
+        assert!(err.contains("redaction placeholder"), "{err}");
+        let err = entry_err(
+            "    driver: postgres\n    host: h\n    user: u\n    password: \"secret://bad name\"\n",
+        );
+        assert!(
+            err.contains("`password` holds a malformed reference"),
+            "{err}"
+        );
+        assert!(!err.contains("bad name"), "{err}");
+        let err = entry_err(
+            "    driver: postgres\n    host: h\n    user: u\n    tls: { client_cert: /c.pem }\n",
+        );
+        assert!(
+            err.contains("needs both `tls.client_cert` and `tls.client_key`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ssh_blocks_are_validated() {
+        let base = "    driver: postgres\n    host: pg-private\n    user: u\n";
+        assert!(
+            entry_ok(&format!(
+                "{base}    ssh: {{ host: b, user: t, password: p }}\n"
+            ))
+            .ssh
+            .unwrap()
+            .port
+                == 22
+        );
+        assert!(
+            entry_err(&format!("{base}    ssh: {{ host: b, user: t }}\n"))
+                .contains("needs `password` or `private_key`")
+        );
+        assert!(entry_err(&format!(
+            "{base}    ssh: {{ host: b, user: t, password: p, passphrase: x }}\n"
+        ))
+        .contains("`ssh.passphrase` is set without `ssh.private_key`"));
+        assert!(entry_err(&format!(
+            "{base}    ssh: {{ host: b, user: t, password: p, host_key: \"MD5:aa\" }}\n"
+        ))
+        .contains("`ssh.host_key` must be an OpenSSH SHA-256 fingerprint"));
+        assert!(entry_err(
+            "    driver: sqlite\n    database: a.db\n    ssh: { host: b, user: t, password: p }\n"
+        )
+        .contains("`ssh` does not apply to sqlite"));
+        assert!(valid_host_key_pin(
+            "SHA256:0rGFgr3lbFUjBJmay4CvRxX16hnJLF7mvototEUXoW0"
+        ));
+        assert!(!valid_host_key_pin("SHA256:short"));
+    }
+
+    #[test]
+    fn display_and_folder_are_checked() {
+        let base = "    driver: sqlite\n    database: a.db\n";
+        assert!(entry_err(&format!("{base}    display: {{ color: red }}\n")).contains("#RRGGBB"));
+        assert!(
+            entry_err(&format!("{base}    display: {{ icon: \"Not An Icon\" }}\n"))
+                .contains("Lucide")
+        );
+        assert!(entry_err(&format!("{base}    folder: relative/path\n")).contains("absolute path"));
+        entry_ok(&format!("{base}    folder: /abs/path\n"));
+        entry_ok(&format!("{base}    folder: \"C:\\\\queries\"\n"));
+    }
+
+    #[test]
+    fn connection_names_follow_the_documented_rule() {
+        for ok in ["shop", "shop_pg", "Shop-2.prod", "_x", "9lives"] {
+            assert!(validate_connection_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "-x", ".x", "has space", "a/b", "ü", &"a".repeat(65)] {
+            assert!(validate_connection_name(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn json_schema_exposes_the_structured_form() {
+        let schema = WorkerConfig::json_schema();
+        let props = &schema["definitions"]["DatabaseConfig"]["properties"];
+        for field in [
+            "url", "driver", "host", "port", "user", "password", "database", "ssh", "display",
+            "folder",
+        ] {
+            assert!(props.get(field).is_some(), "schema lacks {field}");
+        }
+        let modes = schema["definitions"]["TlsMode"].to_string();
+        for mode in ["disable", "prefer", "require", "verify-ca", "verify-full"] {
+            assert!(modes.contains(mode), "TlsMode lacks {mode}");
+        }
+        assert!(schema["definitions"]["TlsConfig"]["properties"]
+            .get("client_key")
+            .is_some());
+    }
 }
