@@ -12,9 +12,34 @@ managed per-database connection pool. Every callable surface lives under
 the `database::*` namespace. The driver is chosen from each database URL
 scheme (`sqlite:`, `postgres://`, `postgresql://`, `mysql://`).
 
-Runtime settings live in the `configuration` worker under id `database`;
-pools hot-reload when the value changes. SQLite is the recommended starting
-point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
+Runtime settings live in the `configuration` worker under id `database` (or
+the `config_id` that `database::listDatabases` reports); pools hot-reload when
+the value changes. SQLite is the recommended starting point. Placeholder
+syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
+
+## Querying a connection
+
+Each configured connection has a name; pass it as `db` on every call.
+
+1. `database::listDatabases` — the connections: `name`, `driver`, `host`,
+   `database`, `folder` (where its saved `.sql` files live, if any) and
+   `error` when it is unavailable (unresolvable secret, SSH failure). An
+   unavailable connection fails its calls with `CONFIG_ERROR` saying why;
+   tell the person rather than retrying.
+2. `database::listTables {db}` / `database::describeTable {db, table}` — the
+   schema, one shape on every driver.
+3. `database::query {db, sql, params?, max_rows?}` — reads. Pass `max_rows`
+   (e.g. 100) for exploratory queries: the result says `truncated: true` when
+   more rows existed, and the SQL is never rewritten. `elapsed_ms` is the
+   statement's time.
+4. `database::execute {db, sql, params?}` — writes.
+
+A chat may mention a connection as `@database(id="shop")`: that is the
+connection named `shop`; use `db: "shop"`.
+
+Connections are managed by people (the console, the iii app): agents cannot
+read a stored entry (`getConnection`), save or delete one. Never ask for or
+handle database passwords; connections reference them as `secret://NAME`.
 
 ## When to Use
 
@@ -76,9 +101,11 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
   transaction.
 - `database::rollbackTransaction` — roll back and finalize an interactive
   transaction.
-- `database::listDatabases` — every configured database with its driver,
-  credential-redacted URL, pool settings and TLS mode. Config only; use
-  `database::health` for live state.
+- `database::listDatabases` — every configured connection with its driver,
+  host, database, folder, credential-redacted URL, pool settings, TLS mode and
+  `error` when unavailable. Config only; use `database::health` for live state.
+- `database::testConnection` — probe a candidate connection entry without
+  saving it; reports `ok`, the failing `stage` and a message.
 
 Interactive transactions auto-roll back when `timeout_ms` elapses (default
 30 s, max 5 min). Prepared handles default to a 1 h TTL (max 24 h) with no
@@ -103,13 +130,34 @@ One shape across all three drivers — prefer these over hand-writing
 
 - `database::browseTable` — paged, sorted, filtered reads with no SQL. Filters
   are `{ column, op, value }` and `total` honours them. Follow a foreign key
-  with an equality filter at `page_size: 1`.
+  with an equality filter at `page_size: 1`. A filter may be
+  `{ raw: "price > 10 AND name LIKE 'a%'" }` — one boolean expression (no `;`,
+  comments or placeholders), run read-only.
+- `database::distinctValues` — a column's values by frequency (`search` to
+  narrow), e.g. to learn the statuses a table actually uses.
 - `database::explain` — the plan as a tree with costs and warnings. `analyze`
   **runs** the statement, so it defaults to false and is refused for anything
   that is not a single read.
 - `database::columnStats` — planner statistics by default (approximate,
   labelled `source: planner`); `exact: true` scans. To profile rows you already
   hold, use the `fp` worker on a `browseTable` result instead.
+
+### Writing rows and formatting SQL
+
+- `database::insertRow {db, table, values}` — insert one row from a
+  `{column: value}` map; values are cast to each column's type (numbers and
+  dates may be strings, bytea/blob take base64) and the inserted row comes
+  back. Prefer it over hand-built INSERTs when you have a record in hand.
+- `database::formatSql {sql, db?}` — pretty-print SQL for the connection's
+  dialect, comments kept. Use it before writing a `.sql` file into a
+  connection's `folder`.
+
+### Values
+
+Rows are JSON objects. Postgres `bigint`/`numeric` and every `decimal` come
+back as strings (exact), `json` columns as JSON values, binary columns as
+base64, dates as `YYYY-MM-DD`, timestamps as RFC 3339 with `Z`, postgres
+arrays as JSON arrays. When writing them back, pass the same forms.
 
 ### Operations and reuse
 

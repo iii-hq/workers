@@ -78,20 +78,50 @@ history_max_bytes: 262144 # 0 disables recording
 
 `history_max_entries` / `history_max_bytes` cap the per-database console query history stored on the [`state`](../state) worker — whichever cap hits first, oldest entries are dropped. Applied live.
 
-Set or replace the whole value:
-
-```bash
-iii trigger configuration::get id=database
-iii trigger configuration::set id=database value='{"databases":{"primary":{"url":"sqlite:./data/iii.db"}}}'
-```
-
 Env placeholders use **`${VAR:default}`** syntax. The configuration worker expands them on every `configuration::get` call, so env changes propagate without a restart.
 
-URL scheme picks the driver: `sqlite:`, `postgres://`, `postgresql://`, `mysql://`.
+The configuration id is `database`, or the name a supervisor passes in `III_CONFIG_NAME` (under compose: `<namespace>-<container>`, e.g. `default-database`). `database::listDatabases` reports it as `config_id`.
+
+### Connection entries
+
+Each entry under `databases` is **either** a connection `url` (its scheme picks the driver: `sqlite:`, `postgres://`, `postgresql://`, `mysql://`) **or** the structured form below — never both (`CONFIG_ERROR` names the offending field). The structured form is what connection editors (the console, the iii app) write:
+
+```yaml
+databases:
+  shop:
+    driver: postgres              # postgres | mysql | sqlite
+    host: db.example.com          # postgres/mysql
+    port: 5432                    # default 5432 / 3306
+    user: app
+    password: secret://DATABASE_SHOP_PASSWORD   # literal | secret://NAME | env://NAME
+    database: shop                # sqlite: the file path on the engine host (or :memory:)
+    tls:
+      mode: verify-full
+      ca_cert: secret://SHOP_CA   # path | inline PEM | secret://NAME | env://NAME
+    display: { icon: database, color: "#22C55E" }   # how clients draw it (Lucide icon, #RRGGBB)
+    folder: /home/me/shop/queries                   # absolute path of its .sql query files
+    pool: { max: 10 }
+    capture: statements
+```
+
+- `display` and `folder` are metadata for clients; the worker validates and stores them, never reads the folder.
+- Connection names written through `database::saveConnection` are 1–64 letters, digits, `_`, `-` or `.`, starting with a letter, digit or `_`.
+- A connection that cannot be built (an unresolvable secret, an SSH failure, an unreadable certificate) does **not** fail the configuration: it gets no pool, `database::listDatabases` reports its `error` and `error_stage`, and its calls fail with `CONFIG_ERROR` naming the cause. Every other connection keeps working, and the worker retries it every 15 s.
+
+### Secrets
+
+`password`, `tls.ca_cert`, `tls.client_cert`, `tls.client_key`, `ssh.password`, `ssh.private_key` and `ssh.passphrase` accept a **reference** instead of a literal:
+
+- `secret://NAME` — a value in the [`secrets`](../secrets) worker's encrypted vault;
+- `env://NAME` — an environment variable the secrets worker reads (the project's `.env`, else its own environment).
+
+The worker resolves them through `secrets::resolve` as consumer **`database`**, so each secret must list `database` in its consumers (`secrets::set` / `secrets::access`). Resolved values are cached (re-read every 5 minutes, failures after 10 s), wiped from memory when replaced, and never logged, returned or written to the configuration. When a secret is rotated, deleted or re-shared, `secrets::changed` makes the worker re-read it and rebuild **only** the connections whose resolved values changed. The worker depends on the `secrets` worker (`iii.worker.yaml`).
+
+An unresolvable reference fails only its connection, with a message that names the reference and what to do (`secret://X did not resolve: database is not allowed to read secret X; add database to the secret's consumers`), never a value.
 
 ### Hot reload
 
-When configuration changes (`configuration::set`, or an external edit to `./data/configuration/database.yaml`), the worker rebuilds connection pools in place. Invalid configs are rejected and the previous pools are kept. In-flight prepared-statement handles and open transactions continue on their original pool until they expire.
+When configuration changes (`configuration::set`, `database::saveConnection`, or an external edit to `./data/configuration/database.yaml`), the worker rebuilds only the connections whose entry or resolved secrets changed; the others keep their pools, tunnels and open connections. Invalid configs are rejected and the previous pools are kept. In-flight prepared-statement handles and open transactions continue on their original pool until they expire.
 
 ### TLS (postgres + mysql)
 
@@ -102,7 +132,7 @@ databases:
   primary:
     url: postgres://app@db.example.com:5432/app
     tls:
-      mode: verify-full           # disable | require | verify-full   (default: require)
+      mode: verify-full           # disable | prefer | require | verify-ca | verify-full   (default: require)
       ca_cert: /etc/ssl/internal-ca.pem    # optional; extends the system trust store
       trust_native: true                   # default true; set false to trust only ca_cert
   local:
@@ -111,11 +141,19 @@ databases:
       mode: disable               # plaintext, local development only
 ```
 
-- **`disable`** — plaintext. Local dev only.
-- **`require`** (default) — encrypted; cert chain validated; hostname is **not** verified. Catches passive eavesdropping, doesn't catch a determined MITM with their own valid-chain cert.
-- **`verify-full`** — encrypted; cert chain validated; cert hostname must match the URL host. Production default for managed services (RDS, Neon, Supabase).
+| Mode | Encrypted | Chain checked | Host name checked | Server without TLS |
+|---|---|---|---|---|
+| `disable` | no | — | — | connects |
+| `prefer` | when offered | yes | no | connects in plaintext (a failed certificate check is still an error) |
+| `require` (default) | yes | yes | no | error |
+| `verify-ca` | yes | yes | no | error |
+| `verify-full` | yes | yes | yes | error |
 
-`ca_cert` lets you point at a CA bundle for self-hosted databases or managed providers whose root isn't in the OS trust store. **Additive by default**: the supplied certs extend the system trust store rather than replacing it, so the same `TlsConfig` surface works for one database that needs a private CA and another that doesn't. Set `tls.trust_native: false` to switch to the strict-isolation posture (only the `ca_cert` certs trusted; the public web PKI is rejected). Postgres only — `mysql_async`'s rustls path always bundles `webpki_roots` and offers no upstream knob to suppress it.
+`require` and `verify-ca` perform the same checks (libpq names them apart because libpq's `require` skips the chain; this worker never does). On postgres, a `sslmode` written into the url still wins over `tls.mode`; otherwise `require` really requires TLS (tokio-postgres alone would fall back to plaintext). `verify-full` is the production default for managed services (RDS, Neon, Supabase).
+
+`ca_cert` lets you point at a CA bundle for self-hosted databases or managed providers whose root isn't in the OS trust store. **Additive by default**: the supplied certs extend the system trust store rather than replacing it. Set `tls.trust_native: false` to trust only the `ca_cert` certs. Postgres only — `mysql_async`'s rustls path always bundles `webpki_roots` and offers no upstream knob to suppress it.
+
+**Mutual TLS.** `tls.client_cert` (the client certificate chain) and `tls.client_key` (its key) present a client certificate; both are required together. Each is a path on the engine host, the PEM itself, or a `secret://` / `env://` reference (a referenced value must be PEM text). Postgres takes PKCS#8, PKCS#1 and SEC1 keys; MySQL takes RSA keys only (PKCS#8 or PKCS#1) — `mysql_async` cannot present EC or Ed25519 client keys.
 
 #### Connecting to managed providers
 
@@ -145,6 +183,33 @@ databases:
 Neon's default `?channel_binding=require` cannot work through the pooler endpoint: TLS terminates at the pooler, so SCRAM-SHA-256-PLUS isn't advertised by the inner server, and `tokio-postgres` refuses to fall back. Leaving the URL param in surfaces as `pool connection failed (auth)`.
 
 SQLite ignores the `tls` block (local-file driver).
+
+### SSH tunnel (postgres + mysql)
+
+```yaml
+databases:
+  private:
+    driver: postgres
+    host: pg-private             # as the SSH server resolves it
+    port: 5432
+    user: shop
+    password: secret://PRIVATE_PG_PASSWORD
+    tls: { mode: verify-full, ca_cert: /etc/ssl/internal-ca.pem }
+    ssh:
+      host: bastion.example.com
+      port: 22                   # default
+      user: tunnel
+      private_key: secret://BASTION_KEY     # OpenSSH or PEM (RSA, ECDSA, Ed25519): inline, a path, or a reference
+      passphrase: secret://BASTION_KEY_PASSPHRASE
+      password: secret://BASTION_PASSWORD   # optional; tried after the key
+      host_key: "SHA256:0rGFgr3lbFUjBJmay4CvRxX16hnJLF7mvototEUXoW0"
+```
+
+The worker opens one SSH session per connection (pure Rust, no OpenSSL), listens on an ephemeral `127.0.0.1` port and forwards each pool connection through a `direct-tcpip` channel to `host:port` as the SSH server sees it; a dropped session is reopened on the next connection. TLS still runs end to end and verifies the **database** host name (`pg-private` above), not `127.0.0.1`. Works with the url form too (the url's host is the forwarding target).
+
+- **Host key.** With `ssh.host_key` (the OpenSSH SHA-256 fingerprint, as `ssh-keygen -lf` prints it) any other key is refused, and the error names both fingerprints. Without it any key is accepted (trust on first use) and `database::testConnection` returns `ssh_host_key: {algorithm, fingerprint}` so a client can pin it.
+- **Authentication.** `private_key` (with `passphrase` when encrypted) is tried first, then `password`. Errors name the SSH server and user, never a credential.
+- The local listener accepts connections only on loopback; any process on the engine host could use it while the pool is up, as with `ssh -L`.
 
 ## Quick start (SQLite)
 
@@ -183,8 +248,8 @@ const { rows } = await iii.trigger({
 
 | Function | Purpose |
 |---|---|
-| `database::query` | Read SQL. Returns `{ rows, row_count, columns }`. |
-| `database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows }`.<br>**`returned_rows`** come from a `RETURNING` clause written into the SQL (SQLite, Postgres — MySQL has none): `INSERT INTO t (n) VALUES (?) RETURNING id`. The `returning: [...]` option never adds the clause; SQLite rejects it without one, Postgres and MySQL ignore it.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row** of an INSERT, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
+| `database::query` | Read SQL (in a read-only transaction). Returns `{ rows, row_count, columns, truncated, elapsed_ms }`. **`max_rows`** caps the rows returned: the worker stops reading after `max_rows + 1` (a postgres portal fetch, mysql's `sql_select_limit`, sqlite's lazy stepping — the SQL is never rewritten) and `truncated` says whether more existed. `elapsed_ms` is the time the statement took, pool acquisition excluded. |
+| `database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows, elapsed_ms }`.<br>**`returned_rows`** come from a `RETURNING` clause written into the SQL (SQLite, Postgres — MySQL has none): `INSERT INTO t (n) VALUES (?) RETURNING id`. The `returning: [...]` option never adds the clause; SQLite rejects it without one, Postgres and MySQL ignore it.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row** of an INSERT, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
 | `database::executeBatch` | Convenience form of `transaction`: statements may be bare SQL strings or `{ sql, params }` objects (use `params` for dynamic values instead of inlining them). Same envelope and semantics as `transaction` — atomic, rolls back on first failure, reports `failed_index`, supports `isolation`. |
 | `database::prepareStatement` | Pin a connection and return `{ handle: { id, expires_at } }`. |
 | `database::runStatement` | Run a prepared SQL statement by handle. (No `timeout_ms` — uses the pinned connection's session lifetime; configure via `ttl_seconds` on `prepareStatement`.) |
@@ -194,7 +259,16 @@ const { rows } = await iii.trigger({
 | `database::transactionExecute` | Write SQL inside an interactive transaction. Same envelope as `execute`. Rejects bare `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`SET TRANSACTION` with `INVALID_PARAM` — finalize via the dedicated handlers below. |
 | `database::commitTransaction` | Commit an open SQL transaction, making its writes permanent. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
 | `database::rollbackTransaction` | Roll back an open SQL transaction, discarding its uncommitted writes. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
-| `database::listDatabases` | List configured databases. Returns `{ databases, count }`; each entry has `name`, `driver`, credential-redacted `url`, `pool` settings, and `tls` (`mode`, `ca_cert_present`, `trust_native`). Config only — no health checks or live pool stats. |
+
+### Connections
+
+| Function | Description |
+|---|---|
+| `database::listDatabases` | Configured connections: `{ databases, count, config_id }`. Each entry: `name`, `driver`, credential-redacted `url`, `host`, `port`, `user`, `database`, `display`, `folder`, `ssh` (`host`, `port`, `user`, `host_key_pinned`), `pool`, `tls` (`mode`, `ca_cert_present`, `client_cert_present`, `trust_native`), `uses_secrets`, and `error` / `error_stage` when the connection could not be built. Config only — no secrets, no health checks. |
+| `database::getConnection` | `{ name }` → `{ name, connection }`: the entry as stored, `${VAR}` templates and `secret://` references intact; a literal password, passphrase, inline private/client key or url password comes back as `"__redacted__"`. |
+| `database::saveConnection` | `{ name, previous_name?, connection }` → `{ name, saved, error?, error_stage? }`. Creates (`previous_name` absent; a taken name is refused), updates (`previous_name` = `name`) or renames (`previous_name` = the old name). A field still holding `"__redacted__"` keeps its stored value. Read-modify-write of the whole configuration through `configuration::set` (raw, so other entries' templates survive); returns after the pools reloaded, with the saved connection's build error, if any (it is saved either way). |
+| `database::deleteConnection` | `{ name }` → `{ deleted }`. The last connection cannot be removed. |
+| `database::testConnection` | Probe a candidate entry before saving: `{ connection, name?, timeout_ms? }` (legacy `{ url, tls }` still works; `name` resolves `"__redacted__"` from the stored entry). One throwaway connection (and tunnel); secrets resolve like a saved connection's. Returns `{ ok, driver, latency_ms, server_version?, message?, stage?, ssh_host_key? }` — `stage` is where it failed: `config`, `secrets`, `ssh`, `tcp`, `tls`, `auth` or `database`. Failures are data, not errors. |
 
 ### Reading the schema
 
@@ -209,9 +283,17 @@ const { rows } = await iii.trigger({
 
 | Function | Description |
 |---|---|
-| `database::browseTable` | Paged, sorted, filtered table read — no SQL from the caller. Filters are structured (`{ column, op, value }`) and compile to a parameterised `WHERE` for the driver in hand; `total` honours the same filters. Sorts accept a `mode` (`natural`, `length`, `absolute_value`, `random`) applied across the whole table, not just the page. To follow a foreign key, filter on equality with `page_size: 1`. |
+| `database::browseTable` | Paged, sorted, filtered table read — no SQL from the caller. Filters are structured (`{ column, op, value }`) and compile to a parameterised `WHERE` for the driver in hand; `total` honours the same filters. Sorts accept a `mode` (`natural`, `length`, `absolute_value`, `random`) applied across the whole table, not just the page. To follow a foreign key, filter on equality with `page_size: 1`. A filter may instead be **`{ raw: "<SQL boolean expression>" }`**, ANDed in its own parentheses (`column`/`op` ignored). A raw filter can never write: it is refused when it could leave its parentheses (a `;`, a comment, an unbalanced `)`, a placeholder, or a backslash whose meaning depends on server settings — quotes, dollar quotes, backticks and sqlite brackets are lexed like the server lexes them), and it runs in a read-only transaction (postgres, mysql) or under `PRAGMA query_only` (sqlite) through the single-statement protocol. Returns `elapsed_ms` too. |
+| `database::distinctValues` | `{ table, schema?, column, search?, limit? }` → `{ values: [{ value, count }], truncated, elapsed_ms }`: a column's distinct values, most frequent first (default 50, max 500). `search` keeps values whose text form contains it, case-insensitively and literally. For filter pickers. |
+| `database::formatSql` | `{ sql, db?, driver?, uppercase?, indent? }` → `{ sql }`: pretty-printed for the driver's dialect (keywords uppercased by default, 2-space indent); statements and comments preserved, postgres dollar-quoted bodies and sqlite `[identifiers]` untouched. Nothing runs. |
 | `database::explain` | The query plan as a tree with per-node cost, row estimates and warnings, instead of the driver's raw text. `analyze` collects real timings by **running** the statement, so it defaults to `false` and is refused for anything that is not a single read. |
 | `database::columnStats` | Profile a table's columns. Reads the planner's own statistics by default — free and approximate, labelled `source: planner`. `exact: true` runs real aggregates and scans the table; it is refused above a row-count ceiling. To profile rows you already hold, pipe a `browseTable` result through the `fp` worker instead. |
+
+### Writing rows
+
+| Function | Description |
+|---|---|
+| `database::insertRow` | `{ table, schema?, values: { column: value } }` → `{ row, affected_rows, elapsed_ms }`. Columns left out take their default. Each value is converted to its column's catalog type: postgres binds text and casts it (`$n::text::<type>`), so numbers as strings, booleans, uuids, dates, json and arrays (from a JSON array) all parse; bytea/blob/binary columns take base64; mysql/sqlite booleans become 1/0. `row` is the inserted row (`RETURNING *` on postgres/sqlite; on mysql a re-select by the auto-increment id or the supplied primary key, else null). Fires `database::row-changed` like `execute`. |
 
 ### Operations
 
@@ -230,6 +312,34 @@ Stored in the [`state`](https://github.com/iii-hq/workers/tree/main/state) worke
 | `database::listSavedQueries` | Saved queries for a database, sorted by name. |
 | `database::deleteSavedQuery` | Delete by id or by name. |
 | `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail bind `database::row-changed`. Stored history is capped per database (`history_max_entries` / `history_max_bytes`, defaults 200 entries / 256KB — oldest dropped first, `0` disables) and holds metadata only: SQL text (truncated to 4000 chars), verb, timing, row count — never result rows. An oversized or unreadable stored value is replaced wholesale on the next write. |
+
+### Chat mentions
+
+The worker is a [mention provider](../crates/mention-contract) named `database`: `@database(id="<connection>")` in a chat renders as a pill with a preview card (driver, server, SSH, folder, status) and reaches the agent as a summary saying which `db` to pass (`database::query {db: "<connection>", sql}`, `database::listTables {db: "<connection>"}`). `database::mention::search` / `database::mention::get` are internal; agents read the connection through `database::listTables` (the provider's `details`).
+
+## Cell values
+
+Every driver returns rows as JSON objects. Values are encoded by column type, so a client parses each type one way:
+
+| Column type | JSON |
+|---|---|
+| integers (`int2`, `int4`, `smallint`, `int`, `mediumint`, `year`, sqlite `INTEGER`), mysql `bigint` | number |
+| postgres `int8`/`bigint`, `numeric`/`decimal` (all drivers but sqlite), `money`, mysql `bigint unsigned` | string (exact) |
+| `real`, `double`, `float` | number; postgres `NaN`/`Infinity` as strings |
+| `boolean` | boolean on postgres; `0`/`1` on mysql (`tinyint(1)`) and sqlite |
+| text types, mysql `enum`/`set` (`"a,b"`), postgres enums, `uuid`, `xml`, `inet`, `cidr`, `macaddr`, `point`, `tsvector`, ranges | string (postgres `char(n)` keeps its padding) |
+| `json`, `jsonb` (sqlite: columns declared `JSON`) | the JSON value |
+| `bytea`, `blob`, `binary`, `varbinary`, `geometry` | base64 string |
+| `date` | `"YYYY-MM-DD"` |
+| `time` | `"HH:MM:SS[.ffffff]"` (mysql durations past 24 h or negative as mysql prints them); postgres `timetz` adds the offset (`"12:30:00+03"`) |
+| `timestamp`, `timestamptz`, `datetime` | RFC 3339 with `Z`, fraction when non-zero (a zone-less value is read as UTC); postgres `infinity` as a string |
+| `interval` | postgres text form (`"1 year 2 mons 3 days 04:05:06"`) |
+| `bit(n)` | string of `0`/`1` |
+| postgres arrays | JSON arrays of the element encoding (nested for several dimensions) |
+| postgres composites / domains | JSON object by field name / the base type's encoding |
+| anything else (extension types) | its bytes as text when printable, else `"\\x…"` hex |
+
+sqlite returns what each value is stored as (its affinity): `NUMERIC` columns may hold integers or reals, and dates are whatever text was stored. A cell that cannot be decoded never fails the query.
 
 ## Triggers
 
@@ -330,8 +440,8 @@ Returned `IIIError::Handler` bodies carry a stable `code` field:
 | `TRANSACTION_NOT_FOUND` | Transaction id unknown, already committed/rolled back, or timed out (auto-rolled-back by the watcher). |
 | `UNKNOWN_DB` | `db` parameter doesn't match any configured database. |
 | `INVALID_PARAM` | JSON value couldn't be coerced for the target driver, transaction-control SQL was sent to `transactionExecute` (use `commitTransaction` / `rollbackTransaction`), or a `transaction`/`executeBatch` batch contained transaction-control SQL or an empty statement. |
-| `DRIVER_ERROR` | Wraps underlying driver error with `driver` and `inner_code` (nullable). `inner_code` format is per-driver: Postgres = SQLSTATE 5-char string (e.g. `42P01`), MySQL = server error number as string, SQLite = `rusqlite::ErrorCode` debug name. Pool-acquire failures use the message form `pool connection failed (<class>)` where `<class>` is one of `tls`, `auth`, `network`, `server-policy`, or `unknown` — a redacted hint so untrusted callers can self-triage without seeing host/userinfo/db fragments. The full driver error is in the worker's stderr via `tracing::warn!`. |
-| `CONFIG_ERROR` | Config parse or pool init failure. |
+| `DRIVER_ERROR` | Wraps underlying driver error with `driver` and `inner_code` (nullable). `inner_code` format is per-driver: Postgres = SQLSTATE 5-char string (e.g. `42P01`), MySQL = server error number as string, SQLite = `rusqlite::ErrorCode` debug name. Pool-acquire failures use the message form `pool connection failed (<class>)` where `<class>` is one of `tls`, `auth`, `network`, `ssh`, `server-policy`, or `unknown` — a redacted hint so untrusted callers can self-triage without seeing host/userinfo/db fragments. The full driver error is in the worker's stderr via `tracing::warn!`. |
+| `CONFIG_ERROR` | Config parse or pool init failure; a connection that is configured but unavailable (`connection \`x\` is unavailable (secrets): secret://X did not resolve: …`); a `saveConnection` / `deleteConnection` the worker refused (validation, duplicate name, `"__redacted__"` with nothing stored). Messages name fields and references, never values. |
 
 ## Driver compatibility
 
@@ -352,7 +462,8 @@ A few operations are no-ops on certain drivers. They emit a `tracing::warn!` rat
 - **`DRIVER_ERROR` "pool connection failed (...)"**: the parenthesized class tells you where to look.
     - `(tls)` — handshake or cert-chain failure. For managed providers (Supabase, self-signed corporate CAs), supply `tls.ca_cert`; see "Connecting to managed providers" above.
     - `(auth)` — credential or pg_hba/SCRAM rejection. Includes Neon's `?channel_binding=require` failing through the pooler endpoint (drop the URL param, use `tls.mode` in YAML).
-    - `(network)` — TCP refuse, DNS, route, or peer reset. Check host/port reachability and any firewalls.
+    - `(network)` — TCP refuse, DNS, route, or peer reset. Check host/port reachability and any firewalls. Through an SSH tunnel: the SSH server could not reach the database host.
+    - `(ssh)` — the connection's SSH tunnel failed (server unreachable, authentication, host key). The worker log names the reason; `database::testConnection` reports it with `stage: "ssh"`.
     - `(server-policy)` — server reachable and TLS+auth OK, but the server actively refused (e.g. `max_connections` exceeded, admin shutdown). Look at the worker stderr for the underlying driver message.
 
 ## License
