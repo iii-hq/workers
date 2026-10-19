@@ -1147,11 +1147,21 @@ pub fn truncated_arguments_result(
             .and_then(Value::as_str)
             .map(|context| truncate_chars(context, PREVIEW_CHARS))
             .unwrap_or_default();
+        // Text after a complete value has, in every case seen live, been an
+        // object closed too soon with its later fields one level out, not a
+        // stray bracket: deleting the last bracket would keep the wrong shape.
+        let hint = if error.contains("after the root value") {
+            " The JSON ended before all of it was written: an object was probably closed too \
+             soon, so the fields after it landed one level up. Check where each object closes \
+             instead of deleting the last bracket."
+        } else {
+            ""
+        };
         (
             format!(
                 "{function_id} did not run: its arguments are not valid JSON ({error}, near \
-                 `{near}`). Nothing ran. Re-send the call with every bracket and quote balanced; \
-                 a large edit is easier to get right as several smaller calls."
+                 `{near}`).{hint} Nothing ran. Re-send the call with every bracket and quote \
+                 balanced; a large edit is easier to get right as several smaller calls."
             ),
             "invalid_json",
         )
@@ -1503,7 +1513,18 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("stopped before"), "{text}");
+        assert!(text.contains("closed too soon"), "{text}");
         assert_eq!(bad.details["cause"], "invalid_json");
+
+        // Any other syntax error gets no closed-too-soon hint.
+        let mut other = args.clone();
+        other["_invalid"]["error"] = json!("expected ',' or '}' in an object");
+        let other = truncated_arguments_result("kanban::project::create", &other, StopReason::End);
+        let ContentBlock::Text { text } = &other.content[0] else {
+            panic!("want text");
+        };
+        assert!(text.contains("expected ',' or '}'"), "{text}");
+        assert!(!text.contains("closed too soon"), "{text}");
 
         // The output limit still wins: a cut stream is not a syntax error.
         let cut = truncated_arguments_result("coder::update-file", &args, StopReason::Length);

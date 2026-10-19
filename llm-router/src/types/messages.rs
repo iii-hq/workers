@@ -307,6 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_root_followed_by_closers_stays_degraded() {
+        // Seen live: `value` closed one level too soon, so `loose_ends` landed
+        // in `payload` and one `}` was left over at the end. The leading root
+        // parses on its own, but it is the wrong shape: trimming the stray
+        // closer would dispatch a `value` without `loose_ends`. It must stay
+        // `_partial` + `_invalid` so the harness refuses it and the model
+        // re-sends the call.
+        let args = r#"{"function":"state::compare-and-set","payload":{"scope":"s","key":"critic","value":{"item":"critic","verdict":"pass"},"loose_ends":["a"]}}}"#;
+        let value = degraded_arguments(args);
+        assert_eq!(value["_partial"], true);
+        assert_eq!(value["_invalid"]["offset"], args.len() - 1);
+        assert!(value["_invalid"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("after the root value"));
+        assert_eq!(value["payload"]["loose_ends"], serde_json::json!(["a"]));
+        assert!(value["payload"]["value"].get("loose_ends").is_none());
+    }
+
+    #[test]
     fn degraded_arguments_exposes_an_open_description_and_payload() {
         assert_eq!(
             degraded_arguments(

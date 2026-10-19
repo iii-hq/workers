@@ -505,19 +505,29 @@ mod tests {
         // Salvage of a max_tokens-cut wrapper can keep a complete `payload`
         // beside the `_partial` marker; the unwrapped call must still carry
         // it so the dispatch loop refuses to execute possibly-partial intent.
+        // Text that was not valid JSON also carries `_invalid`, which picks
+        // the refusal's wording.
+        let invalid = json!({
+            "error": "unexpected data after the root value",
+            "offset": 40,
+            "context": "]}}}"
+        });
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
             function_id: AGENT_TRIGGER_NAME.into(),
             arguments: json!({
                 "function": "state::set",
                 "payload": { "scope": "s", "key": "k" },
-                "_partial": true
+                "_partial": true,
+                "_invalid": invalid
             }),
         }]);
         let calls = plan_calls(&msg, ExposeMode::AgentTrigger);
         assert_eq!(calls[0].function_id, "state::set");
         assert_eq!(calls[0].arguments["_partial"], true);
+        assert_eq!(calls[0].arguments["_invalid"], invalid);
         assert_eq!(calls[0].arguments["scope"], "s");
+        assert!(crate::trigger::arguments_degraded(&calls[0].arguments));
     }
 
     #[test]
