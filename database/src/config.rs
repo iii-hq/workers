@@ -332,6 +332,9 @@ impl DatabaseConfig {
                          the real password or keep the stored url"
                     ));
                 }
+                if let Some(problem) = url_retargeting(self.driver, url) {
+                    return Err(format!("db `{name}`: `url` {problem}"));
+                }
             }
             (None, Some(driver)) => {
                 self.driver = driver;
@@ -495,6 +498,102 @@ impl DatabaseConfig {
         }
         Ok(())
     }
+}
+
+/// What makes a url connect somewhere other than its authority (or carry a
+/// password outside it), if anything: postgres `host`/`hostaddr`/`port`/
+/// `service` parameters and several hosts, mysql `socket`, a `password`
+/// parameter on either. The structured form covers every legitimate case;
+/// in a url these hide where the credentials actually go.
+fn url_retargeting(driver: DriverKind, url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let banned: &[&str] = match driver {
+        DriverKind::Postgres => &["host", "hostaddr", "port", "service", "password"],
+        DriverKind::Mysql => &["socket", "password"],
+        DriverKind::Sqlite => return None,
+    };
+    for (key, _) in parsed.query_pairs() {
+        if banned.iter().any(|b| key.eq_ignore_ascii_case(b)) {
+            return Some(format!(
+                "must not set `{key}` as a parameter: it changes where the connection (and its \
+                 password) goes — use the structured form (driver, host, port, user, password, \
+                 database) instead"
+            ));
+        }
+    }
+    if driver == DriverKind::Postgres {
+        let authority = url.split_once("://").map_or("", |(_, rest)| rest);
+        let hosts = authority
+            .split(['/', '?'])
+            .next()
+            .unwrap_or("")
+            .rsplit('@')
+            .next()
+            .unwrap_or("");
+        if hosts.contains(',') {
+            return Some(
+                "names several hosts; a connection has one server — use the structured form".into(),
+            );
+        }
+    }
+    None
+}
+
+/// Keys an entry may carry, by block. A key outside these (a typo, `Password`,
+/// `ssh.Passphrase`) would be silently ignored by the parser — and its value,
+/// possibly a credential, would ride along unused and unnoticed.
+const ENTRY_KEYS: &[&str] = &[
+    "url", "driver", "host", "port", "user", "password", "database", "pool", "tls", "ssh",
+    "display", "folder", "capture",
+];
+const TLS_KEYS: &[&str] = &[
+    "mode",
+    "ca_cert",
+    "client_cert",
+    "client_key",
+    "trust_native",
+];
+const SSH_KEYS: &[&str] = &[
+    "host",
+    "port",
+    "user",
+    "password",
+    "private_key",
+    "passphrase",
+    "host_key",
+];
+const DISPLAY_KEYS: &[&str] = &["icon", "color"];
+const POOL_KEYS: &[&str] = &["max", "idle_timeout_ms", "acquire_timeout_ms"];
+
+/// The keys of an entry (as JSON) that are not fields, as dotted paths.
+pub fn unknown_entry_keys(entry: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(obj) = entry.as_object() else {
+        return out;
+    };
+    for (key, value) in obj {
+        if !ENTRY_KEYS.contains(&key.as_str()) {
+            out.push(key.clone());
+            continue;
+        }
+        let nested: &[&str] = match key.as_str() {
+            "tls" => TLS_KEYS,
+            "ssh" => SSH_KEYS,
+            "display" => DISPLAY_KEYS,
+            "pool" => POOL_KEYS,
+            _ => continue,
+        };
+        if let Some(block) = value.as_object() {
+            out.extend(
+                block
+                    .keys()
+                    .filter(|k| !nested.contains(&k.as_str()))
+                    .map(|k| format!("{key}.{k}")),
+            );
+        }
+    }
+    out.sort();
+    out
 }
 
 /// A path with a `..` component (either separator).
@@ -894,6 +993,11 @@ impl WorkerConfig {
         let mut cfg: WorkerConfig = serde_json::from_value(rest)
             .map_err(|e| format!("json parse: {}", sanitize_serde_error(&e.to_string())))?;
         for (name, entry) in entries {
+            let unknown = unknown_entry_keys(&entry);
+            if !unknown.is_empty() {
+                // Stored by hand or another client: ignored, but said.
+                tracing::warn!(db = %name, keys = ?unknown, "connection entry has keys that are not fields; ignored");
+            }
             let parsed = serde_json::from_value::<DatabaseConfig>(entry)
                 .map_err(|e| format!("db `{name}`: {}", sanitize_serde_error(&e.to_string())))
                 .and_then(|mut db| db.validate(&name).map(|()| db));
@@ -1653,6 +1757,38 @@ databases:
         assert!(schema["definitions"]["TlsConfig"]["properties"]
             .get("client_key")
             .is_some());
+    }
+
+    #[test]
+    fn unknown_keys_are_reported_by_path() {
+        let entry = serde_json::json!({
+            "driver": "postgres", "Password": "x", "host": "h",
+            "ssh": { "host": "b", "Passphrase": "p" }, "pool": { "bogus": 1 }, "tls": { "mode": "require" }
+        });
+        assert_eq!(
+            unknown_entry_keys(&entry),
+            vec!["Password", "pool.bogus", "ssh.Passphrase"]
+        );
+    }
+
+    #[test]
+    fn urls_cannot_retarget_through_parameters() {
+        for url in [
+            "postgres://u@127.0.0.1:5432/x?host=127.0.0.4&port=56204",
+            "postgres://u@h/x?hostaddr=10.0.0.1",
+            "postgres://u@h/x?Port=1",
+            "postgres://u@h/x?service=prod",
+            "postgres://u@h/x?password=hunter2",
+            "postgres://u@h1,h2/x",
+            "mysql://u@h/x?socket=/tmp/other.sock",
+            "mysql://u@h/x?password=hunter2",
+        ] {
+            let err = entry_err(&format!("    url: \"{url}\"\n"));
+            assert!(err.contains("structured form"), "{url}: {err}");
+            assert!(!err.contains("hunter2"), "{err}");
+        }
+        entry_ok("    url: \"postgres://u@h:5432/x?sslmode=require&application_name=a\"\n");
+        entry_ok("    url: \"mysql://u@h/x?prefer_socket=false\"\n");
     }
 
     #[test]

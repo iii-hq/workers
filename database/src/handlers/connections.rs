@@ -94,6 +94,19 @@ pub(crate) fn sanitize_serde_error(e: &serde_json::Error) -> String {
     crate::config::sanitize_serde_error(&e.to_string())
 }
 
+/// Refuse keys that are not entry fields, naming them (never their values).
+pub(crate) fn refuse_unknown_keys(entry: &Value) -> Result<(), String> {
+    let unknown = crate::config::unknown_entry_keys(entry);
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "`connection.{}` is not a connection field (fields are case-sensitive; see the \
+         database configuration schema)",
+        unknown.join("`, `connection.")
+    ))
+}
+
 /// Credential paths `credentials` may carry.
 const CREDENTIAL_PATHS: [&[&str]; 6] = [
     &["password"],
@@ -278,6 +291,7 @@ pub async fn save(state: &AppState, req: SaveConnectionReq) -> Result<SaveConnec
     };
 
     let mut entry = req.connection;
+    refuse_unknown_keys(&entry).map_err(config_error)?;
     if let Some(field) = redaction::literal_sensitive_fields(&entry).first() {
         return Err(config_error(super::test_connection::literal_refusal(field)));
     }

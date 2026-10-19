@@ -179,10 +179,11 @@ impl Material {
             ));
         }
         let path = iii_worker_paths::resolve_path(text.trim());
+        // Never echo the value: what looked like a path may be key material.
         std::fs::read(&path).map(Some).map_err(|e| {
             ConnectError::new(
                 Stage::Config,
-                format!("`{field}`: cannot read {}: {e}", path.display()),
+                format!("`{field}`: cannot read the file ({e})"),
             )
         })
     }
@@ -537,7 +538,9 @@ fn mysql_opts(
                 "mysql url could not be parsed; check the configured url",
             )
         })?;
-        return Ok(mysql_async::OptsBuilder::from_opts(opts));
+        // Never hop from TCP to a local socket the server names: it may be
+        // a different server, and a socket connection skips TLS.
+        return Ok(mysql_async::OptsBuilder::from_opts(opts).prefer_socket(false));
     }
     let (host, port) = db.server_endpoint().unwrap_or_default();
     Ok(mysql_async::OptsBuilder::default()
@@ -577,7 +580,7 @@ fn start_tunnel(
                 let bytes = std::fs::read(&path).map_err(|e| {
                     ConnectError::new(
                         Stage::Ssh,
-                        format!("`ssh.private_key`: cannot read {}: {e}", path.display()),
+                        format!("`ssh.private_key`: cannot read the key file ({e})"),
                     )
                 })?;
                 SecretValue::new(String::from_utf8(bytes).map_err(|_| {
@@ -730,7 +733,15 @@ mod tests {
             "    driver: postgres\n    host: h\n    user: u\n    tls:\n      mode: require\n      ca_cert: /no/such/ca.pem\n",
         );
         let err = Connector::literal("x", &db).unwrap_err();
-        assert!(err.message.contains("/no/such/ca.pem"), "{}", err.message);
+        assert!(
+            err.message.contains("cannot read the file"),
+            "{}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("/no/such/ca.pem"),
+            "never echo what may be key material"
+        );
 
         // A referenced value that is not PEM is never treated as a path (the
         // error would print it).

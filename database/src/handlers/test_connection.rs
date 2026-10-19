@@ -142,6 +142,9 @@ pub async fn handle(
         Ok(entry) => entry,
         Err(resp) => return Ok(*resp),
     };
+    if let Err(e) = super::connections::refuse_unknown_keys(&entry) {
+        return Ok(TestConnectionResp::failed("unknown", Stage::Config, e));
+    }
     // Literal credentials inside `connection` would be recorded by traces
     // (their redaction misses `passphrase`, `client_key` and url passwords):
     // they must come as references or in `credentials`.
@@ -349,8 +352,8 @@ const BOUND_FIELDS: [&str; 6] = [
 enum Destination {
     Database {
         driver: crate::config::DriverKind,
-        host: String,
-        port: u16,
+        /// Every endpoint the driver would try, from its own parsed settings.
+        endpoints: Vec<String>,
         ssh: Option<(String, u16, String)>,
     },
     Ssh {
@@ -370,6 +373,96 @@ fn tls_rank(mode: crate::config::TlsMode) -> u8 {
     }
 }
 
+/// The TLS mode a connection actually runs with. On postgres a url's own
+/// `sslmode` decides whether TLS is used (the connector keeps it), and
+/// `tls.mode` decides the certificate checks when it is.
+fn effective_tls_mode(db: &crate::config::DatabaseConfig) -> crate::config::TlsMode {
+    use crate::config::TlsMode;
+    let configured = db.tls.mode;
+    if db.driver != crate::config::DriverKind::Postgres {
+        return configured;
+    }
+    let Some(url) = db.url.as_deref().and_then(|u| url::Url::parse(u).ok()) else {
+        return configured;
+    };
+    let sslmode = url
+        .query_pairs()
+        .find(|(k, _)| k.eq_ignore_ascii_case("sslmode"))
+        .map(|(_, v)| v.to_ascii_lowercase());
+    match sslmode.as_deref() {
+        None => configured,
+        Some("disable") => TlsMode::Disable,
+        Some("prefer") | Some("allow") => TlsMode::Prefer,
+        Some(_) => match configured {
+            TlsMode::VerifyCa | TlsMode::VerifyFull => configured,
+            _ => TlsMode::Require,
+        },
+    }
+}
+
+/// The endpoints the driver would connect to, from the driver's own view of
+/// the entry: every host / hostaddr / port tokio-postgres would try, mysql's
+/// host, port and socket — not just a url's authority.
+fn endpoints(db: &crate::config::DatabaseConfig) -> Vec<String> {
+    use crate::config::DriverKind;
+    match db.driver {
+        DriverKind::Sqlite => vec![format!("file:{}", db.sqlite_url().unwrap_or_default())],
+        DriverKind::Postgres => {
+            let parsed: Option<tokio_postgres::Config> =
+                db.url.as_deref().and_then(|u| u.parse().ok());
+            match parsed {
+                Some(config) => {
+                    let (hosts, addrs, ports) = (
+                        config.get_hosts(),
+                        config.get_hostaddrs(),
+                        config.get_ports(),
+                    );
+                    let n = hosts.len().max(addrs.len()).max(1);
+                    (0..n)
+                        .map(|i| {
+                            let host = match hosts.get(i) {
+                                Some(tokio_postgres::config::Host::Tcp(h)) => {
+                                    h.to_ascii_lowercase()
+                                }
+                                #[cfg(unix)]
+                                Some(tokio_postgres::config::Host::Unix(p)) => {
+                                    format!("unix:{}", p.display())
+                                }
+                                None => String::new(),
+                            };
+                            let addr = addrs.get(i).map(|a| a.to_string()).unwrap_or_default();
+                            let port = ports.get(i).or(ports.first()).copied().unwrap_or(5432);
+                            format!("{host}|{addr}|{port}")
+                        })
+                        .collect()
+                }
+                None => {
+                    let (host, port) = db.server_endpoint().unwrap_or_default();
+                    vec![format!("{}||{port}", host.to_ascii_lowercase())]
+                }
+            }
+        }
+        DriverKind::Mysql => {
+            let opts = match db.url.as_deref() {
+                Some(u) => mysql_async::Opts::from_url(u).ok(),
+                None => None,
+            };
+            match opts {
+                Some(opts) => vec![format!(
+                    "{}|{}|{}",
+                    opts.ip_or_hostname().to_ascii_lowercase(),
+                    opts.tcp_port(),
+                    opts.socket().unwrap_or("")
+                )],
+                None => {
+                    let (host, port) = db.server_endpoint().unwrap_or_default();
+                    vec![format!("{}|{port}|", host.to_ascii_lowercase())]
+                }
+            }
+        }
+    }
+}
+
 fn destination(db: &crate::config::DatabaseConfig, field: &str) -> (Destination, u8) {
     let ssh_endpoint = db
         .ssh
@@ -379,15 +472,13 @@ fn destination(db: &crate::config::DatabaseConfig, field: &str) -> (Destination,
         let (host, port, user) = ssh_endpoint.unwrap_or_default();
         return (Destination::Ssh { host, port, user }, 0);
     }
-    let (host, port) = db.server_endpoint().unwrap_or_default();
     (
         Destination::Database {
             driver: db.driver,
-            host: host.to_ascii_lowercase(),
-            port,
+            endpoints: endpoints(db),
             ssh: ssh_endpoint,
         },
-        tls_rank(db.tls.mode),
+        tls_rank(effective_tls_mode(db)),
     )
 }
 
@@ -964,5 +1055,26 @@ mod tests {
         // A weaker TLS mode toward the same server is refused too.
         let plaintext = entry("    driver: postgres\n    host: db.internal\n    user: app\n    tls: { mode: disable }\n    ssh: { host: bastion.internal, user: ops, private_key: /keys/id }\n");
         assert!(restored_targets_match(&plaintext, &stored, "prod", &["password".into()]).is_err());
+    }
+
+    #[test]
+    fn the_effective_tls_mode_and_every_endpoint_count() {
+        let stored =
+            entry("    url: postgres://app@db.internal:5432/x\n    tls: { mode: verify-full }\n");
+        // A url sslmode=disable under tls.mode verify-full runs without TLS.
+        let downgraded = entry("    url: postgres://app@db.internal:5432/x?sslmode=disable\n    tls: { mode: verify-full }\n");
+        assert_eq!(
+            effective_tls_mode(&downgraded),
+            crate::config::TlsMode::Disable
+        );
+        assert!(restored_targets_match(&downgraded, &stored, "prod", &["url".into()]).is_err());
+        let required = entry("    url: postgres://app@db.internal:5432/x?sslmode=require\n    tls: { mode: verify-full }\n");
+        assert_eq!(
+            effective_tls_mode(&required),
+            crate::config::TlsMode::VerifyFull
+        );
+        restored_targets_match(&required, &stored, "prod", &["url".into()]).unwrap();
+        // Endpoints come from the driver's own parse.
+        assert_eq!(endpoints(&stored), vec!["db.internal||5432".to_string()]);
     }
 }

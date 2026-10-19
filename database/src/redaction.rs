@@ -29,25 +29,43 @@ fn get_mut<'a>(entry: &'a mut Value, path: &[&str]) -> Option<&'a mut Value> {
     path.iter().try_fold(entry, |v, k| v.get_mut(k))
 }
 
-/// A reference or a pure `${VAR}` template names a value without being one.
+/// A well-formed reference, or a pure `${VAR}` template without a default
+/// (or with an empty one), names a value without being one. A malformed
+/// reference (`secret:// hunter2`) and a template with a default
+/// (`${VAR:hunter2}`, which IS used when the variable is unset) are literals.
 fn names_a_value(value: &str) -> bool {
     let trimmed = value.trim();
-    crate::secrets::parse_ref(trimmed).is_some()
-        || (trimmed.starts_with("${")
-            && trimmed.ends_with('}')
-            && trimmed.matches("${").count() == 1)
+    if let Some(reference) = crate::secrets::parse_ref(trimmed) {
+        return reference.is_ok();
+    }
+    match trimmed.strip_prefix("${").and_then(|t| t.strip_suffix('}')) {
+        Some(inner) if !inner.contains("${") && !inner.contains('}') => inner
+            .split_once(':')
+            .is_none_or(|(_, default)| default.is_empty()),
+        _ => false,
+    }
 }
 
-/// A file path rather than key material.
+/// A file path rather than key material. A long run of base64 that merely
+/// starts with `/` is a pasted key, not a path.
 fn looks_like_path(value: &str) -> bool {
     let v = value.trim();
-    !v.contains('\n')
-        && !v.contains("-----BEGIN")
-        && (v.starts_with('/')
-            || v.starts_with("~/")
-            || v.starts_with("./")
-            || v.starts_with("../")
-            || (v.len() > 2 && v.as_bytes()[1] == b':' && matches!(v.as_bytes()[2], b'\\' | b'/')))
+    if v.contains('\n') || v.contains("-----BEGIN") || v.len() > 4096 {
+        return false;
+    }
+    let anchored = v.starts_with('/')
+        || v.starts_with("~/")
+        || v.starts_with("./")
+        || v.starts_with("../")
+        || (v.len() > 2 && v.as_bytes()[1] == b':' && matches!(v.as_bytes()[2], b'\\' | b'/'));
+    if !anchored {
+        return false;
+    }
+    let base64ish = v.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '.' | '~' | '\\' | ':')
+    });
+    let long_segment = v.split(['/', '\\']).any(|segment| segment.len() > 64);
+    !(base64ish && v.len() > 64 && (v.contains('+') || v.ends_with('=') || long_segment))
 }
 
 /// Replace every literal sensitive value of an entry with [`REDACTED`].
@@ -77,17 +95,51 @@ pub fn redact_entry(entry: &mut Value) {
     }
 }
 
-/// The url with a literal password replaced by the placeholder; `None` when
-/// there is nothing to hide.
+/// The url with a literal password (userinfo, or a `password` parameter)
+/// replaced by the placeholder; `None` when there is nothing to hide.
 fn redact_url_password(raw: &str) -> Option<String> {
     let mut url = url::Url::parse(raw).ok()?;
-    let password = url.password()?;
-    let decoded = percent_decode(password);
-    if names_a_value(&decoded) {
-        return None;
+    let mut changed = false;
+    if let Some(password) = url.password() {
+        if !names_a_value(&percent_decode(password)) {
+            url.set_password(Some(REDACTED)).ok()?;
+            changed = true;
+        }
     }
-    url.set_password(Some(REDACTED)).ok()?;
-    Some(url.to_string())
+    if url
+        .query_pairs()
+        .any(|(k, v)| k.eq_ignore_ascii_case("password") && !names_a_value(&v))
+    {
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| {
+                if k.eq_ignore_ascii_case("password") {
+                    (k.into_owned(), REDACTED.to_string())
+                } else {
+                    (k.into_owned(), v.into_owned())
+                }
+            })
+            .collect();
+        url.query_pairs_mut().clear().extend_pairs(pairs);
+        changed = true;
+    }
+    changed.then(|| url.to_string())
+}
+
+/// Whether a url carries a literal password, in its userinfo or as a
+/// `password` parameter (percent-encoding decoded before deciding).
+fn url_has_literal_password(raw: &str) -> bool {
+    let Ok(url) = url::Url::parse(raw) else {
+        return false;
+    };
+    let userinfo = url
+        .password()
+        .map(percent_decode)
+        .is_some_and(|p| p != REDACTED && !names_a_value(&p));
+    let param = url
+        .query_pairs()
+        .any(|(k, v)| k.eq_ignore_ascii_case("password") && v != REDACTED && !names_a_value(&v));
+    userinfo || param
 }
 
 fn percent_decode(s: &str) -> String {
@@ -130,14 +182,12 @@ pub fn literal_sensitive_fields(entry: &Value) -> Vec<String> {
             out.push(path.join("."));
         }
     }
-    if let Some(url) = entry.get("url").and_then(Value::as_str) {
-        if url::Url::parse(url)
-            .ok()
-            .and_then(|u| u.password().map(percent_decode))
-            .is_some_and(|p| p != REDACTED && !names_a_value(&p))
-        {
-            out.push("url".into());
-        }
+    if entry
+        .get("url")
+        .and_then(Value::as_str)
+        .is_some_and(url_has_literal_password)
+    {
+        out.push("url".into());
     }
     out
 }
@@ -287,6 +337,43 @@ mod tests {
         );
         let clean = json!({ "url": format!("postgres://u:{REDACTED}@h/db"), "password": REDACTED });
         assert!(literal_sensitive_fields(&clean).is_empty());
+    }
+
+    #[test]
+    fn templates_with_defaults_and_malformed_references_are_literals() {
+        let entry = json!({
+            "password": "${DB_PW:hunter2}",
+            "ssh": { "password": "${SSH_PW}", "passphrase": "secret:// hunter2", "private_key": "${KEY:}" },
+            "url": "postgres://u:%24%7BPGPW%3Ahunter2%7D@h/db"
+        });
+        assert_eq!(
+            literal_sensitive_fields(&entry),
+            vec!["password", "ssh.passphrase", "url"]
+        );
+        let mut shown = entry.clone();
+        redact_entry(&mut shown);
+        assert!(!shown.to_string().contains("hunter2"), "{shown}");
+        assert_eq!(shown["ssh"]["password"], "${SSH_PW}");
+    }
+
+    #[test]
+    fn a_password_parameter_is_a_url_password() {
+        let entry = json!({ "url": "postgres://u@h/db?password=hunter2&sslmode=require" });
+        assert_eq!(literal_sensitive_fields(&entry), vec!["url"]);
+        let mut shown = entry.clone();
+        redact_entry(&mut shown);
+        assert!(!shown.to_string().contains("hunter2"), "{shown}");
+        assert!(shown["url"].as_str().unwrap().contains("sslmode=require"));
+    }
+
+    #[test]
+    fn a_pasted_key_starting_with_a_slash_is_not_a_path() {
+        let key = format!(
+            "/{}",
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7+".repeat(3)
+        );
+        let entry = json!({ "tls": { "client_key": key }, "ssh": { "private_key": "/home/me/.ssh/id_ed25519" } });
+        assert_eq!(literal_sensitive_fields(&entry), vec!["tls.client_key"]);
     }
 
     #[test]
