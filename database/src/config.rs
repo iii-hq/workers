@@ -136,7 +136,7 @@ pub struct DatabaseConfig {
     /// reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
-    /// How `database::row-changed` events are captured for this database.
+    /// How `database::on-row-changed` events are captured for this database.
     /// `statements` (default) classifies the SQL this worker executes;
     /// `native` makes writes from ANY client — psql, other processes — fire
     /// too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a

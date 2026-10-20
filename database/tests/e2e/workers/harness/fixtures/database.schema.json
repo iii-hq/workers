@@ -45,7 +45,7 @@
               "$ref": "#/definitions/CaptureMode"
             }
           ],
-          "description": "How `database::row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` makes writes from ANY client — psql, other processes — fire too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a trigger-fed changelog drained on filesystem wake-up. MySQL: the binlog replication stream (needs REPLICATION SLAVE + CLIENT)."
+          "description": "How `database::on-row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` makes writes from ANY client — psql, other processes — fire too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a trigger-fed changelog drained on filesystem wake-up. MySQL: the binlog replication stream (needs REPLICATION SLAVE + CLIENT)."
         },
         "database": {
           "description": "Structured form: database name (postgres/mysql), or the database file path on the engine host (sqlite; `:memory:` for an in-memory one).",
@@ -190,23 +190,26 @@
       "properties": {
         "acquire_timeout_ms": {
           "default": 5000,
-          "description": "Fail pool acquisition when no connection is available within this many milliseconds.",
+          "description": "Fail pool acquisition when no connection is available within this many milliseconds (1 ms to 10 min).",
           "format": "uint64",
-          "minimum": 0.0,
+          "maximum": 600000.0,
+          "minimum": 1.0,
           "type": "integer"
         },
         "idle_timeout_ms": {
           "default": 30000,
-          "description": "Close idle connections after this many milliseconds.",
+          "description": "Close idle connections after this many milliseconds (at most 24 h).",
           "format": "uint64",
+          "maximum": 86400000.0,
           "minimum": 0.0,
           "type": "integer"
         },
         "max": {
           "default": 10,
-          "description": "Maximum number of open connections in the pool.",
+          "description": "Maximum number of open connections in the pool (1-500).",
           "format": "uint32",
-          "minimum": 0.0,
+          "maximum": 500.0,
+          "minimum": 1.0,
           "type": "integer"
         }
       },

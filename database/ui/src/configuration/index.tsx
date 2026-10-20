@@ -123,9 +123,9 @@ function fieldError(errors: ConfigFormProps['errors'], parts: readonly string[])
 
 const CAPTURE_HINTS: Record<Driver, string> = {
   postgres:
-    'Native: any client’s committed writes fire database::row-changed via triggers + LISTEN/NOTIFY, carrying the changed rows’ primary keys (not their contents). The role needs DDL rights on watched tables; bindings must name a table.',
+    'Native: any client’s committed writes fire database::on-row-changed via triggers + LISTEN/NOTIFY, carrying the changed rows’ primary keys (not their contents). The role needs DDL rights on watched tables; observers must name a table.',
   sqlite:
-    'Native: triggers + changelog table + filesystem watch hear every process writing the file, carrying the changed rows’ primary keys. Writers need libsqlite ≥ 3.38 (JSON built in). Bindings must name a table.',
+    'Native: triggers + changelog table + filesystem watch hear every process writing the file, carrying the changed rows’ primary keys. Writers need libsqlite ≥ 3.38 (JSON built in). Observers must name a table.',
   mysql:
     'Native: streams the binlog as a replica — nothing installed in the schema, but the user needs GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*; primary keys ride the events only with binlog_row_metadata=FULL.',
   unknown: 'Set a URL first — capture support depends on the driver.',
@@ -1400,7 +1400,7 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
       <SettingsSection
         className="db-cfg-detail-section"
         title="Change capture"
-        description="Choose which writes can emit database::row-changed events."
+        description="Choose which writes can emit database::on-row-changed events."
       >
         <SettingsList>
           <SettingsField

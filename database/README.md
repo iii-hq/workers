@@ -305,7 +305,7 @@ const { rows } = await iii.trigger({
 
 | Function | Description |
 |---|---|
-| `database::insertRow` | `{ table, schema?, values: { column: value } }` → `{ row, affected_rows, elapsed_ms }`. Columns left out take their default. Each value is converted to its column's catalog type: postgres binds text and casts it (`$n::text::<type>`), so numbers as strings, booleans, uuids, dates, json and arrays (from a JSON array) all parse; bytea/blob/binary columns take base64; mysql/sqlite booleans become 1/0. On integer and decimal columns a JSON number at or above 2^53 in magnitude is refused (it may already have lost digits in the client — send it as a string), and an integer column takes only decimal digit strings (`"0x10"`, `"1e3"` are refused). `row` is the inserted row (`RETURNING *` on postgres/sqlite; on mysql a re-select by the auto-increment id or the supplied primary key, else null). Fires `database::row-changed` like `execute`. |
+| `database::insertRow` | `{ table, schema?, values: { column: value } }` → `{ row, affected_rows, elapsed_ms }`. Columns left out take their default. Each value is converted to its column's catalog type: postgres binds text and casts it (`$n::text::<type>`), so numbers as strings, booleans, uuids, dates, json and arrays (from a JSON array) all parse; bytea/blob/binary columns take base64; mysql/sqlite booleans become 1/0. On integer and decimal columns a JSON number at or above 2^53 in magnitude is refused (it may already have lost digits in the client — send it as a string), and an integer column takes only decimal digit strings (`"0x10"`, `"1e3"` are refused). `row` is the inserted row (`RETURNING *` on postgres/sqlite; on mysql a re-select by the auto-increment id or the supplied primary key, else null). Reported on `database::on-row-changed` like `execute`. |
 
 ### Operations
 
@@ -323,7 +323,7 @@ The web console's snippet list, stored in the [`state`](https://github.com/iii-h
 | `database::saveQuery` | Save a named snippet to the console's list (not a file). Saving under an existing name replaces it. |
 | `database::listSavedQueries` | Saved queries for a database, sorted by name. |
 | `database::deleteSavedQuery` | Delete by id or by name. |
-| `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail bind `database::row-changed`. Stored history is capped per database (`history_max_entries` / `history_max_bytes`, defaults 200 entries / 256KB — oldest dropped first, `0` disables) and holds metadata only: SQL text (truncated to 4000 chars), verb, timing, row count — never result rows. An oversized or unreadable stored value is replaced wholesale on the next write. |
+| `database::history` | Recent queries, newest first. Best effort — recording never blocks or fails a query, so this is a convenience rather than an audit log. For an audit trail observe `database::on-row-changed`. Stored history is capped per database (`history_max_entries` / `history_max_bytes`, defaults 200 entries / 256KB — oldest dropped first, `0` disables) and holds metadata only: SQL text (truncated to 4000 chars), verb, timing, row count — never result rows. An oversized or unreadable stored value is replaced wholesale on the next write. |
 
 ### Chat mentions
 
@@ -355,37 +355,91 @@ Parameters (`params`, `insertRow` values) take the same forms back. Integers bey
 
 sqlite returns what each value is stored as (its affinity): `NUMERIC` columns may hold integers or reals, and dates are whatever text was stored. A cell that cannot be decoded never fails the query.
 
-## Triggers
+## Row changes
 
-### `database::row-changed`
+### `database::on-row-changed`
 
-Fires after a row change commits. Two capture modes, chosen per database in
-the worker config (`capture:`):
+One event per committed write statement. It is an **observable function**
+(iii 0.25): observe it with args that say which database, table and
+operations, and filters on what changed or who changed it. Two capture modes,
+chosen per database in the worker config (`capture:`):
 
 - **`statements`** (default) — reports mutations made *through this worker*
-  (`execute`, `executeBatch`, `transaction`, and the interactive transaction
-  surface) by classifying the SQL. A write applied by psql, another worker, or
-  a database-side trigger is invisible to it. No database setup; identical on
-  SQLite, Postgres and MySQL.
+  (`execute`, `executeBatch`, `transaction`, `insertRow`, and the interactive
+  transaction surface) by classifying the SQL. A write applied by psql,
+  another worker, or a database-side trigger is invisible to it. No database
+  setup; identical on SQLite, Postgres and MySQL. Events carry `caller`: the
+  function that made the write, and its `parent`, the one that called it.
 - **`native`** — reports committed writes from *any* client. Postgres: per-table
   triggers + LISTEN/NOTIFY (the role needs TRIGGER on the table). File-backed
   SQLite: triggers feeding a changelog table, drained on filesystem wake-up.
   MySQL: the binlog replication stream (`REPLICATION SLAVE, REPLICATION CLIENT`
-  grants, `binlog_row_metadata=FULL` for row identity). Bindings must name a
-  `table`.
+  grants, `binlog_row_metadata=FULL` for row identity). Observers must name a
+  `table`. Events have no `caller.parent`: nothing in iii made the write.
 
-```yaml
-triggers:
-  - type: database::row-changed
-    config:
-      db: primary        # required
-      table: orders      # optional on statements, required on native; case- and schema-insensitive
-      ops: [insert]      # optional; insert / update / delete / other
+"Which worker changed `orders`?"
+
+```ts
+iii.registerFunction('audit::orders-changed', ({ input, caller }: Observed<RowChangedEvent>) =>
+  audit.record({ op: input.op, keys: input.returning, by: caller?.parent?.worker_name ?? 'external' }))
+
+iii.observe({
+  function_id: 'database::on-row-changed',
+  args: { db: 'primary', table: 'orders' },
+  capture: ['input', 'caller'],
+}, 'audit::orders-changed')
 ```
 
-Event: `{ db, table, op, affected_rows, returning?, truncated?, at }`, where
-`op` is `insert` / `update` / `delete` / `other`. The full schema is on the
-trigger type (`engine::triggers::info`).
+"Paid invoices only" (statements capture, the writer's SQL ends in
+`RETURNING id, status`), once:
+
+```ts
+iii.observe({
+  function_id: 'database::on-row-changed',
+  args: { db: 'primary', table: 'invoices', ops: ['update'] },
+  filters: { 'input.returning': { $any: { '@.status': { $eq: 'paid' } } } },
+  capture: ['input'],
+  deliver: 'input',
+}, 'billing::on-invoice-paid', { max_fires: 1 })
+```
+
+"Everything except my own writes", for a projector that writes back:
+
+```rust
+iii.observe(
+    Source::function("database::on-row-changed")
+        .args(json!({ "db": "primary" }))
+        .filters(json!({ "caller.parent.worker_name": { "$ne": "order-projector" } }))
+        .capture([Capture::Input]),
+    "orders::project",
+);
+```
+
+**Args.** `db` (required, a configured connection), `table` (optional on
+`statements`, required on `native`) and `ops` (optional; `insert` /
+`update` / `delete` / `other`). `table` is canonical: the bare name,
+unquoted and lowercase (`orders`, not `public.Orders`); the schema is in the
+event. An observer the worker cannot serve is refused when it is created,
+and its `ready()` says why:
+
+| Code | Why |
+|---|---|
+| `INVALID_ARGS` | A missing `db`, or an unknown arg (`tabel`). |
+| `NON_CANONICAL_TABLE` | `table` is not canonical; the message names the canonical value. |
+| `UNKNOWN_DB` | No such connection. A configuration reload that removes a connection rejects its observers the same way. |
+| `NATIVE_CAPTURE_REQUIRES_TABLE` | A `native` database and no `table`. |
+| `CAPTURE_INSTALL_FAILED` | Native capture could not be installed (privileges, a table that does not exist under that name, a MySQL server without a ROW binlog). |
+
+**Event** (`input`): `{ db, schema, table, op, affected_rows, returning?,
+truncated?, at }`. `schema` is lowercase, `null` when neither the SQL nor the
+driver named one; `table` is canonical. Filter paths are checked against this
+shape (`input.tabel` is `INVALID_FILTER_PATH`).
+
+**Only the database worker emits it.** Invoking `database::on-row-changed`
+directly is refused (`FORBIDDEN`): the engine refuses it from any other
+connection, and the function itself refuses every call, so no worker can
+forge a row change. Nobody observing costs nothing: no event is built and
+nothing goes on the wire.
 
 **Which rows changed — `returning`.** The event never invents row data:
 
@@ -402,8 +456,8 @@ trigger type (`engine::triggers::info`).
   Absent for a table without a primary key. Values are encoded as
   `database::query` returns the same column (Postgres `bigint` as a string,
   for example).
-- When not to bind: if the writer is you and already holds the new values in
-  `execute`'s `returned_rows`, there is nothing to wait for.
+- When not to observe: if the writer is you and already holds the new values
+  in `execute`'s `returned_rows`, there is nothing to wait for.
 
 Worth knowing:
 
@@ -415,7 +469,7 @@ Worth knowing:
 - **Delivery is best-effort.** Dispatch happens after commit and is not durable
   or atomic with the database write. There is no replay, retry, or exactly-once
   guarantee; a crash between commit and dispatch can lose an event. Subscriber
-  failures are logged and never fail the write. A harness wake notification
+  failures never fail the write. A harness wake notification
   renders the event as JSON within ~8,000 characters; an over-long `returning`
   keeps its leading rows and ends with one marker string, `"…N more entries
   omitted (array shortened for this notification; JSON is complete)"` (N is
@@ -423,11 +477,12 @@ Worth knowing:
   still parses and `affected_rows` stays exact. Only an event whose
   non-array fields alone exceed the budget is cut as plain text with an
   `…(truncated)` tail. Re-read the table on wake when a binding can see wide
-  or many-row writes.
+  or many-row writes. A filter that misses sends nothing: observers' filters
+  run in the database worker, before anything goes on the wire.
 - **`table` can be null on `statements`.** The table is read off the SQL. A
   CTE-wrapped write (`WITH … INSERT`) still fires, with `table: null`, rather
-  than being dropped; a binding that named a table simply does not match it.
-  Omit `table` to match every write, including these. The classifier reads
+  than being dropped; an observer that named a table simply does not match
+  it. Omit `table` to match every write, including these. The classifier reads
   keywords rather than parsing, so any `WITH` statement whose text contains
   `INSERT`/`UPDATE`/`DELETE`/`MERGE` — even inside a string literal — fires
   the same way.
@@ -440,7 +495,41 @@ Worth knowing:
   writing the file needs libsqlite ≥ 3.38 (JSON built in) — an older client
   fails its own INSERT with `no such function`. MySQL carries keys only under
   `binlog_row_metadata=FULL`; on the `MINIMAL` default the events are
-  count-only and registration warns.
+  count-only and the worker warns when an observer is added.
+- **Canonical args cannot name a schema or a case-sensitive table.**
+  `args.table` is a bare lowercase name. On `statements` it matches every
+  spelling of the table (filter on `input.schema` to tell schemas apart). On
+  a `native` Postgres database the capture installs on that name, so a table
+  outside the connection's `search_path`, or a quoted mixed-case one
+  (`"Orders"`), fails with `CAPTURE_INSTALL_FAILED` and a hint.
+
+### `database::row-changed` (consumers that have not moved)
+
+The pre-0.25 trigger type keeps working, unchanged, for consumers that still
+call `registerTrigger`:
+
+```ts
+iii.registerTrigger({
+  type: 'database::row-changed',
+  function_id: 'shop::on-order',
+  config: { db: 'primary', table: 'orders', ops: ['insert'] },
+})
+```
+
+- On a **0.25 engine** the engine's legacy shim turns the binding into an
+  observer of `database::on-row-changed` with that config.
+- On an **engine without observe** (0.24) the worker registers the trigger
+  type itself, over the same routing. It follows the engine across
+  reconnects: an engine upgraded or rolled back under a running worker
+  switches between the two without a restart.
+
+Either way the binding receives the event in its pre-0.25 shape: no `schema`,
+and the table schema-qualified when a schema is known (`public.orders` from
+Postgres native capture). `table` in the config matches case- and
+schema-insensitively, as before; on `statements` the event's table is now
+lowercase (`INSERT INTO ORDERS` reports `orders`). The trigger's metadata
+rides along with each call. New code should observe
+`database::on-row-changed` instead.
 
 ## Isolation between callers
 

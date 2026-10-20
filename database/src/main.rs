@@ -597,7 +597,7 @@ async fn main() -> Result<()> {
             .description(
                 "List recent queries run against a database, newest first. Best effort \
                  — recording never blocks or fails a query, so it is a convenience, not \
-                 an audit log. For an audit trail bind database::row-changed.",
+                 an audit log. For an audit trail observe database::on-row-changed.",
             ),
         );
     }

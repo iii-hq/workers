@@ -25,7 +25,7 @@ pub struct ExecuteReq {
     #[serde(default)]
     pub db: Option<String>,
     /// The write statement. To get rows back — and to have them ride the
-    /// `database::row-changed` event this write fires — put a `RETURNING`
+    /// `database::on-row-changed` event this write fires — put a `RETURNING`
     /// clause in the SQL itself: `INSERT INTO t (n) VALUES (?) RETURNING id`
     /// (SQLite, Postgres; MySQL has no RETURNING). Without one the response
     /// has `returned_rows: []` and the event carries only `affected_rows`.

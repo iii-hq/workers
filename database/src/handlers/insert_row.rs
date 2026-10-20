@@ -17,7 +17,7 @@
 //!   BLOB from base64 via `unhex(?)`.
 //!
 //! Columns left out take their default. The write goes through
-//! `database::execute`, so it fires `database::row-changed` like any other.
+//! `database::execute`, so it fires `database::on-row-changed` like any other.
 //! The inserted row comes back via RETURNING (postgres, sqlite) or a
 //! re-select by primary key / last insert id (mysql).
 

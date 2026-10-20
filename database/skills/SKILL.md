@@ -68,7 +68,7 @@ handle database passwords; connections reference them as `secret://NAME`.
 ## Boundaries
 
 - Not a migration tool, ORM, or schema designer — pass raw SQL only.
-- Not a general pub/sub bus. `database::row-changed` reports what THIS
+- Not a general pub/sub bus. `database::on-row-changed` reports what THIS
   worker wrote, on commit (`capture: statements`, the default) or, on a
   `capture: native` database, any client's committed writes.
 - `database::query` is read-oriented; use `database::execute` for writes.
@@ -188,26 +188,43 @@ arrays as JSON arrays. When writing them back, pass the same forms.
   the person, write a `.sql` file into the connection's `folder` (see
   "Saving a query").
 - `database::history` — recent queries, newest first. Best effort, not an audit
-  log; bind `database::row-changed` for that.
+  log; observe `database::on-row-changed` for that.
 
 ## Reacting to writes
 
-Register a `database::row-changed` trigger to be told when this worker commits
-a change, instead of polling:
+`database::on-row-changed` announces each committed write statement, instead
+of polling. Code observes it (iii 0.25) with args naming the database, and
+optionally the table and operations, plus filters on what changed:
+
+```json
+{
+  "function_id": "database::on-row-changed",
+  "args": { "db": "primary", "table": "orders", "ops": ["update"] },
+  "filters": { "input.returning": { "$any": { "@.status": { "$eq": "paid" } } } }
+}
+```
+
+`table` is the bare lowercase name (`orders`, not `public.Orders`); anything
+else is refused with the name to use. The event is
+`{ db, schema, table, op, affected_rows, returning?, truncated?, at }`, and
+`caller.parent` names the function that made the write. Nothing can invoke
+the function: only the database worker emits its events.
+
+In a session, subscribe with a `database::row-changed` trigger (served on
+0.24 and 0.25 engines; the event has no `schema`):
 
 ```json
 { "trigger_type": "database::row-changed", "config": { "db": "primary", "table": "orders", "ops": ["insert"] } }
 ```
 
-The event is `{ db, table, op, affected_rows, returning?, truncated?, at }`. It
-fires on commit — an interactive transaction's writes are announced by
-`commitTransaction`, and a rollback announces nothing. `returning` says which
-rows: on a `capture: statements` database it is the writer's own `RETURNING`
-projection, so write `RETURNING <primary key>` into the SQL when a listener
-needs row identity; on a `capture: native` database (which also hears other
-clients' writes) it is the changed rows' primary keys, capped at 100 with
-`truncated: true` past that. `table` is null when the statement's table cannot
-be read off the SQL (a CTE-wrapped write), and `runStatement` does not fire on
-the statements path because it has no affected-row count to report. Delivery is
-best-effort: it is not durable with the commit and has no replay or
-exactly-once guarantee.
+Either way it fires on commit — an interactive transaction's writes are
+announced by `commitTransaction`, and a rollback announces nothing.
+`returning` says which rows: on a `capture: statements` database it is the
+writer's own `RETURNING` projection, so write `RETURNING <primary key>` into
+the SQL when a listener needs row identity; on a `capture: native` database
+(which also hears other clients' writes, and needs a `table`) it is the
+changed rows' primary keys, capped at 100 with `truncated: true` past that.
+`table` is null when the statement's table cannot be read off the SQL (a
+CTE-wrapped write), and `runStatement` does not fire on the statements path
+because it has no affected-row count to report. Delivery is best-effort: it
+is not durable with the commit and has no replay or exactly-once guarantee.
