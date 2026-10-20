@@ -56,7 +56,7 @@ struct Case {
     /// Already remembered, with whether the layer holds it; the bank's own
     /// first, as in production.
     known: &'static [(&'static str, bool)],
-    /// `(role, text)` excerpt lines.
+    /// `(role, text)` excerpt lines, roles as [`parse_entry`] reads them.
     lines: &'static [(&'static str, &'static str)],
     want: &'static [Want],
 }
@@ -531,15 +531,16 @@ const CASES: &[Case] = &[
         ],
         &[],
     ),
-    // Harness messages stored as user lines: a wake carries the
-    // `[notification]` prefix; a resume or validation nudge and a subtree
-    // deletion notice carry none, so the rule gate reads them as the user's.
+    // Harness messages stored as user lines with an origin, which
+    // `parse_entry` reads as `notice`: a wake (`[notification] …`), a resume
+    // or validation nudge, a subtree deletion notice. A workflow's reply
+    // comes through `harness::send` with none, so it stays a user line.
     case(
         "cron-wake",
         "notices",
         &[
             (
-                "user",
+                "notice",
                 r#"[notification] daily-digest: {"trigger":"cron","job_id":"daily-digest","scheduled_time":"2026-10-14T09:00:00Z","actual_time":"2026-10-14T09:00:02Z"}"#,
             ),
             (
@@ -554,7 +555,7 @@ const CASES: &[Case] = &[
         "notices",
         &[
             (
-                "user",
+                "notice",
                 r#"[notification] ci-main: {"key":"ci/main","new_value":{"status":"failed","job":"ledger-sync","reason":"runner offline"}}"#,
             ),
             (
@@ -569,7 +570,7 @@ const CASES: &[Case] = &[
         "notices",
         &[
             (
-                "user",
+                "notice",
                 "[notification] binding b_7f3 `deploy-watch` watching `state` {\"key\":\"deploy/prod\"} \
                  fired but was NOT delivered: condition function deploy::ready timed out. The binding \
                  stays armed and every fire will keep skipping until the condition call succeeds. If \
@@ -591,7 +592,7 @@ const CASES: &[Case] = &[
             ("user", "Write the release notes for 2.4."),
             ("assistant", "Release notes for 2.4:\n- Faster sync"),
             (
-                "user",
+                "notice",
                 "The provider/router ended transiently after streaming the previous partial \
                  response: stream read failed: connection reset. Resume from the transcript and \
                  return the complete deliverable, incorporating the previous partial even if it \
@@ -612,7 +613,7 @@ const CASES: &[Case] = &[
             ("user", "Classify ticket #233."),
             ("assistant", "bug"),
             (
-                "user",
+                "notice",
                 "Your previous result was not accepted: missing required field `severity`. Please \
                  provide a corrected result that satisfies the required output contract.",
             ),
@@ -625,7 +626,7 @@ const CASES: &[Case] = &[
         "notices",
         &[
             (
-                "user",
+                "notice",
                 "User-requested cancellation and deletion of session triage-worker (s_4f2a) and its \
                  subtree: triage-worker, triage-worker/fetch. All turns have stopped; these sessions \
                  are being deleted. Do not await their results and do not recreate them \
@@ -657,7 +658,7 @@ const CASES: &[Case] = &[
         "notices",
         &[
             (
-                "user",
+                "notice",
                 r#"[notification] standup-reminder: "Standup in 10 minutes""#,
             ),
             ("assistant", "Reminder: standup starts in 10 minutes."),

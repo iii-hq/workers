@@ -1131,7 +1131,10 @@ pub(crate) async fn messages_tail(iii: &IIIClient, session_id: &str) -> Option<V
 
 /// One `session::messages` item as `(entry_id, role, text, timestamp_ms)`;
 /// `None` for entries without a message (custom entries). A missing or
-/// zero timestamp falls back to the pass's own clock.
+/// zero timestamp falls back to the pass's own clock. A user-role entry
+/// with an origin is a `notice`: the harness or a bot wrote it (a wake, a
+/// resume or validation nudge, a deletion notice, a delegated task), and
+/// only what a person sends carries none.
 fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
     let message = item.get("message")?;
     let entry_id = item
@@ -1139,11 +1142,11 @@ fn parse_entry(item: &Value) -> Option<(String, String, String, u64)> {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let role = message
-        .get("role")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let role = match message.get("role").and_then(Value::as_str).unwrap_or("") {
+        "user" if item.get("origin").is_some_and(|o| !o.is_null()) => "notice",
+        role => role,
+    }
+    .to_string();
     let text = content_text(message.get("content"));
     let ts = message
         .get("timestamp")
@@ -2261,6 +2264,20 @@ mod tests {
         assert!(parse_entry(&bare).unwrap().3 >= before);
         // Custom entries carry no message.
         assert!(parse_entry(&json!({ "entry_id": "e_3", "custom": {} })).is_none());
+
+        // The harness's own user-role lines carry an origin; a person's none.
+        let nudge = json!({
+            "entry_id": "e_t1_nudge_1",
+            "message": { "role": "user", "content": "Your previous result was not accepted." },
+            "origin": { "turn_id": "t1", "validation": true },
+        });
+        assert_eq!(parse_entry(&nudge).unwrap().1, "notice");
+        let annotated = json!({
+            "entry_id": "e_4",
+            "message": { "role": "assistant", "content": "ok" },
+            "origin": { "turn_id": "t1", "memory_bank": "main" },
+        });
+        assert_eq!(parse_entry(&annotated).unwrap().1, "assistant");
     }
 
     #[test]
