@@ -2,9 +2,9 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
   CircleQuestionMark,
   Download,
-  Plus,
   Search,
   Settings,
+  SquarePen,
 } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
@@ -253,7 +253,10 @@ export function ConversationSidebar({
               narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
             )}
           >
-            <Plus className="size-4 shrink-0" aria-hidden />
+            {/* A compose mark, not a plus: the header's plus already means
+                "new workspace", and the phone header spells new chat this
+                way too. */}
+            <SquarePen className="size-4 shrink-0" aria-hidden />
             New chat
           </button>
         ) : null}

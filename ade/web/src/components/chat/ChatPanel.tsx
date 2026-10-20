@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { SquarePen } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
@@ -418,7 +418,7 @@ export function ChatPanel({
                 onClick={handleCreate}
                 className="size-7"
               >
-                <Plus aria-hidden />
+                <SquarePen aria-hidden />
               </IconButton>
             }
           >
