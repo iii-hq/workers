@@ -30,9 +30,15 @@ pub struct GcsBackend {
     /// can't reach the override; we fail closed to avoid silently handing
     /// out unusable links.
     endpoint_overridden: bool,
+    /// The client can sign URLs: a service-account key, or the metadata
+    /// server's identity on Google Cloud.
+    can_sign: bool,
 }
 
 pub struct GcsBackendOpts {
+    /// The service-account JSON itself (resolved `credentials_json`).
+    /// Takes precedence over `credentials_file`.
+    pub credentials_json: Option<String>,
     /// Path to a service-account JSON. When `None`, defers to ADC chain.
     pub credentials_file: Option<String>,
     /// Custom storage endpoint. `None` → default GCS host. The actual
@@ -43,7 +49,23 @@ pub struct GcsBackendOpts {
 
 impl GcsBackend {
     pub async fn build(opts: GcsBackendOpts, bucket: String) -> Result<Self, BackendError> {
-        let mut config = if let Some(path) = opts.credentials_file {
+        let mut config = if let Some(json) = opts.credentials_json.as_deref() {
+            // The parse error never quotes the input (it may be a key).
+            let creds = gcloud_auth::credentials::CredentialsFile::new_from_str(json)
+                .await
+                .map_err(|_| {
+                    BackendError::AuthFailed(
+                        "gcs `credentials_json` is not a valid service-account or ADC credentials JSON"
+                            .into(),
+                    )
+                })?;
+            ClientConfig::default()
+                .with_credentials(creds)
+                .await
+                .map_err(|e| {
+                    BackendError::AuthFailed(format!("gcs auth (credentials_json): {e}"))
+                })?
+        } else if let Some(path) = opts.credentials_file {
             // Load the SA file directly instead of mutating GOOGLE_APPLICATION_CREDENTIALS,
             // which would race across multiple GCS buckets and leak into unrelated
             // SDK clients or child processes.
@@ -69,6 +91,8 @@ impl GcsBackend {
         // (sign.rs) generates URLs against storage.googleapis.com regardless;
         // fake-gcs accepts unsigned/anonymous URLs so this is fine for tests.
         let endpoint_overridden = opts.endpoint_url.is_some();
+        let can_sign =
+            config.default_google_access_id.is_some() && config.default_sign_by.is_some();
         if let Some(url) = opts.endpoint_url.as_deref() {
             config.storage_endpoint = url.to_string();
             tracing::info!(
@@ -82,6 +106,7 @@ impl GcsBackend {
             client,
             bucket,
             endpoint_overridden,
+            can_sign,
         })
     }
 }
@@ -155,25 +180,29 @@ impl Backend for GcsBackend {
         } else {
             object.size as u64
         };
-        // Reject oversized objects BEFORE the download call buffers anything.
-        if let Some(cap) = req.max_inline_bytes {
-            if size > cap {
-                return Err(BackendError::ObjectTooLarge {
-                    actual_size: size,
-                    cap,
-                });
-            }
-        }
+        let (start, end) = match req.range {
+            Some(range) => range.span(size)?,
+            None => (0, size),
+        };
+        // Reject oversized reads BEFORE the download call buffers anything.
+        ByteRange::check_cap(start, end, req.max_inline_bytes)?;
         // Pin the body download to the exact generation we just read so a
         // concurrent overwrite returns 412 instead of silently mismatching the
         // returned etag/body.
         let mut download_req = get_req.clone();
         download_req.if_generation_match = Some(object.generation);
-        let body = self
-            .client
-            .download_object(&download_req, &Range::default())
-            .await
-            .map_err(map_gcs_error)?;
+        let body = if start == end && req.range.is_some() {
+            Vec::new()
+        } else {
+            let range = match req.range {
+                Some(_) => Range(Some(start), Some(end - 1)),
+                None => Range::default(),
+            };
+            self.client
+                .download_object(&download_req, &range)
+                .await
+                .map_err(map_gcs_error)?
+        };
         let last_modified = object
             .updated
             .and_then(|t| chrono::Utc.timestamp_opt(t.unix_timestamp(), 0).single())
@@ -187,6 +216,7 @@ impl Backend for GcsBackend {
             etag: object.etag,
             last_modified,
             size,
+            offset: start,
         })
     }
 
@@ -318,6 +348,57 @@ impl Backend for GcsBackend {
     fn provider(&self) -> &'static str {
         "gcs"
     }
+
+    fn direct_downloads(&self) -> bool {
+        !self.endpoint_overridden && self.can_sign
+    }
+
+    async fn probe(&self) -> Result<(), ProbeFailure> {
+        use crate::material::Stage;
+        let result = self
+            .client
+            .list_objects(&ListObjectsRequest {
+                bucket: self.bucket.clone(),
+                prefix: Some(String::new()),
+                delimiter: Some("/".into()),
+                max_results: Some(1),
+                ..Default::default()
+            })
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(GcsHttpError::Response(ErrorResponse { code, message, .. })) => Err(match code {
+                404 => ProbeFailure::missing(message),
+                401 | 403 => ProbeFailure::new(Stage::Auth, message),
+                _ => ProbeFailure::new(Stage::List, format!("HTTP {code}: {message}")),
+            }),
+            Err(GcsHttpError::TokenSource(e)) => Err(ProbeFailure::new(
+                Stage::Auth,
+                format!("token source failed: {e}"),
+            )),
+            Err(GcsHttpError::HttpClient(e))
+                if e.is_connect() || e.is_timeout() || e.is_request() =>
+            {
+                Err(ProbeFailure::new(Stage::Endpoint, error_chain(&e)))
+            }
+            Err(other) => Err(ProbeFailure::new(Stage::List, error_chain(&other))),
+        }
+    }
+}
+
+/// An error and its causes, `: `-joined (reqwest's Display alone hides why).
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = cause.source();
+    }
+    out
 }
 
 /// Map a `gcloud_storage::http::Error` into our `BackendError`. 404 / NotFound
@@ -353,6 +434,7 @@ mod tests {
     async fn gcs_construction_with_missing_creds_returns_auth_error() {
         let r = GcsBackend::build(
             GcsBackendOpts {
+                credentials_json: None,
                 credentials_file: Some("/nonexistent/path/to/sa.json".into()),
                 endpoint_url: None,
             },
@@ -368,6 +450,7 @@ mod tests {
     async fn gcs_build_with_endpoint_url_does_not_panic() {
         let r = GcsBackend::build(
             GcsBackendOpts {
+                credentials_json: None,
                 credentials_file: None,
                 endpoint_url: Some("http://127.0.0.1:4443".into()),
             },
@@ -381,5 +464,25 @@ mod tests {
         // touch config.storage_endpoint. The test guards against the field
         // assignment itself panicking, e.g., from a typo in the field name.
         let _ = r;
+    }
+
+    #[tokio::test]
+    async fn a_malformed_credentials_json_is_an_auth_error_that_never_quotes_it() {
+        let r = GcsBackend::build(
+            GcsBackendOpts {
+                credentials_json: Some("{\"private_key\": \"LEAKME\"".into()),
+                credentials_file: None,
+                endpoint_url: None,
+            },
+            "bucket".into(),
+        )
+        .await;
+        match r {
+            Err(BackendError::AuthFailed(message)) => {
+                assert!(!message.contains("LEAKME"), "{message}")
+            }
+            Err(other) => panic!("expected AuthFailed, got {other}"),
+            Ok(_) => panic!("a malformed credentials JSON must not build"),
+        }
     }
 }

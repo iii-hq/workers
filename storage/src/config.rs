@@ -3,7 +3,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+/// What `storage::getBucket` shows for a stored literal credential, and what
+/// a client sends back to keep it (see `crate::redaction`).
+pub const REDACTED: &str = "__redacted__";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct WorkerConfig {
@@ -11,6 +15,22 @@ pub struct WorkerConfig {
     pub providers: ProvidersConfig,
     #[serde(default)]
     pub buckets: HashMap<String, BucketConfig>,
+    /// Stored bucket entries that did not parse or validate, by name (only
+    /// [`WorkerConfig::from_json_isolating`] fills it). Each one is listed
+    /// with its error and answers `BUCKET_UNAVAILABLE`; the other buckets
+    /// keep working.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub invalid: BTreeMap<String, InvalidBucket>,
+}
+
+/// A stored bucket entry that could not be used as it is.
+#[derive(Debug, Clone)]
+pub struct InvalidBucket {
+    /// Why, naming fields but never a value.
+    pub message: String,
+    /// The entry as stored, for the listing's provider / bucket / display.
+    pub raw: Value,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
@@ -69,8 +89,13 @@ pub enum BucketConfig {
 pub struct S3BucketConfig {
     pub bucket: Option<String>,
     pub region: String,
+    /// A literal, `secret://NAME` or `env://NAME` (resolved through the
+    /// `secrets` worker). Absent with `secret_access_key` = the AWS default
+    /// credential chain.
     pub access_key_id: Option<String>,
+    /// Sensitive: `secret://NAME` / `env://NAME`, or a literal.
     pub secret_access_key: Option<String>,
+    /// Sensitive: `secret://NAME` / `env://NAME`, or a literal.
     pub session_token: Option<String>,
     /// When set, overrides the AWS-default endpoint. Use for self-hosted
     /// S3-compatible stores (MinIO, Ceph, SeaweedFS) or local testing.
@@ -82,6 +107,9 @@ pub struct S3BucketConfig {
     #[serde(default)]
     pub force_path_style: Option<bool>,
     pub notifications: Option<S3Notifications>,
+    /// How clients draw the bucket (UI only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<BucketDisplay>,
 }
 
 impl std::fmt::Debug for S3BucketConfig {
@@ -101,6 +129,7 @@ impl std::fmt::Debug for S3BucketConfig {
             .field("endpoint_url", &self.endpoint_url)
             .field("force_path_style", &self.force_path_style)
             .field("notifications", &self.notifications)
+            .field("display", &self.display)
             .finish()
     }
 }
@@ -110,15 +139,40 @@ pub struct S3Notifications {
     pub sqs_queue_url: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct GcsBucketConfig {
     pub bucket: Option<String>,
+    /// A service-account JSON file on the engine host.
     pub credentials_file: Option<String>,
+    /// Sensitive: the service-account JSON itself, as `secret://NAME` /
+    /// `env://NAME` (or a literal). Takes precedence over
+    /// `credentials_file`; neither = Application Default Credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_json: Option<String>,
     /// When set, overrides the `https://storage.googleapis.com` default.
     /// Used by fake-gcs-server in the e2e harness; safe for any
     /// custom-endpoint GCS-compatible deployment.
     pub endpoint_url: Option<String>,
     pub notifications: Option<GcsNotifications>,
+    /// How clients draw the bucket (UI only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<BucketDisplay>,
+}
+
+impl std::fmt::Debug for GcsBucketConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GcsBucketConfig")
+            .field("bucket", &self.bucket)
+            .field("credentials_file", &self.credentials_file)
+            .field(
+                "credentials_json",
+                &self.credentials_json.as_deref().map(redact_secret),
+            )
+            .field("endpoint_url", &self.endpoint_url)
+            .field("notifications", &self.notifications)
+            .field("display", &self.display)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -129,8 +183,11 @@ pub struct GcsNotifications {
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct R2BucketConfig {
     pub bucket: Option<String>,
+    /// A literal, `secret://NAME` or `env://NAME`.
     pub account_id: String,
+    /// A literal, `secret://NAME` or `env://NAME`.
     pub access_key_id: String,
+    /// Sensitive: `secret://NAME` / `env://NAME`, or a literal.
     pub secret_access_key: String,
     /// When set, overrides the `<account_id>.r2.cloudflarestorage.com`
     /// default. For testing against MinIO or a private R2-compatible store.
@@ -138,6 +195,9 @@ pub struct R2BucketConfig {
     /// visible in logs.
     pub endpoint_url: Option<String>,
     pub notifications: Option<R2Notifications>,
+    /// How clients draw the bucket (UI only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<BucketDisplay>,
 }
 
 impl std::fmt::Debug for R2BucketConfig {
@@ -149,6 +209,7 @@ impl std::fmt::Debug for R2BucketConfig {
             .field("secret_access_key", &redact_secret(&self.secret_access_key))
             .field("endpoint_url", &self.endpoint_url)
             .field("notifications", &self.notifications)
+            .field("display", &self.display)
             .finish()
     }
 }
@@ -156,6 +217,7 @@ impl std::fmt::Debug for R2BucketConfig {
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct R2Notifications {
     pub queue_id: String,
+    /// Sensitive: `secret://NAME` / `env://NAME`, or a literal.
     pub api_token: String,
 }
 
@@ -171,6 +233,288 @@ impl std::fmt::Debug for R2Notifications {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct LocalBucketConfig {
     pub bucket: Option<String>,
+    /// How clients draw the bucket (UI only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<BucketDisplay>,
+}
+
+/// How clients draw a bucket. Never read by the worker itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+pub struct BucketDisplay {
+    /// A Lucide icon name (`hard-drive`, `cloud`, …): `[a-z0-9-]`, at most 64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// `#RRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+impl BucketDisplay {
+    /// Refuse a malformed icon or color, naming the field.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(icon) = &self.icon {
+            if !valid_icon(icon) {
+                return Err(
+                    "`display.icon` must be a Lucide icon name ([a-z0-9-], at most 64)".into(),
+                );
+            }
+        }
+        if let Some(color) = &self.color {
+            if !valid_color(color) {
+                return Err("`display.color` must be #RRGGBB".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// The well-formed parts only (a hand-edited entry may hold anything).
+    pub fn sanitized(&self) -> Option<Self> {
+        let icon = self.icon.clone().filter(|v| valid_icon(v));
+        let color = self.color.clone().filter(|v| valid_color(v));
+        (icon.is_some() || color.is_some()).then_some(Self { icon, color })
+    }
+}
+
+fn valid_icon(icon: &str) -> bool {
+    !icon.is_empty()
+        && icon.len() <= 64
+        && icon
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn valid_color(color: &str) -> bool {
+    color.len() == 7 && color.starts_with('#') && color[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Every key a bucket entry may hold, per provider (`provider` included).
+/// Saves refuse anything else; a stored entry's extra keys are ignored.
+pub fn entry_keys(provider: &str) -> Option<&'static [&'static str]> {
+    Some(match provider {
+        "s3" => &[
+            "provider",
+            "bucket",
+            "region",
+            "access_key_id",
+            "secret_access_key",
+            "session_token",
+            "endpoint_url",
+            "force_path_style",
+            "notifications",
+            "display",
+        ],
+        "r2" => &[
+            "provider",
+            "bucket",
+            "account_id",
+            "access_key_id",
+            "secret_access_key",
+            "endpoint_url",
+            "notifications",
+            "display",
+        ],
+        "gcs" => &[
+            "provider",
+            "bucket",
+            "credentials_file",
+            "credentials_json",
+            "endpoint_url",
+            "notifications",
+            "display",
+        ],
+        "local" => &["provider", "bucket", "display"],
+        _ => return None,
+    })
+}
+
+fn notification_keys(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "s3" => &["sqs_queue_url"],
+        "r2" => &["queue_id", "api_token"],
+        "gcs" => &["pubsub_subscription"],
+        _ => &[],
+    }
+}
+
+/// Keys of an entry that are not fields of its provider, as dotted paths
+/// (`display.size`, `notifications.x`); every top-level key when the
+/// provider is missing or unknown is NOT reported (the parse says that).
+pub fn unknown_entry_keys(entry: &Value) -> Vec<String> {
+    let Some(obj) = entry.as_object() else {
+        return Vec::new();
+    };
+    let Some(keys) = obj
+        .get("provider")
+        .and_then(Value::as_str)
+        .and_then(entry_keys)
+    else {
+        return Vec::new();
+    };
+    let provider = obj["provider"].as_str().unwrap_or_default();
+    let mut out = Vec::new();
+    for (key, value) in obj {
+        if !keys.contains(&key.as_str()) {
+            out.push(key.clone());
+            continue;
+        }
+        let nested: &[&str] = match key.as_str() {
+            "display" => &["icon", "color"],
+            "notifications" => notification_keys(provider),
+            _ => continue,
+        };
+        if let Some(block) = value.as_object() {
+            out.extend(
+                block
+                    .keys()
+                    .filter(|k| !nested.contains(&k.as_str()))
+                    .map(|k| format!("{key}.{k}")),
+            );
+        }
+    }
+    out.sort();
+    out
+}
+
+impl BucketConfig {
+    /// `s3` | `r2` | `gcs` | `local`.
+    pub fn provider(&self) -> &'static str {
+        match self {
+            Self::S3(_) => "s3",
+            Self::Gcs(_) => "gcs",
+            Self::R2(_) => "r2",
+            Self::Local(_) => "local",
+        }
+    }
+
+    /// The provider-side bucket: `bucket`, else the worker-facing name.
+    pub fn underlying(&self, name: &str) -> String {
+        let explicit = match self {
+            Self::S3(v) => v.bucket.as_deref(),
+            Self::Gcs(v) => v.bucket.as_deref(),
+            Self::R2(v) => v.bucket.as_deref(),
+            Self::Local(v) => v.bucket.as_deref(),
+        };
+        explicit
+            .filter(|value| !value.is_empty())
+            .unwrap_or(name)
+            .to_string()
+    }
+
+    pub fn display(&self) -> Option<&BucketDisplay> {
+        match self {
+            Self::S3(v) => v.display.as_ref(),
+            Self::Gcs(v) => v.display.as_ref(),
+            Self::R2(v) => v.display.as_ref(),
+            Self::Local(v) => v.display.as_ref(),
+        }
+    }
+
+    pub fn endpoint_url(&self) -> Option<&str> {
+        match self {
+            Self::S3(v) => v.endpoint_url.as_deref(),
+            Self::Gcs(v) => v.endpoint_url.as_deref(),
+            Self::R2(v) => v.endpoint_url.as_deref(),
+            Self::Local(_) => None,
+        }
+    }
+
+    /// The fields that may hold a `secret://` / `env://` reference, with
+    /// their values: `access_key_id`, `secret_access_key`, `session_token`,
+    /// `account_id`, `credentials_json`, `notifications.api_token`.
+    pub fn credential_fields(&self) -> Vec<(&'static str, &str)> {
+        let fields: Vec<(&'static str, Option<&str>)> = match self {
+            Self::S3(v) => vec![
+                ("access_key_id", v.access_key_id.as_deref()),
+                ("secret_access_key", v.secret_access_key.as_deref()),
+                ("session_token", v.session_token.as_deref()),
+            ],
+            Self::R2(v) => vec![
+                ("account_id", Some(v.account_id.as_str())),
+                ("access_key_id", Some(v.access_key_id.as_str())),
+                ("secret_access_key", Some(v.secret_access_key.as_str())),
+                (
+                    "notifications.api_token",
+                    v.notifications.as_ref().map(|n| n.api_token.as_str()),
+                ),
+            ],
+            Self::Gcs(v) => vec![("credentials_json", v.credentials_json.as_deref())],
+            Self::Local(_) => Vec::new(),
+        };
+        fields
+            .into_iter()
+            .filter_map(|(field, value)| value.map(|v| (field, v)))
+            .collect()
+    }
+
+    /// Whether any value is a `secret://` / `env://` reference.
+    pub fn uses_secrets(&self) -> bool {
+        self.credential_fields()
+            .iter()
+            .any(|(_, v)| crate::secrets::parse_ref(v).is_some())
+    }
+
+    /// Check one parsed entry. Every message names the bucket and the
+    /// field, never a value: a misplaced value may be a credential.
+    pub fn validate(&self, name: &str) -> Result<(), String> {
+        validate_bucket_name(name).map_err(|e| format!("bucket `{name}`: {e}"))?;
+        if let Self::Local(local) = self {
+            if let Some(underlying) = local.bucket.as_deref() {
+                validate_bucket_name(underlying)
+                    .map_err(|e| format!("bucket `{name}` local bucket `{underlying}`: {e}"))?;
+            }
+        }
+        for (field, value) in self.credential_fields() {
+            if value.trim() == REDACTED {
+                return Err(format!(
+                    "bucket `{name}`: `{field}` holds the redaction placeholder \"{REDACTED}\"; \
+                     store the value or a secret:// reference"
+                ));
+            }
+        }
+        if let Some(endpoint) = self.endpoint_url() {
+            let parsed = url::Url::parse(endpoint)
+                .map_err(|_| format!("bucket `{name}`: `endpoint_url` is not a valid url"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err(format!(
+                    "bucket `{name}`: `endpoint_url` must use http or https"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Parse and validate one stored bucket entry.
+pub fn parse_bucket(name: &str, entry: &Value) -> Result<BucketConfig, String> {
+    validate_bucket_name(name).map_err(|e| format!("bucket `{name}`: {e}"))?;
+    if !entry.is_object() {
+        return Err(format!("bucket `{name}`: the entry must be an object"));
+    }
+    let parsed: BucketConfig = serde_json::from_value(entry.clone())
+        .map_err(|e| format!("bucket `{name}`: {}", sanitize_serde_error(&e.to_string())))?;
+    parsed.validate(name)?;
+    Ok(parsed)
+}
+
+/// A serde error text with every quoted value elided: `invalid type: string
+/// "hunter2"` becomes `invalid type: string "…"`. Field names survive (serde
+/// quotes them with backticks).
+pub fn sanitize_serde_error(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_quote = false;
+    for c in text.chars() {
+        if c == '"' {
+            if !in_quote {
+                out.push_str("\"…");
+            } else {
+                out.push('"');
+            }
+            in_quote = !in_quote;
+        } else if !in_quote {
+            out.push(c);
+        }
+    }
+    out
 }
 
 impl WorkerConfig {
@@ -201,14 +545,13 @@ impl WorkerConfig {
     /// operator configures one.
     fn validate_bucket_names(&self) -> Result<(), String> {
         for (name, bucket) in &self.buckets {
-            validate_bucket_name(name).map_err(|e| format!("bucket `{name}`: {e}"))?;
-            if let BucketConfig::Local(local) = bucket {
-                if let Some(underlying) = local.bucket.as_deref() {
-                    validate_bucket_name(underlying)
-                        .map_err(|e| format!("bucket `{name}` local bucket `{underlying}`: {e}"))?;
-                }
-            }
+            bucket.validate(name)?;
         }
+        self.validate_providers()
+    }
+
+    /// The `providers` block alone: the local listener and its public url.
+    fn validate_providers(&self) -> Result<(), String> {
         if let Some(http) = self
             .providers
             .local
@@ -249,6 +592,47 @@ impl WorkerConfig {
         let cfg: WorkerConfig =
             serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))?;
         cfg.validate_bucket_names()?;
+        Ok(cfg)
+    }
+
+    /// Parse the live configuration, isolating bucket entries: one that does
+    /// not parse or validate lands in [`WorkerConfig::invalid`] with its
+    /// error instead of failing the whole value. `providers` stays strict:
+    /// the local listener is applied all-or-nothing.
+    pub fn from_json_isolating(value: &Value) -> Result<Self, String> {
+        let mut rest = value.clone();
+        let Some(obj) = rest.as_object_mut() else {
+            return Err("json parse: the configuration value must be an object".into());
+        };
+        let entries = match obj.remove("buckets") {
+            None | Some(Value::Null) => serde_json::Map::new(),
+            Some(Value::Object(map)) => map,
+            Some(_) => return Err("json parse: `buckets` must be an object".into()),
+        };
+        let mut cfg: WorkerConfig = serde_json::from_value(rest)
+            .map_err(|e| format!("json parse: {}", sanitize_serde_error(&e.to_string())))?;
+        cfg.validate_providers()?;
+        for (name, entry) in entries {
+            let unknown = unknown_entry_keys(&entry);
+            if !unknown.is_empty() {
+                // Stored by hand or by another client: ignored, but said.
+                tracing::warn!(bucket = %name, keys = ?unknown, "bucket entry has keys that are not fields; ignored");
+            }
+            match parse_bucket(&name, &entry) {
+                Ok(bucket) => {
+                    cfg.buckets.insert(name, bucket);
+                }
+                Err(message) => {
+                    cfg.invalid.insert(
+                        name,
+                        InvalidBucket {
+                            message,
+                            raw: entry,
+                        },
+                    );
+                }
+            }
+        }
         Ok(cfg)
     }
 
@@ -707,6 +1091,120 @@ buckets:
     fn from_yaml_still_requires_at_least_one_bucket() {
         let err = WorkerConfig::from_yaml("buckets: {}\n").unwrap_err();
         assert!(err.contains("at least one bucket"), "got: {err}");
+    }
+
+    #[test]
+    fn isolating_parse_keeps_good_buckets_and_lists_bad_ones() {
+        let cfg = WorkerConfig::from_json_isolating(&serde_json::json!({
+            "providers": { "local": { "data_dir": "/tmp/x" } },
+            "buckets": {
+                "good": { "provider": "local" },
+                "Bad Name": { "provider": "local" },
+                "noregion": { "provider": "s3" },
+                "typo": { "provider": "s3", "region": "r", "force_path_style": "yes" },
+                "placeholder": { "provider": "s3", "region": "r", "secret_access_key": "__redacted__" },
+                "badurl": { "provider": "s3", "region": "r", "endpoint_url": "ftp://x" },
+                "extra": { "provider": "local", "colour": "red" }
+            }
+        }))
+        .unwrap();
+        assert!(cfg.buckets.contains_key("good"));
+        assert!(
+            cfg.buckets.contains_key("extra"),
+            "unknown keys are ignored when loading"
+        );
+        for bad in ["Bad Name", "noregion", "typo", "placeholder", "badurl"] {
+            assert!(cfg.invalid.contains_key(bad), "{bad} should be invalid");
+        }
+        assert!(
+            !cfg.invalid["typo"].message.contains("yes"),
+            "values are never echoed"
+        );
+        assert!(cfg.invalid["placeholder"]
+            .message
+            .contains("redaction placeholder"));
+        // The providers block stays strict.
+        assert!(WorkerConfig::from_json_isolating(&serde_json::json!({
+            "providers": { "local": { "http": { "bind_address": "nope" } } }
+        }))
+        .is_err());
+        assert!(WorkerConfig::from_json_isolating(&serde_json::json!({ "buckets": [] })).is_err());
+        assert!(WorkerConfig::from_json_isolating(&serde_json::json!({}))
+            .unwrap()
+            .buckets
+            .is_empty());
+    }
+
+    #[test]
+    fn credential_fields_and_references_per_provider() {
+        let r2: BucketConfig = serde_json::from_value(serde_json::json!({
+            "provider": "r2", "account_id": "env://CF_ACCOUNT", "access_key_id": "k",
+            "secret_access_key": "secret://R2_SK",
+            "notifications": { "queue_id": "q", "api_token": "secret://CF_TOKEN" },
+            "display": { "icon": "cloud", "color": "#F38020" }
+        }))
+        .unwrap();
+        let fields: Vec<_> = r2.credential_fields().into_iter().map(|(f, _)| f).collect();
+        assert_eq!(
+            fields,
+            vec![
+                "account_id",
+                "access_key_id",
+                "secret_access_key",
+                "notifications.api_token"
+            ]
+        );
+        assert!(r2.uses_secrets());
+        assert_eq!(r2.underlying("docs"), "docs");
+        assert_eq!(r2.display().unwrap().color.as_deref(), Some("#F38020"));
+        let gcs: BucketConfig = serde_json::from_value(serde_json::json!({
+            "provider": "gcs", "bucket": "b", "credentials_json": "{\"private_key\":\"LEAK\"}"
+        }))
+        .unwrap();
+        assert!(!gcs.uses_secrets());
+        assert!(
+            !format!("{gcs:?}").contains("LEAK"),
+            "Debug redacts credentials_json"
+        );
+        let local: BucketConfig =
+            serde_json::from_value(serde_json::json!({ "provider": "local" })).unwrap();
+        assert!(local.credential_fields().is_empty());
+        // Absent display/credentials_json are not written back as nulls.
+        let json = serde_json::to_value(&local).unwrap();
+        assert!(json.get("display").is_none(), "{json}");
+    }
+
+    #[test]
+    fn display_validation_and_unknown_keys() {
+        let ok = BucketDisplay {
+            icon: Some("hard-drive".into()),
+            color: Some("#3b82F6".into()),
+        };
+        assert!(ok.validate().is_ok());
+        assert_eq!(ok.sanitized(), Some(ok.clone()));
+        let bad = BucketDisplay {
+            icon: Some("Hard Drive".into()),
+            color: Some("#12345".into()),
+        };
+        assert!(bad.validate().unwrap_err().contains("display.icon"));
+        assert_eq!(bad.sanitized(), None);
+        assert_eq!(
+            unknown_entry_keys(&serde_json::json!({
+                "provider": "s3", "region": "r", "Region": "x",
+                "display": { "icon": "x", "size": 2 },
+                "notifications": { "sqs_queue_url": "u", "queue_id": "q" }
+            })),
+            vec!["Region", "display.size", "notifications.queue_id"]
+        );
+        assert_eq!(
+            unknown_entry_keys(&serde_json::json!({ "provider": "local", "region": "r" })),
+            vec!["region"]
+        );
+        assert!(unknown_entry_keys(&serde_json::json!({ "provider": "ftp", "x": 1 })).is_empty());
+        assert_eq!(
+            sanitize_serde_error("invalid type: string \"hunter2\", expected a boolean"),
+            "invalid type: string \"…\", expected a boolean"
+        );
     }
 
     #[test]

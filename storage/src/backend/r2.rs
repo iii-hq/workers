@@ -10,6 +10,8 @@ pub struct R2BackendOpts {
     pub secret_access_key: String,
     /// When set, overrides the account-id-derived CF endpoint.
     pub endpoint_url: Option<String>,
+    /// One attempt per call (`storage::testBucket`).
+    pub fast_fail: bool,
 }
 
 pub async fn build(opts: R2BackendOpts, bucket: String) -> Result<Arc<dyn Backend>, BackendError> {
@@ -35,6 +37,7 @@ pub async fn build(opts: R2BackendOpts, bucket: String) -> Result<Arc<dyn Backen
             endpoint_url: Some(endpoint),
             force_path_style: false,
             provider_tag: "r2",
+            fast_fail: opts.fast_fail,
         },
         bucket,
     )
@@ -54,6 +57,7 @@ mod tests {
                 access_key_id: "k".into(),
                 secret_access_key: "s".into(),
                 endpoint_url: None,
+                fast_fail: false,
             },
             "bucket".into(),
         )

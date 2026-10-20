@@ -6,6 +6,9 @@ pub mod configuration;
 pub mod error;
 pub mod handlers;
 pub mod manifest;
+pub mod material;
+pub mod redaction;
+pub mod secrets;
 pub mod triggers;
 pub mod ui;
 
