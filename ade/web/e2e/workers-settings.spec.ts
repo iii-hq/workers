@@ -36,6 +36,7 @@ declare global {
       readsCompleted: number
       configurationReferenceMode: 'none' | 'identity' | 'catalog' | 'error'
       configurationReferenceFailures: number
+      settleEditor: () => Promise<void>
       editorSnapshot: () => Promise<{
         value: string
         position: { lineNumber: number; column: number } | null
@@ -4620,6 +4621,9 @@ async function nativeTouchSwipe(
   endY: number,
 ) {
   await page.bringToFront()
+  // A line Monaco repaints with its tokens mid-swipe detaches the touch
+  // target, and the rest of the gesture never reaches the editor.
+  await page.evaluate(() => window.__WORKERS_HARNESS__.settleEditor())
   const session = await page.context().newCDPSession(page)
   try {
     await session.send('Input.dispatchTouchEvent', {
