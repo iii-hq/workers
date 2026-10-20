@@ -85,6 +85,22 @@ Trigger config:
 - `condition_function_id` (optional): called before the handler; only explicit
   `false` skips the handler.
 
+On an iii 0.25 engine, observe `queue::on-message` with the same config as
+args instead; filters select messages per observer, and the target's result
+acks, retries, or dead-letters the message as for a trigger target:
+
+```typescript
+iii.observe(
+  { function_id: 'queue::on-message', args: { topic: 'orders.created', max_retries: 3 } },
+  'orders::process',
+)
+```
+
+Every subscriber of a topic (binding or observer) receives every message.
+`dispose()` stops the observer's consumer. Invoking `queue::on-message`
+directly is refused. Engines without observe (0.24) answer `UNSUPPORTED`: use
+the trigger there.
+
 ## Configuration
 
 Use the `configuration` worker entry named `queue`. The default is in-memory:
