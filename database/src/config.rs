@@ -601,21 +601,28 @@ fn has_parent_segment(path: &str) -> bool {
     path.split(['/', '\\']).any(|segment| segment == "..")
 }
 
-/// serde's messages quote offending values (`invalid type: string "…"`),
-/// and a misplaced value may be a password: drop every quoted span.
+/// serde's messages quote offending values (`invalid type: string "…"`,
+/// ``invalid type: integer `123456` ``), and a misplaced value may be a
+/// password: drop every quoted span, escaped quotes included.
 pub fn sanitize_serde_error(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut in_quote = false;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
     for c in text.chars() {
-        if c == '"' {
-            if !in_quote {
-                out.push_str("\"…");
-            } else {
-                out.push('"');
+        match quote {
+            None if c == '"' || c == '`' => {
+                out.push(c);
+                out.push('…');
+                quote = Some(c);
             }
-            in_quote = !in_quote;
-        } else if !in_quote {
-            out.push(c);
+            None => out.push(c),
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(open) if c == open => {
+                out.push(c);
+                quote = None;
+            }
+            Some(_) => {}
         }
     }
     out
@@ -1101,21 +1108,19 @@ fn resolve_sqlite_url(url: &str) -> String {
 
 /// Strip the userinfo from a URL-like string for safe logging.
 ///
-/// Best-effort: malformed or non-URL forms (e.g. `sqlite::memory:`) are
-/// returned unchanged because the `url` crate cannot parse them and they
-/// cannot carry credentials anyway. Successfully parsed URLs have their
-/// password removed and any non-empty username replaced with `***`.
+/// The userinfo is everything before the last `@` of the authority, and it
+/// is replaced with `***` whole. Not the `url` crate's split: a password
+/// with a raw `#`, `/`, `?` or `@` is cut elsewhere (or refused) by it while
+/// a driver still reads it, and a misplaced half would be echoed. A form
+/// without an authority (`sqlite::memory:`, `sqlite:///data/a@b.db`) or
+/// without an `@` cannot carry credentials and is returned unchanged.
 pub fn redact_url(input: &str) -> String {
-    use url::Url;
-    if let Ok(parsed) = Url::parse(input) {
-        let mut redacted = parsed;
-        if redacted.password().is_some() {
-            let _ = redacted.set_password(None);
+    if let Some((scheme, rest)) = input.split_once("://") {
+        if !rest.starts_with('/') {
+            if let Some((_, host_and_rest)) = rest.rsplit_once('@') {
+                return format!("{scheme}://***@{host_and_rest}");
+            }
         }
-        if !redacted.username().is_empty() {
-            let _ = redacted.set_username("***");
-        }
-        return redacted.into();
     }
     input.to_string()
 }
@@ -1565,6 +1570,41 @@ databases:
             !result.contains("user:"),
             "no credentials present: {result}"
         );
+    }
+
+    #[test]
+    fn redact_url_never_echoes_an_unparseable_userinfo() {
+        // `#` ends the authority for the url crate (the parse fails), while
+        // a driver reads the userinfo up to the `@`.
+        let redacted = redact_url("postgres://app:pa#ss@db.internal/shop");
+        assert_eq!(redacted, "postgres://***@db.internal/shop");
+        assert!(!redact_url("mysql://root:p/w?x@h:3306/d").contains("p/w"));
+        // `123` would parse as a port, and `#4@db/shop` as the fragment.
+        assert_eq!(
+            redact_url("postgres://app:123#4@db/shop"),
+            "postgres://***@db/shop"
+        );
+        assert_eq!(
+            redact_url("postgres://app:p@ss@db/shop"),
+            "postgres://***@db/shop"
+        );
+        assert_eq!(redact_url("sqlite:///data/a@b.db"), "sqlite:///data/a@b.db");
+    }
+
+    #[test]
+    fn serde_errors_lose_every_quoted_value() {
+        let text = r#"invalid type: string "hunter2", expected u32"#;
+        assert_eq!(
+            sanitize_serde_error(text),
+            r#"invalid type: string "…", expected u32"#
+        );
+        let numeric = "invalid type: integer `123456`, expected a string";
+        assert_eq!(
+            sanitize_serde_error(numeric),
+            "invalid type: integer `…`, expected a string"
+        );
+        let escaped = r#"invalid type: string "pa\"ss", expected u32"#;
+        assert!(!sanitize_serde_error(escaped).contains("ss"));
     }
 
     #[test]
