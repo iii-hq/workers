@@ -164,7 +164,7 @@ export function ObjectPreview({
 
   if (!src) {
     return (
-      <div className="storage-ui-preview" aria-label="Loading preview">
+      <div className="storage-ui-preview" role="status" aria-label="Loading preview">
         <Skeleton className="storage-ui-preview-skeleton" />
       </div>
     )

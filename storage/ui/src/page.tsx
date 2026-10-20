@@ -553,6 +553,7 @@ function StorageExplorer({
               {buckets === null ? (
                 <div
                   className="storage-ui-skeleton"
+                  role="status"
                   aria-label="Loading buckets"
                 >
                   <Skeleton />
@@ -729,6 +730,7 @@ function StorageExplorer({
                   ) : listing === null ? (
                     <div
                       className="storage-ui-skeleton listing"
+                      role="status"
                       aria-label="Loading objects"
                     >
                       <Skeleton />
@@ -896,7 +898,8 @@ function StorageExplorer({
                 ) : metadata === null ? (
                   <div
                     className="storage-ui-skeleton"
-                    aria-label="Loading metadata"
+                    role="status"
+                  aria-label="Loading metadata"
                   >
                     <Skeleton />
                     <Skeleton />

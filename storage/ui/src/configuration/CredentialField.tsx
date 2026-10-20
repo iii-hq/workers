@@ -58,6 +58,9 @@ export interface CredentialFieldProps {
 
 type Busy = 'store' | null
 
+// biome-ignore lint/suspicious/noTemplateCurlyInString: the configuration's own template syntax, shown as text
+const TEMPLATE_SYNTAX = '${VAR}'
+
 export function CredentialField(props: CredentialFieldProps) {
   return (
     <Field label={<label htmlFor={props.id}>{props.label}</label>} hint={props.hint} error={props.error}>
@@ -240,7 +243,7 @@ function CredentialControl({
         ) : null}
         {legacyWorker ? (
           <div className="storage-cfg-notice" role="note">
-            This storage worker reads credentials only as plain values or <code>{'${VAR}'}</code> templates. Update it
+            This storage worker reads credentials only as plain values or <code>{TEMPLATE_SYNTAX}</code> templates. Update it
             (<code>iii worker update storage</code>) to keep them in the secrets store.
           </div>
         ) : secretsUp === false ? (
