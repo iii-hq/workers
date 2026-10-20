@@ -7,10 +7,12 @@
 use iii_sdk::protocol::TriggerRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
+use crate::extract::{PassHealth, CURSOR_SCOPE};
+use crate::store::Store;
 use crate::types::{fingerprint, now_ms, Confidence, Memory};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -25,17 +27,18 @@ pub struct DoctorCheck {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct DoctorResponse {
-    /// True only when every REQUIRED check passed (sibling reachability is
-    /// reported but advisory).
+    /// True only when every REQUIRED check passed (the store roundtrip; the
+    /// rest are reported but advisory).
     pub ok: bool,
     pub checks: Vec<DoctorCheck>,
 }
 
 pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, MemoryError> {
+    let cfg = deps.config().await;
     let mut checks = Vec::new();
 
-    // 1. REQUIRED: full save → recall → trash roundtrip in a scratch bank.
-    let roundtrip = roundtrip_check(deps).await;
+    // 1. REQUIRED: full save → recall → delete roundtrip in a scratch bank.
+    let roundtrip = roundtrip_check(&*deps.store().await).await;
     let roundtrip_ok = roundtrip.ok;
     checks.push(roundtrip);
 
@@ -45,6 +48,7 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
             deps,
             "router-reachable",
             "router::models::list",
+            json!({}),
             "extraction degrades to manual saves without llm-router",
         )
         .await,
@@ -56,10 +60,32 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
             deps,
             "session-manager-reachable",
             "session::list",
+            json!({}),
             "hook injection and extraction need session-manager",
         )
         .await,
     );
+
+    // 4. Advisory: the state worker holds the extraction cursor.
+    checks.push(
+        sibling_check(
+            deps,
+            "state-reachable",
+            "state::get",
+            json!({ "scope": CURSOR_SCOPE, "key": "doctor-probe" }),
+            "the extraction cursor is lost, so every pass re-reads the newest messages",
+        )
+        .await,
+    );
+
+    // 5. Advisory: an embed provider answers (semantic recall needs it).
+    checks.push(embeddings_check(deps, cfg.embeddings_enabled).await);
+
+    // 6. Advisory: extraction passes succeed (a failing one only logs).
+    checks.push(extraction_check(
+        cfg.extraction_enabled,
+        &crate::extract::pass_health(),
+    ));
 
     Ok(DoctorResponse {
         ok: roundtrip_ok,
@@ -67,40 +93,100 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
     })
 }
 
-async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
-    let store = deps.store().await;
+async fn embeddings_check(deps: &Deps, enabled: bool) -> DoctorCheck {
+    let (ok, detail) = if !enabled {
+        (
+            true,
+            "embeddings disabled by config; recall is lexical-only".into(),
+        )
+    } else {
+        match crate::embed_client::query_vector(deps, "doctor probe").await {
+            Some(q) => (true, format!("router::embed answered (model {})", q.model)),
+            None => (
+                false,
+                "router::embed returned no vector; recall runs lexical-only (BM25 + entities)"
+                    .into(),
+            ),
+        }
+    };
+    DoctorCheck {
+        name: "embeddings-available".into(),
+        ok,
+        detail,
+    }
+}
+
+fn extraction_check(enabled: bool, health: &PassHealth) -> DoctorCheck {
+    let (ok, detail) = match &health.last_error {
+        _ if !enabled => (true, "extraction disabled by config".to_string()),
+        Some(e) => (
+            false,
+            format!(
+                "the last {} of {} passes since boot failed; nothing is captured until one \
+                 succeeds. Last error: {e}",
+                health.failed_in_a_row, health.passes
+            ),
+        ),
+        None if health.passes == 0 => (true, "no extraction pass since boot".into()),
+        None => (
+            true,
+            format!("{} passes since boot, the latest succeeded", health.passes),
+        ),
+    };
+    DoctorCheck {
+        name: "extraction-passes".into(),
+        ok,
+        detail,
+    }
+}
+
+async fn roundtrip_check(store: &Store) -> DoctorCheck {
     let scratch = format!("doctor-{}", now_ms() % 1_000_000);
     let probe_text = "doctor probe memory: memory roundtrip";
     let result: Result<String, MemoryError> = async {
-        let (bank, _) = store.ensure_bank(&scratch, Some("doctor scratch")).await?;
+        let (bank, created) = store.ensure_bank(&scratch, Some("doctor scratch")).await?;
+        if !created {
+            // Not a scratch bank: never write to it, let alone delete it.
+            return Err(MemoryError::Storage(format!(
+                "scratch bank {scratch} already exists"
+            )));
+        }
         let now = now_ms();
-        bank.commit(Memory {
-            tags: vec![],
-            id: fingerprint(probe_text),
-            text: probe_text.into(),
-            entities: vec![],
-            confidence: Confidence::Stated,
-            corroboration: 0,
-            pinned: false,
-            source: None,
-            created_at: now,
-            updated_at: now,
-            invalid_at: None,
-            superseded_by: None,
-            revision: 0,
-            stated_at: Some(now),
-        })
-        .await?;
-        let hits = bank
-            .recall("memory roundtrip probe", None, "", 3, 30, false)
+        let saved = bank
+            .commit(Memory {
+                tags: vec![],
+                id: fingerprint(probe_text),
+                text: probe_text.into(),
+                entities: vec![],
+                confidence: Confidence::Stated,
+                corroboration: 0,
+                pinned: false,
+                source: None,
+                created_at: now,
+                updated_at: now,
+                invalid_at: None,
+                superseded_by: None,
+                revision: 0,
+                stated_at: Some(now),
+            })
             .await;
-        let trashed = store.trash_bank(&scratch).await?;
+        let hits = match saved {
+            Ok(_) => {
+                bank.recall("memory roundtrip probe", None, "", 3, 30, false)
+                    .await
+            }
+            Err(_) => Vec::new(),
+        };
+        // Deleted outright, a failed save included: a scratch bank in
+        // .trash is litter nobody will recover.
+        store.destroy_bank(&scratch).await?;
+        saved?;
         if hits.is_empty() {
             return Err(MemoryError::Storage(
                 "probe memory was saved but not recallable".into(),
             ));
         }
-        Ok(format!("save→recall→trash ok (scratch at {trashed})"))
+        Ok("save→recall→delete ok".into())
     }
     .await;
     match result {
@@ -117,12 +203,18 @@ async fn roundtrip_check(deps: &Deps) -> DoctorCheck {
     }
 }
 
-async fn sibling_check(deps: &Deps, name: &str, function_id: &str, why: &str) -> DoctorCheck {
+async fn sibling_check(
+    deps: &Deps,
+    name: &str,
+    function_id: &str,
+    payload: Value,
+    why: &str,
+) -> DoctorCheck {
     let res = deps
         .iii
         .trigger(TriggerRequest {
             function_id: function_id.into(),
-            payload: json!({}),
+            payload,
             action: None,
             timeout_ms: Some(3_000),
         })
@@ -154,4 +246,47 @@ pub async fn reload(deps: &Deps, _req: ReloadRequest) -> Result<ReloadResponse, 
     let store = deps.store().await;
     let banks = store.reload().await?;
     Ok(ReloadResponse { ok: true, banks })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_roundtrip_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let check = roundtrip_check(&store).await;
+        assert!(check.ok, "{}", check.detail);
+        assert!(store.bank_names().await.is_empty());
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "no scratch bank, no .trash: {left:?}");
+    }
+
+    #[test]
+    fn failing_extraction_passes_fail_the_check() {
+        let failing = PassHealth {
+            passes: 4,
+            failed_in_a_row: 3,
+            last_error: Some("router::complete: no provider".into()),
+        };
+        let check = extraction_check(true, &failing);
+        assert!(!check.ok);
+        assert!(check.detail.contains("last 3 of 4"), "{}", check.detail);
+        assert!(check.detail.contains("no provider"), "{}", check.detail);
+
+        assert!(extraction_check(false, &failing).ok, "disabled by config");
+        assert!(
+            extraction_check(true, &PassHealth::default()).ok,
+            "no pass yet"
+        );
+        let recovered = PassHealth {
+            passes: 4,
+            ..PassHealth::default()
+        };
+        assert!(extraction_check(true, &recovered).ok);
+    }
 }
