@@ -93,8 +93,9 @@ unsure, use \"project\".\n\
 const REPOSITORY_RULE: &str = "\n- This conversation works in a repository: also keep \
 what the assistant finds out about the project that a later session would need (how to build, \
 test or run it, a pitfall that will bite again, where something lives), as kind \"memory\", \
-scope \"project\". Only facts about the project: never what the assistant plans, advises, \
-guesses about the user or says about its own instructions, nor a failure that passes.";
+scope \"project\". Only facts about the project: never what a notice says, what the assistant \
+plans, advises, guesses about the user or says about its own instructions, nor a failure that \
+passes.";
 
 /// Name of the auto-managed rule that captured standing instructions
 /// append to. Hand-authored rules are never touched by extraction.
