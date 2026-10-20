@@ -193,11 +193,12 @@ fn names(uses: &[Use]) -> String {
 /// host's ambient credentials, anywhere their stored uses do not.
 ///
 /// `own` is the bucket being saved (`saveBucket`'s `previous_name`; `None`
-/// for a test): its own `access_key_id`, `secret_access_key` and
-/// `account_id` may follow it to a new destination in the same field; its
-/// `session_token`, `credentials_json`, `credentials_file` and API token,
-/// which travel in clear or as bearer credentials, may not. A value never
-/// changes field.
+/// for a test): when no other bucket shares them, its own `access_key_id`,
+/// `secret_access_key` and `account_id` may follow it to a new destination
+/// in the same field; its `session_token`, `credentials_json` and
+/// `credentials_file`, which travel in clear or as bearer credentials, may
+/// not. (Its API token always goes to the Cloudflare API, so its
+/// destination never changes.) A value never changes field.
 pub fn check_bound(
     candidate: &Value,
     uses: &HashMap<String, Vec<Use>>,

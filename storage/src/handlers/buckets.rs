@@ -380,8 +380,9 @@ pub(crate) fn plan_save(raw: Value, req: &SaveBucketReq) -> Result<SavePlan, Str
     // Credentials stay where they belong: a kept value only goes where the
     // stored entry sends it; a reference or credentials file a stored bucket
     // uses only goes, in the same field, where that bucket sends it — this
-    // bucket's own signing keys may follow it to a new destination, its
-    // session token, credentials JSON or file and API token may not; the
+    // bucket's own signing keys may follow it to a new destination when no
+    // other bucket shares them, its session token, credentials JSON or file
+    // may not; the
     // engine host's own credentials stay with the provider or an endpoint
     // already using them.
     if let (Some(previous), Some(stored)) = (&req.previous_name, &stored) {
