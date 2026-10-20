@@ -231,6 +231,81 @@ export function buildBucketCases(providers: readonly Provider[]): TestCase[] {
         }
       },
     },
+    {
+      name: 'credential guards: bound references, templates, userinfo, unknown keys, header overrides',
+      async run(ctx) {
+        const bound = {
+          provider: 's3', region: 'us-east-1', bucket: 'b', endpoint_url: 'http://127.0.0.1:1',
+          access_key_id: 'AKIA', secret_access_key: 'secret://HARNESS_BOUND_SK',
+        };
+        try {
+          await ctx.call('storage::saveBucket', { name: 'harness-bound', bucket: bound });
+          // The stored reference cannot go to another endpoint, through any field.
+          for (const field of ['secret_access_key', 'access_key_id', 'session_token']) {
+            const r = await ctx.call('storage::testBucket', {
+              bucket: { ...bound, endpoint_url: 'http://127.0.0.1:2', [field]: 'secret://HARNESS_BOUND_SK' },
+              credentials: field === 'secret_access_key' ? undefined : { secret_access_key: 'typed' },
+            });
+            assertEqual(r.stage, 'config', `${field} stage (${r.message})`);
+            assertTruthy(String(r.message).includes('belongs to bucket `harness-bound`'), `${field}: ${r.message}`);
+          }
+          await ctx.expectError(
+            () => ctx.call('storage::saveBucket', {
+              name: 'harness-dup', bucket: { ...bound, endpoint_url: 'http://127.0.0.1:2' },
+            }),
+            'belongs to bucket',
+          );
+          // A Duplicate to the same endpoint is fine.
+          await ctx.call('storage::saveBucket', { name: 'harness-dup', bucket: bound });
+        } finally {
+          for (const name of ['harness-bound', 'harness-dup']) {
+            await ctx.call('storage::deleteBucket', { name }).catch(() => undefined);
+          }
+        }
+        await ctx.expectError(
+          () => ctx.call('storage::saveBucket', {
+            name: 'harness-tpl', bucket: { ...bound, session_token: '${HOME}' },
+          }),
+          'env://NAME',
+        );
+        await ctx.expectError(
+          () => ctx.call('storage::saveBucket', {
+            name: 'harness-ui', bucket: { ...bound, endpoint_url: 'http://u:pw@127.0.0.1:1' },
+          }),
+          'carries credentials',
+        );
+        await ctx.expectError(
+          () => ctx.call('storage::saveBucket', { name: 'harness-x', bucket: bound, create_bucket_yes: true }),
+          'unknown field',
+        );
+        await ctx.expectError(
+          () => ctx.call('storage::testBucket', { name: 'scratch-local', timeout_ms: '5' }),
+          'CONFIG_ERROR',
+        );
+        const creds = await ctx.call('storage::testBucket', {
+          name: 'scratch-local', credentials: { secret_access_key: 'x' },
+        });
+        assertEqual(creds.stage, 'config', 'credentials without a bucket');
+        await ctx.expectError(
+          () => ctx.call('storage::presignUrl', {
+            bucket: 'scratch-local', key: 'k', method: 'GET', expires_in_seconds: 60,
+            response_content_disposition: 'attachment\r\nSet-Cookie: a=b',
+          }),
+          'INVALID_PRESIGN_PARAMS',
+        );
+        await ctx.call('storage::putObject', {
+          bucket: 'scratch-local', key: 'harness/guards/page.html', body_base64: ctx.b64('<script>1</script>'),
+          content_type: 'text/html',
+        });
+        const { url } = await ctx.call('storage::presignUrl', {
+          bucket: 'scratch-local', key: 'harness/guards/page.html', method: 'GET', expires_in_seconds: 60,
+        });
+        const page = await fetch(url);
+        assertEqual(page.headers.get('x-content-type-options'), 'nosniff', 'nosniff');
+        assertEqual(page.headers.get('content-security-policy'), 'sandbox', 'csp');
+        await page.arrayBuffer();
+      },
+    },
   ];
 
   if (providers.includes('s3')) {
