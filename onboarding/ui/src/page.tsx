@@ -33,7 +33,8 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   const { tour: loaded, records, error, open, setOpen, active, framed } = tour
   const removeButton = <RemoveOnboarding host={host} onClose={onRequestClose} />
 
-  const caption = tour.openStep && loaded ? `${loaded.steps.indexOf(tour.openStep) + 1} · ${tour.openStep.title}` : undefined
+  const caption =
+    tour.openStep && loaded ? `${loaded.steps.indexOf(tour.openStep) + 1} · ${tour.openStep.title}` : undefined
   useEffect(() => {
     showSpotlight(framed, caption)
     return hideSpotlight
@@ -239,4 +240,3 @@ function Frame({
     </PageShell>
   )
 }
-

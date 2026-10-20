@@ -274,7 +274,13 @@ function StayInTouch({
               className="ob-field"
             />
             <div className="ob-form-actions">
-              <Button type="button" variant="ghost" className="ob-ghost" onClick={onSkip} disabled={status === 'sending'}>
+              <Button
+                type="button"
+                variant="ghost"
+                className="ob-ghost"
+                onClick={onSkip}
+                disabled={status === 'sending'}
+              >
                 Skip this step
               </Button>
               <Button type="submit" className="ob-action" disabled={status === 'sending'}>

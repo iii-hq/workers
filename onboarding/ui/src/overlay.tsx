@@ -1,4 +1,4 @@
-import { Button, type Host, type OverlayRenderProps, StatusPanel, Skeleton, uiClasses } from '@iii-dev/console-ui'
+import { Button, type Host, type OverlayRenderProps, Skeleton, StatusPanel, uiClasses } from '@iii-dev/console-ui'
 import { Check, ChevronLeft, ChevronRight, Compass, Minus, X } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { RemoveOnboarding } from './page'
@@ -90,10 +90,24 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
             {index + 1} / {loaded.steps.length}
           </span>
         ) : null}
-        <Button variant="icon" size="icon" className="ob-link" aria-label="Fold the tour" title="Fold" onClick={minimizeTour}>
+        <Button
+          variant="icon"
+          size="icon"
+          className="ob-link"
+          aria-label="Fold the tour"
+          title="Fold"
+          onClick={minimizeTour}
+        >
           <Minus className={uiClasses.icon} aria-hidden="true" />
         </Button>
-        <Button variant="icon" size="icon" className="ob-link" aria-label="Close the tour" title="Close" onClick={closeTour}>
+        <Button
+          variant="icon"
+          size="icon"
+          className="ob-link"
+          aria-label="Close the tour"
+          title="Close"
+          onClick={closeTour}
+        >
           <X className={uiClasses.icon} aria-hidden="true" />
         </Button>
       </header>
@@ -196,7 +210,13 @@ function StepNav({ tour, index }: { tour: TourController; index: number }) {
   const nextReached = next ? tour.stateOf(next) !== 'pending' : false
   return (
     <span className="ob-overlay-nav">
-      <Button variant="ghost" size="sm" className="ob-ghost" disabled={!prev} onClick={() => prev && tour.setOpen(prev.id)}>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="ob-ghost"
+        disabled={!prev}
+        onClick={() => prev && tour.setOpen(prev.id)}
+      >
         <ChevronLeft className={uiClasses.icon} aria-hidden="true" />
         Back
       </Button>

@@ -145,7 +145,9 @@ export function useTour(host: Host, conversationId: string | null | undefined): 
       if (!tour) return
       recordsRef.current = next
       setRecords(next)
-      setOpen((reading) => (reading !== null && closed.includes(reading) ? (firstIncomplete(tour, next)?.id ?? null) : reading))
+      setOpen((reading) =>
+        reading !== null && closed.includes(reading) ? (firstIncomplete(tour, next)?.id ?? null) : reading,
+      )
     },
     [tour],
   )
