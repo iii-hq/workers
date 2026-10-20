@@ -1,13 +1,15 @@
 /**
- * The icons a bucket can wear (`display.icon`, a Lucide name): the iii app's
- * environment glyphs, storage-flavoured ones first, so a bucket looks the
- * same on the phone and in the console. A name outside the set — written by
- * another client — still renders, as the hard-drive glyph, and is kept as
- * stored.
+ * The icons a bucket can wear (`display.icon`, a Lucide name): a few
+ * storage glyphs (folder, files, image, archive…) and then the iii app's
+ * environment glyphs — every one of them drawn by the iii app too — so a
+ * bucket looks the same on the phone and in the console. A name outside the
+ * set — written by another client — still renders, as the hard-drive glyph,
+ * and is kept as stored.
  */
 
 import {
   Anchor,
+  Archive,
   Atom,
   Bird,
   Bot,
@@ -26,10 +28,13 @@ import {
   Crown,
   Database,
   Dog,
+  Files,
+  FileText,
   Fish,
   Flag,
   Flame,
   FlaskConical,
+  Folder,
   Gamepad2,
   Gem,
   Ghost,
@@ -39,6 +44,7 @@ import {
   Heart,
   Hexagon,
   House,
+  Image,
   Infinity as InfinityIcon,
   KeyRound,
   Laptop,
@@ -76,6 +82,11 @@ const ICONS: Readonly<Record<string, LucideIcon>> = {
   database: Database,
   cloud: Cloud,
   server: Server,
+  folder: Folder,
+  files: Files,
+  'file-text': FileText,
+  image: Image,
+  archive: Archive,
   box: Box,
   boxes: Boxes,
   container: Container,
