@@ -70,8 +70,9 @@ pub trait ConfigStore: Send + Sync {
     /// stored.
     async fn get(&self, raw: bool) -> Result<Value, String>;
     /// Replace the whole stored value (validated against the registered
-    /// schema, then announced to every consumer).
-    async fn set(&self, value: Value) -> Result<(), String>;
+    /// schema, then announced to every consumer). Answers the value it
+    /// replaced, when the store says (there is no compare-and-set).
+    async fn set(&self, value: Value) -> Result<Option<Value>, String>;
 }
 
 /// [`ConfigStore`] over the configuration worker.
@@ -99,9 +100,10 @@ impl ConfigStore for EngineStore {
         }
     }
 
-    async fn set(&self, value: Value) -> Result<(), String> {
+    async fn set(&self, value: Value) -> Result<Option<Value>, String> {
         // One attempt: a rejected value (schema) must surface at once.
-        self.iii
+        let response = self
+            .iii
             .trigger(
                 TriggerRequest {
                     function_id: "configuration::set".to_string(),
@@ -112,8 +114,8 @@ impl ConfigStore for EngineStore {
                 .namespace("default"),
             )
             .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        Ok(response.get("old_value").cloned())
     }
 }
 

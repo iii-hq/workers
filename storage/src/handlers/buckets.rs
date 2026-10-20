@@ -29,6 +29,7 @@ use crate::redaction;
 use crate::secrets::Refetch;
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetBucketReq {
     /// Bucket name (the key under `buckets`).
     pub name: String,
@@ -44,6 +45,7 @@ pub struct GetBucketResp {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SaveBucketReq {
     /// The name to save under: `[a-z0-9][a-z0-9_-]{0,62}`.
     pub name: String,
@@ -85,6 +87,7 @@ pub struct SaveBucketResp {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DeleteBucketReq {
     pub name: String,
 }
@@ -130,32 +133,27 @@ pub(crate) async fn stored_entry(
         .cloned())
 }
 
-/// One stored entry as written (raw) and as applied (`${VAR}` templates
-/// expanded by the configuration worker; `None` when the value cannot be
-/// expanded).
-pub(crate) async fn stored_entry_both(
+/// Every stored bucket entry, as written (raw) and as applied (`${VAR}`
+/// templates expanded by the configuration worker; `None` when the value
+/// cannot be expanded or read). Entries that do not parse are included.
+pub(crate) async fn stored_buckets_both(
     runtime: &StorageRuntime,
-    name: &str,
-) -> Result<(Option<Value>, Option<Value>), String> {
-    let store = store(runtime)?;
+) -> (Map<String, Value>, Option<Map<String, Value>>) {
+    let Ok(store) = store(runtime) else {
+        return (Map::new(), None);
+    };
     let raw = store
         .get(true)
         .await
-        .map_err(|e| config_error(format!("reading the stored configuration failed: {e}")))?;
-    let raw_entry = stored_buckets(&raw)
-        .map_err(config_error)?
-        .get(name)
-        .cloned();
-    if raw_entry.is_none() {
-        return Ok((None, None));
-    }
+        .ok()
+        .and_then(|value| stored_buckets(&value).ok())
+        .unwrap_or_default();
     let expanded = store
         .get(false)
         .await
         .ok()
-        .and_then(|value| stored_buckets(&value).ok())
-        .and_then(|buckets| buckets.get(name).cloned());
-    Ok((raw_entry, expanded))
+        .and_then(|value| stored_buckets(&value).ok());
+    (raw, expanded)
 }
 
 /// Refuse keys that are not fields of the entry's provider, naming them
@@ -181,17 +179,74 @@ pub(crate) fn refuse_unknown_keys(entry: &Value, prefix: &str) -> Result<(), Str
     ))
 }
 
-/// A candidate entry made usable: unknown keys and literal credentials
-/// refused, `credentials` merged, `"__redacted__"` restored from `stored`.
-/// Returns the entry and the fields restored.
+/// A candidate entry made usable, and the values it keeps from the stored
+/// entry: unknown keys, credentials in `endpoint_url`, malformed references,
+/// literal credentials and new `${VAR}` templates refused; `credentials`
+/// merged; `"__redacted__"` restored from `stored`.
+pub(crate) struct Candidate {
+    pub entry: Value,
+    /// Fields whose value comes from the stored entry: restored
+    /// `"__redacted__"` values and `${VAR}` templates left unchanged. They
+    /// may only go where the stored entry sends them
+    /// ([`crate::binding::check_kept`]).
+    pub kept: Vec<String>,
+    /// The kept `${VAR}` templates (a subset of `kept`).
+    pub templates: Vec<String>,
+}
+
 pub(crate) fn prepare_candidate(
     mut entry: Value,
     credentials: Option<&Value>,
     stored: Option<&Value>,
-) -> Result<(Value, Vec<String>), String> {
+) -> Result<Candidate, String> {
     refuse_unknown_keys(&entry, "bucket")?;
-    if let Some(field) = redaction::literal_sensitive_fields(&entry).first() {
-        return Err(redaction::literal_refusal(field));
+    if entry
+        .get("endpoint_url")
+        .and_then(Value::as_str)
+        .is_some_and(redaction::has_userinfo)
+    {
+        return Err(
+            "`bucket.endpoint_url` carries credentials (user:password@); put them in \
+             access_key_id and secret_access_key"
+                .into(),
+        );
+    }
+    if let Some(field) = redaction::malformed_references(&entry).first() {
+        return Err(redaction::malformed_refusal(&format!("bucket.{field}")));
+    }
+    // `${VAR}` reads the engine's environment, which nothing gates: only a
+    // template left exactly as the stored entry has it may stay.
+    let mut templates = Vec::new();
+    for path in redaction::template_paths(&entry, "") {
+        if stored.is_some() && redaction::at(Some(&entry), &path) == redaction::at(stored, &path) {
+            templates.push(path);
+            continue;
+        }
+        return Err(format!(
+            "`bucket.{path}` is a ${{VAR}} template; templates read the engine's environment, \
+             which nothing gates. Use env://NAME (the secrets worker decides who may read it), \
+             or leave the stored template unchanged"
+        ));
+    }
+    if let Some(field) = redaction::literal_sensitive_fields(&entry)
+        .into_iter()
+        .find(|field| !templates.contains(field))
+    {
+        return Err(redaction::literal_refusal(&field));
+    }
+    if let Some(fields) = credentials.and_then(Value::as_object) {
+        for (key, value) in fields {
+            let Some(text) = value.as_str() else { continue };
+            if text.contains("${") {
+                return Err(format!(
+                    "`credentials.{key}` holds a ${{VAR}} template; send the value itself, or \
+                     env://NAME in `bucket`"
+                ));
+            }
+            if crate::secrets::parse_ref(text).is_some_and(|r| r.is_err()) {
+                return Err(redaction::malformed_refusal(&format!("credentials.{key}")));
+            }
+        }
     }
     redaction::merge_credentials(&mut entry, credentials)?;
     // A credential the provider has no field for (`session_token` on r2).
@@ -201,8 +256,13 @@ pub(crate) fn prepare_candidate(
             "`credentials` sets `{key}`, which is not a {provider} bucket field"
         ));
     }
-    let restored = redaction::restore_entry(&mut entry, stored)?;
-    Ok((entry, restored))
+    let mut kept = redaction::restore_entry(&mut entry, stored)?;
+    kept.extend(templates.iter().cloned());
+    Ok(Candidate {
+        entry,
+        kept,
+        templates,
+    })
 }
 
 /// What a save writes: the whole new configuration value and the parsed
@@ -253,7 +313,11 @@ pub(crate) fn plan_save(raw: Value, req: &SaveBucketReq) -> Result<SavePlan, Str
         }
     };
 
-    let (mut entry, _) = prepare_candidate(
+    let Candidate {
+        mut entry,
+        kept,
+        templates,
+    } = prepare_candidate(
         req.bucket.clone(),
         req.credentials.as_ref(),
         stored.as_ref(),
@@ -278,10 +342,28 @@ pub(crate) fn plan_save(raw: Value, req: &SaveBucketReq) -> Result<SavePlan, Str
         }
     }
 
-    let bucket = parse_bucket(&req.name, &entry)?;
+    // A kept `${VAR}` endpoint is only a url once the configuration worker
+    // expands it: validate the rest of the entry around it.
+    let mut checked = entry.clone();
+    if templates.iter().any(|path| path == "endpoint_url") {
+        checked["endpoint_url"] = Value::String("https://template.invalid".into());
+    }
+    let bucket = parse_bucket(&req.name, &checked)?;
     if let Some(display) = bucket.display() {
         display.validate()?;
     }
+    // Credentials stay where they belong: a kept value only goes where the
+    // stored entry sends it; a reference or credentials file another stored
+    // bucket uses only goes where that bucket sends it (this bucket may take
+    // its own along); the engine host's own credentials stay with the
+    // provider or an endpoint already using them.
+    if let (Some(previous), Some(stored)) = (&req.previous_name, &stored) {
+        crate::binding::check_kept(&entry, stored, previous, &kept)?;
+    }
+    crate::binding::check_bound(
+        &entry,
+        &crate::binding::uses(&buckets, req.previous_name.as_deref()),
+    )?;
     if req.create_bucket == Some(true) && matches!(bucket, BucketConfig::Gcs(_)) {
         return Err(
             "create_bucket is supported for s3, r2 and S3-compatible buckets; create the GCS \
@@ -348,11 +430,11 @@ pub async fn save(
         .get(true)
         .await
         .map_err(|e| config_error(format!("reading the stored configuration failed: {e}")))?;
-    let plan = plan_save(raw, &req).map_err(config_error)?;
-    store
-        .set(plan.value)
-        .await
-        .map_err(|e| config_error(format!("configuration::set refused the value: {e}")))?;
+    let plan = plan_save(raw.clone(), &req).map_err(config_error)?;
+    let plan = write_with_retry(store.as_ref(), raw, plan, |base| {
+        plan_save(base, &req).map_err(config_error)
+    })
+    .await?;
 
     // The saved entry's references are read again now: saving right after
     // correcting a secret must not build the bucket from a cached value.
@@ -398,6 +480,7 @@ fn creation_failure(error: BackendError) -> (Stage, String) {
             inner_code: None,
             message,
         } => (Stage::Endpoint, message),
+        BackendError::Provider { message, .. } => (Stage::Bucket, message),
         other => (Stage::Bucket, other.to_string()),
     }
 }
@@ -413,15 +496,70 @@ pub async fn delete(
         .get(true)
         .await
         .map_err(|e| config_error(format!("reading the stored configuration failed: {e}")))?;
-    let Some(value) = plan_delete(raw, &req.name).map_err(config_error)? else {
+    let Some(value) = plan_delete(raw.clone(), &req.name).map_err(config_error)? else {
         return Ok(DeleteBucketResp { deleted: false });
     };
-    store
-        .set(value)
-        .await
-        .map_err(|e| config_error(format!("configuration::set refused the value: {e}")))?;
+    write_with_retry(store.as_ref(), raw, value, |base| {
+        plan_delete(base, &req.name)
+            .map_err(config_error)?
+            .ok_or_else(|| config_error(format!("bucket `{}` was deleted meanwhile", req.name)))
+    })
+    .await?;
     let _ = reload(state, runtime, &req.name).await;
     Ok(DeleteBucketResp { deleted: true })
+}
+
+/// What a write produces: the whole value to store.
+pub(crate) trait Planned {
+    fn value(&self) -> &Value;
+}
+
+impl Planned for SavePlan {
+    fn value(&self) -> &Value {
+        &self.value
+    }
+}
+
+impl Planned for Value {
+    fn value(&self) -> &Value {
+        self
+    }
+}
+
+/// Write a planned value. `configuration::set` has no compare-and-set, but it
+/// answers the value it replaced: when that is not what the plan was made
+/// from, another writer got in between, so the change is planned again on
+/// top of that writer's value and written again (at most twice more). A plan
+/// that no longer applies puts the other writer's value back and fails.
+pub(crate) async fn write_with_retry<P: Planned>(
+    store: &dyn ConfigStore,
+    base: Value,
+    plan: P,
+    replan: impl Fn(Value) -> Result<P, String>,
+) -> Result<P, String> {
+    let mut expected = base;
+    let mut plan = plan;
+    for attempt in 0..3 {
+        let replaced = store
+            .set(plan.value().clone())
+            .await
+            .map_err(|e| config_error(format!("configuration::set refused the value: {e}")))?;
+        match replaced {
+            Some(other) if other != expected && attempt < 2 => {
+                tracing::warn!("the storage configuration changed during a bucket edit; re-applying the edit on top of it");
+                expected = plan.value().clone();
+                plan = match replan(other.clone()) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        let _ = store.set(other).await;
+                        return Err(error);
+                    }
+                };
+            }
+            _ => break,
+        }
+    }
+    Ok(plan)
 }
 
 /// Apply the just-written configuration now (the change trigger that follows
@@ -464,17 +602,32 @@ pub(crate) mod tests {
     pub(crate) struct MemoryStore {
         pub value: Mutex<Value>,
         pub sets: Mutex<Vec<Value>>,
+        pub interleave: Mutex<Option<Value>>,
+        /// What `get(raw: false)` answers when set (the configuration
+        /// worker's expansion); else the stored value.
+        pub expanded: Mutex<Option<Value>>,
     }
 
     #[async_trait]
     impl ConfigStore for MemoryStore {
-        async fn get(&self, _raw: bool) -> Result<Value, String> {
+        async fn get(&self, raw: bool) -> Result<Value, String> {
+            if !raw {
+                if let Some(expanded) = self.expanded.lock().unwrap().clone() {
+                    return Ok(expanded);
+                }
+            }
             Ok(self.value.lock().unwrap().clone())
         }
-        async fn set(&self, value: Value) -> Result<(), String> {
-            *self.value.lock().unwrap() = value.clone();
+        async fn set(&self, value: Value) -> Result<Option<Value>, String> {
+            let mut current = self.value.lock().unwrap();
+            // A concurrent writer, scripted by a test: it lands right before
+            // this write.
+            if let Some(other) = self.interleave.lock().unwrap().take() {
+                *current = other;
+            }
+            let previous = std::mem::replace(&mut *current, value.clone());
             self.sets.lock().unwrap().push(value);
-            Ok(())
+            Ok(Some(previous))
         }
     }
 
@@ -503,6 +656,8 @@ pub(crate) mod tests {
         let store = Arc::new(MemoryStore {
             value: Mutex::new(value),
             sets: Mutex::new(Vec::new()),
+            interleave: Mutex::new(None),
+            expanded: Mutex::new(None),
         });
         let runtime = StorageRuntime::with_store(
             Arc::new(EngineDispatcher::new(
@@ -682,18 +837,32 @@ pub(crate) mod tests {
         let raw = json!({ "buckets": { "a": {
             "provider": "r2", "account_id": "acc", "access_key_id": "ak", "secret_access_key": "stored-sk",
             "notifications": { "queue_id": "q", "api_token": "stored-tok" } } } });
-        let plan = plan_save(
-            raw.clone(),
-            &save_req(json!({ "name": "a", "previous_name": "a", "bucket": {
-                "provider": "r2", "account_id": "acc2", "access_key_id": "ak",
+        let edit = |account: &str, endpoint: Option<&str>| {
+            let mut bucket = json!({
+                "provider": "r2", "account_id": account, "access_key_id": "ak",
                 "secret_access_key": "__redacted__",
-                "notifications": { "queue_id": "q", "api_token": "__redacted__" } } })),
-        )
-        .unwrap();
+                "notifications": { "queue_id": "q2", "api_token": "__redacted__" } });
+            if let Some(e) = endpoint {
+                bucket["endpoint_url"] = json!(e);
+            }
+            save_req(json!({ "name": "a", "previous_name": "a", "bucket": bucket }))
+        };
+        let plan = plan_save(raw.clone(), &edit("acc", None)).unwrap();
         let saved = &plan.value["buckets"]["a"];
         assert_eq!(saved["secret_access_key"], "stored-sk");
         assert_eq!(saved["notifications"]["api_token"], "stored-tok");
-        assert_eq!(saved["account_id"], "acc2");
+        assert_eq!(saved["notifications"]["queue_id"], "q2");
+        // A kept value never follows a moved account or endpoint.
+        for moved in [
+            edit("acc2", None),
+            edit("acc", Some("http://127.0.0.1:49262")),
+        ] {
+            let err = plan_save(raw.clone(), &moved).unwrap_err();
+            assert!(
+                err.contains("keeps bucket `a`'s stored value") && err.contains("re-enter"),
+                "{err}"
+            );
+        }
         // A create has nothing stored to keep.
         let err = plan_save(
             raw,
@@ -702,6 +871,210 @@ pub(crate) mod tests {
         )
         .unwrap_err();
         assert!(err.contains("no stored value to keep"), "{err}");
+    }
+
+    #[test]
+    fn saves_keep_credentials_where_they_belong() {
+        let raw = json!({ "buckets": {
+            "prod": { "provider": "s3", "region": "r", "endpoint_url": "https://s3.prod.example",
+                      "access_key_id": "AKIA", "secret_access_key": "secret://PROD_SK",
+                      "session_token": "${PROD_TOKEN}" },
+            "broken": { "provider": "s3", "endpoint_url": "ftp://x", "secret_access_key": "secret://BROKEN_SK" }
+        } });
+        let evil = "http://127.0.0.1:49262";
+        let s3 = |endpoint: &str, extra: Value| {
+            let mut b = json!({ "provider": "s3", "region": "r", "endpoint_url": endpoint, "access_key_id": "a" });
+            for (k, v) in extra.as_object().unwrap() {
+                b[k] = v.clone();
+            }
+            b
+        };
+        // Another bucket's reference, in any field, elsewhere: refused.
+        for extra in [
+            json!({ "secret_access_key": "secret://PROD_SK" }),
+            json!({ "secret_access_key": "secret://X", "session_token": "secret://PROD_SK" }),
+            json!({ "secret_access_key": "secret://BROKEN_SK" }),
+        ] {
+            let err = plan_save(
+                raw.clone(),
+                &save_req(json!({ "name": "dup", "bucket": s3(evil, extra) })),
+            )
+            .unwrap_err();
+            assert!(err.contains("belongs to bucket"), "{err}");
+        }
+        // A Duplicate toward the same endpoint keeps working.
+        plan_save(
+            raw.clone(),
+            &save_req(
+                json!({ "name": "dup", "bucket": s3("https://s3.prod.example",
+                json!({ "access_key_id": "AKIA", "secret_access_key": "secret://PROD_SK" })) }),
+            ),
+        )
+        .unwrap();
+        // A bucket may take its own reference to a new endpoint…
+        let mine = json!({ "access_key_id": "AKIA", "secret_access_key": "secret://PROD_SK" });
+        plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "prod", "previous_name": "prod", "bucket": s3("https://new.example", mine.clone()) })),
+        )
+        .unwrap();
+        // …but not its kept template: nor may a new template appear.
+        let kept_template = json!({ "access_key_id": "AKIA", "secret_access_key": "secret://PROD_SK",
+                                    "session_token": "${PROD_TOKEN}" });
+        let err = plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "prod", "previous_name": "prod", "bucket": s3("https://new.example", kept_template.clone()) })),
+        )
+        .unwrap_err();
+        assert!(err.contains("keeps bucket `prod`'s stored value"), "{err}");
+        plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "prod", "previous_name": "prod", "bucket": s3("https://s3.prod.example", kept_template) })),
+        )
+        .unwrap();
+        let err = plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "tpl", "bucket": s3("https://h", json!({ "secret_access_key": "secret://S", "session_token": "${HOME}" })) })),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("`bucket.session_token` is a ${VAR} template")
+                && err.contains("env://NAME"),
+            "{err}"
+        );
+        let err = plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "tpl", "bucket": s3("https://h", json!({})),
+                              "credentials": { "secret_access_key": "${HOME}" } })),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("`credentials.secret_access_key` holds a ${VAR} template"),
+            "{err}"
+        );
+        // The host's own AWS credentials do not go to an unknown endpoint.
+        let err = plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "bare", "bucket": { "provider": "s3", "region": "r", "endpoint_url": evil } })),
+        )
+        .unwrap_err();
+        assert!(err.contains("engine host's own AWS credentials"), "{err}");
+        plan_save(
+            raw,
+            &save_req(json!({ "name": "bare", "bucket": { "provider": "s3", "region": "r" } })),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn userinfo_and_malformed_references_are_refused_plainly() {
+        let raw = json!({ "buckets": {} });
+        let err = plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "a", "bucket": { "provider": "s3", "region": "r",
+                "endpoint_url": "http://user:PW-SECRET@h", "secret_access_key": "secret://S", "access_key_id": "a" } })),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("carries credentials") && !err.contains("PW-SECRET"),
+            "{err}"
+        );
+        for bad in ["secret://", "secret://a b", "secret://ção"] {
+            let err = plan_save(
+                raw.clone(),
+                &save_req(
+                    json!({ "name": "a", "bucket": { "provider": "s3", "region": "r",
+                    "access_key_id": "a", "secret_access_key": bad } }),
+                ),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("malformed reference") && !err.contains("literal"),
+                "{bad}: {err}"
+            );
+        }
+        let err = plan_save(
+            raw,
+            &save_req(json!({ "name": "a", "bucket": { "provider": "s3", "region": "r", "access_key_id": "a" },
+                              "credentials": { "secret_access_key": "env://a b" } })),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("`credentials.secret_access_key` holds a malformed reference"),
+            "{err}"
+        );
+        let err = crate::handlers::parse_request::<SaveBucketReq>(
+            json!({ "name": "a", "bucket": {}, "create_bucket_yes": true }),
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown field `create_bucket_yes`"), "{err}");
+        let err = crate::handlers::parse_request::<SaveBucketReq>(
+            json!({ "name": "a", "bucket": {}, "create_bucket": "yes" }),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("`create_bucket`") && !err.contains("yes"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn creation_failures_keep_the_providers_code_and_stage() {
+        let (stage, message) = creation_failure(BackendError::AuthFailed(
+            "CreateBucket: HTTP 403 AccessDenied: Access Denied. (the key may not create buckets)"
+                .into(),
+        ));
+        assert_eq!(stage, Stage::Auth);
+        assert!(message.contains("AccessDenied"));
+        let (stage, _) = creation_failure(BackendError::Provider {
+            inner_code: None,
+            message: "dispatch failure".into(),
+        });
+        assert_eq!(stage, Stage::Endpoint);
+        let (stage, _) = creation_failure(BackendError::Provider {
+            inner_code: Some("BucketAlreadyExists".into()),
+            message: "taken".into(),
+        });
+        assert_eq!(stage, Stage::Bucket);
+    }
+
+    #[tokio::test]
+    async fn a_write_that_lands_in_between_is_kept() {
+        let f = fixture(json!({ "buckets": { "keep": { "provider": "local" } } })).await;
+        // Someone adds `theirs` between this save's read and its write.
+        let mut theirs = f.store.value.lock().unwrap().clone();
+        theirs["buckets"]["theirs"] = json!({ "provider": "local" });
+        *f.store.interleave.lock().unwrap() = Some(theirs);
+        save(
+            &f.state,
+            &f.runtime,
+            save_req(json!({ "name": "mine", "bucket": { "provider": "local" } })),
+        )
+        .await
+        .unwrap();
+        let stored = f.store.value.lock().unwrap().clone();
+        for name in ["keep", "theirs", "mine"] {
+            assert!(
+                stored["buckets"].get(name).is_some(),
+                "{name} lost: {stored}"
+            );
+        }
+        // A plan that no longer applies puts the other writer's value back.
+        let mut clash = f.store.value.lock().unwrap().clone();
+        clash["buckets"]["again"] = json!({ "provider": "local", "bucket": "theirs-again" });
+        *f.store.interleave.lock().unwrap() = Some(clash);
+        let err = save(
+            &f.state,
+            &f.runtime,
+            save_req(json!({ "name": "again", "bucket": { "provider": "local" } })),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(
+            f.store.value.lock().unwrap()["buckets"]["again"]["bucket"],
+            "theirs-again"
+        );
     }
 
     #[test]

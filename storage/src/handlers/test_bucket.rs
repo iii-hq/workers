@@ -18,17 +18,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-use super::buckets::{prepare_candidate, stored_entry_both};
+use super::buckets::{prepare_candidate, stored_buckets_both, Candidate};
 use super::AppState;
 use crate::backend::factory::{self, Purpose};
+use crate::binding;
 use crate::config::{parse_bucket, BucketConfig, WorkerConfig};
 use crate::configuration::StorageRuntime;
 use crate::material::{self, BucketError, Material, Stage};
+use crate::redaction::{at, template_paths};
 
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MAX_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TestBucketReq {
     /// The candidate entry (`provider` and its fields), as `saveBucket`
     /// takes it. Absent: test the stored bucket `name` as it is.
@@ -109,10 +112,23 @@ async fn run(
     req: &TestBucketReq,
     budget: Duration,
 ) -> TestBucketResp {
-    let (stored, stored_expanded) = match &req.name {
-        Some(name) => stored_entry_both(runtime, name).await.unwrap_or_default(),
-        None => (None, None),
-    };
+    if req.bucket.is_none() && req.credentials.as_ref().is_some_and(|c| !c.is_null()) {
+        return TestBucketResp::failed(
+            "unknown",
+            Stage::Config,
+            "`credentials` need a `bucket` to test; to test a stored bucket as it is, send only \
+             its `name`",
+        );
+    }
+    // Every stored entry, as written and as the configuration worker expands
+    // it (parsed or not: an entry that does not parse still binds its
+    // references).
+    let (raw_buckets, expanded_buckets) = stored_buckets_both(runtime).await;
+    let stored = req.name.as_ref().and_then(|n| raw_buckets.get(n).cloned());
+    let stored_expanded = req
+        .name
+        .as_ref()
+        .and_then(|n| expanded_buckets.as_ref()?.get(n).cloned());
     let candidate = match (&req.bucket, &stored) {
         (Some(bucket), _) => bucket.clone(),
         // The stored bucket as the worker runs it: templates expanded.
@@ -136,11 +152,27 @@ async fn run(
         .unwrap_or("unknown")
         .to_string();
 
-    // A stored entry tested as it is may hold legacy literals: they are not
-    // in a request, so only a request's `bucket` is held to the rules.
-    let (entry, restored) = if req.bucket.is_some() {
+    // A stored entry tested as it is may hold legacy literals and templates:
+    // they are not in a request, so only a request's `bucket` is held to the
+    // rules.
+    let (entry, kept) = if req.bucket.is_some() {
         match prepare_candidate(candidate, req.credentials.as_ref(), stored.as_ref()) {
-            Ok(prepared) => prepared,
+            Ok(Candidate {
+                mut entry,
+                kept,
+                templates,
+            }) => {
+                // A template kept from the stored entry takes the value the
+                // configuration worker expanded for it.
+                for path in &templates {
+                    if let Some(value) =
+                        at(stored_expanded.as_ref(), path).filter(|v| v.is_string())
+                    {
+                        set_at(&mut entry, path, value.clone());
+                    }
+                }
+                (entry, kept)
+            }
             Err(e) => {
                 let hint = if req.name.is_none() && e.contains("no stored value") {
                     " (pass `name` to use the stored bucket's values)"
@@ -153,25 +185,13 @@ async fn run(
     } else {
         (candidate, Vec::new())
     };
-    // `${VAR}` templates kept from the stored entry take the value the
-    // configuration worker expanded for it; a new template cannot be
-    // expanded here (the engine's environment is not the worker's).
-    let mut entry = entry;
-    let mut restored = restored;
-    if req.bucket.is_some() {
-        restored.extend(expand_stored_templates(
-            &mut entry,
-            stored.as_ref(),
-            stored_expanded.as_ref(),
-        ));
-    }
     if let Some(path) = template_paths(&entry, "").first() {
         return TestBucketResp::failed(
             &provider_hint,
             Stage::Config,
             format!(
-                "`bucket.{path}` is a ${{VAR}} template, which the configuration worker expands \
-                 when the bucket is saved; save it first, or use env://VAR"
+                "`bucket.{path}` is a ${{VAR}} template the configuration worker could not \
+                 expand; fix the stored value, or use env://NAME"
             ),
         );
     }
@@ -195,33 +215,26 @@ async fn run(
     };
     let provider = bucket.provider();
 
-    // A stored value only ever goes where its bucket goes.
-    if !restored.is_empty() {
-        let (Some(name), Some(stored)) = (&req.name, &stored) else {
-            return TestBucketResp::failed(provider, Stage::Config, "nothing stored to restore");
-        };
-        let stored_bucket = match parse_bucket(name, stored) {
-            Ok(b) => b,
-            Err(_) => {
-                return TestBucketResp::failed(
-                    provider,
-                    Stage::Config,
-                    format!(
-                        "the stored bucket `{name}` could not be read to compare endpoints; \
-                         re-enter the redacted values"
-                    ),
-                )
+    // Credentials only go where they belong (see `crate::binding`): kept
+    // values where the stored entry sends them, bound references and
+    // credentials files where their stored buckets send them — this bucket's
+    // own included, so testing a moved endpoint needs the values re-entered.
+    if req.bucket.is_some() {
+        if let (Some(name), false) = (&req.name, kept.is_empty()) {
+            let Some(stored) = stored_expanded.as_ref().or(stored.as_ref()) else {
+                return TestBucketResp::failed(provider, Stage::Config, "nothing stored to keep");
+            };
+            if let Err(e) = binding::check_kept(&entry, stored, name, &kept) {
+                return TestBucketResp::failed(provider, Stage::Config, e);
             }
-        };
-        if let Err(e) = restored_targets_match(&bucket, &stored_bucket, name, &restored) {
+        }
+        let all = expanded_buckets.as_ref().unwrap_or(&raw_buckets);
+        if let Err(e) = binding::check_bound(&entry, &binding::uses(all, None)) {
             return TestBucketResp::failed(provider, Stage::Config, e);
         }
     }
-    let snapshot = state.catalog.read().await.config.clone();
-    if let Err(e) = references_stay_bound(&bucket, &snapshot) {
-        return TestBucketResp::failed(provider, Stage::Config, e);
-    }
 
+    let snapshot = state.catalog.read().await.config.clone();
     match tokio::time::timeout(budget, probe(state, &label, &bucket, &snapshot)).await {
         Ok(resp) => resp,
         Err(_) => TestBucketResp::failed(
@@ -229,6 +242,13 @@ async fn run(
             Stage::Endpoint,
             format!("timed out after {}ms", budget.as_millis()),
         ),
+    }
+}
+
+/// Set the value at a dotted path that exists.
+fn set_at(entry: &mut Value, path: &str, value: Value) {
+    if let Some(slot) = path.split('.').try_fold(entry, |v, k| v.get_mut(k)) {
+        *slot = value;
     }
 }
 
@@ -334,162 +354,6 @@ async fn probe_local(
         },
         Err(message) => TestBucketResp::failed("local", Stage::Bucket, message),
     }
-}
-
-/// Where a string holds a `${…}` template, as dotted paths.
-fn template_paths(value: &Value, prefix: &str) -> Vec<String> {
-    match value {
-        Value::String(s) if s.contains("${") && s.contains('}') => vec![prefix.to_string()],
-        Value::Object(map) => map
-            .iter()
-            .flat_map(|(k, v)| {
-                let path = if prefix.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{prefix}.{k}")
-                };
-                template_paths(v, &path)
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn at<'a>(value: Option<&'a Value>, path: &str) -> Option<&'a Value> {
-    path.split('.').try_fold(value?, |v, k| v.get(k))
-}
-
-/// Replace every template the candidate kept from the stored entry with its
-/// expanded stored value; returns the fields replaced.
-fn expand_stored_templates(
-    candidate: &mut Value,
-    raw: Option<&Value>,
-    expanded: Option<&Value>,
-) -> Vec<String> {
-    let mut replaced = Vec::new();
-    for path in template_paths(candidate, "") {
-        let kept = at(Some(candidate), &path) == at(raw, &path);
-        let Some(value) = at(expanded, &path).filter(|v| v.is_string()).cloned() else {
-            continue;
-        };
-        if !kept {
-            continue;
-        }
-        let slot = path
-            .split('.')
-            .try_fold(&mut *candidate, |v, k| v.get_mut(k));
-        if let Some(slot) = slot {
-            *slot = value;
-            replaced.push(path);
-        }
-    }
-    replaced
-}
-
-/// Credential fields bound to where they are sent (an access key id and an
-/// account id are identifiers, sent in clear anyway).
-const BOUND_FIELDS: [&str; 3] = ["secret_access_key", "session_token", "credentials_json"];
-
-/// Where a bucket's credentials are sent: its endpoint (scheme, host and
-/// port, lowercased), the R2 account's endpoint, or the provider's default.
-fn destination(bucket: &BucketConfig) -> String {
-    let normalize = |raw: &str| match url::Url::parse(raw) {
-        Ok(url) => format!(
-            "{}://{}:{}",
-            url.scheme(),
-            url.host_str().unwrap_or("").to_ascii_lowercase(),
-            url.port_or_known_default().unwrap_or(0)
-        ),
-        Err(_) => raw.trim().to_ascii_lowercase(),
-    };
-    match bucket {
-        BucketConfig::S3(v) => v
-            .endpoint_url
-            .as_deref()
-            .map(normalize)
-            .unwrap_or_else(|| "aws".into()),
-        BucketConfig::R2(v) => v
-            .endpoint_url
-            .as_deref()
-            .map(normalize)
-            .unwrap_or_else(|| format!("r2-account:{}", v.account_id.trim())),
-        BucketConfig::Gcs(v) => v
-            .endpoint_url
-            .as_deref()
-            .map(normalize)
-            .unwrap_or_else(|| "google".into()),
-        BucketConfig::Local(_) => "local".into(),
-    }
-}
-
-/// `"__redacted__"` values restored from bucket `name` may only be sent to
-/// that bucket's endpoint (same provider, same scheme, host and port).
-fn restored_targets_match(
-    candidate: &BucketConfig,
-    stored: &BucketConfig,
-    name: &str,
-    restored: &[String],
-) -> Result<(), String> {
-    for field in restored {
-        if !BOUND_FIELDS.contains(&field.as_str()) {
-            continue;
-        }
-        if candidate.provider() != stored.provider()
-            || destination(candidate) != destination(stored)
-        {
-            return Err(format!(
-                "`{field}` keeps bucket `{name}`'s stored value (\"__redacted__\" or its ${{VAR}} \
-                 template), but this test targets a different endpoint or account; re-enter the \
-                 value to test against a different endpoint"
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// A `secret://` / `env://` reference a configured bucket already uses in a
-/// bound field may only be sent to that bucket's endpoint. References no
-/// configured bucket uses (a new bucket's fresh secret) are free.
-fn references_stay_bound(candidate: &BucketConfig, live: &WorkerConfig) -> Result<(), String> {
-    for (field, value) in candidate.credential_fields() {
-        if !BOUND_FIELDS.contains(&field) {
-            continue;
-        }
-        let Some(Ok(reference)) = crate::secrets::parse_ref(value) else {
-            continue;
-        };
-        let key = reference.key();
-        let mut users: Vec<(&str, String, &str)> = Vec::new();
-        for (name, bucket) in &live.buckets {
-            for (stored_field, stored_value) in bucket.credential_fields() {
-                if BOUND_FIELDS.contains(&stored_field)
-                    && crate::secrets::parse_ref(stored_value)
-                        .and_then(Result::ok)
-                        .is_some_and(|r| r.key() == key)
-                {
-                    users.push((name, destination(bucket), bucket.provider()));
-                }
-            }
-        }
-        if users.is_empty() {
-            continue;
-        }
-        let target = destination(candidate);
-        if !users
-            .iter()
-            .any(|(_, d, p)| *d == target && *p == candidate.provider())
-        {
-            let mut names: Vec<&str> = users.iter().map(|(n, _, _)| *n).collect();
-            names.sort_unstable();
-            names.dedup();
-            return Err(format!(
-                "`{field}`: {key} belongs to bucket `{}` and is only sent to that bucket's \
-                 endpoint; enter the value itself to test against a different endpoint",
-                names.join("`, `")
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -648,17 +512,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp.stage, Some(Stage::Endpoint), "{:?}", resp.message);
-        // A downgrade to http is another endpoint.
-        let stored: BucketConfig = serde_json::from_value(
-            json!({ "provider": "s3", "region": "r", "endpoint_url": "https://h" }),
-        )
-        .unwrap();
-        let http: BucketConfig = serde_json::from_value(
-            json!({ "provider": "s3", "region": "r", "endpoint_url": "http://h" }),
-        )
-        .unwrap();
-        assert!(restored_targets_match(&http, &stored, "x", &["session_token".into()]).is_err());
-        assert!(restored_targets_match(&stored, &stored, "x", &["session_token".into()]).is_ok());
     }
 
     #[tokio::test]
@@ -683,15 +536,141 @@ mod tests {
         assert_eq!(resp.stage, Some(Stage::Config));
     }
 
-    #[test]
-    fn kept_templates_take_the_stored_expanded_values() {
-        let raw = json!({ "provider": "s3", "access_key_id": "${AK}", "secret_access_key": "${SK}", "region": "r" });
-        let expanded = json!({ "provider": "s3", "access_key_id": "ak-value", "secret_access_key": "sk-value", "region": "r" });
-        let mut candidate = json!({ "provider": "s3", "access_key_id": "${AK}", "secret_access_key": "${OTHER}", "region": "r" });
-        let replaced = expand_stored_templates(&mut candidate, Some(&raw), Some(&expanded));
-        assert_eq!(replaced, vec!["access_key_id"]);
-        assert_eq!(candidate["access_key_id"], "ak-value");
-        assert_eq!(template_paths(&candidate, ""), vec!["secret_access_key"]);
+    #[tokio::test]
+    async fn kept_templates_take_the_stored_expanded_values_and_stay_with_their_endpoint() {
+        let f = fixture(json!({ "buckets": { "tpl": {
+            "provider": "s3", "region": "r", "endpoint_url": "http://127.0.0.1:1",
+            "access_key_id": "${AK}", "secret_access_key": "${SK}" } } }))
+        .await;
+        let mut expanded = f.store.value.lock().unwrap().clone();
+        expanded["buckets"]["tpl"]["access_key_id"] = json!("ak-value");
+        expanded["buckets"]["tpl"]["secret_access_key"] = json!("sk-value");
+        *f.store.expanded.lock().unwrap() = Some(expanded);
+        let entry = |endpoint: &str, sk: &str| {
+            json!({ "name": "tpl", "timeout_ms": 3000, "bucket": {
+                "provider": "s3", "region": "r", "endpoint_url": endpoint,
+                "access_key_id": "${AK}", "secret_access_key": sk } })
+        };
+        // Kept: expanded, and the probe goes out (and fails to connect).
+        let resp = handle(
+            &f.state,
+            &f.runtime,
+            req(entry("http://127.0.0.1:1", "${SK}")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Endpoint), "{:?}", resp.message);
+        // Changed: refused.
+        let resp = handle(
+            &f.state,
+            &f.runtime,
+            req(entry("http://127.0.0.1:1", "${HOME}")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config));
+        assert!(resp.message.unwrap().contains("env://NAME"));
+        // Kept, toward another endpoint: refused, nothing sent.
+        let (port, got) = recording_server().await;
+        let resp = handle(
+            &f.state,
+            &f.runtime,
+            req(entry(&format!("http://127.0.0.1:{port}"), "${SK}")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config), "{:?}", resp.message);
+        assert!(resp
+            .message
+            .unwrap()
+            .contains("keeps bucket `tpl`'s stored value"));
+        assert!(got.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn any_field_binds_a_reference_and_broken_entries_and_files_bind_too() {
+        let (port, got) = recording_server().await;
+        let evil = format!("http://127.0.0.1:{port}");
+        let dir = tempfile::tempdir().unwrap();
+        let sa = dir.path().join("sa.json");
+        std::fs::write(&sa, b"{}").unwrap();
+        let f = fixture(json!({ "buckets": {
+            "prod": { "provider": "s3", "region": "r", "endpoint_url": "https://s3.prod.internal",
+                      "access_key_id": "AKIA", "secret_access_key": "secret://PROD_SK" },
+            "broken": { "provider": "s3", "endpoint_url": "ftp://x", "secret_access_key": "secret://BROKEN_SK" },
+            "docs": { "provider": "gcs", "credentials_file": sa.to_string_lossy() } } }))
+        .await;
+        f.secrets.set("secret://PROD_SK", Ok("prod-secret"));
+        f.secrets.set("secret://BROKEN_SK", Ok("broken-secret"));
+        let s3 = |field: &str, value: &str| {
+            let mut b = json!({ "provider": "s3", "region": "r", "bucket": "b", "endpoint_url": evil,
+                                "access_key_id": "a" });
+            b[field] = json!(value);
+            req(
+                json!({ "bucket": b, "credentials": { "secret_access_key": "typed" }, "timeout_ms": 3000 }),
+            )
+        };
+        for (field, value) in [
+            ("access_key_id", "secret://PROD_SK"),
+            ("session_token", "secret://PROD_SK"),
+            ("session_token", "secret://BROKEN_SK"),
+        ] {
+            let resp = handle(&f.state, &f.runtime, s3(field, value))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.stage,
+                Some(Stage::Config),
+                "{field}: {:?}",
+                resp.message
+            );
+        }
+        let other_spelling = dir.path().join(".").join("sa.json");
+        let resp = handle(
+            &f.state,
+            &f.runtime,
+            req(json!({ "bucket": {
+            "provider": "gcs", "bucket": "docs", "endpoint_url": evil,
+            "credentials_file": other_spelling.to_string_lossy() }, "timeout_ms": 3000 })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config), "{:?}", resp.message);
+        // The host's own credentials do not go to an unknown endpoint either.
+        let resp = handle(&f.state, &f.runtime, req(json!({ "bucket": {
+            "provider": "s3", "region": "r", "bucket": "b", "endpoint_url": evil }, "timeout_ms": 3000 })))
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config), "{:?}", resp.message);
+        assert!(
+            got.lock().unwrap().is_empty(),
+            "nothing reached the other endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn credentials_without_a_bucket_and_unknown_keys_are_refused() {
+        let f = fixture(json!({ "buckets": { "scratch": { "provider": "local" } } })).await;
+        let resp = handle(
+            &f.state,
+            &f.runtime,
+            req(json!({ "name": "scratch", "credentials": { "secret_access_key": "x" } })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config));
+        assert!(resp.message.unwrap().contains("need a `bucket`"));
+        let err = crate::handlers::parse_request::<TestBucketReq>(
+            json!({ "name": "scratch", "timeout": 5 }),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("CONFIG_ERROR") && err.contains("unknown field `timeout`"),
+            "{err}"
+        );
+        let err = crate::handlers::parse_request::<TestBucketReq>(json!({ "timeout_ms": "5" }))
+            .unwrap_err();
+        assert!(err.contains("`timeout_ms`"), "{err}");
     }
 
     #[tokio::test]

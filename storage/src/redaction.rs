@@ -59,7 +59,9 @@ pub fn names_a_value(value: &str) -> bool {
     }
 }
 
-/// Replace every literal sensitive value of an entry with [`REDACTED`].
+/// Replace every literal sensitive value of an entry with [`REDACTED`], and
+/// drop any userinfo from its `endpoint_url` (a hand-written entry may carry
+/// one; requests may not).
 pub fn redact_entry(entry: &mut Value) {
     for path in SECRET_FIELDS {
         if let Some(v) = get_mut(entry, path) {
@@ -70,6 +72,65 @@ pub fn redact_entry(entry: &mut Value) {
             }
         }
     }
+    if let Some(endpoint) = entry.get_mut("endpoint_url") {
+        if endpoint.as_str().is_some_and(has_userinfo) {
+            let stripped = crate::config::redact_url(endpoint.as_str().unwrap_or_default());
+            *endpoint = Value::String(stripped);
+        }
+    }
+}
+
+/// Whether a url carries `user[:password]@`.
+pub fn has_userinfo(raw: &str) -> bool {
+    url::Url::parse(raw.trim())
+        .map(|url| !url.username().is_empty() || url.password().is_some())
+        .unwrap_or(false)
+}
+
+/// Where a string holds a `${…}` template, as dotted paths.
+pub fn template_paths(value: &Value, prefix: &str) -> Vec<String> {
+    match value {
+        Value::String(s) if s.contains("${") => vec![prefix.to_string()],
+        Value::Object(map) => map
+            .iter()
+            .flat_map(|(k, v)| {
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                template_paths(v, &path)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The value at a dotted path.
+pub fn at<'a>(value: Option<&'a Value>, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(value?, |v, k| v.get(k))
+}
+
+/// Credential fields holding a malformed `secret://` / `env://` reference.
+pub fn malformed_references(entry: &Value) -> Vec<String> {
+    crate::binding::CREDENTIAL_PATHS
+        .iter()
+        .filter(|path| {
+            at(Some(entry), path)
+                .and_then(Value::as_str)
+                .and_then(crate::secrets::parse_ref)
+                .is_some_and(|r| r.is_err())
+        })
+        .map(|path| path.to_string())
+        .collect()
+}
+
+/// The refusal for a malformed reference (the value is not echoed).
+pub fn malformed_refusal(field: &str) -> String {
+    format!(
+        "`{field}` holds a malformed reference; the name after secret:// or env:// must match \
+         ^[A-Za-z_][A-Za-z0-9_.-]{{0,127}}$"
+    )
 }
 
 /// Whether any string anywhere in `value` is the placeholder.
@@ -293,6 +354,27 @@ mod tests {
         assert!(merge_credentials(&mut entry, Some(&json!("x"))).is_err());
         merge_credentials(&mut entry, None).unwrap();
         merge_credentials(&mut entry, Some(&Value::Null)).unwrap();
+    }
+
+    #[test]
+    fn templates_malformed_references_and_userinfo_are_found() {
+        let entry = json!({
+            "provider": "s3", "region": "${REGION}", "endpoint_url": "https://u:pw@h",
+            "session_token": "secret://a b", "access_key_id": "env://", "secret_access_key": "secret://OK",
+            "notifications": { "sqs_queue_url": "x${Y}" }
+        });
+        let mut templates = template_paths(&entry, "");
+        templates.sort();
+        assert_eq!(templates, vec!["notifications.sqs_queue_url", "region"]);
+        assert_eq!(
+            malformed_references(&entry),
+            vec!["access_key_id", "session_token"]
+        );
+        assert!(malformed_refusal("session_token").contains("malformed reference"));
+        let mut shown = entry.clone();
+        redact_entry(&mut shown);
+        assert!(!shown.to_string().contains("pw"), "{shown}");
+        assert!(has_userinfo("https://u@h") && !has_userinfo("https://h"));
     }
 
     #[test]
