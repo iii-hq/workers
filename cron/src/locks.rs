@@ -2,6 +2,8 @@
 //! (engine/src/workers/cron/adapters/): TTL 30s; redis uses SET NX PX with
 //! key prefix `cron_lock:` and owner-checked Lua release. `local` matches the
 //! builtin `kv` adapter's real semantics: process-local mutual exclusion.
+//! A job serves one cron expression, so the key is the expression: one lock
+//! op per expression and fire, however many bindings and observers share it.
 
 use std::collections::HashMap;
 use std::sync::Arc;

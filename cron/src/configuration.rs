@@ -150,22 +150,14 @@ async fn swap_scheduler(
     next: CronConfig,
 ) -> anyhow::Result<()> {
     let lock = locks::build_lock(&next).await?;
-    let old = scheduler_cell.read().await.clone();
-    let specs = old.job_specs().await;
     let new_scheduler = Arc::new(Scheduler::new(lock, boot::sdk_invoker(iii.clone())));
 
-    old.shutdown().await;
-    for spec in specs {
-        if let Err(e) = new_scheduler.register(spec.clone()).await {
-            tracing::error!(
-                trigger_id = %spec.trigger_id,
-                error = %e,
-                "failed to re-register cron job after lock-backend swap"
-            );
-        }
-    }
-
-    *scheduler_cell.write().await = new_scheduler;
+    // Held through the move: a binding or observer filed meanwhile waits and
+    // lands on the new scheduler instead of the one being stopped.
+    let mut current = scheduler_cell.write().await;
+    current.hand_over(&new_scheduler).await;
+    *current = new_scheduler;
+    drop(current);
     *config_cell.write().await = next;
     tracing::info!("cron configuration reloaded with lock-backend swap");
     Ok(())
