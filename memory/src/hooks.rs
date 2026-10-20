@@ -863,6 +863,14 @@ pub(crate) fn build_rules_section(
             budget -= content.len();
             out.push_str(&format!("\n## {}\n{content}\n", rule.name));
         } else if budget > 200 {
+            // Extraction appends: the learned rule loses its oldest lines,
+            // never what the user said last.
+            let body = if rule.name.split(" (").next() == Some(crate::extract::LEARNED_RULE) {
+                newest_lines(content, budget)
+            } else {
+                body
+            };
+            let content = body.as_str();
             let mut cut = budget.min(content.len());
             while cut > 0 && !content.is_char_boundary(cut) {
                 cut -= 1;
@@ -884,6 +892,19 @@ pub(crate) fn build_rules_section(
         }
     }
     (out, truncated)
+}
+
+/// `body` without its oldest `- ` lines, as few as bring it within
+/// `budget`; other lines stay.
+fn newest_lines(body: &str, budget: usize) -> String {
+    let mut lines: Vec<&str> = body.lines().collect();
+    while lines.join("\n").len() > budget {
+        let Some(oldest) = lines.iter().position(|l| l.starts_with("- ")) else {
+            break;
+        };
+        lines.remove(oldest);
+    }
+    lines.join("\n")
 }
 
 /// Pad thin recall results with the bank's strongest memories, deduped by
@@ -1205,6 +1226,35 @@ Formal."
         // The kept prefix respects the budget.
         assert!(section.contains(&"x".repeat(300)));
         assert!(!section.contains(&"x".repeat(301)));
+    }
+
+    #[test]
+    fn an_over_budget_learned_rule_loses_its_oldest_lines() {
+        let lines: Vec<String> = (1..=20)
+            .map(|n| format!("- Learned line number {n:02}, kept short."))
+            .collect();
+        let learned = format!(
+            "{}intro\n{}\n",
+            crate::extract::LEARNED_HEADER,
+            lines.join("\n")
+        );
+        for name in ["learned", "learned (main)"] {
+            let (section, truncated) = build_rules_section(&[rule(name, &learned)], 400);
+            assert!(truncated);
+            assert!(section.contains("[rule truncated"), "{section}");
+            assert!(section.contains("intro\n"), "{section}");
+            assert!(
+                section.contains("number 20,"),
+                "the newest stays: {section}"
+            );
+            assert!(
+                !section.contains("number 01,"),
+                "the oldest goes: {section}"
+            );
+        }
+        // Any other rule keeps its head, as before.
+        let (section, _) = build_rules_section(&[rule("style", &learned)], 400);
+        assert!(section.contains("number 01,") && !section.contains("number 20,"));
     }
 
     #[test]

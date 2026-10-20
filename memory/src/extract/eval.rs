@@ -7,7 +7,8 @@
 //!   from an excerpt built to hold nothing more ([`STRICT`]): an
 //!   instruction only the assistant gave, a pasted document, a harness
 //!   notice, a transient error, a one-off instruction, task progress, what
-//!   a correction leaves behind, a turn with nothing to keep. The report
+//!   a correction leaves behind, a learned rule restated, a turn with
+//!   nothing to keep. The report
 //!   also counts the trap hits the rule gate would still let into the bank.
 //! - placement ([`placement`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may.
@@ -32,6 +33,7 @@ const STRICT: &[&str] = &[
     "assistant-only",
     "corrections",
     "errors",
+    "learned rules",
     "negatives",
     "notices",
     "one-off",
@@ -57,6 +59,8 @@ struct Case {
     /// Already remembered, with whether the layer holds it; the bank's own
     /// first, as in production.
     known: &'static [(&'static str, bool)],
+    /// Learned lines already in force, the same way, numbered after `known`.
+    learned: &'static [(&'static str, bool)],
     /// `(role, text)` excerpt lines, roles as [`parse_entry`] reads them.
     lines: &'static [(&'static str, &'static str)],
     want: &'static [Want],
@@ -99,6 +103,7 @@ const fn case(
         id,
         category,
         known: &[],
+        learned: &[],
         lines,
         want,
     }
@@ -263,6 +268,7 @@ const CASES: &[Case] = &[
         id: "npm-here",
         category: "here only",
         known: &[("The user prefers npm for JavaScript projects.", true)],
+        learned: &[],
         lines: &[
             ("user", "In this repo I use pnpm, not npm."),
             ("assistant", "Okay, pnpm it is for this repository."),
@@ -348,6 +354,7 @@ const CASES: &[Case] = &[
         id: "porto",
         category: "corrections",
         known: &[("The user lives in Lisbon.", true)],
+        learned: &[],
         lines: &[
             ("user", "I moved to Porto last month."),
             ("assistant", "Congrats on the move!"),
@@ -363,6 +370,7 @@ const CASES: &[Case] = &[
         id: "postgres-16",
         category: "corrections",
         known: &[("The ledger service runs on Postgres 15.", false)],
+        learned: &[],
         lines: &[
             (
                 "user",
@@ -384,6 +392,7 @@ const CASES: &[Case] = &[
             "The user has a dentist appointment on 2026-10-16 at 3pm.",
             true,
         )],
+        learned: &[],
         lines: &[
             ("user", "The dentist moved my appointment to Monday, same time."),
             ("assistant", "Okay, Monday at 3pm then."),
@@ -933,6 +942,7 @@ const CASES: &[Case] = &[
             "The user works at Acme as a backend engineer.",
             true,
         )],
+        learned: &[],
         lines: &[
             ("user", "I switched to the platform team last week, still at Acme."),
             ("assistant", "Congrats on the new team!"),
@@ -940,6 +950,35 @@ const CASES: &[Case] = &[
         want: &[Want {
             has: &["platform", "acme"],
             rule: Some(false),
+            user: true,
+            replaces: Some(1),
+        }],
+    },
+    // A learned line restated, or corrected: rewritten where it is, never
+    // appended again.
+    Case {
+        id: "emoji-again",
+        category: "learned rules",
+        known: &[],
+        learned: &[("Never use emoji in your answers.", true)],
+        lines: &[
+            ("user", "And no emojis in replies, please, ever."),
+            ("assistant", "Understood, none."),
+        ],
+        want: &[],
+    },
+    Case {
+        id: "english-to-portuguese",
+        category: "learned rules",
+        known: &[],
+        learned: &[("Always reply to me in English.", true)],
+        lines: &[
+            ("user", "From now on reply to me in Portuguese, not English."),
+            ("assistant", "Combinado, a partir de agora em português."),
+        ],
+        want: &[Want {
+            has: &["portuguese"],
+            rule: Some(true),
             user: true,
             replaces: Some(1),
         }],
@@ -1032,6 +1071,11 @@ async fn extraction_eval() {
             .filter(|(_, (_, in_layer))| *in_layer)
             .map(|(m, _)| m.id.clone())
             .collect();
+        let learned: Vec<(String, bool)> = case
+            .learned
+            .iter()
+            .map(|(line, in_layer)| (line.to_string(), *in_layer))
+            .collect();
         let entries: Vec<Entry> = case
             .lines
             .iter()
@@ -1053,7 +1097,7 @@ async fn extraction_eval() {
                 &model,
                 cfg.max_memories_per_turn,
                 120_000,
-                extraction_input(&known, &transcript),
+                extraction_input(&known, &learned, &transcript),
                 case.id,
                 true,
             )
@@ -1062,12 +1106,14 @@ async fn extraction_eval() {
             // Where each item lands, as `try_run` routes it under a layer.
             let lands: Vec<(bool, bool)> = items
                 .iter()
-                .map(|item| match item.is_rule() {
-                    true => (item.is_user(), false),
-                    false => placement(
-                        item.is_user(),
-                        correction_target(&known, item.replaces).map(|t| layered.contains(&t.id)),
-                    ),
+                .map(|item| {
+                    let target_in_layer = match item.is_rule() {
+                        true => learned_target(known.len(), &learned, item.replaces)
+                            .map(|(_, in_layer)| *in_layer),
+                        false => correction_target(&known, item.replaces)
+                            .map(|t| layered.contains(&t.id)),
+                    };
+                    placement(item.is_user(), target_in_layer)
                 })
                 .collect();
             // Why item `i` is not what `want` expects, if it is not.
