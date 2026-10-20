@@ -1144,7 +1144,11 @@ async fn download_handler(
         .header(header::CONTENT_LENGTH, length.to_string())
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, metadata.etag.clone())
-        .header(header::LAST_MODIFIED, last_modified);
+        .header(header::LAST_MODIFIED, last_modified)
+        // Objects are data, never pages of the listener's origin: no type
+        // sniffing, and anything a browser renders runs sandboxed.
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CONTENT_SECURITY_POLICY, "sandbox");
     if status == StatusCode::PARTIAL_CONTENT {
         response = response.header(
             header::CONTENT_RANGE,
@@ -1788,6 +1792,8 @@ mod tests {
 
         let head = client.head(&url).send().await.unwrap();
         assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(head.headers()[header::CONTENT_SECURITY_POLICY], "sandbox");
         assert_eq!(head.headers()[header::CONTENT_LENGTH], "10");
         assert_eq!(head.headers()[header::ACCEPT_RANGES], "bytes");
         assert!(head.bytes().await.unwrap().is_empty());
