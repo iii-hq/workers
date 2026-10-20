@@ -18,3 +18,36 @@ export function onChatShownRequest(listener: ChatShownListener): () => void {
     listeners.delete(listener)
   }
 }
+
+/**
+ * Outside requests to open one of the chat pane's dialogs — the New chat
+ * and Add project shortcuts, dispatched from the app shell. The latest
+ * request waits for a pane when none is mounted yet, so a key pressed while
+ * the chat page is still opening is not lost.
+ */
+export type ChatDialog = 'new-chat' | 'add-project'
+
+type ChatDialogListener = (dialog: ChatDialog) => void
+
+const dialogListeners = new Set<ChatDialogListener>()
+let pendingDialog: ChatDialog | null = null
+
+export function requestChatDialog(dialog: ChatDialog): void {
+  if (dialogListeners.size === 0) {
+    pendingDialog = dialog
+    return
+  }
+  for (const listener of dialogListeners) listener(dialog)
+}
+
+export function onChatDialogRequest(listener: ChatDialogListener): () => void {
+  dialogListeners.add(listener)
+  if (pendingDialog !== null) {
+    const dialog = pendingDialog
+    pendingDialog = null
+    listener(dialog)
+  }
+  return () => {
+    dialogListeners.delete(listener)
+  }
+}

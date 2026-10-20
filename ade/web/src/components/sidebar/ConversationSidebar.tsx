@@ -9,7 +9,6 @@ import {
 } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
-import { KeyCombo } from '@/components/ui/KeyCombo'
 import { hashForSettingsLanding } from '@/hooks/use-hash-route'
 import { hideSideChats } from '@/lib/chat-aside'
 import {
@@ -29,7 +28,12 @@ import {
   parseConversationListView,
   sortConversationRoots,
 } from '@/lib/conversation-view'
-import { bindingsFor } from '@/lib/keybindings/registry'
+import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
+import {
+  bindingsFor,
+  hoverTitle,
+  type KeybindingActionId,
+} from '@/lib/keybindings/registry'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
@@ -68,7 +72,27 @@ const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
  * and a label on a rounded-xl wash that only paints on hover or focus.
  */
 const NAV_ROW =
-  'flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-neutral-600 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-neutral-600 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+
+/**
+ * A row's shortcut, spelled plainly (⌘K, ⌃N) and shown only while the row
+ * is hovered or focused: it slides in from the right so the hint reads as
+ * an answer to the pointer, not as a second label.
+ */
+function ShortcutHint({ id }: { id: KeybindingActionId }) {
+  const platform = shortcutPlatform()
+  const binding = bindingsFor(id, platform)[0]
+  if (!binding) return null
+  const caps = formatBinding(binding, platform)
+  return (
+    <span
+      aria-hidden
+      className="ml-auto shrink-0 translate-x-1 pl-2 font-inter text-[11px] font-medium text-neutral-400 opacity-0 transition-[opacity,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] group-hover/row:translate-x-0 group-hover/row:opacity-100 group-focus-visible/row:translate-x-0 group-focus-visible/row:opacity-100 dark:text-neutral-500"
+    >
+      {platform === 'mac' ? caps.join('') : caps.join('+')}
+    </span>
+  )
+}
 
 /** The quiet icon buttons beside the list title and along the bottom row. */
 const QUIET_ACTION =
@@ -242,6 +266,7 @@ export function ConversationSidebar({
           <button
             type="button"
             onClick={onCreate}
+            title={hoverTitle('New chat', 'chat.new')}
             className={cn(
               NAV_ROW,
               narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
@@ -251,20 +276,23 @@ export function ConversationSidebar({
                 "new workspace", and the phone header spells new chat this
                 way too. */}
             <SquarePen className="size-4 shrink-0" aria-hidden />
-            New chat
+            <span className="min-w-0 flex-1 truncate">New chat</span>
+            {narrow ? null : <ShortcutHint id="chat.new" />}
           </button>
         ) : null}
         {onAddProject ? (
           <button
             type="button"
             onClick={onAddProject}
+            title={hoverTitle('Add project', 'project.add')}
             className={cn(
               NAV_ROW,
               narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
             )}
           >
             <FolderPlus className="size-4 shrink-0" aria-hidden />
-            Add project
+            <span className="min-w-0 flex-1 truncate">Add project</span>
+            {narrow ? null : <ShortcutHint id="project.add" />}
           </button>
         ) : null}
         {/* Search is the console's one search: the ⌘K palette, which lists
@@ -273,17 +301,12 @@ export function ConversationSidebar({
           type="button"
           onClick={() => requestPaletteOpen()}
           aria-label="Search and commands"
+          title={hoverTitle('Search and commands', 'palette.toggle')}
           className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-[13px]')}
         >
           <Search className="size-4 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate">Search</span>
-          {narrow ? null : (
-            <KeyCombo
-              binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
-              className="gap-0.5"
-              capClassName="min-w-5 rounded-md bg-white px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700"
-            />
-          )}
+          {narrow ? null : <ShortcutHint id="palette.toggle" />}
         </button>
       </nav>
 

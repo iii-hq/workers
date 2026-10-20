@@ -1,6 +1,10 @@
 import { SquarePen } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AddProjectDialog } from '@/components/chat/AddProjectDialog'
+import {
+  NewChatDialog,
+  type NewChatDraft,
+} from '@/components/chat/NewChatDialog'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
 import {
@@ -23,7 +27,8 @@ import {
   sideChatsLeftByClosedTabs,
   sideChatsMadeHere,
 } from '@/lib/chat-aside'
-import { onChatShownRequest } from '@/lib/chat-requests'
+import { onChatDialogRequest, onChatShownRequest } from '@/lib/chat-requests'
+import { sendDraftWhenReady } from '@/lib/composer-insert'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import {
@@ -261,6 +266,21 @@ export function ChatPanel({
     ])
   }, [commands, createNew, pinned])
 
+  // New chat is a dialog (project, first message, model), so the chat is
+  // born with its first message on the way rather than as an empty draft.
+  const [newChatOpen, setNewChatOpen] = useState(false)
+  const handleNewChat = useCallback(
+    (draft: NewChatDraft) => {
+      const id = createNew({ text: draft.text })
+      if (draft.model) setModel(id, draft.model)
+      setThinkingLevel(id, draft.thinkingLevel)
+      if (draft.workingDir) setWorkingDir(id, draft.workingDir)
+      sendDraftWhenReady(id, draft.text)
+      setNarrowView('chat')
+    },
+    [createNew, setModel, setThinkingLevel, setWorkingDir],
+  )
+
   // Add project: a new chat scoped to the folder just added, so the first
   // message lands where the user pointed.
   const [addProjectOpen, setAddProjectOpen] = useState(false)
@@ -273,10 +293,18 @@ export function ChatPanel({
     [createNew, setWorkingDir],
   )
 
-  const handleCreate = useCallback(() => {
-    createNew()
-    setNarrowView('chat')
-  }, [createNew])
+  // The shortcuts reach the pane through the request bus (App dispatches
+  // them); a pinned pane leaves the global chat's dialogs alone.
+  useEffect(
+    () =>
+      pinned
+        ? undefined
+        : onChatDialogRequest((dialog) => {
+            if (dialog === 'new-chat') setNewChatOpen(true)
+            else setAddProjectOpen(true)
+          }),
+    [pinned],
+  )
 
   const handleBack = useCallback(() => {
     setNarrowView('list')
@@ -387,6 +415,13 @@ export function ChatPanel({
         onOpenChange={setAddProjectOpen}
         onAdded={handleProjectAdded}
       />
+      <NewChatDialog
+        open={newChatOpen}
+        onOpenChange={setNewChatOpen}
+        modelOptions={modelOptions}
+        catalogLoading={catalogLoading}
+        onCreate={handleNewChat}
+      />
       <ConversationLoadNotice
         loading={conversationsLoading && connectionState === 'connected'}
         error={
@@ -419,7 +454,7 @@ export function ChatPanel({
               <IconButton
                 label="New chat"
                 tooltipSide={panelSide === 'left' ? 'right' : 'left'}
-                onClick={handleCreate}
+                onClick={() => setNewChatOpen(true)}
                 className="size-7"
               >
                 <SquarePen aria-hidden />
@@ -430,7 +465,7 @@ export function ChatPanel({
               conversations={conversations}
               activeId={activeId}
               narrow={narrow}
-              onCreate={handleCreate}
+              onCreate={() => setNewChatOpen(true)}
               onAddProject={() => setAddProjectOpen(true)}
               onImport={() => setImportOpen(true)}
               onSelect={handleSelect}

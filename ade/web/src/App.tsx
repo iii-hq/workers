@@ -56,6 +56,7 @@ import {
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
 } from '@/hooks/use-workspace-tabs'
+import { requestChatDialog } from '@/lib/chat-requests'
 import { armCompletionBell } from '@/lib/completion-bell'
 import {
   ConversationsProvider,
@@ -429,6 +430,15 @@ export function App({
       setPaletteOpen((current) => !current)
     },
     'app.settings': toggleSettings,
+    // Both open the chat pane first: the dialogs live in it.
+    'chat.new': () => {
+      openWorkspaceScreen(CHAT_SCREEN)
+      requestChatDialog('new-chat')
+    },
+    'project.add': () => {
+      openWorkspaceScreen(CHAT_SCREEN)
+      requestChatDialog('add-project')
+    },
     'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
     'page.workers': () => openWorkspaceScreen('workers'),
     'page.traces': () => openWorkspaceScreen('traces'),

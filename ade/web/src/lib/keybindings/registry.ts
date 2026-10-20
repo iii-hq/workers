@@ -35,6 +35,8 @@ export type KeybindingScope = 'global' | 'palette'
 export type KeybindingActionId =
   | 'palette.toggle'
   | 'app.settings'
+  | 'chat.new'
+  | 'project.add'
   | 'page.chat'
   | 'page.workers'
   | 'page.traces'
@@ -231,6 +233,24 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     scope: 'global',
     bindings: { mac: ['Ctrl+,'], other: ['Alt+,'] },
     keywords: ['configuration', 'preferences'],
+  },
+  // The chat pair sits on the same free tier as the workspace keys: N for
+  // a new chat, O for opening a folder as a project.
+  {
+    id: 'chat.new',
+    title: 'New chat',
+    group: 'Chat',
+    scope: 'global',
+    bindings: { mac: ['Ctrl+N'], other: ['Alt+N'] },
+    keywords: ['conversation', 'session', 'create', 'start'],
+  },
+  {
+    id: 'project.add',
+    title: 'Add project',
+    group: 'Chat',
+    scope: 'global',
+    bindings: { mac: ['Ctrl+O'], other: ['Alt+O'] },
+    keywords: ['folder', 'directory', 'open', 'working directory'],
   },
   {
     id: 'palette.next',
