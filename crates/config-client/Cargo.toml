@@ -14,9 +14,11 @@ publish = false
 
 [dependencies]
 # Workers carry their own exact SDK pins. Keep this shared crate compatible
-# with both the previous prerelease and the current stable SDK line so Cargo
-# can unify it with each worker.
-iii-sdk = "=0.24.6"
+# with the current stable SDK line and the 0.25 release candidates so Cargo
+# can unify it with each worker. The upper bound names the candidate because
+# Cargo only admits a prerelease when a comparator names one on the same
+# major.minor.patch; widen it to `<0.26.0` once 0.25.0 is released.
+iii-sdk = ">=0.24.6, <=0.25.0-rc.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.
