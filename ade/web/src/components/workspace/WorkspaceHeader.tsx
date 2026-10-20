@@ -183,7 +183,7 @@ export function WorkspaceHeader({
       {/* The bar is the browser's frame: a step darker than the canvas, so
           the active tab (canvas-coloured, flared at its feet) reads as the
           sheet the workspace is drawn on. */}
-      <header className="onboarding-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 bg-neutral-200 px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-900 dark:text-neutral-50">
+      <header className="onboarding-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 bg-neutral-200 px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-900 dark:text-neutral-50">
         <div className="flex h-full min-w-0 items-end gap-1">
           <span className="flex size-8 shrink-0 items-center justify-center self-center">
             {/* 20% under the 24px mark it replaced: 19.2px. */}
@@ -204,16 +204,17 @@ export function WorkspaceHeader({
           />
         </div>
 
-        {/* The console is reached through the palette, so search sits in
-            the middle of the bar and carries its own chord: the caps teach
-            ⌘K on sight. */}
+        {/* The console is reached through the palette, so search keeps a
+            fixed pill on the bar's right edge and carries its own chord: the
+            caps teach ⌘K on sight. It sits right, not centre, so the tab
+            strip gets every other pixel of the bar. */}
         <button
           type="button"
           onClick={onOpenPalette}
           aria-label={paletteTitle}
           title={paletteTitle}
           /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-          className="onboarding-palette inline-flex h-8 w-72 max-w-full items-center gap-2 justify-self-center rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
+          className="onboarding-palette inline-flex h-8 w-72 max-w-full items-center gap-2 justify-self-end rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
         >
           <Search className="size-4 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate text-left">Search</span>
@@ -223,10 +224,6 @@ export function WorkspaceHeader({
             capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
           />
         </button>
-
-        {/* The right column is empty on purpose: settings moved to the
-            sidebar's bottom row, and the grid keeps search centred. */}
-        <div aria-hidden className="min-w-0" />
       </header>
     </>
   )
