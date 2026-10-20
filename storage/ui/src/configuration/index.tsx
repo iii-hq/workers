@@ -394,6 +394,11 @@ interface CredentialContext {
   errors: ConfigFormProps['errors']
   referencesSupported: boolean | null
   onChange: (next: JsonObject) => void
+  /**
+   * One field of the entry as it is when the value arrives: a secret is
+   * stored after an await, and the edits made meanwhile must survive it.
+   */
+  onField: (field: string, value: JsonValue | undefined) => void
 }
 
 function credential(
@@ -425,7 +430,7 @@ function credential(
       preferText={options.preferText}
       referencesSupported={ctx.referencesSupported}
       placeholder={options.placeholder}
-      onChange={(next) => ctx.onChange(withField(ctx.bucket, field, next))}
+      onChange={(next) => ctx.onField(field, next)}
     />
   )
 }
@@ -528,6 +533,7 @@ function BucketEditor({
   onRename,
   onChoice,
   onChange,
+  onField,
   onRemove,
   onTest,
 }: {
@@ -548,12 +554,13 @@ function BucketEditor({
   onRename: () => void
   onChoice: (choice: ProviderChoice) => void
   onChange: (next: JsonObject) => void
+  onField: (field: string, value: JsonValue | undefined) => void
   onRemove: () => void
   onTest: () => void
 }) {
   const provider = providerOf(bucket)
   const display = bucketDisplay(bucket)
-  const ctx: CredentialContext = { host, name, bucket, buckets, errors, referencesSupported, onChange }
+  const ctx: CredentialContext = { host, name, bucket, buckets, errors, referencesSupported, onChange, onField }
   const setOptional = (field: string, raw: string) => onChange(withField(bucket, field, raw === '' ? undefined : raw))
   const preset = presetById(detectPreset(asString(bucket.endpoint_url)))
   const compatible = choice === 's3-compatible'
@@ -637,7 +644,7 @@ function BucketEditor({
             placeholder={name}
             hint={
               provider === 'local'
-                ? 'Optional override of the folder under the data directory. Empty uses the worker bucket name.'
+                ? 'Optional override of its folder under the data directory’s buckets/. Empty uses the worker bucket name.'
                 : 'Optional override. Empty uses the worker bucket name.'
             }
             error={fieldError(errors, 'buckets', name, 'bucket')}
@@ -693,7 +700,7 @@ function BucketEditor({
               {compatible ? (
                 <SelectField<PresetId>
                   id={`storage-cfg-${name}-preset`}
-                  path={`buckets/${name}/endpoint_url`}
+                  path={`buckets/${name}/endpoint_preset`}
                   label="Service"
                   value={preset.id}
                   options={S3_PRESETS.map((p) => ({ value: p.id, label: p.label }))}
@@ -932,6 +939,14 @@ export function StorageConfigForm(props: StorageConfigFormProps) {
     commitBuckets({ ...currentBuckets(), [name]: next })
   }
 
+  // Applied to the entry as it is now; a bucket renamed or removed while a
+  // secret was being stored is left alone rather than brought back.
+  const setBucketField = (name: string, field: string, next: JsonValue | undefined) => {
+    const current = currentBuckets()[name]
+    if (!isObject(current)) return
+    setBucket(name, withField(current, field, next))
+  }
+
   const addBucket = () => {
     const name = nextBucketName(buckets)
     commitBuckets({ ...buckets, [name]: newBucketEntry('local') })
@@ -1078,6 +1093,7 @@ export function StorageConfigForm(props: StorageConfigFormProps) {
             onRename={() => renameBucket(selection.name)}
             onChoice={(next) => pickChoice(selection.name, next)}
             onChange={(next) => setBucket(selection.name, next)}
+            onField={(field, next) => setBucketField(selection.name, field, next)}
             onRemove={() => void removeBucket(selection.name)}
             onTest={() => void runTest(selection.name)}
           />
