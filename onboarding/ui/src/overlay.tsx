@@ -333,15 +333,23 @@ function Pill({
   onDismiss: () => void
 }) {
   const steps = tour.tour?.steps ?? []
+  const activeId = tour.active?.id ?? null
   const at = tour.active ? steps.indexOf(tour.active) + 1 : steps.length
   const waiting = Boolean(tour.active?.condition)
+  // The tour moved on while folded (a step the agent finished): say so until
+  // the card is opened again, which unmounts the pill.
+  const folded = useRef(activeId)
+  const [moved, setMoved] = useState(false)
+  useEffect(() => {
+    if (activeId !== folded.current) setMoved(true)
+  }, [activeId])
   return (
     <span ref={cardRef as React.RefObject<HTMLSpanElement>} className="learn-pill" data-corner={corner}>
       <button
         type="button"
         className="learn-pill-open"
         onClick={showTour}
-        aria-label={`Open the tour, step ${at} of ${steps.length}`}
+        aria-label={`Open the tour, step ${at} of ${steps.length}${moved ? ', a step moved on' : ''}`}
       >
         <Compass className={uiClasses.icon} aria-hidden="true" />
         Tour
@@ -350,7 +358,13 @@ function Pill({
             {at}/{steps.length}
           </span>
         ) : null}
-        {waiting ? <span className={`learn-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
+        {moved ? (
+          <span className="learn-pill-alert" aria-hidden="true">
+            !
+          </span>
+        ) : waiting ? (
+          <span className={`learn-chip-dot ${uiClasses.pulse}`} aria-hidden="true" />
+        ) : null}
       </button>
       <button type="button" className="learn-pill-close" onClick={onDismiss} aria-label="Close the tour" title="Close">
         <X className={uiClasses.icon} aria-hidden="true" />

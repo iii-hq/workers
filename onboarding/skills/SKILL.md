@@ -168,9 +168,10 @@ Web page:
   container fails with "Address already in use", another process holds
   3111: `configuration::set { "id": "http", "value": { "port": 3121 } }`
   and start it again.
-- Open it for the operator when it works: `browser::sessions::start
-  { "url": "http://localhost:<port>/todo" }` opens it in the console's
-  browser, beside the chat. Tell the operator the address too.
+- Open it for the operator when it works, in a new console tab, not the
+  preview window: `browser::sessions::start { "url": "http://localhost:<port>/todo", "preview": false }`
+  (no preview pop), then `console::workspace::open { "screen": "browser", "placement": "new-tab" }`.
+  Tell the operator the address too.
 
 Checks: call the functions and read the board (`kanban-todo-local::board::get`)
 to prove each part; `browser::fetch` the web page and check it answers 200;

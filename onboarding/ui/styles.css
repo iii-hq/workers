@@ -365,6 +365,21 @@
   outline-offset: -2px;
 }
 
+/* The tour moved on while folded. */
+[data-iii-ui='learn-iii'] .learn-pill-alert {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--color-alert);
+  color: var(--color-panel-raised);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 /* After the pill's close: how to get the tour back, for a few seconds. */
 [data-iii-ui='learn-iii'] .learn-hint {
   position: fixed;
