@@ -11,6 +11,7 @@ use iii_sdk::errors::Error;
 use serde_json::Value;
 
 use crate::config::{self, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME, KanbanConfig};
+use crate::events::{self, Subscribers};
 use crate::store::ConfigCell;
 
 /// Process-stable entry identity: `III_CONFIG_NAME`, else the worker name
@@ -57,9 +58,14 @@ pub async fn fetch(iii: &IIIClient) -> Result<KanbanConfig, String> {
         .unwrap_or_default())
 }
 
-/// Bind `configuration:updated` → refetch → swap the cell. Call `.run()` on
-/// the returned handle once right after binding to close the boot gap.
-pub fn bind_reload(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result<Reload, Error> {
+/// Bind `configuration:updated` → refetch → swap the cell → tell the pages
+/// (`config.updated` on `kanban:change`). Call `.run()` on the returned
+/// handle once right after binding to close the boot gap.
+pub fn bind_reload(
+    iii: &Arc<IIIClient>,
+    cell: ConfigCell,
+    subscribers: Subscribers,
+) -> Result<Reload, Error> {
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,
@@ -69,12 +75,14 @@ pub fn bind_reload(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result<Reload, Err
         move || {
             let engine = engine.clone();
             let cell = cell.clone();
+            let subscribers = subscribers.clone();
             async move {
                 match fetch(&engine).await {
                     Ok(next) => {
                         let board_file = next.board_file();
                         *cell.write().unwrap_or_else(|p| p.into_inner()) = next;
                         tracing::info!(board_file = %board_file.display(), "kanban configuration reloaded");
+                        events::emit_config_updated(&engine, &subscribers);
                     }
                     Err(error) => {
                         tracing::error!(error = %error, "kanban configuration reload failed; keeping previous config");

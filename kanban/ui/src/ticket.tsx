@@ -68,6 +68,7 @@ import {
   noteOwnWrite,
   priorityLabel,
   statusLabel,
+  CONFIG_EVENT,
   subscribeChanges,
   type Activity,
   type AgentProfile,
@@ -1648,10 +1649,20 @@ export function TicketPage({
   const [canceledStatus, setCanceledStatus] = useState<string | null>(null)
   const [agents, setAgents] = useState<AgentProfile[]>([])
   const { props: shell } = useShell()
+  // Bumped when the worker says its configuration changed: columns and statuses are read again.
+  const [configVersion, setConfigVersion] = useState(0)
 
   useEffect(() => {
     if (contextId) setStoredId(contextId)
   }, [contextId, panelContext?.id, setStoredId])
+
+  useEffect(
+    () =>
+      subscribeChanges(host.iii, (event) => {
+        if (event?.event === CONFIG_EVENT) setConfigVersion((version) => version + 1)
+      }),
+    [host],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -1674,7 +1685,7 @@ export function TicketPage({
     return () => {
       cancelled = true
     }
-  }, [host])
+  }, [host, configVersion])
 
   const id = contextId ?? storedId
 

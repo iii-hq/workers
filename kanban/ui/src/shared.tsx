@@ -189,12 +189,16 @@ export type ConfigInfo = {
 
 export type ChangeEvent = {
   event: string
-  ticket_id: string
-  ticket_key: string
-  ticket: Ticket
-  comment: Comment | null
+  ticket_id?: string
+  ticket_key?: string
+  /** Absent on `config.updated`: the columns or statuses changed, read again. */
+  ticket?: Ticket | null
+  comment?: Comment | null
   at: string
 }
+
+/** The `kanban:change` event that names no ticket: the configuration was reloaded. */
+export const CONFIG_EVENT = 'config.updated'
 
 export const COLUMNS_CONFIGURATION_ID = WORKER
 export const BOARD_PAGE_ID = `${WORKER}-board`

@@ -84,6 +84,7 @@ import {
   RELEASES_PAGE_ID,
   StatusGlyph,
   statusLabel,
+  CONFIG_EVENT,
   subscribeChanges,
   Pills,
   summarizeTicket,
@@ -668,6 +669,11 @@ export function BoardPage({
 
   useEffect(() => {
     return subscribeChanges(host.iii, (event) => {
+      // Columns or statuses changed outside this pane: the board read carries them.
+      if (event?.event === CONFIG_EVENT) {
+        void load(true)
+        return
+      }
       if (!event?.ticket) return
       write(summarizeTicket(event.ticket), {
         moved: event.event === 'ticket.moved',
