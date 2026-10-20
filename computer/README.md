@@ -15,7 +15,7 @@ the cursor. Three drivers sit behind one surface, picked per session:
 - **native** (no `endpoint`, no `image`): drive the local machine this worker
   runs on, capture and input injection built in.
 - **sandbox** (an `image`): boot a fresh desktop inside an
-  [iii-sandbox](https://github.com/iii-hq/workers/tree/main/iii-sandbox) microVM
+  [iii-sandbox](https://iii.dev/registry/workers/iii-sandbox) microVM
   and drive it through iii primitives alone (`sandbox::exec` / `sandbox::fs`),
   with no socket into the guest. A fixed virtual display means 1:1 coordinates,
   no HiDPI or multi-monitor ambiguity, and nothing to grant on the host.
