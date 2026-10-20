@@ -11,5 +11,5 @@ export default function setup(host: Host) {
     configurationId: 'storage',
     render: (props) => <StoragePage host={host} {...props} />,
   })
-  host.configForms.register('storage', StorageConfigForm, { layout: 'full' })
+  host.configForms.register('storage', (props) => <StorageConfigForm {...props} host={host} />, { layout: 'full' })
 }
