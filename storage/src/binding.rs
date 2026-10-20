@@ -237,7 +237,14 @@ pub fn check_bound(
         };
         let own_same_field =
             own.is_some_and(|own| stored.iter().any(|u| u.bucket == own && u.field == field));
-        if own_same_field {
+        // Only a value this bucket alone uses may follow it: another bucket
+        // sharing it (a Duplicate) still binds it to where that one points.
+        let others: Vec<Use> = stored
+            .iter()
+            .filter(|u| own != Some(u.bucket.as_str()))
+            .cloned()
+            .collect();
+        if own_same_field && others.is_empty() {
             if MAY_FOLLOW.contains(&field) {
                 continue;
             }
@@ -245,6 +252,13 @@ pub fn check_bound(
                 "`{field}`: {what} is sent in clear (or as a bearer credential) to where this \
                  bucket points; it cannot follow the bucket to another provider, endpoint or \
                  account. Enter the value again (as a new secret) for the new destination"
+            ));
+        }
+        if own_same_field {
+            return Err(format!(
+                "`{field}`: {what} is shared with bucket `{}`, which still sends it where it \
+                 points; enter a new value (a new secret) for this bucket's new destination",
+                names(&others)
             ));
         }
         return Err(format!(
@@ -356,6 +370,23 @@ mod tests {
         // (c) credentials_json does not follow a moved gcs endpoint…
         let gcs = json!({ "provider": "gcs", "endpoint_url": "http://127.0.0.1:49262", "credentials_json": "secret://MINE_JSON" });
         assert!(check_bound(&gcs, &uses, Some("gcs")).is_err());
+        // A value shared with another bucket (a Duplicate) stays with it.
+        let mut shared = stored.clone();
+        shared.insert(
+            "dup".into(),
+            json!({ "provider": "s3", "region": "r", "endpoint_url": "http://10.0.0.1:9000",
+                    "access_key_id": "secret://MINE_AK", "secret_access_key": "secret://OTHER" }),
+        );
+        let shared_uses = super::uses(&shared);
+        let err = check_bound(&moved(json!({})), &shared_uses, Some("mine")).unwrap_err();
+        assert!(
+            err.contains("`access_key_id`") && err.contains("shared with bucket `dup`"),
+            "{err}"
+        );
+        let dup_moved = json!({ "provider": "s3", "region": "r", "endpoint_url": "http://127.0.0.1:49262",
+                                "access_key_id": "secret://MINE_AK", "secret_access_key": "secret://OTHER" });
+        let err = check_bound(&dup_moved, &shared_uses, Some("dup")).unwrap_err();
+        assert!(err.contains("shared with bucket `mine`"), "{err}");
         // …and another bucket never takes them anywhere new.
         assert!(check_bound(&moved(json!({})), &uses, Some("other")).is_err());
         assert!(check_bound(&moved(json!({})), &uses, None).is_err());
