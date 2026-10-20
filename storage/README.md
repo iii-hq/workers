@@ -387,6 +387,38 @@ Bucket editors (the console, the iii app) create and change buckets through
 four functions instead of rewriting the whole configuration. All four are
 denied to agents by `iii-permissions.yaml` (they rewrite which providers and
 credentials the worker uses, or send credentials where a candidate points).
+Their requests refuse unknown keys and wrong-typed fields with `CONFIG_ERROR`
+naming the field (keys starting with `_` are the engine's own metadata and are
+ignored).
+
+### Where credentials may go
+
+A save makes the live bucket send its credentials to its endpoint; a test sends
+them at once. Neither may become a way to read a credential the caller cannot
+read (the vault never returns values, stored literals come back
+`"__redacted__"`, files on the engine host are not readable through the bus):
+
+- A value kept from the stored entry — a `"__redacted__"` restored, a `${VAR}`
+  template left unchanged — only goes to the same provider and destination (the
+  `endpoint_url` as scheme, host and port; else AWS, Google, or the R2 account).
+  Moving the endpoint, account or provider needs the value entered again.
+- A `secret://` / `env://` reference or a `credentials_file` that a stored bucket
+  uses, in any credential field, only goes in the same field to a destination a
+  stored bucket sends it to (entries that do not parse count too). `testBucket`
+  counts every stored bucket; `saveBucket` lets the bucket being saved take its
+  own along, so a Duplicate to the same endpoint and an edit of a bucket's own
+  endpoint keep working.
+- The engine host's ambient credentials — the AWS default chain for an s3 bucket
+  without keys, Google ADC for a gcs bucket without credentials — only go to the
+  provider itself or to an endpoint a stored bucket already uses them with.
+- A request may not introduce a `${VAR}` template (it reads the engine's
+  environment, which nothing gates; `env://NAME` goes through the secrets
+  worker's access rules), nor userinfo in `endpoint_url`. An r2 `account_id`
+  must be a 32-hex account id before it becomes a hostname.
+
+`credentials` stores its values as literals in the configuration, where
+`configuration::get {raw: true}` shows them; the secrets vault is the intended
+store.
 
 ### `storage::listBuckets`
 
@@ -434,9 +466,14 @@ references unexpanded), sensitive literals as `"__redacted__"`.
   key named `credentials` whole. `"__redacted__"` keeps the stored value.
 - The save is a read-modify-write of the whole raw value through
   `configuration::set`: `providers`, the other buckets and their templates and
-  references are written back untouched. The answer comes after the runtime
-  reloaded; `error` / `error_stage` is the saved bucket's build error (the
-  entry is saved anyway). Refusals are `CONFIG_ERROR`.
+  references are written back untouched. `configuration::set` has no
+  compare-and-set, but answers the value it replaced: when another writer got in
+  between, the edit is applied again on top of that writer's value (best
+  effort). The answer comes after the runtime reloaded; `error` /
+  `error_stage` is the saved bucket's build error (the entry is saved anyway).
+  Refusals are `CONFIG_ERROR`.
+- Changing a local bucket's `bucket` points it at another directory under
+  `data_dir/buckets/`; objects are not moved.
 - `create_bucket: true` (s3, r2, S3-compatible) creates the provider-side
   bucket when it does not exist (`created_bucket: true`; already there →
   `false`), sending the region as `LocationConstraint` except for AWS's
@@ -529,8 +566,11 @@ at or past the end, `bytes=-0`, or any range of an empty object → `416` with
 `Content-Range: bytes */size`. A request for several ranges (`bytes=0-1,5-6`),
 another unit, or a malformed or inverted range is answered with the whole
 object (`200`), which RFC 9110 allows; `If-Range` naming another version does
-the same. The signing key is per worker process: URLs issued before a restart
-answer `401`.
+the same. Downloads carry `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: sandbox`, so an HTML object never runs as a page of
+the listener's origin. The signing key is per worker process: URLs issued
+before a restart answer `401`. `presignUrl` refuses control characters in
+`response_content_disposition` / `response_content_type`.
 
 ## Local development & testing
 
