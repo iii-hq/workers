@@ -198,10 +198,20 @@ pub fn check_bound(candidate: &Value, uses: &HashMap<String, Vec<Use>>) -> Resul
         let Some(key) = binding_key(field, value) else {
             continue;
         };
+        let target = destination(candidate, field);
         let Some(stored) = uses.get(&key) else {
+            // A file on the engine host no stored bucket uses is the host's
+            // credential, like the ambient ones: it only goes to Google.
+            if field == "credentials_file" && target != "google" {
+                return Err(
+                    "`credentials_file`: a credentials file from the engine host only goes to \
+                     Google, or where a configured bucket already sends it; for a custom \
+                     endpoint put the JSON itself in credentials_json (as a secret:// reference)"
+                        .into(),
+                );
+            }
             continue;
         };
-        let target = destination(candidate, field);
         if stored
             .iter()
             .any(|u| u.field == field && u.destination == target)
@@ -360,6 +370,14 @@ mod tests {
         );
         assert!(check_bound(&gcs("/etc/./iii/sa.json", Some("http://evil")), &uses).is_err());
         check_bound(&gcs("/etc/iii/sa.json", None), &uses).unwrap();
+        // A host file no bucket uses only goes to Google.
+        let err = check_bound(
+            &gcs("/var/other-sa.json", Some("http://127.0.0.1:49262")),
+            &uses,
+        )
+        .unwrap_err();
+        assert!(err.contains("only goes to Google"), "{err}");
+        check_bound(&gcs("/var/other-sa.json", None), &uses).unwrap();
     }
 
     #[test]
