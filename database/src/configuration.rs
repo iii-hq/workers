@@ -388,16 +388,14 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and observe the engine's
-/// `configuration::on-updated` for this worker's entry. Against an engine
-/// without observe (`engine_observes` false), bind the old `configuration`
-/// trigger instead.
+/// Register the internal config-change handler. The returned binding hears
+/// the changes: [`ConfigBinding::follow`] picks the way the engine on the
+/// current connection serves them.
 pub fn register_config_trigger(
     iii: &IIIClient,
     state: AppState,
     listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
-    engine_observes: bool,
-) -> Result<(), Error> {
+) -> ConfigBinding {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -416,37 +414,78 @@ pub fn register_config_trigger(
         )
         .metadata(json!({ "internal": true })),
     );
-
-    if engine_observes {
-        // The observer is replayed on reconnect; the handle is not needed.
-        let _ = iii.observe(
-            Source::function("configuration::on-updated")
-                .namespace("default")
-                .filters(json!({
-                    "input.id": { "$eq": config_id() },
-                    "input.event_type": { "$eq": "configuration:updated" },
-                }))
-                // The event's input carries the whole configuration value
-                // (url passwords included), and whatever an activation
-                // ships lands in this worker's trace span. The filter reads
-                // the input; the activation ships only the caller — the
-                // handler re-fetches the value anyway.
-                .capture([iii_sdk::protocol::Capture::Caller])
-                .deliver(Deliver::Envelope),
-            CONFIG_FN_ID,
-        );
-        return Ok(());
+    ConfigBinding {
+        iii: iii.clone(),
+        observer: std::sync::Mutex::new(None),
+        trigger: std::sync::Mutex::new(None),
     }
-    #[allow(deprecated)]
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+}
+
+/// How the worker hears its configuration entry change: an observer of the
+/// engine's `configuration::on-updated` on an engine with observe, the old
+/// `configuration` trigger on one without.
+pub struct ConfigBinding {
+    iii: IIIClient,
+    observer: std::sync::Mutex<Option<iii_sdk::ObserverHandle>>,
+    trigger: std::sync::Mutex<Option<iii_sdk::trigger::Trigger>>,
+}
+
+impl ConfigBinding {
+    /// Binds the way an engine that does (`true`) or does not (`false`)
+    /// support observe serves configuration changes, and drops the other.
+    /// Idempotent; called again when a reconnect lands on an engine of the
+    /// other kind (an upgrade or a rollback under the running worker).
+    pub fn follow(&self, engine_observes: bool) {
+        let mut observer = self.observer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut trigger = self.trigger.lock().unwrap_or_else(|e| e.into_inner());
+        if engine_observes {
+            if observer.is_none() {
+                *observer = Some(
+                    self.iii.observe(
+                        Source::function("configuration::on-updated")
+                            .namespace("default")
+                            .filters(json!({
+                                "input.id": { "$eq": config_id() },
+                                "input.event_type": { "$eq": "configuration:updated" },
+                            }))
+                            // The event's input carries the whole configuration value
+                            // (url passwords included), and whatever an activation
+                            // ships lands in this worker's trace span. The filter reads
+                            // the input; the activation ships only the caller — the
+                            // handler re-fetches the value anyway.
+                            .capture([iii_sdk::protocol::Capture::Caller])
+                            .deliver(Deliver::Envelope),
+                        CONFIG_FN_ID,
+                    ),
+                );
+            }
+            if let Some(old) = trigger.take() {
+                old.unregister();
+            }
+            return;
+        }
+        // An observer made on an earlier engine stays: the SDK fails it with
+        // `UNSUPPORTED` here and replays it to the next engine with observe.
+        if trigger.is_none() {
+            // Deprecated in 0.25; kept for engines without observe.
+            #[allow(deprecated)]
+            let bound = self.iii.register_trigger(RegisterTriggerInput::new(
+                "configuration".to_string(),
+                CONFIG_FN_ID.to_string(),
+                json!({
+                    "configuration_id": config_id(),
+                    "event_types": ["configuration:updated"],
+                }),
+            ));
+            match bound {
+                Ok(bound) => *trigger = Some(bound),
+                Err(e) => tracing::error!(
+                    error = %e,
+                    "binding the configuration trigger failed; configuration changes are not heard"
+                ),
+            }
+        }
+    }
 }
 
 /// Reload pools from the AUTHORITATIVE configuration.

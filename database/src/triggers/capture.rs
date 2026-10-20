@@ -18,13 +18,15 @@
 //!   `registerTrigger({ type: 'database::row-changed' })` into an observer
 //!   whose `legacy.config` is the old config (the legacy shim);
 //! * against an older engine, `legacy.rs` registers the old trigger type and
-//!   files each binding in the same index as a [`Sink::Trigger`].
+//!   files each binding in the same index as a [`Sink::Trigger`]. It follows
+//!   the engine across reconnects, so an engine upgraded or rolled back under
+//!   the running worker switches between the two.
 //!
 //! Either way a legacy binding receives the event in its pre-0.25 shape
 //! ([`RowChangedEvent::legacy_view`]).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use async_trait::async_trait;
@@ -186,6 +188,24 @@ impl RouteIndex {
         removed
     }
 
+    /// Removes every [`Sink::Trigger`] route, observers left in place.
+    fn remove_trigger_sinks(&self) -> Vec<Arc<Route>> {
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let ids: Vec<String> = inner
+            .by_id
+            .values()
+            .filter(|route| matches!(route.sink, Sink::Trigger { .. }))
+            .map(|route| route.id.clone())
+            .collect();
+        let removed: Vec<Arc<Route>> = ids
+            .iter()
+            .filter_map(|id| Self::take(&mut inner, id))
+            .collect();
+        self.trigger_sinks
+            .fetch_sub(removed.len(), Ordering::AcqRel);
+        removed
+    }
+
     fn take(inner: &mut IndexInner, id: &str) -> Option<Arc<Route>> {
         let route = inner.by_id.remove(id)?;
         let key = (route.db.clone(), route.table.clone());
@@ -242,6 +262,12 @@ pub struct NativeCapture {
     /// reinstall and an orphan notify per write is near-free).
     installed: Mutex<HashMap<(String, String), usize>>,
     function: OnceLock<FunctionRef>,
+    /// Whether the engine on the current connection supports observe, as
+    /// `legacy::Fallback` last heard it. Against one that does not, the
+    /// observers the SDK still holds from an earlier engine stay filed but
+    /// hear nothing: the engine has none of them, and they are acked again
+    /// without hooks when an engine with observe replays them.
+    engine_observes: AtomicBool,
     dispatch_timeout_ms: u64,
 }
 
@@ -259,6 +285,7 @@ impl NativeCapture {
             index: RouteIndex::default(),
             installed: Mutex::new(HashMap::new()),
             function: OnceLock::new(),
+            engine_observes: AtomicBool::new(true),
             dispatch_timeout_ms,
         }
     }
@@ -288,10 +315,18 @@ impl NativeCapture {
     }
 
     /// Whether any event can reach anyone: an active observer, or a binding
-    /// through the pre-0.25 fallback. Two atomic loads.
+    /// through the pre-0.25 fallback. A few atomic loads.
     #[inline]
     pub fn is_listened(&self) -> bool {
-        self.function.get().is_some_and(FunctionRef::is_observed) || self.index.has_trigger_sinks()
+        (self.engine_observes.load(Ordering::Acquire)
+            && self.function.get().is_some_and(FunctionRef::is_observed))
+            || self.index.has_trigger_sinks()
+    }
+
+    /// Records whether the engine on the current connection supports
+    /// observe (see the field).
+    pub fn set_engine_observes(&self, observes: bool) {
+        self.engine_observes.store(observes, Ordering::Release);
     }
 
     pub fn route_count(&self) -> usize {
@@ -309,8 +344,10 @@ impl NativeCapture {
             return;
         }
         let mut legacy_value: Option<Value> = None;
+        let engine_observes = self.engine_observes.load(Ordering::Acquire);
         for route in routes {
             match &route.sink {
+                Sink::Observer(_) if !engine_observes => {}
                 Sink::Observer(obs) => {
                     let sent = if route.legacy {
                         obs.emit(&event.legacy_view())
@@ -475,6 +512,18 @@ impl NativeCapture {
         if let Some(route) = self.index.remove(route_id) {
             self.release(&route);
         }
+    }
+
+    /// Removes every pre-0.25 binding ([`Sink::Trigger`]) and releases their
+    /// holds: the trigger type that served them was unregistered, and the
+    /// engine hands them to the function's legacy shim as observers. Returns
+    /// how many there were.
+    pub fn unfile_trigger_sinks(&self) -> usize {
+        let removed = self.index.remove_trigger_sinks();
+        for route in &removed {
+            self.release(route);
+        }
+        removed.len()
     }
 
     fn release(&self, route: &Route) {
@@ -885,6 +934,19 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, codes::CAPTURE_INSTALL_FAILED);
         assert!(err.message.contains("no pool"), "{}", err.message);
+    }
+
+    #[test]
+    fn the_fallback_bindings_leave_the_index_together() {
+        let index = RouteIndex::default();
+        index.insert(route("binding-1", "primary", Some("orders"), None));
+        index.insert(route("binding-2", "primary", None, None));
+        assert!(index.has_trigger_sinks());
+        let removed = index.remove_trigger_sinks();
+        assert_eq!(removed.len(), 2);
+        assert_eq!(index.len(), 0);
+        assert!(!index.has_trigger_sinks());
+        assert!(index.remove_trigger_sinks().is_empty());
     }
 
     #[test]

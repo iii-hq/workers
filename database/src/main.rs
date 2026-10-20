@@ -882,24 +882,21 @@ async fn main() -> Result<()> {
     // can attribute it.
     database::triggers::capture::register(&iii, &capture);
 
-    // An engine older than 0.25 has no observe: register the old trigger type
-    // over the same index so old consumers keep hearing their writes.
-    let engine_observes = database::triggers::legacy::engine_supports_observe(&iii).await;
-    let _row_changed_type = (!engine_observes).then(|| {
-        tracing::warn!(
-            "the engine does not support observe; registering the deprecated \
-             database::row-changed trigger type for old consumers"
-        );
-        database::triggers::legacy::register_trigger_type(&iii, capture.clone())
+    // What depends on the engine's observe support follows it, as the SDK
+    // learns it on each connection: an engine older than 0.25 gets the old
+    // trigger type over the same index (old consumers keep hearing their
+    // writes) and the old `configuration` trigger. An engine upgraded or
+    // rolled back under the worker switches both without a restart.
+    let fallback = Arc::new(database::triggers::legacy::Fallback::new(
+        iii.as_ref().clone(),
+        capture.clone(),
+    ));
+    let config_binding =
+        configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()));
+    let _engine_follower = iii.on_engine_supports_observe(move |engine_observes| {
+        fallback.follow(engine_observes);
+        config_binding.follow(engine_observes);
     });
-
-    configuration::register_config_trigger(
-        &iii,
-        state.clone(),
-        Some(native_listeners.clone()),
-        engine_observes,
-    )
-    .context("registering configuration change observer")?;
     configuration::register_secret_trigger(&iii, state.clone(), Some(native_listeners.clone()));
     let _maintenance =
         configuration::spawn_maintenance(state.clone(), Some(native_listeners.clone()));
@@ -909,7 +906,7 @@ async fn main() -> Result<()> {
     database::ui::register(&iii);
 
     tracing::info!(
-        engine_observes,
+        engine_observes = ?iii.engine_supports_observe(),
         "database worker registered 39 functions, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
