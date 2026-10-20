@@ -154,7 +154,8 @@ fn content_text(content: &Value, block_type: &str) -> String {
 }
 
 /// Claude Code files bash-mode and slash-command activity (what the person ran, and what it
-/// printed) as user rows that open with one of these tags: none of it is words they typed.
+/// printed) as user rows that open with one of these tags. Only `<command-name>` and
+/// `<command-args>` are the person's words: the command they ran and what they typed after it.
 const CLAUDE_COMMAND_TAGS: [&str; 9] = [
     "bash-input",
     "bash-stdout",
@@ -167,11 +168,19 @@ const CLAUDE_COMMAND_TAGS: [&str; 9] = [
     "local-command-caveat",
 ];
 
-fn is_claude_command_row(body: &str) -> bool {
+fn claude_command_tag(body: &str) -> Option<&str> {
     body.trim_start()
         .strip_prefix('<')
         .and_then(|rest| rest.split_once('>'))
-        .is_some_and(|(tag, _)| CLAUDE_COMMAND_TAGS.contains(&tag))
+        .map(|(tag, _)| tag)
+        .filter(|tag| CLAUDE_COMMAND_TAGS.contains(tag))
+}
+
+/// The text of the first `<tag>…</tag>` in `body`, or "" when it has none.
+fn tag_value<'a>(body: &'a str, tag: &str) -> &'a str {
+    body.split_once(&format!("<{tag}>"))
+        .and_then(|(_, rest)| rest.split_once(&format!("</{tag}>")))
+        .map_or("", |(value, _)| value)
 }
 
 /// A Codex tool item as one call: the source's tool name and the arguments it ran with.
@@ -516,7 +525,19 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                             result.is_error = block["is_error"] == true;
                             out.push(result);
                         }
-                        if !body.trim().is_empty() && !is_claude_command_row(&body) {
+                        let body = match claude_command_tag(&body) {
+                            None => body,
+                            // The tags come in either order, so look each one up.
+                            Some("command-name" | "command-message" | "command-args") => format!(
+                                "{} {}",
+                                tag_value(&body, "command-name"),
+                                tag_value(&body, "command-args")
+                            )
+                            .trim()
+                            .to_owned(),
+                            Some(_) => String::new(),
+                        };
+                        if !body.trim().is_empty() {
                             out.push(ExternalMessage::new(entry_id, role, body, when));
                         }
                         Ok(out)
@@ -908,11 +929,28 @@ mod tests {
     }
 
     #[test]
-    fn claude_skips_bash_mode_and_slash_command_rows_but_keeps_typed_text() {
+    fn claude_keeps_typed_commands_but_skips_bash_mode_and_command_output() {
+        let mut expansion = claude(
+            "expansion",
+            Some("skill"),
+            "user",
+            json!("Review the pull request.\n\nARGUMENTS: PR 1234"),
+        );
+        expansion["isMeta"] = json!(true);
         let bytes = jsonl(vec![
             claude(
-                "command",
+                "skill",
                 None,
+                "user",
+                json!(
+                    "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>PR 1234</command-args>"
+                ),
+            ),
+            expansion,
+            claude("reply", Some("expansion"), "assistant", json!("reviewed")),
+            claude(
+                "command",
+                Some("reply"),
                 "user",
                 json!(
                     "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>"
@@ -952,9 +990,11 @@ mod tests {
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect::<Vec<_>>(),
-            ["typed", "answer", "quoted"]
+            ["skill", "reply", "command", "typed", "answer", "quoted"]
         );
-        assert_eq!(result.conversation.title, "fix the build");
+        assert_eq!(result.messages[0].text, "/review PR 1234");
+        assert_eq!(result.messages[2].text, "/model");
+        assert_eq!(result.conversation.title, "/review PR 1234");
     }
 
     #[test]
