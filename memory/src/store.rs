@@ -883,8 +883,8 @@ impl Bank {
         scored
     }
 
-    /// The raw semantic arm: cosine against the vector sidecar, above the
-    /// model's floor, same model-acceptance rule as [`Bank::recall`].
+    /// The raw semantic arm: cosine against the vector sidecar, above
+    /// `SEMANTIC_FLOOR`, same model-acceptance rule as [`Bank::recall`].
     /// Scores are the cosine itself, so callers can reason about them.
     pub async fn semantic(
         &self,
@@ -893,7 +893,6 @@ impl Bank {
         limit: usize,
         include_superseded: bool,
     ) -> Vec<(Memory, f32)> {
-        let (floor, _, _) = semantic_scale(embedding_model);
         let inner = self.inner.read().await;
         let mut scored: Vec<(Memory, f32)> = inner
             .vectors
@@ -902,7 +901,7 @@ impl Bank {
             .filter_map(|(id, (_, v))| {
                 let c = cosine(query_vec, v);
                 let m = inner.memories.get(id)?;
-                (c > floor && (include_superseded || m.is_live())).then(|| (m.clone(), c))
+                (c > SEMANTIC_FLOOR && (include_superseded || m.is_live())).then(|| (m.clone(), c))
             })
             .collect();
         rank_desc(&mut scored, limit);
@@ -1565,8 +1564,9 @@ mod tests {
             let recalled = bank
                 .recall("", Some(&[1.0, 0.0]), model, 10, 60, false)
                 .await;
+            // The raw semantic arm keeps the default floor for every model.
             let want = usize::from(model == minilm);
-            assert_eq!((semantic.len(), recalled.len()), (want, want), "{model}");
+            assert_eq!((semantic.len(), recalled.len()), (0, want), "{model}");
         }
     }
 
