@@ -17,18 +17,14 @@ import {
   type PanelContextEvent,
   Skeleton,
   StatusBar,
+  StatusDot,
   StatusPanel,
   Toolbar,
   useConfirm,
 } from '@iii-dev/console-ui'
-import {
-  copyText,
-  errorMessage,
-  formatBytes,
-} from '@iii-dev/console-ui/format'
+import { copyText, formatBytes } from '@iii-dev/console-ui/format'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
 import {
-  Archive,
   ChevronLeft,
   ChevronRight,
   Database,
@@ -40,16 +36,22 @@ import {
   Upload,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { stageLabel } from './configuration/bucket'
+import { ObjectPreview } from './ObjectPreview'
+import { BucketIcon } from './lib/bucket-icons'
+import { bucketUnavailable, errorMessage } from './lib/errors'
+import {
+  attachmentDisposition,
+  type BucketSummary,
+  bucketProviderLabel,
+  parseBucketList,
+  readThroughWorker,
+} from './lib/objects'
 import { parseStoragePanelContext } from './panel-context'
 import { leafName, parentPrefix } from './widgets'
 
 const NARROW_BELOW = 760
 const LIST_LIMIT = 250
-
-interface BucketSummary {
-  name: string
-  provider: string
-}
 
 interface StorageObject {
   key: string
@@ -76,6 +78,38 @@ interface PersistedState {
   bucket?: string
   prefix?: string
   objectKey?: string
+}
+
+/** What a failed call says, with a bucket the worker could not build named as such. */
+interface CallError {
+  headline?: string
+  detail: string
+}
+
+function describeError(error: unknown): CallError {
+  const unavailable = bucketUnavailable(error)
+  if (unavailable) {
+    return {
+      headline: 'Bucket unavailable',
+      detail: [stageLabel(unavailable.stage), unavailable.message]
+        .filter(Boolean)
+        .join(' · '),
+    }
+  }
+  return { detail: errorMessage(error) }
+}
+
+/** Hand a blob to the browser as a download named `filename`. */
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.rel = 'noopener'
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 function readPersisted(tabId: string): PersistedState {
@@ -113,12 +147,14 @@ function StorageExplorer({
   )
   const [prefix, setPrefix] = useState(persisted.prefix ?? '')
   const [listing, setListing] = useState<Listing | null>(null)
-  const [listingError, setListingError] = useState<string | null>(null)
+  const [listingError, setListingError] = useState<CallError | null>(null)
   const [objectKey, setObjectKey] = useState<string | null>(
     persisted.objectKey ?? null,
   )
   const [metadata, setMetadata] = useState<ObjectMetadata | null>(null)
-  const [metadataError, setMetadataError] = useState<string | null>(null)
+  const [metadataError, setMetadataError] = useState<CallError | null>(
+    null,
+  )
   const [loadingMore, setLoadingMore] = useState(false)
   const [transfer, setTransfer] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -132,6 +168,8 @@ function StorageExplorer({
 
   const selectedBucket =
     buckets?.find((bucket) => bucket.name === bucketName) ?? null
+  // Listed but not built: its calls would only fail with BUCKET_UNAVAILABLE.
+  const bucketBroken = Boolean(selectedBucket?.error)
 
   useEffect(() => {
     if (!tabId) return
@@ -148,13 +186,14 @@ function StorageExplorer({
   const loadBuckets = useCallback(() => {
     setBucketError(null)
     host.iii
-      .trigger<{ buckets: BucketSummary[] }>('storage::listBuckets', {})
+      .trigger<unknown>('storage::listBuckets', {})
       .then((response) => {
-        setBuckets(response.buckets)
+        const list = parseBucketList(response)
+        setBuckets(list)
         setBucketError(null)
         if (
           bucketRef.current &&
-          !response.buckets.some((bucket) => bucket.name === bucketRef.current)
+          !list.some((bucket) => bucket.name === bucketRef.current)
         ) {
           setBucketName(null)
           setPrefix('')
@@ -210,7 +249,7 @@ function StorageExplorer({
             prefixRef.current !== currentPrefix
           )
             return
-          setListingError(errorMessage(error))
+          setListingError(describeError(error))
           if (!append) setListing({ objects: [], common_prefixes: [] })
         })
         .finally(() => setLoadingMore(false))
@@ -219,12 +258,12 @@ function StorageExplorer({
   )
 
   useEffect(() => {
-    if (bucketName) loadListing()
+    if (bucketName && !bucketBroken) loadListing()
     else setListing(null)
-  }, [bucketName, prefix, loadListing])
+  }, [bucketName, prefix, bucketBroken, loadListing])
 
   useEffect(() => {
-    if (!bucketName || !objectKey) {
+    if (!bucketName || !objectKey || bucketBroken) {
       setMetadata(null)
       setMetadataError(null)
       return
@@ -251,10 +290,10 @@ function StorageExplorer({
           bucketRef.current === currentBucket &&
           objectRef.current === currentObject
         ) {
-          setMetadataError(errorMessage(error))
+          setMetadataError(describeError(error))
         }
       })
-  }, [host, bucketName, objectKey])
+  }, [host, bucketName, objectKey, bucketBroken])
 
   // A context from the palette source (or another worker's "inspect this
   // object" affordance) selects a bucket/prefix/object once the bucket list
@@ -354,15 +393,48 @@ function StorageExplorer({
       loadListing()
       setObjectKey(key)
     } catch (error) {
-      setActionError(errorMessage(error))
+      setActionError(describeError(error).detail)
     } finally {
       setTransfer(null)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
+  // A bucket that cannot sign links is read through the worker, in ranged
+  // reads, and saved from memory; every other download is a signed link.
+  const downloadThroughWorker = async (bucket: string, key: string) => {
+    const name = leafName(key)
+    setTransfer(`reading ${name}`)
+    setActionError(null)
+    try {
+      const head =
+        metadata && objectRef.current === key
+          ? metadata
+          : await host.iii.trigger<ObjectMetadata>('storage::headObject', {
+              bucket,
+              key,
+            })
+      const blob = await readThroughWorker(host, bucket, key, head.size, {
+        contentType: head.content_type,
+        onProgress: (done, total) =>
+          setTransfer(
+            `reading ${name} · ${formatBytes(done)} of ${formatBytes(total)}`,
+          ),
+      })
+      saveBlob(blob, name)
+    } catch (error) {
+      setActionError(describeError(error).detail)
+    } finally {
+      setTransfer(null)
+    }
+  }
+
   const download = async () => {
     if (!bucketName || !objectKey) return
+    if (selectedBucket?.direct_downloads === false) {
+      await downloadThroughWorker(bucketName, objectKey)
+      return
+    }
     const popup = window.open('', '_blank')
     setTransfer(`preparing ${leafName(objectKey)}`)
     setActionError(null)
@@ -374,14 +446,16 @@ function StorageExplorer({
           key: objectKey,
           method: 'GET',
           expires_in_seconds: 600,
-          response_content_disposition: `attachment; filename="${leafName(objectKey).replaceAll('"', '')}"`,
+          response_content_disposition: attachmentDisposition(
+            leafName(objectKey),
+          ),
         },
       )
       if (popup) popup.location.href = signed.url
       else window.location.assign(signed.url)
     } catch (error) {
       popup?.close()
-      setActionError(errorMessage(error))
+      setActionError(describeError(error).detail)
     } finally {
       setTransfer(null)
     }
@@ -513,10 +587,29 @@ function StorageExplorer({
                       aria-current={
                         bucket.name === bucketName ? 'true' : undefined
                       }
-                      leading={<Archive />}
+                      leading={
+                        <BucketIcon
+                          name={bucket.display?.icon}
+                          color={bucket.display?.color}
+                        />
+                      }
                       label={bucket.name}
-                      description={bucket.provider}
-                      trailing={<ChevronRight className="iii-ui-icon" />}
+                      description={
+                        bucket.error
+                          ? `${bucketProviderLabel(bucket)} · unavailable`
+                          : bucketProviderLabel(bucket)
+                      }
+                      title={bucket.error}
+                      trailing={
+                        bucket.error ? (
+                          <StatusDot
+                            tone="alert"
+                            aria-label="The worker could not build this bucket"
+                          />
+                        ) : (
+                          <ChevronRight className="iii-ui-icon" />
+                        )
+                      }
                       onClick={() => openBucket(bucket.name)}
                     />
                   ))}
@@ -562,7 +655,7 @@ function StorageExplorer({
                       <Button
                         variant="primary"
                         size="sm"
-                        disabled={transfer !== null}
+                        disabled={transfer !== null || bucketBroken}
                         onClick={() => fileInputRef.current?.click()}
                       >
                         <Upload /> upload
@@ -616,7 +709,24 @@ function StorageExplorer({
                   />
                 ) : null}
                 <div className="storage-ui-scroll">
-                  {listing === null ? (
+                  {selectedBucket?.error ? (
+                    <StatusPanel
+                      variant="alert"
+                      headline="Bucket unavailable"
+                      detail={[
+                        stageLabel(selectedBucket.error_stage),
+                        selectedBucket.error,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                      className="storage-ui-status"
+                      action={
+                        <Button variant="ghost" size="sm" onClick={loadBuckets}>
+                          retry
+                        </Button>
+                      }
+                    />
+                  ) : listing === null ? (
                     <div
                       className="storage-ui-skeleton listing"
                       aria-label="Loading objects"
@@ -629,8 +739,10 @@ function StorageExplorer({
                   ) : listingError ? (
                     <StatusPanel
                       variant="alert"
-                      headline="Could not load this folder"
-                      detail={listingError}
+                      headline={
+                        listingError.headline ?? 'Could not load this folder'
+                      }
+                      detail={listingError.detail}
                       className="storage-ui-status"
                       action={
                         <Button
@@ -764,11 +876,21 @@ function StorageExplorer({
                     className="storage-ui-status"
                   />
                 ) : null}
+                {metadata && selectedBucket ? (
+                  <ObjectPreview
+                    host={host}
+                    bucket={selectedBucket}
+                    objectKey={objectKey}
+                    metadata={metadata}
+                    busy={transfer !== null}
+                    onDownload={() => void download()}
+                  />
+                ) : null}
                 {metadataError ? (
                   <StatusPanel
                     variant="alert"
-                    headline="Metadata unavailable"
-                    detail={metadataError}
+                    headline={metadataError.headline ?? 'Metadata unavailable'}
+                    detail={metadataError.detail}
                     className="storage-ui-status"
                   />
                 ) : metadata === null ? (
@@ -801,15 +923,27 @@ function StorageExplorer({
                     </div>
                     <div>
                       <dt>Provider</dt>
-                      <dd>{selectedBucket?.provider ?? 'unknown'}</dd>
+                      <dd>
+                        {selectedBucket
+                          ? bucketProviderLabel(selectedBucket)
+                          : 'unknown'}
+                      </dd>
                     </div>
                   </dl>
                 )}
-                <StatusPanel
-                  headline="Direct transfer"
-                  detail="Downloads use a short-lived signed URL, so file bytes bypass the inline worker RPC limit."
-                  className="storage-ui-status"
-                />
+                {selectedBucket?.direct_downloads === false ? (
+                  <StatusPanel
+                    headline="Through the worker"
+                    detail="This bucket cannot sign download links, so downloads are read through the worker in parts and saved from the browser."
+                    className="storage-ui-status"
+                  />
+                ) : (
+                  <StatusPanel
+                    headline="Direct transfer"
+                    detail="Downloads and previews use a short-lived signed URL, so file bytes bypass the inline worker RPC limit."
+                    className="storage-ui-status"
+                  />
+                )}
                 {transfer ? (
                   <StatusBar role="status">{transfer}…</StatusBar>
                 ) : null}

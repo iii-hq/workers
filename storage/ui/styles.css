@@ -740,3 +740,43 @@
   width: 40px;
   height: 40px;
 }
+
+/* Inline preview of the selected object. */
+
+[data-iii-ui="storage"] .storage-ui-preview {
+  display: flex;
+  justify-content: center;
+  padding: 14px 20px 4px;
+}
+
+[data-iii-ui="storage"] .storage-ui-preview > .storage-ui-preview-open {
+  display: flex;
+  max-width: 100%;
+  padding: 0;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+[data-iii-ui="storage"] .storage-ui-preview-media {
+  display: block;
+  max-width: 100%;
+  max-height: min(56vh, 520px);
+  object-fit: contain;
+}
+
+[data-iii-ui="storage"] video.storage-ui-preview-media {
+  width: 100%;
+  border-radius: 6px;
+  background: var(--color-bg);
+}
+
+[data-iii-ui="storage"] .storage-ui-preview-skeleton {
+  width: 100%;
+  height: 220px;
+}
+
+[data-iii-ui="storage"] .storage-ui-preview-status {
+  width: 100%;
+}
