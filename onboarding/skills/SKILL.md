@@ -189,8 +189,10 @@ Web page:
   and start it again.
 - Open it for the operator when it works, in a new console tab, not the
   preview window: `browser::sessions::start { "url": "http://localhost:<port>/todo", "preview": false }`
-  (no preview pop), then `console::workspace::open { "screen": "browser", "placement": "new-tab" }`.
-  Tell the operator the address too.
+  (no preview pop), then `console::workspace::open { "screen": "browser", "placement": "new-tab", "activate": false }`.
+  `activate: false` keeps the operator on the tab with the TODO page and
+  the board; never switch them to the browser tab, and never put the
+  browser in their tab. Tell the operator the address too.
 
 Checks: call the functions and read the board (`kanban-todo-local::board::get`)
 to prove each part; `browser::fetch` the web page and check it answers 200;
