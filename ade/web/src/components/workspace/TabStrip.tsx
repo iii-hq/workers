@@ -1,5 +1,13 @@
-import { Check, ChevronDown, Plus, X } from 'lucide-react'
 import {
+  AppWindow,
+  Check,
+  ChevronDown,
+  type LucideIcon,
+  Plus,
+  X,
+} from 'lucide-react'
+import {
+  Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
@@ -18,7 +26,12 @@ import {
 import { IconButton } from '@/components/ui/IconButton'
 import { hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
-import { tabLabel, type WorkspaceTab } from '@/lib/workspace-tabs'
+import {
+  CHAT_SCREEN,
+  isChatScreen,
+  tabLabel,
+  type WorkspaceTab,
+} from '@/lib/workspace-tabs'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -29,6 +42,12 @@ interface TabStripProps {
   activeTabId: string
   /** ext page id -> title, for tab labels. */
   extPageTitles: ReadonlyMap<string, string>
+  /**
+   * screen -> glyph, for the favicon-style mark a tab wears: its first
+   * attached screen's icon, the chat mark for any chat session, a window
+   * glyph while nothing is attached yet.
+   */
+  screenIcons?: ReadonlyMap<string, LucideIcon>
   onActivate: (id: string) => void
   onClose: (id: string) => void
   /** Create an EMPTY single-column tab (panes grow via the edge zones). */
@@ -75,6 +94,26 @@ interface Overflow {
 }
 
 const NO_OVERFLOW: Overflow = { overflowing: false, start: false, end: false }
+
+/** The glyph a tab wears, from its first attached screen. */
+function tabIcon(
+  tab: WorkspaceTab,
+  screenIcons: ReadonlyMap<string, LucideIcon> | undefined,
+): LucideIcon {
+  const first = tab.screens.find((screen) => screen !== null)
+  if (!first) return AppWindow
+  const key = isChatScreen(first) ? CHAT_SCREEN : first
+  return screenIcons?.get(key) ?? AppWindow
+}
+
+/**
+ * The active tab's two flares — the browser-tab silhouette: a square of the
+ * canvas colour just outside each bottom corner, with a quarter circle cut
+ * out of its far top corner, so the tab appears to curve down into the
+ * canvas below the bar.
+ */
+const TAB_FLARES =
+  'before:pointer-events-none before:absolute before:bottom-0 before:-left-3 before:size-[12px] before:bg-bg before:[mask-image:radial-gradient(circle_at_0_0,transparent_12px,black_12.5px)] after:pointer-events-none after:absolute after:bottom-0 after:-right-3 after:size-[12px] after:bg-bg after:[mask-image:radial-gradient(circle_at_100%_0,transparent_12px,black_12.5px)]'
 
 /** Where the next focused/activated tab lands for a tablist key. */
 export function tabIndexForKey(
@@ -126,6 +165,7 @@ export function TabStrip({
   tabs,
   activeTabId,
   extPageTitles,
+  screenIcons,
   onActivate,
   onClose,
   onCreate,
@@ -362,7 +402,7 @@ export function TabStrip({
     : undefined
 
   return (
-    <div className="flex min-w-0 items-center gap-1">
+    <div className="flex min-w-0 items-end gap-1">
       <div
         ref={stripRef}
         role="tablist"
@@ -375,12 +415,20 @@ export function TabStrip({
           maskImage ? { maskImage, WebkitMaskImage: maskImage } : undefined
         }
         /* onboarding-tabs: tour anchor (workers/onboarding). Do not remove. */
-        className="onboarding-tabs workspace-tab-strip flex min-w-0 items-center gap-1.5 overflow-x-auto"
+        className="onboarding-tabs workspace-tab-strip flex min-w-0 items-end overflow-x-auto px-3"
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId
           const label = tabLabel(tab, extPageTitles)
+          const Icon = tabIcon(tab, screenIcons)
           const isDragged = drag !== null && drag.from === index
+          // A hairline between two inactive tabs; none beside the active
+          // tab (its flares own that edge) or the one being dragged.
+          const divider =
+            index > 0 &&
+            !active &&
+            tabs[index - 1].id !== activeTabId &&
+            drag === null
           // Dragged tab follows the pointer; tabs between its old and
           // prospective slots slide one tab-width toward the vacancy.
           let transform: string | undefined
@@ -398,184 +446,202 @@ export function TabStrip({
             }
           }
           return (
-            <div
-              key={tab.id}
-              role="tab"
-              data-tab-id={tab.id}
-              aria-selected={active}
-              tabIndex={active ? 0 : -1}
-              title={index < 9 ? `${label} (${index + 1})` : label}
-              onClick={() => {
-                if (suppressClickRef.current) {
-                  suppressClickRef.current = false
-                  return
-                }
-                onActivate(tab.id)
-              }}
-              onAuxClick={(e) => {
-                if (e.button !== 1 || renamingId === tab.id) return
-                e.preventDefault()
-                closeTab(tab.id)
-              }}
-              onKeyDown={(e) => {
-                if (renamingId === tab.id) return
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
+            <Fragment key={tab.id}>
+              <span
+                aria-hidden
+                className={cn(
+                  'h-4 w-px shrink-0 self-center bg-neutral-400/60 transition-opacity duration-[var(--motion-duration-control)] dark:bg-neutral-700',
+                  !divider && 'opacity-0',
+                )}
+              />
+              <div
+                role="tab"
+                data-tab-id={tab.id}
+                aria-selected={active}
+                tabIndex={active ? 0 : -1}
+                title={index < 9 ? `${label} (${index + 1})` : label}
+                onClick={() => {
+                  if (suppressClickRef.current) {
+                    suppressClickRef.current = false
+                    return
+                  }
                   onActivate(tab.id)
-                }
-              }}
-              onDoubleClick={() => {
-                if (renamingId === tab.id || dragRef.current) return
-                cancelPress()
-                setRenamingId(tab.id)
-              }}
-              onPointerDown={(e) => {
-                if (e.button === 1) e.preventDefault()
-                if (e.button !== 0 || renamingId === tab.id || dragRef.current)
-                  return
-                // Presses on the close affordance never arm a drag.
-                if ((e.target as Element).closest('button')) return
-                suppressClickRef.current = false
-                cancelPress()
-                // Capture up front so slight drift off the tab during the
-                // 2s hold neither hides moves from the slop check nor
-                // strands the eventual drag without events.
-                try {
-                  e.currentTarget.setPointerCapture(e.pointerId)
-                } catch {
-                  // Best-effort; the press still works in place.
-                }
-                pressRef.current = {
-                  pointerId: e.pointerId,
-                  pointerType: e.pointerType,
-                  x: e.clientX,
-                  y: e.clientY,
-                  index,
-                  el: e.currentTarget,
-                  // Touch keeps a short-hold pickup (movement scrolls the
-                  // strip). Mouse/pen picks up on movement — the timer is a
-                  // stationary-hold fallback.
-                  timer: window.setTimeout(
-                    beginDrag,
-                    e.pointerType === 'touch' ? TOUCH_PICKUP_MS : 2000,
-                  ),
-                }
-              }}
-              onPointerMove={(e) => {
-                const press = pressRef.current
-                if (
-                  press &&
-                  Math.hypot(e.clientX - press.x, e.clientY - press.y) >
-                    PRESS_SLOP_PX
-                ) {
-                  if (press.pointerType === 'touch') {
-                    // Let the finger scroll the strip.
-                    cancelPress()
-                  } else {
-                    // Mouse/pen: movement IS the drag gesture.
-                    clearTimeout(press.timer)
-                    beginDrag()
+                }}
+                onAuxClick={(e) => {
+                  if (e.button !== 1 || renamingId === tab.id) return
+                  e.preventDefault()
+                  closeTab(tab.id)
+                }}
+                onKeyDown={(e) => {
+                  if (renamingId === tab.id) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onActivate(tab.id)
                   }
-                }
-                const d = dragRef.current
-                if (!d) return
-                const { rects } = geomRef.current
-                const own = rects[d.from]
-                // Clamp to the tab row so the strip never gains overflow.
-                const dx = Math.max(
-                  rects[0].left - own.left,
-                  Math.min(
-                    rects[rects.length - 1].right - own.right,
-                    e.clientX - d.startX,
-                  ),
-                )
-                // Drop slot from the POINTER, not the (clamped) tab: the
-                // insertion index is how many other tabs' centers sit left
-                // of it.
-                let to = 0
-                for (let i = 0; i < rects.length; i++) {
-                  if (i === d.from) continue
-                  if (e.clientX > rects[i].left + rects[i].width / 2) to++
-                }
-                d.dx = dx
-                d.to = to
-                setDrag({ from: d.from, to, dx })
-              }}
-              onPointerUp={() => {
-                cancelPress()
-                endDrag(true)
-              }}
-              onPointerCancel={() => {
-                cancelPress()
-                endDrag(false)
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                if (dragRef.current) return
-                // Touch long-press fires the browser context menu well
-                // before the 2s pickup — swallow it so a continued hold
-                // reaches reorder mode.
-                if (pressRef.current?.pointerType === 'touch') return
-                cancelPress()
-                setMenu({ id: tab.id, x: e.clientX, y: e.clientY })
-              }}
-              style={transform ? { transform } : undefined}
-              className={cn(
-                'group/tab flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:h-8 sm:gap-1 sm:pl-3 dark:focus-visible:ring-neutral-400',
-                tabs.length > 1 ? 'pr-2 sm:pr-1' : 'pr-4 sm:pr-3',
-                active
-                  ? 'bg-neutral-200/80 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50'
-                  : 'text-neutral-500 hover:bg-neutral-200/50 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-100',
-                dragging && !isDragged && 'transition-transform',
-                isDragged &&
-                  'relative z-10 cursor-grabbing shadow-floating transition-none',
-                isDragged &&
-                  !active &&
-                  'bg-neutral-100 text-neutral-900 dark:bg-neutral-900 dark:text-neutral-50',
-              )}
-            >
-              {renamingId === tab.id ? (
-                <RenameInput
-                  initial={tab.name ?? label}
-                  onCommit={(name) => {
-                    setRenamingId(null)
-                    if (name.trim() !== (tab.name ?? label).trim()) {
-                      onRename(tab.id, name)
+                }}
+                onDoubleClick={() => {
+                  if (renamingId === tab.id || dragRef.current) return
+                  cancelPress()
+                  setRenamingId(tab.id)
+                }}
+                onPointerDown={(e) => {
+                  if (e.button === 1) e.preventDefault()
+                  if (
+                    e.button !== 0 ||
+                    renamingId === tab.id ||
+                    dragRef.current
+                  )
+                    return
+                  // Presses on the close affordance never arm a drag.
+                  if ((e.target as Element).closest('button')) return
+                  suppressClickRef.current = false
+                  cancelPress()
+                  // Capture up front so slight drift off the tab during the
+                  // 2s hold neither hides moves from the slop check nor
+                  // strands the eventual drag without events.
+                  try {
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                  } catch {
+                    // Best-effort; the press still works in place.
+                  }
+                  pressRef.current = {
+                    pointerId: e.pointerId,
+                    pointerType: e.pointerType,
+                    x: e.clientX,
+                    y: e.clientY,
+                    index,
+                    el: e.currentTarget,
+                    // Touch keeps a short-hold pickup (movement scrolls the
+                    // strip). Mouse/pen picks up on movement — the timer is a
+                    // stationary-hold fallback.
+                    timer: window.setTimeout(
+                      beginDrag,
+                      e.pointerType === 'touch' ? TOUCH_PICKUP_MS : 2000,
+                    ),
+                  }
+                }}
+                onPointerMove={(e) => {
+                  const press = pressRef.current
+                  if (
+                    press &&
+                    Math.hypot(e.clientX - press.x, e.clientY - press.y) >
+                      PRESS_SLOP_PX
+                  ) {
+                    if (press.pointerType === 'touch') {
+                      // Let the finger scroll the strip.
+                      cancelPress()
+                    } else {
+                      // Mouse/pen: movement IS the drag gesture.
+                      clearTimeout(press.timer)
+                      beginDrag()
                     }
-                  }}
-                  onCancel={() => setRenamingId(null)}
-                />
-              ) : (
-                <span className="max-w-[180px] truncate">{label}</span>
-              )}
-              {tabs.length > 1 && renamingId !== tab.id ? (
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  aria-label={`Close ${label}`}
-                  title={
-                    tab.id === activeTabId
-                      ? hoverTitle(`Close ${label}`, 'workspace.close')
-                      : `Close ${label}`
                   }
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    closeTab(tab.id)
-                  }}
-                  className={cn(
-                    'relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
+                  const d = dragRef.current
+                  if (!d) return
+                  const { rects } = geomRef.current
+                  const own = rects[d.from]
+                  // Clamp to the tab row so the strip never gains overflow.
+                  const dx = Math.max(
+                    rects[0].left - own.left,
+                    Math.min(
+                      rects[rects.length - 1].right - own.right,
+                      e.clientX - d.startX,
+                    ),
+                  )
+                  // Drop slot from the POINTER, not the (clamped) tab: the
+                  // insertion index is how many other tabs' centers sit left
+                  // of it.
+                  let to = 0
+                  for (let i = 0; i < rects.length; i++) {
+                    if (i === d.from) continue
+                    if (e.clientX > rects[i].left + rects[i].width / 2) to++
+                  }
+                  d.dx = dx
+                  d.to = to
+                  setDrag({ from: d.from, to, dx })
+                }}
+                onPointerUp={() => {
+                  cancelPress()
+                  endDrag(true)
+                }}
+                onPointerCancel={() => {
+                  cancelPress()
+                  endDrag(false)
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  if (dragRef.current) return
+                  // Touch long-press fires the browser context menu well
+                  // before the 2s pickup — swallow it so a continued hold
+                  // reaches reorder mode.
+                  if (pressRef.current?.pointerType === 'touch') return
+                  cancelPress()
+                  setMenu({ id: tab.id, x: e.clientX, y: e.clientY })
+                }}
+                style={transform ? { transform } : undefined}
+                className={cn(
+                  'group/tab relative flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-t-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 focus-visible:ring-inset sm:h-9 sm:gap-2 sm:pl-3 dark:focus-visible:ring-neutral-400',
+                  tabs.length > 1 ? 'pr-2 sm:pr-1.5' : 'pr-4 sm:pr-3',
+                  active
+                    ? cn(
+                        'z-10 bg-bg text-neutral-900 dark:text-neutral-50',
+                        TAB_FLARES,
+                      )
+                    : 'text-neutral-500 hover:bg-neutral-300/50 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
+                  dragging && !isDragged && 'transition-transform',
+                  isDragged && 'z-20 cursor-grabbing transition-none',
+                  isDragged &&
                     !active &&
-                      'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
-                  )}
-                >
-                  <span
-                    className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                    aria-hidden="true"
+                    'bg-neutral-300/60 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50',
+                )}
+              >
+                <Icon
+                  className="size-4 shrink-0 text-neutral-500 dark:text-neutral-400"
+                  aria-hidden
+                />
+                {renamingId === tab.id ? (
+                  <RenameInput
+                    initial={tab.name ?? label}
+                    onCommit={(name) => {
+                      setRenamingId(null)
+                      if (name.trim() !== (tab.name ?? label).trim()) {
+                        onRename(tab.id, name)
+                      }
+                    }}
+                    onCancel={() => setRenamingId(null)}
                   />
-                  <X className="size-4 shrink-0" aria-hidden />
-                </button>
-              ) : null}
-            </div>
+                ) : (
+                  <span className="max-w-[180px] truncate">{label}</span>
+                )}
+                {tabs.length > 1 && renamingId !== tab.id ? (
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={`Close ${label}`}
+                    title={
+                      tab.id === activeTabId
+                        ? hoverTitle(`Close ${label}`, 'workspace.close')
+                        : `Close ${label}`
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      closeTab(tab.id)
+                    }}
+                    className={cn(
+                      'relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
+                      !active &&
+                        'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
+                    )}
+                  >
+                    <span
+                      className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                      aria-hidden="true"
+                    />
+                    <X className="size-4 shrink-0" aria-hidden />
+                  </button>
+                ) : null}
+              </div>
+            </Fragment>
           )
         })}
       </div>
@@ -585,7 +651,7 @@ export function TabStrip({
         aria-label="New workspace"
         title={hoverTitle('New workspace', 'workspace.create')}
         onClick={onCreate}
-        className="relative flex size-12 shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+        className="relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
       >
         <span
           className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"

@@ -1,5 +1,5 @@
 import { Menu, Plus, Search, SettingsIcon, SquarePen } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
@@ -25,7 +25,7 @@ import {
  * every control in the chrome answers the pointer the same way.
  */
 const GHOST_CONTROL =
-  'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
+  'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-300 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
 
 export interface WorkspaceHeaderProps {
   workspace: UseWorkspaceTabsReturn
@@ -59,7 +59,11 @@ export function WorkspaceHeader({
   onToggleSettings,
   onOpenPalette,
 }: WorkspaceHeaderProps) {
-  const { extPageTitles } = useScreenOptions()
+  const { extPageTitles, screenOptions } = useScreenOptions()
+  const screenIcons = useMemo(
+    () => new Map(screenOptions.map((option) => [option.value, option.icon])),
+    [screenOptions],
+  )
   const { createNew } = useConversationsCtx()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const columns = tabColumns(workspace.activeTab)
@@ -165,9 +169,12 @@ export function WorkspaceHeader({
 
       {/* onboarding-menu-bar: tour anchor (workers/onboarding) — a selector,
           not styling. Do not remove. */}
-      <header className="onboarding-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 bg-white px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-950 dark:text-neutral-50">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="flex size-8 shrink-0 items-center justify-center">
+      {/* The bar is the browser's frame: a step darker than the canvas, so
+          the active tab (canvas-coloured, flared at its feet) reads as the
+          sheet the workspace is drawn on. */}
+      <header className="onboarding-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 bg-neutral-200 px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-900 dark:text-neutral-50">
+        <div className="flex h-full min-w-0 items-end gap-1">
+          <span className="flex size-8 shrink-0 items-center justify-center self-center">
             {/* 20% under the 24px mark it replaced: 19.2px. */}
             <Wordmark className="mx-0 h-[1.2rem]" />
           </span>
@@ -175,6 +182,7 @@ export function WorkspaceHeader({
             tabs={workspace.tabs}
             activeTabId={workspace.activeTabId}
             extPageTitles={extPageTitles}
+            screenIcons={screenIcons}
             onActivate={workspace.activateTab}
             onClose={onCloseTab}
             onCreate={() => workspace.createTab({ columns: 1 })}
@@ -192,14 +200,14 @@ export function WorkspaceHeader({
           aria-label={paletteTitle}
           title={paletteTitle}
           /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-          className="onboarding-palette inline-flex h-8 w-72 max-w-full items-center gap-2 justify-self-center rounded-xl bg-neutral-100 pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+          className="onboarding-palette inline-flex h-8 w-72 max-w-full items-center gap-2 justify-self-center rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
         >
           <Search className="size-4 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate text-left">Search</span>
           <KeyCombo
             binding={paletteBinding}
-            className="gap-0.5"
-            capClassName="min-w-5 rounded-md bg-white px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700"
+            className="gap-2"
+            capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
           />
         </button>
 
