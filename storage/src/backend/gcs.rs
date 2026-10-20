@@ -69,24 +69,14 @@ impl GcsBackend {
             // Load the SA file directly instead of mutating GOOGLE_APPLICATION_CREDENTIALS,
             // which would race across multiple GCS buckets and leak into unrelated
             // SDK clients or child processes.
-            // Read it here so a missing or unreadable file says so plainly. The
-            // path is not repeated: listBuckets shows this message.
-            let bytes = tokio::fs::read(&path)
+            // A file of the engine host: read here, bounded, never a FIFO or
+            // a device (a reload must not block), and only a key whose token
+            // endpoint is Google's (the signed assertion goes there). Every
+            // failure reads the same, so the message does not tell whether a
+            // host path exists or what it holds.
+            let creds = tokio::task::spawn_blocking(move || host_key_file(&path))
                 .await
-                .map_err(|e| BackendError::Provider {
-                    inner_code: Some("CONFIG".into()),
-                    message: format!("`credentials_file` cannot be read: {}", io_reason(&e)),
-                })?;
-            let creds = std::str::from_utf8(&bytes)
-                .ok()
-                .and_then(|text| {
-                    serde_json::from_str::<gcloud_auth::credentials::CredentialsFile>(text).ok()
-                })
-                .ok_or_else(|| BackendError::Provider {
-                    inner_code: Some("CONFIG".into()),
-                    message: "`credentials_file` is not a service-account or ADC credentials JSON"
-                        .into(),
-                })?;
+                .map_err(|_| unusable_key_file())??;
             ClientConfig::default()
                 .with_credentials(creds)
                 .await
@@ -399,14 +389,74 @@ impl Backend for GcsBackend {
     }
 }
 
-/// Why a file could not be read, without its path.
-fn io_reason(error: &std::io::Error) -> &'static str {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => "no such file",
-        std::io::ErrorKind::PermissionDenied => "permission denied",
-        std::io::ErrorKind::IsADirectory => "it is a directory",
-        _ => "an I/O error",
+/// The largest `credentials_file` read (a service-account key is ~2.4 KiB).
+pub const KEY_FILE_CAP: u64 = 64 * 1024;
+
+fn unusable_key_file() -> BackendError {
+    BackendError::Provider {
+        inner_code: Some("CONFIG".into()),
+        message: "`credentials_file` cannot be used as a service-account key file (a readable \
+                  regular JSON key file of at most 64 KiB whose token_uri is Google's)"
+            .into(),
     }
+}
+
+/// A token endpoint of Google's.
+fn google_token_uri(raw: &str) -> bool {
+    url::Url::parse(raw).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.port().is_none_or(|port| port == 443)
+            && url.host_str().is_some_and(|host| {
+                host == "oauth2.googleapis.com"
+                    || host == "accounts.google.com"
+                    || host.ends_with(".googleapis.com")
+            })
+    })
+}
+
+/// Read and check a host `credentials_file`: a regular, non-empty file of at
+/// most [`KEY_FILE_CAP`] bytes (checked before and after opening it without
+/// blocking), a `service_account` or `authorized_user` JSON whose
+/// `token_uri`, if any, is Google's.
+fn host_key_file(path: &str) -> Result<gcloud_auth::credentials::CredentialsFile, BackendError> {
+    use std::io::Read;
+    let regular =
+        |meta: &std::fs::Metadata| meta.is_file() && meta.len() > 0 && meta.len() <= KEY_FILE_CAP;
+    let meta = std::fs::metadata(path).map_err(|_| unusable_key_file())?;
+    if !regular(&meta) {
+        return Err(unusable_key_file());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Swapped for a FIFO after the check: opening must not wait for a writer.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|_| unusable_key_file())?;
+    if !file.metadata().is_ok_and(|meta| regular(&meta)) {
+        return Err(unusable_key_file());
+    }
+    let mut bytes = Vec::new();
+    file.take(KEY_FILE_CAP + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unusable_key_file())?;
+    if bytes.len() as u64 > KEY_FILE_CAP {
+        return Err(unusable_key_file());
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| unusable_key_file())?;
+    let kind = json.get("type").and_then(serde_json::Value::as_str);
+    let token_uri_ok = match json.get("token_uri") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(uri)) => google_token_uri(uri),
+        Some(_) => false,
+    };
+    if !matches!(kind, Some("service_account" | "authorized_user")) || !token_uri_ok {
+        return Err(unusable_key_file());
+    }
+    serde_json::from_value(json).map_err(|_| unusable_key_file())
 }
 
 /// Map a `gcloud_storage::http::Error` into our `BackendError`. 404 / NotFound
@@ -474,44 +524,90 @@ mod tests {
         let _ = r;
     }
 
+    async fn build_with_file(path: &str) -> Result<GcsBackend, BackendError> {
+        GcsBackend::build(
+            GcsBackendOpts {
+                credentials_json: None,
+                credentials_file: Some(path.into()),
+                endpoint_url: None,
+            },
+            "b".into(),
+        )
+        .await
+    }
+
+    fn message(result: Result<GcsBackend, BackendError>) -> String {
+        match result {
+            Err(BackendError::Provider { message, .. }) => message,
+            Err(other) => panic!("expected a config error, got {other}"),
+            Ok(_) => panic!("expected a refusal"),
+        }
+    }
+
     #[tokio::test]
-    async fn a_missing_or_malformed_credentials_file_says_so_without_its_path() {
-        let missing = GcsBackend::build(
-            GcsBackendOpts {
-                credentials_json: None,
-                credentials_file: Some("/nonexistent/secret-dir/sa.json".into()),
-                endpoint_url: None,
-            },
-            "b".into(),
-        )
-        .await;
-        match missing {
-            Err(BackendError::Provider { message, .. }) => {
-                assert_eq!(message, "`credentials_file` cannot be read: no such file")
-            }
-            _ => panic!("expected a config error"),
-        }
+    async fn an_unusable_credentials_file_fails_fast_with_one_message() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sa.json");
-        std::fs::write(&path, b"{\"private_key\": \"LEAKME\"").unwrap();
-        let malformed = GcsBackend::build(
-            GcsBackendOpts {
-                credentials_json: None,
-                credentials_file: Some(path.to_string_lossy().to_string()),
-                endpoint_url: None,
-            },
-            "b".into(),
-        )
-        .await;
-        match malformed {
-            Err(BackendError::Provider { message, .. }) => {
-                assert!(
-                    !message.contains("LEAKME") && !message.contains("sa.json"),
-                    "{message}"
-                )
-            }
-            _ => panic!("expected a config error"),
+        let expected = message(build_with_file("/nonexistent/secret-dir/sa.json").await);
+        assert!(
+            expected.contains("cannot be used as a service-account key file"),
+            "{expected}"
+        );
+        assert!(!expected.contains("secret-dir"));
+        let write = |name: &str, body: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let sa = |token_uri: &str| {
+            format!(
+                "{{\"type\":\"service_account\",\"client_email\":\"a@b\",\"private_key\":\"LEAKME\",\"token_uri\":\"{token_uri}\"}}"
+            )
+        };
+        let cases = vec![
+            write("malformed.json", b"{\"private_key\": \"LEAKME\""),
+            write("empty.json", b""),
+            write("big.json", &vec![b' '; (KEY_FILE_CAP + 1) as usize]),
+            write(
+                "external.json",
+                b"{\"type\":\"external_account\",\"audience\":\"x\"}",
+            ),
+            write(
+                "evil-token.json",
+                sa("http://127.0.0.1:49262/token").as_bytes(),
+            ),
+            write(
+                "evil-host.json",
+                sa("https://oauth2.googleapis.com.evil.example/token").as_bytes(),
+            ),
+            dir.path().to_string_lossy().to_string(),
+            "/dev/zero".to_string(),
+        ];
+        for path in cases {
+            assert_eq!(message(build_with_file(&path).await), expected, "{path}");
         }
+        // A FIFO is refused at once, without waiting for a writer.
+        let fifo = dir.path().join("fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let started = std::time::Instant::now();
+        assert_eq!(
+            message(build_with_file(&fifo.to_string_lossy()).await),
+            expected
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // Google's token endpoint is accepted (the key itself is fake, so
+        // the client may still refuse it later, but not as unusable).
+        assert!(google_token_uri("https://oauth2.googleapis.com/token"));
+        assert!(google_token_uri(
+            "https://accounts.google.com/o/oauth2/token"
+        ));
+        assert!(!google_token_uri(
+            "https://oauth2.googleapis.com:8443/token"
+        ));
+        assert!(!google_token_uri("http://oauth2.googleapis.com/token"));
     }
 
     #[tokio::test]

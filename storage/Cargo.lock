@@ -3401,6 +3401,7 @@ dependencies = [
  "iii-console-ui",
  "iii-sdk",
  "iii-worker-paths",
+ "libc",
  "percent-encoding",
  "rand 0.8.6",
  "reqwest 0.12.28",
