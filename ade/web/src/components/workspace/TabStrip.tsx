@@ -116,6 +116,15 @@ function tabIcon(
  * out of its far top corner, so the tab appears to curve down into the
  * canvas below the bar.
  */
+/**
+ * An inactive tab's hover: not the tab silhouette (that is the active tab's
+ * shape) but a pill inset a few pixels on every side, drawn behind the
+ * label, so the wash floats inside the tab rather than butting against the
+ * bar's bottom edge.
+ */
+const INACTIVE_WASH =
+  'after:pointer-events-none after:absolute after:inset-x-0.5 after:inset-y-1 after:-z-10 after:rounded-lg after:transition-colors after:duration-[var(--motion-duration-control)]'
+
 const TAB_FLARES =
   'before:pointer-events-none before:absolute before:bottom-0 before:-left-3 before:size-[12px] before:bg-bg before:[mask-image:radial-gradient(circle_at_0_0,transparent_12px,black_12.5px)] after:pointer-events-none after:absolute after:bottom-0 after:-right-3 after:size-[12px] after:bg-bg after:[mask-image:radial-gradient(circle_at_100%_0,transparent_12px,black_12.5px)]'
 
@@ -586,19 +595,23 @@ export function TabStrip({
                 }}
                 style={transform ? { transform } : undefined}
                 className={cn(
-                  'group/tab relative flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-t-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 focus-visible:ring-inset sm:h-9 sm:gap-2 sm:pl-3 dark:focus-visible:ring-neutral-400',
+                  'group/tab relative isolate flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-t-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 focus-visible:ring-inset sm:h-9 sm:gap-2 sm:pl-3 dark:focus-visible:ring-neutral-400',
                   tabs.length > 1 ? 'pr-2 sm:pr-1.5' : 'pr-4 sm:pr-3',
                   active
                     ? cn(
                         'z-10 bg-bg text-neutral-900 dark:text-neutral-50',
                         TAB_FLARES,
                       )
-                    : 'text-neutral-500 hover:bg-neutral-300/50 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
+                    : cn(
+                        'text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100',
+                        INACTIVE_WASH,
+                        'hover:after:bg-neutral-300/60 dark:hover:after:bg-neutral-800',
+                      ),
                   dragging && !isDragged && 'transition-transform',
                   isDragged && 'z-20 cursor-grabbing transition-none',
                   isDragged &&
                     !active &&
-                    'bg-neutral-300/60 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50',
+                    'text-neutral-900 after:bg-neutral-300/60 dark:text-neutral-50 dark:after:bg-neutral-800',
                 )}
               >
                 <Icon
