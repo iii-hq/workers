@@ -17,7 +17,7 @@
 import { Button, Chip, type Host, Input, type JsonValue } from '@iii-dev/console-ui'
 import { Upload } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { errorMessage } from '../lib/errors'
+import { errorText } from '../lib/errors'
 import {
   envRefName,
   envStatusText,
@@ -139,7 +139,7 @@ function CredentialControl({
       setDraft('')
       setReload((n) => n + 1)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorText(cause))
     } finally {
       setBusy(null)
     }
@@ -159,7 +159,7 @@ function CredentialControl({
       setDraft(await file.text())
       setError(null)
     } catch (cause) {
-      setError(errorMessage(cause))
+      setError(errorText(cause))
     }
   }
 

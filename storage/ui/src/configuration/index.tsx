@@ -30,7 +30,7 @@ import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
 import { ChevronLeft, Database, Plus, Trash2 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { BucketIcon } from '../lib/bucket-icons'
-import { errorMessage, isMissingFunction } from '../lib/errors'
+import { errorText, isMissingFunction } from '../lib/errors'
 import { ColorPicker, IconPicker } from './BucketAppearance'
 import {
   applyPreset,
@@ -1039,7 +1039,7 @@ export function StorageConfigForm(props: StorageConfigFormProps) {
     } catch (cause) {
       result = isMissingFunction(cause)
         ? { status: 'unsupported' }
-        : { status: 'done', ok: false, text: errorMessage(cause) }
+        : { status: 'done', ok: false, text: errorText(cause) }
     }
     if (testTokens.current[name] !== token) return // superseded by an edit
     setTests((current) => ({ ...current, [name]: result }))

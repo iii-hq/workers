@@ -15,7 +15,7 @@ import { Button, type Host, ImageThumbnailButton, ImageViewer, Skeleton, StatusP
 import { formatBytes } from '@iii-dev/console-ui/format'
 import { Download } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { errorMessage } from './lib/errors'
+import { errorText } from './lib/errors'
 import {
   type BucketSummary,
   INLINE_CAP,
@@ -100,7 +100,7 @@ export function ObjectPreview({
         setSrc(url)
       })
       .catch((error: unknown) => {
-        if (alive) setFailure(errorMessage(error))
+        if (alive) setFailure(errorText(error))
       })
     return () => {
       alive = false

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bucketUnavailable, innerError, isMissingFunction } from './errors'
+import { bucketUnavailable, errorText, innerError, isMissingFunction } from './errors'
 
 describe('missing functions', () => {
   it('recognises the engine’s function_not_found', () => {
@@ -78,5 +78,30 @@ describe('worker errors', () => {
     })
     expect(bucketUnavailable({ code: 'OBJECT_NOT_FOUND', message: 'x' })).toBeNull()
     expect(bucketUnavailable(new Error('x'))).toBeNull()
+  })
+})
+
+describe('error text', () => {
+  it('reads a worker error without a message', () => {
+    expect(
+      errorText({
+        code: 'invocation_failed',
+        message: 'handler error: {"code":"OBJECT_TOO_LARGE","size":59468103,"cap":10485760}',
+      }),
+    ).toBe('OBJECT_TOO_LARGE (size 59468103, cap 10485760)')
+  })
+
+  it('keeps the console’s wording for everything else', () => {
+    expect(
+      errorText({
+        code: 'invocation_failed',
+        message: 'handler error: {"code":"UNKNOWN_BUCKET","message":"unknown bucket x"}',
+      }),
+    ).toBe('UNKNOWN_BUCKET: unknown bucket x')
+    expect(errorText({ code: 'function_not_found', message: 'Function x::y not found' })).toBe(
+      'function_not_found: Function x::y not found',
+    )
+    expect(errorText(new Error('boom'))).toBe('boom')
+    expect(errorText('plain')).toBe('plain')
   })
 })

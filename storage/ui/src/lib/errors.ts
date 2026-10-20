@@ -62,6 +62,22 @@ export function isMissingFunction(err: unknown): boolean {
   )
 }
 
+/**
+ * One readable line for a failed call. Like `errorMessage`, plus the worker
+ * errors that carry no `message` (`{"code":"OBJECT_TOO_LARGE","size":…,
+ * "cap":…}`), which would otherwise read as the raw `handler error: {…}`.
+ */
+export function errorText(err: unknown): string {
+  const inner = innerError(err)
+  if (inner && typeof inner.code === 'string' && typeof inner.message !== 'string' && inner !== record(err)) {
+    const details = Object.entries(inner)
+      .filter(([key]) => key !== 'code')
+      .map(([key, value]) => `${key} ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+    return details.length > 0 ? `${inner.code} (${details.join(', ')})` : inner.code
+  }
+  return errorMessage(err)
+}
+
 /** `BUCKET_UNAVAILABLE`: the bucket is configured but its backend could not be built. */
 export interface BucketUnavailable {
   bucket?: string

@@ -28,7 +28,7 @@ import { ChevronLeft, ChevronRight, Database, Download, File, Folder, RefreshCw,
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { stageLabel } from './configuration/bucket'
 import { BucketIcon } from './lib/bucket-icons'
-import { bucketUnavailable, errorMessage } from './lib/errors'
+import { bucketUnavailable, errorText } from './lib/errors'
 import {
   attachmentDisposition,
   type BucketSummary,
@@ -84,7 +84,7 @@ function describeError(error: unknown): CallError {
       detail: [stageLabel(unavailable.stage), unavailable.message].filter(Boolean).join(' · '),
     }
   }
-  return { detail: errorMessage(error) }
+  return { detail: errorText(error) }
 }
 
 /** Hand a blob to the browser as a download named `filename`. */
@@ -175,7 +175,7 @@ function StorageExplorer({
       })
       .catch((error: unknown) => {
         setBuckets([])
-        setBucketError(errorMessage(error))
+        setBucketError(errorText(error))
       })
   }, [host])
 
@@ -425,7 +425,7 @@ function StorageExplorer({
       setObjectKey(null)
       loadListing()
     } catch (error) {
-      setActionError(errorMessage(error))
+      setActionError(errorText(error))
     } finally {
       setTransfer(null)
     }
