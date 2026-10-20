@@ -265,8 +265,10 @@ pub struct NativeCapture {
     /// Whether the engine on the current connection supports observe, as
     /// `legacy::Fallback` last heard it. Against one that does not, the
     /// observers the SDK still holds from an earlier engine stay filed but
-    /// hear nothing: the engine has none of them, and they are acked again
-    /// without hooks when an engine with observe replays them.
+    /// hear nothing: the engine has none of them, and the SDK would send
+    /// their reports to the next engine with observe, a second delivery of
+    /// what the fallback already delivered. An engine that kept them acks
+    /// them again without calling the hooks, so their routes must stay.
     engine_observes: AtomicBool,
     dispatch_timeout_ms: u64,
 }

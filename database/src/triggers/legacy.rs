@@ -34,8 +34,10 @@ pub const ROW_CHANGED_TYPE_DESCRIPTION: &str =
 
 /// A binding's id in the routing index. Kept apart from observer ids: the
 /// shim gives the observer it makes from a binding the binding's own id, and
-/// after a rollback to an engine without observe the SDK still holds that
-/// observer (see [`NativeCapture::set_engine_observes`]).
+/// while the worker is on an engine without observe the SDK still holds that
+/// observer. Its route must survive the binding's: an engine with observe
+/// that kept the observer while the worker was away acks it again without
+/// calling the hooks (see [`NativeCapture::set_engine_observes`]).
 fn route_id(trigger_id: &str) -> String {
     format!("\0trigger:{trigger_id}")
 }
