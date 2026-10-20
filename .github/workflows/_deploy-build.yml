@@ -41,6 +41,9 @@ jobs:
   build:
     name: ${{ inputs.worker }} / ${{ inputs.unit }}
     runs-on: ${{ inputs.runner }}
+    # Successful builds finish within 25 minutes. Without a cap, a stalled
+    # apt mirror held paid release runners for the 6-hour default.
+    timeout-minutes: 60
     defaults:
       run:
         # Windows runners default to pwsh; every run step here is written for
@@ -104,6 +107,7 @@ jobs:
 
       - name: Install Linux cross-compilers
         if: runner.os == 'Linux' && inputs.kind == 'rust-binary'
+        timeout-minutes: 10
         env:
           BUILD_TARGET: ${{ inputs.target }}
         run: |
@@ -256,6 +260,7 @@ jobs:
       # dangling in target/.
       - name: Provision llama.cpp build tools (llama.cpp workers, Linux)
         if: inputs.kind == 'rust-binary' && (inputs.worker == 'judge-semif' || inputs.worker == 'judge-decider' || inputs.worker == 'judge-laya' || inputs.worker == 'judge-clef') && runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
           sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find . -path '*/target/*' -xtype l -print -delete 2>/dev/null || true

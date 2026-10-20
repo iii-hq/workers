@@ -1,4 +1,4 @@
-//! INT-040 — a child that ends while its parent is parked on a wake wakes the
+//! INT-041 — a child that ends while its parent is parked on a wake wakes the
 //! parent with the news, long before the wake's own deadline.
 //!
 //! This pins the 21-minute stall found in a deepwork run: an orchestrator armed
@@ -30,7 +30,7 @@ const SPAWN: &str = "harness::spawn";
 const EXPIRES_IN_MS: u64 = 60_000;
 
 pub(super) fn scenario() -> ScenarioFixture {
-    const ID: &str = "INT-040";
+    const ID: &str = "INT-041";
     const MESSAGE: &str = "Delegate the report and wait for it.";
 
     let model = Model::scripted("fixture-model");

@@ -60,4 +60,16 @@ export default defineConfig({
     hmr: false,
     ws: false,
   },
+  // Playwright serves a production build: an unbundled dev page costs about
+  // four seconds of CPU per load, a built one about one.
+  build: {
+    outDir: fileURLToPath(
+      new URL('../../../../target/workers-harness-dist', import.meta.url),
+    ),
+    emptyOutDir: true,
+    rollupOptions: {
+      input: fileURLToPath(new URL('./index.html', import.meta.url)),
+    },
+  },
+  preview: { port: 4180 },
 })

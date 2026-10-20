@@ -745,7 +745,7 @@ impl Generation {
     /// Capture a runtime value from this generation's matched request: the
     /// regex's first group is stored under `name`, and later frames may echo
     /// it as `[[cap:<name>]]` — e.g. a `sub_…` subscription id from a
-    /// registration function_result in the history (INT-040).
+    /// registration function_result in the history (INT-041).
     pub(super) fn capture(mut self, name: &str, pattern: &str) -> Self {
         self.captures.push((name.to_string(), pattern.to_string()));
         self

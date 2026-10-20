@@ -38,8 +38,9 @@ impl Deps {
 
 /// Best-effort `harness::stop` of a node's live session. A lost stop is recovered
 /// by the run's finalizing/sweep path, so the error is intentionally dropped.
-/// `harness::stop` is a no-op for a session with no live turn, so this is safe to
-/// call on an already-finished session.
+/// `harness::stop` cancels nothing for a session with no live turn (it only
+/// kills the tree's leftover `shell::exec_bg` jobs), so this is safe to call on
+/// an already-finished session.
 pub(crate) async fn harness_stop_session(deps: &Deps, session_id: &str, dispatch_timeout_ms: u64) {
     let _ = deps
         .iii

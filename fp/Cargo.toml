@@ -2,7 +2,7 @@
 
 [package]
 name = "fp"
-version = "0.2.21"
+version = "0.2.23"
 edition = "2021"
 publish = false
 
@@ -17,7 +17,7 @@ name = "fp"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.5"
+iii-sdk = "=0.24.6"
 # Shared plumbing for the builtin `configuration` worker (seeding, retries,
 # NOT_FOUND semantics, serialized hot-reload, guidance binding slot).
 iii-config-client = { path = "../crates/config-client" }

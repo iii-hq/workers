@@ -49,6 +49,7 @@ async fn insert_then_get_round_trips_the_record() {
         finalized: false,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     let h = jobs::get(id).await.expect("inserted job exists");
@@ -74,6 +75,7 @@ async fn list_all_includes_inserted_jobs() {
         finalized: false,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     seed(JobHandle {
@@ -81,6 +83,7 @@ async fn list_all_includes_inserted_jobs() {
         finalized: true,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     let all = jobs::list_all().await;
@@ -101,6 +104,7 @@ async fn running_count_excludes_terminal_states() {
         finalized: false,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     seed(JobHandle {
@@ -108,6 +112,7 @@ async fn running_count_excludes_terminal_states() {
         finalized: true,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     seed(JobHandle {
@@ -115,6 +120,7 @@ async fn running_count_excludes_terminal_states() {
         finalized: true,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     seed(JobHandle {
@@ -122,6 +128,7 @@ async fn running_count_excludes_terminal_states() {
         finalized: true,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
 
@@ -151,6 +158,7 @@ async fn remove_old_retention_matrix() {
         finalized: true,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     assert!(jobs::get(stale_id).await.is_some(), "pre-prune sanity");
@@ -165,6 +173,7 @@ async fn remove_old_retention_matrix() {
         finalized: false,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     jobs::remove_old(0).await;
@@ -179,6 +188,7 @@ async fn remove_old_retention_matrix() {
         finalized: true,
         child: None,
         host_pid: None,
+        owner_session_id: None,
     })
     .await;
     jobs::remove_old(60).await;
@@ -200,6 +210,7 @@ async fn concurrent_inserts_and_lookups_dont_deadlock() {
                 finalized: false,
                 child: None,
                 host_pid: None,
+                owner_session_id: None,
             })
             .await;
             jobs::get(&id).await.is_some()

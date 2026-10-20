@@ -51,6 +51,23 @@ harness.editorSnapshot = async () => {
     focused: editor.hasTextFocus(),
   }
 }
+// Resolves once the settings editor's grammar is loaded and every line is
+// tokenized and repainted. Monaco paints a line as one plain span first and
+// swaps in token spans once the lazily loaded grammar arrives; a touch that
+// starts on a span about to be swapped loses its target mid-gesture.
+harness.settleEditor = async () => {
+  const { monaco } = await import('@/lib/monaco')
+  const editor = monaco.editor
+    .getEditors()
+    .find((editor) => editor.getDomNode()?.closest('.wk-code'))
+  const model = editor?.getModel()
+  if (!model) throw new Error('The real settings editor has not mounted')
+  await monaco.editor.colorize('', model.getLanguageId(), {})
+  monaco.editor.colorizeModelLine(model, model.getLineCount())
+  await new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve)),
+  )
+}
 document.documentElement.dataset.theme = parameters.get('theme') ?? 'dark'
 const pane = parameters.get('pane')
 if (pane)

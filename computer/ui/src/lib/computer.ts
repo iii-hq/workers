@@ -22,9 +22,19 @@ export const ACT_FUNCTION_ID = 'computer::act'
 export const SCREENCAST_START_FUNCTION_ID = 'computer::screencast::start'
 export const SCREENCAST_STOP_FUNCTION_ID = 'computer::screencast::stop'
 export const FRAME_FUNCTION_ID = 'computer::frame'
+export const RUN_FUNCTION_ID = 'computer::run'
 
 export const SESSION_STARTED_TRIGGER = 'computer::session-started'
 export const SESSION_STOPPED_TRIGGER = 'computer::session-stopped'
+
+/**
+ * A caller drove a session (`{ session_id, function, timestamp }`, function
+ * `computer::act` or `computer::run`): the live preview shows it.
+ */
+export const ACTIVITY_TRIGGER = 'computer::activity'
+
+/** iii-sandbox's catalog: the images a sandbox session can boot. */
+export const SANDBOX_CATALOG_FUNCTION_ID = 'sandbox::catalog::list'
 
 /** Session lifecycle trigger types the rail re-reads on. */
 export const LIFECYCLE_TRIGGERS = [
@@ -232,6 +242,8 @@ export interface StartSessionInput {
   endpoint?: string
   os?: string
   monitor?: number
+  /** This machine, even when the worker has a default sandbox image or endpoint. */
+  native?: boolean
 }
 
 export async function startSession(
@@ -243,6 +255,7 @@ export async function startSession(
   if (input.endpoint) payload.endpoint = input.endpoint
   if (input.os) payload.os = input.os
   if (input.monitor != null) payload.monitor = input.monitor
+  if (input.native) payload.native = true
   const res = await iii.trigger<unknown>(SESSIONS_START_FUNCTION_ID, payload, {
     timeoutMs: 120_000,
   })
@@ -272,6 +285,50 @@ export async function listDisplays(
     .object({ displays: z.array(displayInfoSchema).optional() })
     .safeParse(decodeComputerResult(res))
   return parsed.success ? (parsed.data.displays ?? []) : []
+}
+
+export interface SandboxImage {
+  name: string
+  ociRef: string
+}
+
+const sandboxCatalogSchema = z.object({
+  images: z
+    .array(
+      z.object({
+        name: z.string(),
+        oci_ref: z.string().optional(),
+        kind: z.string().optional(),
+      }),
+    )
+    .optional(),
+})
+
+/**
+ * `sandbox::catalog::list` → the desktops a sandbox session can boot: the
+ * `custom_images` entries. Presets (python, node) are code runners, not
+ * desktops.
+ */
+export function sandboxImages(response: unknown): SandboxImage[] {
+  const parsed = sandboxCatalogSchema.safeParse(response)
+  if (!parsed.success) return []
+  return (parsed.data.images ?? [])
+    .filter((image) => image.kind !== 'preset' && image.name.trim() !== '')
+    .map((image) => ({
+      name: image.name.trim(),
+      ociRef: image.oci_ref?.trim() ?? '',
+    }))
+}
+
+export async function listSandboxImages(
+  iii: ExtensionIii,
+): Promise<SandboxImage[]> {
+  const res = await iii.trigger<unknown>(
+    SANDBOX_CATALOG_FUNCTION_ID,
+    {},
+    { timeoutMs: 10_000 },
+  )
+  return sandboxImages(res)
 }
 
 export async function takeScreenshot(

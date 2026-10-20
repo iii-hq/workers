@@ -330,9 +330,9 @@ async function resolveNamespace(): Promise<string | undefined> {
   )
 }
 
-/** Engine control-plane functions are registered only in `default`. */
+/** Engine-owned functions (control plane, iii-sandbox) are registered only in `default`. */
 function controlPlaneNamespace(functionId: string): string | undefined {
-  return /^(configuration|engine|worker)::/.test(functionId)
+  return /^(configuration|engine|worker|sandbox)::/.test(functionId)
     ? 'default'
     : undefined
 }

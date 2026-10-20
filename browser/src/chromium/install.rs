@@ -564,7 +564,7 @@ pub fn extract_zip(
             .map_err(|e| format!("cannot read the zip: {e}"))?;
         let rel = entry
             .enclosed_name()
-            .ok_or_else(|| format!("refusing an unsafe path in the zip: {}", entry.name()))?;
+            .ok_or_else(|| format!("refusing an unsafe path in the zip: entry {i}"))?;
         let out = dest.join(&rel);
         if entry.is_dir() {
             std::fs::create_dir_all(&out)

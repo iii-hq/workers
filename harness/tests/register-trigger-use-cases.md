@@ -121,13 +121,15 @@ write in the scope.
 
 ```text
 Register:
-engine::register_trigger { "trigger_type": "state", "config": { "scope": "rtuc-02" } }
+engine::register_trigger { "trigger_type": "state", "config": { "scope": "rtuc-02" }, "once": false }
 Then report the `note` field verbatim and stop. Do not register anything else.
 ```
 
 *Expect:* registration SUCCEEDS and the note warns the binding has no `key`
 filter and fires for every key written in scope `rtuc-02`. Drop the `scope`
-too and the warning escalates to "EVERY state write in EVERY scope".
+too and the warning escalates to "EVERY state write in EVERY scope". Drop
+`"once": false` (a wake is one-shot by default) and the note says the FIRST
+write of ANY key in the scope fires and retires it instead.
 
 ---
 

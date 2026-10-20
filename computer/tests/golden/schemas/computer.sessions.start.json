@@ -1,5 +1,5 @@
 {
-  "description": "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop in an iii-sandbox microVM, `endpoint` to drive a remote desktop's guest executor, or neither to drive the local machine. Stop it with computer::sessions::stop.",
+  "description": "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop in an iii-sandbox microVM, `endpoint` to drive a remote desktop's guest executor, or neither for the worker's configured default (else the local machine); `native: true` always drives the local machine. Stop it with computer::sessions::stop.",
   "function_id": "computer::sessions::start",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -29,6 +29,11 @@
           "integer",
           "null"
         ]
+      },
+      "native": {
+        "default": false,
+        "description": "Drive this machine even when the worker has a default `sandbox_image` or `default_endpoint` configured. Refused with `image` or `endpoint`.",
+        "type": "boolean"
       },
       "os": {
         "default": null,

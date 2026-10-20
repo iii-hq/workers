@@ -2200,8 +2200,19 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     }
                     None => None,
                 };
-                if chromium_path.is_none() {
-                    issues.push(doctor::missing_executable_issue(&cfg));
+                // A Chromium that prints no version cannot start either: a
+                // wrapper script whose target is gone exits 127 on --version.
+                let chromium_silent = cfg.engine == crate::config::BrowserEngine::Chromium
+                    && chromium_version.is_none();
+                match &chromium_path {
+                    None => issues.push(doctor::missing_executable_issue(&cfg)),
+                    Some(path) if chromium_silent => issues.push(doctor::DoctorIssue {
+                        what: format!("executable '{}' printed no version", path.display()),
+                        enable_how: "run it with --version by hand; if it is a wrapper, fix the \
+                                     path it execs"
+                            .to_string(),
+                    }),
+                    Some(_) => {}
                 }
                 let unsandboxed = chromium_source.is_some_and(|source| {
                     crate::chromium::runs_without_sandbox(
@@ -2242,7 +2253,9 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 }
 
                 Ok::<_, Error>(doctor::DoctorOutput {
-                    ok: chromium_path.is_some() && active_sessions < cfg.max_sessions,
+                    ok: chromium_path.is_some()
+                        && !chromium_silent
+                        && active_sessions < cfg.max_sessions,
                     engine: cfg.engine.as_str().to_string(),
                     chromium_path: chromium_path.map(|p| p.display().to_string()),
                     chromium_version,

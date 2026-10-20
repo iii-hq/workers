@@ -378,6 +378,8 @@ pub struct SkillsConfig {
     /// judge for 30 s). Hybrid fuses BM25 with the local MiniLM model and
     /// needs the bundle at `function_search_model_path` (downloaded on first
     /// run by default), serving BM25 until it is ready. Lexical is BM25 only.
+    /// In every mode, a bundle already on disk loads on the first
+    /// `router::embed` call that reaches `provider::minilm::embed`.
     /// Mode changes apply without restart.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
@@ -436,8 +438,9 @@ pub struct SkillsConfig {
 
     /// Local semantic model directory: the pinned MiniLM bundle (embedding
     /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
-    /// `null` disables the local Hybrid lane, including the judge's Hybrid fallback.
-    /// Changing it requires a restart.
+    /// `null` disables the local Hybrid lane, including the judge's Hybrid fallback,
+    /// and `provider::minilm::embed` (`router::embed`'s local fallback), which
+    /// loads the bundle on first use in every mode. Changing it requires a restart.
     #[serde(
         default = "default_function_search_model_path",
         deserialize_with = "deserialize_model_path"

@@ -1078,7 +1078,7 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 pub fn wrapper_without_target_result(arguments: &Value) -> ResultData {
-    let got = arguments_preview(arguments);
+    let got = arguments_preview(&without_salvage_markers(arguments));
     let msg = format!(
         "agent_trigger was called without a usable target (arguments were {got}); expected \
          {{\"function\": \"<function id>\", \"payload\": {{...}}}}. Re-issue the call with the \
@@ -1107,9 +1107,12 @@ pub fn arguments_degraded(arguments: &Value) -> bool {
 /// [`wrapper_without_target_result`].
 ///
 /// The wording names the real cause, so the model fixes the right thing:
+/// - `_invalid` (set by the router's salvage, or by `plan_calls` for a
+///   stringified payload) — the JSON has a syntax error, reported with the
+///   parser's message and the text around it. A cut stream alone never sets
+///   it, so it wins over `stop_reason: length`, which is the whole message's
+///   and may belong to another call;
 /// - `stop_reason: length` — the model ran out of output room;
-/// - `_invalid` (set by the router's salvage) — the JSON has a syntax error,
-///   reported with the parser's message and the text around it;
 /// - otherwise — the arguments stopped before the object was complete.
 ///
 /// Only an ok `Done` outcome reaches dispatch (a dead stream goes to transient
@@ -1119,12 +1122,11 @@ pub fn truncated_arguments_result(
     arguments: &Value,
     stop_reason: crate::types::event::StopReason,
 ) -> ResultData {
-    let hit_output_limit = stop_reason == crate::types::event::StopReason::Length;
-    let invalid = (!hit_output_limit)
-        .then(|| arguments.get("_invalid"))
-        .flatten()
+    let invalid = arguments
+        .get("_invalid")
         .filter(|invalid| invalid.is_object());
-    let (msg, cause) = if hit_output_limit {
+    let hit_output_limit = stop_reason == crate::types::event::StopReason::Length;
+    let (msg, cause) = if invalid.is_none() && hit_output_limit {
         let got = salvage_preview(arguments);
         (
             format!(
@@ -1147,11 +1149,21 @@ pub fn truncated_arguments_result(
             .and_then(Value::as_str)
             .map(|context| truncate_chars(context, PREVIEW_CHARS))
             .unwrap_or_default();
+        // Text after a complete value has, in every case seen live, been an
+        // object closed too soon with its later fields one level out, not a
+        // stray bracket: deleting the last bracket would keep the wrong shape.
+        let hint = if error.contains("after the root value") {
+            " Text after a complete object usually means an object closed too soon, so the \
+             fields after it landed one level up: check where each object closes, and remove a \
+             bracket only if it is truly extra."
+        } else {
+            ""
+        };
         (
             format!(
                 "{function_id} did not run: its arguments are not valid JSON ({error}, near \
-                 `{near}`). Nothing ran. Re-send the call with every bracket and quote balanced; \
-                 a large edit is easier to get right as several smaller calls."
+                 `{near}`).{hint} Nothing ran. Re-send the call with every bracket and quote \
+                 balanced; a large edit is easier to get right as several smaller calls."
             ),
             "invalid_json",
         )
@@ -1431,6 +1443,12 @@ mod tests {
         assert!(args.to_string().starts_with(&preview));
         // Both teachable results render without panicking.
         assert!(wrapper_without_target_result(&args).is_error);
+        // Salvage markers stay out of the preview: they would fill it with
+        // text the model did not write.
+        let marked = json!({ "a": 1, "_partial": true, "_invalid": { "error": "e", "offset": 7, "context": "c" } });
+        let no_target = wrapper_without_target_result(&marked);
+        let text = no_target.details["message"].as_str().unwrap();
+        assert!(text.contains("arguments were {\"a\":1})"), "{text}");
         assert!(
             truncated_arguments_result("state::set", &args, crate::types::event::StopReason::End)
                 .is_error
@@ -1503,10 +1521,27 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("stopped before"), "{text}");
+        assert!(text.contains("closed too soon"), "{text}");
         assert_eq!(bad.details["cause"], "invalid_json");
 
-        // The output limit still wins: a cut stream is not a syntax error.
+        // Any other syntax error gets no closed-too-soon hint.
+        let mut other = args.clone();
+        other["_invalid"]["error"] = json!("expected ',' or '}' in an object");
+        let other = truncated_arguments_result("kanban::project::create", &other, StopReason::End);
+        let ContentBlock::Text { text } = &other.content[0] else {
+            panic!("want text");
+        };
+        assert!(text.contains("expected ',' or '}'"), "{text}");
+        assert!(!text.contains("closed too soon"), "{text}");
+
+        // A syntax error wins over the output limit: `length` is the whole
+        // message's and may belong to another call, and a cut stream alone
+        // never sets `_invalid`.
         let cut = truncated_arguments_result("coder::update-file", &args, StopReason::Length);
+        assert_eq!(cut.details["cause"], "invalid_json");
+        let mut only_cut = args.clone();
+        only_cut.as_object_mut().unwrap().remove("_invalid");
+        let cut = truncated_arguments_result("coder::update-file", &only_cut, StopReason::Length);
         assert_eq!(cut.details["cause"], "max_output_tokens");
     }
 

@@ -294,6 +294,11 @@ impl FrameNotifier {
         self.lock().len()
     }
 
+    /// Some console viewer follows this session's frames.
+    pub fn watching(&self, session_id: &str) -> bool {
+        self.lock().values().any(|b| b.session_id == session_id)
+    }
+
     /// The slot of one binding (tests and diagnostics).
     pub fn slot(&self, id: &str) -> Option<Arc<DeliverySlot>> {
         self.lock().get(id).map(|b| b.slot.clone())

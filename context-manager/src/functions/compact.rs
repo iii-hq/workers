@@ -16,7 +16,7 @@ use super::summarize::{summarize_head, PromptSteering};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{estimator_for_model, Estimator};
 use crate::core::lease;
-use crate::core::selection::select;
+use crate::core::selection::{fit_tail, select};
 use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, SummarizeError};
@@ -77,7 +77,7 @@ pub enum CompactResponse {
     Busy,
     /// Nothing to compact.
     Empty,
-    /// The summariser is unavailable or itself overflowed.
+    /// The summariser is unavailable, overflowed, or returned no summary.
     Overflow,
 }
 
@@ -145,7 +145,15 @@ async fn summarise(
     // One estimate per message; select, tokens_before, and tokens_after
     // all read this memo instead of re-serializing per pass.
     let sizes: Vec<u64> = messages.iter().map(|m| estimator.message(m)).collect();
-    let selection = select(messages, &sizes, budget, tail_turns);
+    // An explicit compaction must free room: when the kept turn alone is
+    // oversized (the one that overflowed the window), cut inside it until
+    // the verbatim tail leaves at least half the input budget free.
+    let selection = fit_tail(
+        messages,
+        &sizes,
+        select(messages, &sizes, budget, tail_turns),
+        input_budget / 2,
+    );
     let head = &messages[..selection.head_len];
     if head.is_empty() {
         return CompactResponse::Empty;
@@ -154,9 +162,11 @@ async fn summarise(
     let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
     let summary = match summarize_head(deps, model, head, input_budget, steering).await {
         Ok(summary) => summary,
+        // `empty` means "nothing to compact"; a blank summary is the
+        // summariser failing on a non-empty head.
         Err(SummarizeError::Empty) => {
-            tracing::warn!("summariser produced an empty summary; nothing to compact");
-            return CompactResponse::Empty;
+            tracing::error!("summariser produced an empty summary");
+            return CompactResponse::Overflow;
         }
         Err(err @ SummarizeError::Unavailable(_)) => {
             // Spec: without llm-router, compact returns overflow with a

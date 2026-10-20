@@ -344,6 +344,59 @@ pub fn prefix_change(
     })
 }
 
+/// The window an explicit compaction left, on top of the last generate
+/// step's snapshot: the summary in place of the previous one (or none) in the
+/// system prompt, the verbatim tail's messages, everything else unchanged.
+/// No generation ran, so there is no provider bill for it (`usage: None`).
+/// Without this the `context` chip and `harness::status` kept showing the
+/// pre-compaction window until the next turn.
+pub fn after_compaction(
+    last: &ContextSnapshotV1,
+    messages: SnapshotMessagesV1,
+    previous_summary_tokens: u64,
+    summary_tokens: u64,
+    summarized_head_tokens: u64,
+    timestamp: i64,
+) -> ContextSnapshotV1 {
+    let mut next = last.clone();
+    let categories = &mut next.categories;
+    // The previous summary is only in the prompt when the last window carried one.
+    let replaced = if last.compacted {
+        previous_summary_tokens
+    } else {
+        0
+    };
+    categories.system_prompt = categories
+        .system_prompt
+        .saturating_sub(replaced)
+        .saturating_add(summary_tokens);
+    categories.messages = messages;
+    categories.hook_guidance = 0;
+    next.total = categories.system_prompt
+        + categories.skills
+        + categories.tools
+        + categories.messages.total()
+        + categories.overhead;
+    next.free = next.usable.saturating_sub(next.total);
+    next.compacted = true;
+    next.summarized_head_tokens = Some(summarized_head_tokens);
+    next.usage = None;
+    next.timestamp = timestamp;
+    next
+}
+
+/// The newer of two snapshots of one session: the turn record keeps the last
+/// generate step's, the store also gets the one an explicit compaction writes.
+pub fn newest(
+    a: Option<ContextSnapshotV1>,
+    b: Option<ContextSnapshotV1>,
+) -> Option<ContextSnapshotV1> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(if b.timestamp > a.timestamp { b } else { a }),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Store the session's latest snapshot (whole-value write; the loop holds
 /// the only writer per session).
 pub async fn put(
@@ -668,6 +721,85 @@ mod tests {
         assert_eq!(change.offset, Some(768), "the chunk holding byte 901");
         assert!(change.after.contains("<summary>"), "{}", change.after);
         assert!(!change.before.contains("<summary>"), "{}", change.before);
+    }
+
+    fn step_snapshot(compacted: bool) -> ContextSnapshotV1 {
+        serde_json::from_value(json!({
+            "session_id": "s_1", "turn_id": "t_1", "step": 9, "model": "m",
+            "usable": 800_000, "effective_max_output_tokens": 64_000,
+            "total": 480_000, "free": 320_000,
+            "categories": {
+                "system_prompt": 12_000, "skills": 3_000, "tools": 4_000,
+                "messages": { "user": 20_000, "assistant": 140_000, "function_result": 300_000, "custom": 0 },
+                "overhead": 100, "hook_guidance": 900
+            },
+            "compacted": compacted,
+            "usage": { "input": 479_000, "output": 2_000 },
+            "session_cost_usd": 12.5,
+            "timestamp": 1_000
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_compaction_replaces_the_messages_and_swaps_the_summary() {
+        let tail = SnapshotMessagesV1 {
+            user: 1_000,
+            assistant: 2_000,
+            function_result: 500,
+            custom: 0,
+        };
+        let next = after_compaction(
+            &step_snapshot(true),
+            tail.clone(),
+            2_500,
+            3_000,
+            470_000,
+            2_000,
+        );
+        assert_eq!(next.categories.system_prompt, 12_000 - 2_500 + 3_000);
+        assert_eq!(next.categories.messages, tail);
+        assert_eq!(next.categories.hook_guidance, 0);
+        assert_eq!(next.total, 12_500 + 3_000 + 4_000 + 3_500 + 100);
+        assert_eq!(next.free, 800_000 - next.total);
+        assert!(next.compacted);
+        assert_eq!(next.summarized_head_tokens, Some(470_000));
+        assert_eq!(next.usage, None, "no generation billed this window");
+        assert_eq!(next.timestamp, 2_000);
+        // Identity, budget and running cost carry over.
+        assert_eq!(
+            (next.turn_id.as_str(), next.step, next.usable),
+            ("t_1", 9, 800_000)
+        );
+        assert_eq!(next.session_cost_usd, Some(12.5));
+    }
+
+    #[test]
+    fn a_first_compaction_has_no_previous_summary_to_replace() {
+        let next = after_compaction(
+            &step_snapshot(false),
+            SnapshotMessagesV1::default(),
+            2_500,
+            3_000,
+            1,
+            2_000,
+        );
+        assert_eq!(next.categories.system_prompt, 15_000);
+    }
+
+    #[test]
+    fn the_newer_snapshot_wins() {
+        let old = step_snapshot(false);
+        let mut new = old.clone();
+        new.timestamp = 5_000;
+        assert_eq!(
+            newest(Some(old.clone()), Some(new.clone())),
+            Some(new.clone())
+        );
+        assert_eq!(newest(Some(new.clone()), Some(old.clone())), Some(new));
+        assert_eq!(newest(None, Some(old.clone())), Some(old.clone()));
+        assert_eq!(newest(Some(old.clone()), None), Some(old));
+        assert_eq!(newest(None, None), None);
     }
 
     #[test]

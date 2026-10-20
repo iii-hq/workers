@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ade"
-version = "1.9.65"
+version = "1.9.67"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -858,9 +858,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.24.5"
+version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "153d1efa91fc973adda221013d28bf1428f6c39d48c2b5c0ad83f23eac6a137f"
+checksum = "3a6af460c1ecd277c99d375fb6b1c652639520148ddad304f424a3d9cd97b5d1"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -879,9 +879,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.24.5"
+version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c40db04bca94554b42a6dbd697e44555f51c44d68a3ba3a4702d913d8fce80c"
+checksum = "33696540e03a6d9650009c4091d1aee78f7caa3fbd8a2375d75032d83000604f"
 dependencies = [
  "async-trait",
  "futures-util",

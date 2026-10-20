@@ -9,17 +9,17 @@
  *
  * Layout adapts to the width the page HAS (a ResizeObserver on its own body
  * row, not a viewport media query — the console can host it in panes of any
- * size). Wide: the rail (start form + session list) is a collapsible navigation
- * column beside the desktop workspace. Under 720px (useContainerNarrow) it becomes a
- * drill-in flow: the session list fills the width, and opening a session
- * swaps it for the full-width viewport with a ← back button. The screencast
- * subscription only runs while the viewport is actually visible, so a
- * narrow pane parked on the list streams nothing.
+ * size). Wide: the rail (session list, + for a new desktop) is a collapsible
+ * navigation column beside the desktop workspace, which shows the open
+ * desktop or, with none open, the launcher. Under 720px (useContainerNarrow)
+ * it becomes a drill-in flow: the session list fills the width, and opening a
+ * session (or +) swaps it for the full-width stage with a ← back button. The
+ * screencast subscription only runs while the viewport is actually visible,
+ * so a narrow pane parked on the list streams nothing.
  */
 
 import {
   Button,
-  EmptyState,
   Eyebrow,
   type Host,
   IconButton,
@@ -33,7 +33,7 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, useWorkerLive } from '@iii-dev/console-ui/hooks'
-import { ChevronLeft, Monitor } from 'lucide-react'
+import { ChevronLeft, Monitor, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type ActPayload,
@@ -47,12 +47,10 @@ import {
   startSession,
   stopSession,
 } from '../lib/computer'
-import { formatAge, shortEndpoint } from '../lib/format'
+import { describeEndpoint, formatAge } from '../lib/format'
+import { claimOnPage } from '../overlay/store'
+import { Launcher, type LauncherHandle } from './Launcher'
 import { SessionRail } from './SessionRail'
-import {
-  StartSessionForm,
-  type StartSessionFormHandle,
-} from './StartSessionForm'
 import { useLiveFrames } from './useLiveFrames'
 import { Viewport } from './Viewport'
 
@@ -88,6 +86,9 @@ export function ComputerPage({
   // click or a start), false after ← back. Wide mode renders both panes
   // regardless, so the flag is harmless there.
   const [drilled, setDrilled] = useState(false)
+  // The stage shows the launcher instead of the selected desktop (+, or no
+  // desktop open at all).
+  const [launching, setLaunching] = useState(false)
 
   // A session selected the moment it starts is not in the list yet; hold it
   // until the refresh lands so the selection does not bounce back to the old
@@ -116,10 +117,10 @@ export function ComputerPage({
   // whichever session the selection fell back to. A session still waiting
   // to appear in the list (pendingIdRef) is not dead — keep the viewport.
   useEffect(() => {
-    if (!drilled || selectedId === null) return
+    if (!drilled || launching || selectedId === null) return
     const alive = sessions.some((s) => s.session_id === selectedId)
     if (!alive && pendingIdRef.current !== selectedId) setDrilled(false)
-  }, [sessions, drilled, selectedId])
+  }, [sessions, drilled, launching, selectedId])
 
   useEffect(() => {
     let cancelled = false
@@ -139,16 +140,24 @@ export function ComputerPage({
     [sessions, selectedId],
   )
 
-  // Narrow: one pane at a time — the rail (start form + list) or the
-  // opened desktop.
-  const stageVisible = !narrow || (drilled && selected !== null)
+  // The stage holds the launcher until a desktop is open, or while + asks
+  // for a new one.
+  const showLauncher = launching || selected === null
+  // Narrow: one pane at a time — the rail (list) or the stage.
+  const stageVisible = !narrow || (drilled && (launching || selected !== null))
   const railVisible = !narrow || !stageVisible
 
   const {
     frame,
     loading: frameLoading,
     error: frameError,
-  } = useLiveFrames(host, selectedId, stageVisible)
+  } = useLiveFrames(host, selectedId, stageVisible && !showLauncher)
+  // The desktop shown here gets no corner preview in this window, even when
+  // its own viewport input fires computer::activity.
+  useEffect(() => {
+    if (stageVisible && !showLauncher && selectedId)
+      return claimOnPage(selectedId)
+  }, [stageVisible, showLauncher, selectedId])
 
   const runAct = useCallback(
     (payload: ActPayload) => {
@@ -162,6 +171,12 @@ export function ComputerPage({
 
   const openSession = useCallback((sessionId: string) => {
     setSelectedId(sessionId)
+    setLaunching(false)
+    setDrilled(true)
+  }, [])
+
+  const openLauncher = useCallback(() => {
+    setLaunching(true)
     setDrilled(true)
   }, [])
 
@@ -172,6 +187,7 @@ export function ComputerPage({
       const started = await startSession(host.iii, input)
       pendingIdRef.current = started.session_id
       setSelectedId(started.session_id)
+      setLaunching(false)
       setDrilled(true)
     } catch (err) {
       setActionError(errorMessage(err))
@@ -196,9 +212,9 @@ export function ComputerPage({
     }
   }
 
-  // The start form owns its own mode/fields; a page-level command submits
-  // whatever the user currently has configured through this handle.
-  const startFormRef = useRef<StartSessionFormHandle>(null)
+  // The launcher owns its own mode/fields; a page-level command submits
+  // whatever the user currently has set through this handle, or opens it.
+  const launcherRef = useRef<LauncherHandle>(null)
 
   // A palette "computer-sessions" row (or any other host.panels.open caller)
   // selects a session by id through the standard panelContext channel.
@@ -220,10 +236,12 @@ export function ComputerPage({
         {
           id: 'start-session',
           title: 'Start session',
-          detail: 'Start a desktop with the current start form settings',
+          detail:
+            'Start a desktop with the launcher settings, or open the launcher',
           keywords: ['new', 'desktop'],
           enabled: () => !starting,
-          run: () => startFormRef.current?.submit(),
+          run: () =>
+            launcherRef.current ? launcherRef.current.submit() : openLauncher(),
         },
         {
           id: 'stop-session',
@@ -237,7 +255,7 @@ export function ComputerPage({
           },
         },
       ]),
-    [commands, starting, selected, busyId],
+    [commands, starting, selected, busyId, openLauncher],
   )
 
   return (
@@ -277,7 +295,7 @@ export function ComputerPage({
                 refresh()
               }}
             >
-              dismiss
+              Dismiss
             </Button>
           }
         />
@@ -302,26 +320,21 @@ export function ComputerPage({
                 {loading && sessions.length === 0 ? null : (
                   <span className="count">{sessions.length}</span>
                 )}
+                <IconButton label="New desktop" onClick={openLauncher}>
+                  <Plus size={16} aria-hidden />
+                </IconButton>
               </div>
             }
           >
-            <div className="cp-ui-rail-top">
-              <Eyebrow as="div">start a session</Eyebrow>
-              <StartSessionForm
-                ref={startFormRef}
-                displays={displays}
-                starting={starting}
-                onStart={(input) => void handleStart(input)}
-              />
-            </div>
             <div className="cp-ui-rail-scroll">
               <SessionRail
                 sessions={sessions}
-                selectedId={selectedId}
+                selectedId={showLauncher ? null : selectedId}
                 loading={loading}
                 busyId={busyId}
                 onSelect={openSession}
                 onStop={(id) => void handleStop(id)}
+                onNew={narrow ? openLauncher : undefined}
               />
             </div>
           </PageSidebar>
@@ -329,7 +342,7 @@ export function ComputerPage({
 
         {stageVisible ? (
           <section className="cp-ui-stage" aria-label="desktop workspace">
-            {selected ? (
+            {!showLauncher && selected ? (
               <>
                 <header className="cp-ui-doc-head">
                   {narrow ? (
@@ -348,8 +361,11 @@ export function ComputerPage({
                       <span className="txt">{selected.session_id}</span>
                     </span>
                     {!narrow ? (
-                      <span className="cp-ui-doc-crumb">
-                        {shortEndpoint(selected.endpoint)} · {selected.os}
+                      <span
+                        className="cp-ui-doc-crumb"
+                        title={selected.endpoint}
+                      >
+                        {describeEndpoint(selected.endpoint)} · {selected.os}
                       </span>
                     ) : null}
                   </div>
@@ -383,12 +399,9 @@ export function ComputerPage({
                   end={
                     <>
                       <span className="cp-ui-hint">
-                        click to focus — clicks, scroll, typing and shortcuts
-                        forward as act
+                        Click the desktop to control it
                       </span>
-                      <span className="cp-ui-hint">
-                        shift+esc leaves the surface
-                      </span>
+                      <span className="cp-ui-hint">Shift+Esc releases it</span>
                     </>
                   }
                 >
@@ -401,11 +414,33 @@ export function ComputerPage({
                 </StatusBar>
               </>
             ) : (
-              <EmptyState
-                icon={Monitor}
-                title="no desktop yet"
-                description="start a session to drive this machine, a sandboxed desktop, or a remote one."
-              />
+              <>
+                {narrow && sessions.length > 0 ? (
+                  <header className="cp-ui-doc-head">
+                    <IconButton
+                      label="back to session list"
+                      onClick={() => {
+                        setLaunching(false)
+                        setDrilled(false)
+                      }}
+                    >
+                      <ChevronLeft size={16} aria-hidden />
+                    </IconButton>
+                    <span className="cp-ui-doc-name">
+                      <span className="txt">New desktop</span>
+                    </span>
+                  </header>
+                ) : null}
+                <div className="cp-ui-stage-launch">
+                  <Launcher
+                    ref={launcherRef}
+                    host={host}
+                    displays={displays}
+                    starting={starting}
+                    onStart={(input) => void handleStart(input)}
+                  />
+                </div>
+              </>
             )}
           </section>
         ) : null}

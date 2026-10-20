@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-queue"
-version = "0.21.21"
+version = "0.21.22"
 edition = "2021"
 description = "Durable queue worker for iii - durable:subscriber trigger type and queue service functions"
 license = "Apache-2.0"
@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [features]
 default = ["rabbitmq"]
-rabbitmq = ["dep:lapin"]
+rabbitmq = ["dep:lapin", "dep:rustls"]
 # In-process test-only transport (`adapters::memory::MemoryAdapter`),
 # registered under the adapter name "memory". Off in normal builds; turned on
 # for this crate's own test targets via the dev-dependency self-reference
@@ -27,9 +27,9 @@ rabbitmq = ["dep:lapin"]
 test-adapters = []
 
 [dependencies]
-iii-sdk = "=0.24.6-rc.5"
+iii-sdk = "=0.24.6"
 iii-worker-paths = { path = "../crates/worker-paths" }
-iii-helpers = "=0.24.6-rc.5"
+iii-helpers = "=0.24.6"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -45,6 +45,10 @@ uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }
+# lapin pulls aws-lc-rs and the iii-sdk pulls ring, so rustls cannot pick a
+# process-level CryptoProvider by itself; the adapter installs `ring` (already
+# in the tree) before the first amqps:// connect.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"], optional = true }
 
 [dev-dependencies]
 serial_test = "3"

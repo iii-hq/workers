@@ -17,6 +17,7 @@
 
 pub mod agents;
 pub mod download;
+pub mod embed_provider;
 pub mod engine_fn;
 pub mod error;
 pub mod kits;

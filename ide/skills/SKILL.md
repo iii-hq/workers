@@ -85,8 +85,8 @@ agents, pair with the `skills` worker.
   EOF), plus `cwd`/`env` — are rejected with `S210` when supplied on a sandbox
   target, because the sandbox exec protocol does not forward them.
 - `shell::exec_bg`: spawn a command as a background job and return
-  a `job_id` immediately. Host-targeted jobs run until they exit or `shell::kill`
-  terminates them — unbounded by default, capped only when the operator sets a
+  a `job_id` immediately. Host-targeted jobs run until they exit, `shell::kill`
+  terminates them, or `harness::stop` stops the session that started them — unbounded by default, capped only when the operator sets a
   positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway
   job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`.
   Same optional host-only `stdin` as `shell::exec`.

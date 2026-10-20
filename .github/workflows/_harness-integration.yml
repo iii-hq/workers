@@ -379,10 +379,6 @@ jobs:
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: pnpm test:e2e
 
-      - name: Run Workers settings Playwright scenarios
-        working-directory: ade/web
-        run: pnpm test:e2e:workers --output ../../target/console-e2e/workers-settings
-
       - name: Upload Playwright coverage profiles
         if: always() && inputs.coverage
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -399,6 +395,48 @@ jobs:
         with:
           name: console-e2e-artifacts
           path: target/console-e2e/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # The Workers settings suite drives the real Workers page against an
+  # in-memory backend (ade/web/e2e/workers-harness), so it needs no stack
+  # bundle and runs alongside the build instead of after it.
+  workers-settings:
+    name: run Workers settings Playwright
+    runs-on: ${{ inputs.execution-runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_ref }}
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 11.13.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+
+      - name: Install Console web dependencies
+        working-directory: ade/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        working-directory: ade/web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Workers settings Playwright scenarios
+        working-directory: ade/web
+        run: pnpm test:e2e:workers
+
+      - name: Upload Workers settings artifacts
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: workers-settings-e2e-artifacts
+          path: target/workers-settings-e2e/
           retention-days: 14
           if-no-files-found: ignore
 

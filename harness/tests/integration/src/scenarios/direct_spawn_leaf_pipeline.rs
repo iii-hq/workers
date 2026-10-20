@@ -12,7 +12,7 @@
 //!     gains exactly one `[notification]` (the barrier payload) and never a
 //!     `[child-failure]` or injected child result. The leaf ends after the
 //!     barrier fired, so the parent is no longer parked on a wake and gets no
-//!     child-ended notice either (INT-040 covers the parked case);
+//!     child-ended notice either (INT-041 covers the parked case);
 //!   * the leaf runs on the shared identity and needs no trigger
 //!     knowledge — its generations are plain task → `state::set` writes.
 //!

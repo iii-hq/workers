@@ -8,6 +8,7 @@ mod agent_shared_prompt_prefix;
 mod ask_bypasses_approval_hook;
 mod ask_ends_turn;
 mod binding_prefix_append_only;
+mod call_argument_contract;
 mod call_argument_diagnosis;
 mod call_argument_reconciliation;
 mod child_discovery_granted;
@@ -91,6 +92,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         spawn_reuse_guard::scenario(),
         stop_cancel_cascade::scenario(),
         stop_held_call::scenario(),
+        call_argument_contract::scenario(),
         queued_message_edit_unqueue::scenario(),
         streamed_text::scenario(),
         truncated_function_call_stream::scenario(),

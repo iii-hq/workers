@@ -101,6 +101,11 @@ async fn repair_locked(deps: &Deps, session_id: &str) -> Result<bool, HarnessErr
 /// Status and record are read under the same lock, so a turn that starts in
 /// between is seen as live and left alone.
 pub async fn reconcile(deps: &Deps, session_id: &str) -> Result<bool, HarnessError> {
+    // A compaction marks the session `working` with no live turn behind it;
+    // it restores the projection itself when it ends.
+    if deps.compactions.is_running(session_id) {
+        return Ok(false);
+    }
     let _guard = deps.locks.guard(session_id).await;
     let session = deps.session().await;
     if session.status(session_id).await?.as_deref() != Some("working") {
@@ -132,6 +137,10 @@ pub fn spawn_project(deps: &Deps, record: TurnRecord) {
                 return;
             }
         };
+        // A running compaction owns the status until it restores it.
+        if deps.compactions.is_running(&record.session_id) {
+            return;
+        }
         if let Some(current) = current {
             if current.turn_id == record.turn_id && current.status.is_terminal() {
                 let session = deps.session().await;

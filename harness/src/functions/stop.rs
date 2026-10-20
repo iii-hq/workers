@@ -49,6 +49,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
             }
         }
     }
+    let session_ids: Vec<String> = tree.sessions.iter().map(|n| n.session_id.clone()).collect();
     let mut stopping = false;
     let mut errors = Vec::new();
     for node in tree.sessions {
@@ -71,11 +72,42 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
             Err(error) => errors.push(error.to_string()),
         }
     }
+    kill_session_jobs(deps, session_ids).await;
     if !errors.is_empty() {
         return Err(HarnessError::Dependency(errors.join("; ")));
     }
     Ok(StopResponse { stopping })
 }
+
+/// Background jobs (`shell::exec_bg`) outlive the turn that started them, and
+/// idle or parked members are exactly the ones waiting on one, so reap the
+/// whole tree's jobs here rather than in `stop_one`. Best effort, like
+/// `router::abort`: the stop is already persisted, and the shell worker may
+/// not be deployed.
+// ponytail: an exec_bg dispatch already in flight when the stop lands can
+// register its job after this sweep (MOT-3682 territory); wait on the
+// session's dispatch witnesses first if that leak shows up.
+async fn kill_session_jobs(deps: &Deps, session_ids: Vec<String>) {
+    if session_ids.is_empty() {
+        return;
+    }
+    if let Err(error) = deps
+        .iii
+        .trigger(iii_sdk::protocol::TriggerRequest {
+            function_id: "shell::kill-session-jobs".into(),
+            payload: serde_json::json!({ "session_ids": session_ids }),
+            action: None,
+            timeout_ms: Some(KILL_SESSION_JOBS_TIMEOUT_MS),
+        })
+        .await
+    {
+        tracing::warn!(%error, "shell::kill-session-jobs failed");
+    }
+}
+
+/// The kill only flags jobs and notifies their drain tasks; it never waits on
+/// process exit, so a slow answer means the shell worker is unhealthy.
+const KILL_SESSION_JOBS_TIMEOUT_MS: u64 = 5_000;
 
 /// What stopping one session established. `harness::stop` reports only
 /// `stopping`; deletion additionally fails closed on any `unconfirmed` reason.

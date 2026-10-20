@@ -30,7 +30,7 @@ instead — that provider speaks the same API with `ANTHROPIC_API_KEY`.
 
 This worker is a **dumb token consumer** — login and refresh live out-of-band:
 
-1. **Vault (intended authority):** the [`auth-credentials`](../auth-credentials/)
+1. **Vault (intended authority):** the `auth-credentials`
    worker (`auth::get_token`), populated by an `oauth-claude-code` sign-in flow.
    A near-expiry token triggers the vault-owned refresh
    (`oauth::claude-code::refresh`); this provider never calls the OAuth token

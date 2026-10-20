@@ -5,6 +5,7 @@ import type {
   DynamicMapFieldSpec,
   FilterListFieldSpec,
   FormFieldSpec,
+  JudgeProviderFieldSpec,
   ModelFieldSpec,
   NumberFieldSpec,
   ObjectCollectionFieldSpec,
@@ -64,6 +65,13 @@ export const model = (
   description?: string,
   options: Partial<Omit<ModelFieldSpec, 'kind' | 'path' | 'label' | 'description'>> = {},
 ): ModelFieldSpec => ({ kind: 'model', path: p(path), label, description, ...options })
+
+export const judgeProvider = (
+  path: string,
+  label: string,
+  owner: string,
+  description?: string,
+): JudgeProviderFieldSpec => ({ kind: 'judge-provider', path: p(path), label, description, optional: true, owner })
 
 export const toggle = (
   path: string,

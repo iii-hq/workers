@@ -21,11 +21,9 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
-const FRAME_BYTES: usize = 96 * 1024;
-
 /// A desktop behind the guest-executor wire: answers `get_screen_size` and
-/// `screenshot` (a distinct ~96 KB JPEG-looking image each time), accepts
-/// every input command.
+/// `screenshot` (a PNG of a different colour each time, which the worker fits
+/// to a JPEG), accepts every input command.
 async fn fake_desktop(port: u16) {
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
@@ -46,14 +44,21 @@ async fn fake_desktop(port: u16) {
                     let req: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
                     let reply = match req["command"].as_str() {
                         Some("get_screen_size") => {
-                            json!({ "success": true, "size": { "width": 1280, "height": 800 } })
+                            json!({ "success": true, "size": { "width": 320, "height": 200 } })
                         }
                         Some("screenshot") => {
                             n += 1;
-                            let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
-                            bytes.extend(std::iter::repeat_n((n % 251) as u8, FRAME_BYTES));
+                            let shade = (n % 251) as u8;
+                            let mut png = Vec::new();
+                            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                                320,
+                                200,
+                                image::Rgb([shade, shade, shade]),
+                            ))
+                            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                            .unwrap();
                             use base64::Engine;
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(png);
                             json!({ "success": true, "image_data": b64 })
                         }
                         _ => json!({ "success": true }),
@@ -263,7 +268,10 @@ async fn live_frames_without_iii_stream() {
     .await;
     let note = a.lock().unwrap().last().cloned().unwrap();
     assert_eq!(note["session_id"], c1.as_str());
-    assert_eq!(note["bytes"], (FRAME_BYTES + 4) as u64);
+    assert!(
+        note["bytes"].as_u64().is_some_and(|bytes| bytes > 0),
+        "{note}"
+    );
     assert!(note.get("frame").is_none() && note.get("data").is_none());
     let note_len = note.to_string().len();
     eprintln!("[live] notification ({note_len} bytes): {note}");

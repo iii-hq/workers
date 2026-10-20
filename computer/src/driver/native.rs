@@ -21,17 +21,14 @@
 //! Capture and input are synchronous, blocking OS calls, so each runs on a
 //! blocking thread.
 
-use std::io::Cursor;
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use image::codecs::jpeg::JpegEncoder;
-use image::imageops::{resize, FilterType};
 use image::{DynamicImage, RgbaImage};
 use tokio::task::spawn_blocking;
 
-use super::{Driver, Screen, Shot};
+use super::{encode_jpeg, target_dims, Driver, Screen, Shot};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop;
@@ -158,33 +155,6 @@ impl NativeHost {
     }
 }
 
-/// Downscale target: longest edge capped at `max_dim`, aspect preserved.
-fn target_dims(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
-    let longest = w.max(h);
-    if longest <= max_dim || longest == 0 {
-        return (w, h);
-    }
-    let s = max_dim as f64 / longest as f64;
-    (
-        ((w as f64 * s).round() as u32).max(1),
-        ((h as f64 * s).round() as u32).max(1),
-    )
-}
-
-/// Downscale to `(tw, th)` and JPEG-encode.
-fn encode(img: RgbaImage, tw: u32, th: u32, quality: u8) -> Result<Vec<u8>, String> {
-    let rgb = if (tw, th) == img.dimensions() {
-        DynamicImage::ImageRgba8(img).to_rgb8()
-    } else {
-        DynamicImage::ImageRgba8(resize(&img, tw, th, FilterType::Triangle)).to_rgb8()
-    };
-    let mut out = Vec::new();
-    JpegEncoder::new_with_quality(&mut Cursor::new(&mut out), quality)
-        .encode_image(&rgb)
-        .map_err(|e| format!("jpeg encode failed: {e}"))?;
-    Ok(out)
-}
-
 /// One capture: the encoded frame plus everything the session learns from
 /// taking it — which display it came from and how to map its pixels back to
 /// absolute input coordinates.
@@ -215,7 +185,7 @@ fn capture(
         scale_y: g.h as f64 / th.max(1) as f64,
     };
     Ok(Capture {
-        jpeg: encode(g.img, tw, th, quality)?,
+        jpeg: encode_jpeg(DynamicImage::ImageRgba8(g.img), tw, th, quality)?,
         width: tw,
         height: th,
         display_id: g.id,
@@ -364,21 +334,6 @@ mod tests {
         assert_eq!(button_for("right"), Ok(Btn::Right));
         assert_eq!(button_for("middle"), Ok(Btn::Middle));
         assert!(button_for("thumb").is_err());
-    }
-
-    #[test]
-    fn target_dims_caps_longest_edge() {
-        assert_eq!(target_dims(3024, 1964, 1280), (1280, 831));
-        assert_eq!(target_dims(800, 600, 1280), (800, 600));
-        assert_eq!(target_dims(0, 0, 1280), (0, 0));
-    }
-
-    #[test]
-    fn encode_downscales_to_a_jpeg() {
-        let jpeg = encode(RgbaImage::new(64, 32), 32, 16, 80).unwrap();
-        assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF]);
-        let back = image::load_from_memory(&jpeg).unwrap();
-        assert_eq!((back.width(), back.height()), (32, 16));
     }
 
     #[test]

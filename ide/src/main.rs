@@ -343,6 +343,20 @@ async fn main() -> Result<()> {
     );
 
     iii.register_function(
+        "shell::kill-session-jobs",
+        RegisterFunction::new_async(|req: functions::types::KillSessionJobsRequest| {
+            telemetry::record_call("shell::kill-session-jobs", async move {
+                Ok::<_, Error>(functions::kill::handle_session(req).await)
+            })
+        })
+        .description(
+            "Harness-internal: kill every running background job owned by the given harness \
+             session_ids (harness::stop reaps a stopped session tree). Returns { killed }.",
+        )
+        .metadata(serde_json::json!({ "internal": true })),
+    );
+
+    iii.register_function(
         "shell::status",
         RegisterFunction::new_async(|req: StatusRequest| {
             telemetry::record_call("shell::status", async move {

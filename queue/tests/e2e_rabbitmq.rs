@@ -627,3 +627,26 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
     adapter.shutdown().await;
     iii.shutdown_async().await;
 }
+
+/// KAN-285: with both `ring` and `aws-lc-rs` compiled in, rustls cannot pick a
+/// process-level CryptoProvider on its own and the lapin io-loop thread
+/// panicked on the first `amqps://` connect. The adapter must install one.
+#[tokio::test]
+#[serial]
+async fn amqps_connects_with_a_process_default_crypto_provider() {
+    let Some(container) = docker::start_rabbitmq_tls().await else {
+        return; // skip: docker or openssl not available
+    };
+    std::env::set_var("SSL_CERT_DIR", container.ca_dir());
+
+    let invoker: Arc<dyn Invoker> = Arc::new(NoopInvoker);
+    let adapter = tokio::time::timeout(
+        Duration::from_secs(30),
+        RabbitMQAdapter::from_config(Some(&json!({"amqp_url": container.amqps_url()})), invoker),
+    )
+    .await
+    .expect("amqps connect must not hang")
+    .expect("rabbitmq adapter should connect over amqps");
+
+    adapter.shutdown().await;
+}

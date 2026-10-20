@@ -160,6 +160,11 @@ pub struct ExecBgRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<FsScope>,
+    /// Internal owning harness session, stamped (overwritten) by the harness
+    /// call chokepoint; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub session_id: Option<String>,
     /// Per-call env values (host only, S210 on sandbox); exec-hijacking keys
     /// (PATH, IFS, HOME, LD_*/DYLD_*, …) reject the whole call S210.
     // Deny-only: see DANGEROUS_ENV_KEYS; values override forwarded ones, and
@@ -223,6 +228,19 @@ pub struct KillResponse {
     pub status: JobStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Wire request for `shell::kill-session-jobs` (harness-internal).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct KillSessionJobsRequest {
+    /// Harness sessions whose running background jobs are killed.
+    pub session_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct KillSessionJobsResponse {
+    /// Ids of the jobs this call killed.
+    pub killed: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
