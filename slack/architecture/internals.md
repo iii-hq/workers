@@ -39,10 +39,13 @@ within Slack's 3-second window, and processes the event asynchronously.
 - `event_id` dedupe guards Slack retries.
 
 `turn.rs` builds the turn. On the first mention in a thread it backfills prior
-replies (`conversations.replies`, bots skipped) plus the pending buffer into the
-session as context, bounded by `backfill_max_messages`. The context rides after
-the typed text in an `<attached-file path="slack-thread">` block, so memory never
-reads other members' words as the user's. The model comes from `default_model`
+replies (`conversations.replies`) plus the pending buffer into the session as
+context, bounded by `backfill_max_messages`. Bot, app and integration messages are
+not backfilled, an alert thread's bot-posted root included. The context rides
+after the typed text in an `<attached-file path="slack-thread">` block, so
+memory's learned-rule gate never counts thread lines as the user's words, the
+asker's own earlier lines included. A `/compact` mention goes bare, with no
+context, so the harness runs it as the command. The model comes from `default_model`
 (validated against `router::models::list`) or the first available model — no
 vendor names are baked in. The Slack channel-context prompt
 (`prompts/channel-context.txt`) is layered onto the system prompt. The returned

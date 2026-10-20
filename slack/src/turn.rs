@@ -33,16 +33,19 @@ pub async fn handle_addressed(
     let is_new = session.is_none();
     let session_id = session.unwrap_or_else(|| kv::new_thread_session_id(team, channel, thread_ts));
 
-    // Build context from captured (untagged) messages, plus the full thread on
-    // the first mention.
-    let mut context: Vec<PendingMsg> = Vec::new();
-    if is_new && cfg.backfill_thread {
-        context.extend(fetch_thread(deps, channel, thread_ts, cfg.backfill_max_messages).await);
-    }
-    context.extend(kv::take_pending(deps, team, channel, thread_ts).await);
-    truncate_front(&mut context, cfg.backfill_max_messages as usize);
-
     let user_text = strip_mention(raw_text, deps.bot_user_id().await.as_deref());
+
+    // Build context from captured (untagged) messages, plus the full thread on
+    // the first mention. A `/compact` goes bare, so the harness runs it as the
+    // command and the pending buffer waits for the next mention.
+    let mut context: Vec<PendingMsg> = Vec::new();
+    if !is_compact(&user_text) {
+        if is_new && cfg.backfill_thread {
+            context.extend(fetch_thread(deps, channel, thread_ts, cfg.backfill_max_messages).await);
+        }
+        context.extend(kv::take_pending(deps, team, channel, thread_ts).await);
+        truncate_front(&mut context, cfg.backfill_max_messages as usize);
+    }
     let message = compose_message(&context, &user_text);
 
     let Some(model) = resolve_model(deps, &cfg).await else {
@@ -170,6 +173,14 @@ fn backfill_msg(m: &Value) -> Option<PendingMsg> {
         user: m.get("user").and_then(Value::as_str).map(str::to_string),
         text: text.to_string(),
     })
+}
+
+/// The harness's `/compact` command, as `compaction::parse` reads it: the word
+/// alone or followed by guidance.
+fn is_compact(text: &str) -> bool {
+    text.trim()
+        .strip_prefix("/compact")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
 /// The typed text first, then the thread in the ADE's `<attached-file …>`
@@ -304,6 +315,12 @@ mod tests {
         let first = build_system_prompt(&cfg, "C1", "1712345678.000100", &id);
         assert!(first.contains(&format!("session_id: {id}")));
         assert!(!first.contains("(new)"));
+    }
+
+    #[test]
+    fn only_a_leading_compact_word_is_the_command() {
+        assert!(is_compact("/compact") && is_compact(" /compact keep the plan "));
+        assert!(!is_compact("/compaction") && !is_compact("please /compact"));
     }
 
     #[test]
