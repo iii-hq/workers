@@ -144,6 +144,7 @@ pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryE
             "text must be 3..2000 characters".into(),
         ));
     }
+    crate::redact::reject_injection("text", &text)?;
     // Redact before the fingerprint: dedup and the stored text agree, and
     // the caller sees what was kept in the returned record.
     let redaction = crate::redact::redact(&text);
@@ -292,6 +293,7 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
                 "text must be 3..2000 characters".into(),
             ));
         }
+        crate::redact::reject_injection("text", &text)?;
         let redaction = crate::redact::redact(&text);
         labels.extend(redaction.labels);
         let text = redaction.text;

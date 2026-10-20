@@ -51,6 +51,7 @@ pub struct RuleSetResponse {
 }
 
 pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, MemoryError> {
+    crate::redact::reject_injection("content", &req.content)?;
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
     let exists = !req.content.trim().is_empty();

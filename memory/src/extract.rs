@@ -635,6 +635,13 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
                 (up, crate::redact::redact(r.text.trim()).text)
             })
             .filter(|(_, t)| t.len() >= 3 && t.len() <= 500)
+            .filter(|(_, t)| match crate::redact::reject_injection("learned rule", t) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(session_id, bank = %bank_name, error = %e, "dropped a learned rule");
+                    false
+                }
+            })
             .filter(|(_, t)| {
                 let backed = stated_by_user(t, &user_words);
                 if !backed {
@@ -698,6 +705,10 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         crate::redact::drop_secrets(&mut item.tags);
         let text = item.text.as_str();
         if text.len() < 3 || text.len() > 500 {
+            continue;
+        }
+        if let Err(e) = crate::redact::reject_injection("extracted memory", text) {
+            tracing::warn!(session_id, bank = %bank_name, error = %e, "dropped an extracted memory");
             continue;
         }
         let now = now_ms();
