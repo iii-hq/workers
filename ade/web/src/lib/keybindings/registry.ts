@@ -234,23 +234,29 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     bindings: { mac: ['Ctrl+,'], other: ['Alt+,'] },
     keywords: ['configuration', 'preferences'],
   },
-  // The chat pair sits on the same free tier as the workspace keys: N for
-  // a new chat, O for opening a folder as a project.
-  {
-    id: 'chat.new',
-    title: 'New chat',
-    group: 'Chat',
-    scope: 'global',
-    bindings: { mac: ['Ctrl+N'], other: ['Alt+N'] },
-    keywords: ['conversation', 'session', 'create', 'start'],
-  },
+  // The chat pair is on the Mod tier: ⌘O opens a folder as a project, and
+  // ⇧⌘O opens a new chat. Mod+N would be the obvious chord for a new chat,
+  // but every browser opens a new window on it before the page sees the
+  // key (see BROWSER_RESERVED), so Shift+O stands in beside its sibling.
+  // Both fire while typing: from the composer they are a jump, not a
+  // character, the way ⌘K is.
   {
     id: 'project.add',
     title: 'Add project',
     group: 'Chat',
     scope: 'global',
-    bindings: { mac: ['Ctrl+O'], other: ['Alt+O'] },
+    bindings: ['Mod+O'],
+    firesWhileTyping: true,
     keywords: ['folder', 'directory', 'open', 'working directory'],
+  },
+  {
+    id: 'chat.new',
+    title: 'New chat',
+    group: 'Chat',
+    scope: 'global',
+    bindings: ['Mod+Shift+O'],
+    firesWhileTyping: true,
+    keywords: ['conversation', 'session', 'create', 'start'],
   },
   {
     id: 'palette.next',
