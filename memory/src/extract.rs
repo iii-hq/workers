@@ -5,8 +5,9 @@
 //! Extraction adds; it never edits a memory in place or deletes one. The
 //! model sees what the bank already holds about the excerpt, so it returns
 //! only what is new, and a known memory re-observed — the same text, or a
-//! rewording [`near_duplicate`] catches — is reinforced (`corroboration +=
-//! 1`), never duplicated. A correction ("moved from Lisbon to Porto")
+//! rewording [`near_duplicate`] catches — is never duplicated, and is
+//! reinforced (`corroboration += 1`) only when the user's own lines restate
+//! it ([`reinforced`]). A correction ("moved from Lisbon to Porto")
 //! supersedes the memory it corrects in the bank it lands in ([`placement`]):
 //! a recoverable tombstone pointing at the corrected one; a project-scope
 //! correction of a `default_bank` memory leaves that memory live. Pinned
@@ -791,17 +792,12 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         )
         .await;
         let (mut memory, event) = match existing {
-            // Known memory re-observed: reinforce, never duplicate. A pinned
-            // or tombstoned record is left exactly as it is.
-            Some(existing) if existing.is_live() && !existing.pinned => {
-                let mut f = existing;
-                f.corroboration = f.corroboration.saturating_add(1);
-                f.updated_at = now;
-                f.stated_at = Some(now);
-                f.revision += 1;
-                (f, ItemEvent::Updated)
-            }
-            Some(_) => continue,
+            // Known memory re-observed: never duplicated, reinforced or left
+            // exactly as it is.
+            Some(existing) => match reinforced(existing, text, &user_words, now) {
+                Some(f) => (f, ItemEvent::Updated),
+                None => continue,
+            },
             None => (
                 new_memory(item, session_id, newest_id.as_deref(), now),
                 ItemEvent::Created,
@@ -859,6 +855,25 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A known memory `text` re-observed, reinforced: only a live, unpinned one
+/// the user's own lines restate. The assistant echoing an injected memory,
+/// or a notice relaying one, is not the user saying it again.
+fn reinforced(
+    mut m: Memory,
+    text: &str,
+    user_words: &BTreeSet<String>,
+    now: u64,
+) -> Option<Memory> {
+    if !m.is_live() || m.pinned || !stated_by_user(text, user_words) {
+        return None;
+    }
+    m.corroboration = m.corroboration.saturating_add(1);
+    m.updated_at = now;
+    m.stated_at = Some(now);
+    m.revision += 1;
+    Some(m)
 }
 
 /// Whether a session of `kind` is extracted: the user's own (`user`, or no
@@ -2058,6 +2073,51 @@ mod tests {
         );
         assert_eq!(added, 1);
         assert!(again.ends_with("- Use pnpm.\n- Be terse.\n"), "{again}");
+    }
+
+    #[test]
+    fn only_the_users_own_restatement_reinforces_a_known_memory() {
+        let porto = known("The user lives in Porto.");
+        let echo = user_words(&[
+            said(
+                "m",
+                "user",
+                "<memory bank=\"main\">\n- The user lives in Porto. (2026-10-01)\n</memory>",
+            ),
+            said("u", "user", "Which beach should I try this weekend?"),
+            said("a", "assistant", "Since you live in Porto, try Matosinhos."),
+            said(
+                "w",
+                "notice",
+                "[notification] digest: the user lives in Porto",
+            ),
+        ]);
+        assert!(
+            reinforced(porto.clone(), &porto.text, &echo, 9).is_none(),
+            "the assistant echoing an injected memory is not the user"
+        );
+
+        let restated = user_words(&[said("u", "user", "I still live in Porto, by the way.")]);
+        let m = reinforced(porto.clone(), &porto.text, &restated, 9).unwrap();
+        assert_eq!(
+            (m.corroboration, m.revision, m.updated_at, m.stated_at),
+            (1, 1, 9, Some(9))
+        );
+
+        let pinned = Memory {
+            pinned: true,
+            ..porto.clone()
+        };
+        let retired = Memory {
+            invalid_at: Some(5),
+            ..porto.clone()
+        };
+        for m in [pinned, retired] {
+            assert!(
+                reinforced(m, &porto.text, &restated, 9).is_none(),
+                "left exactly as it is"
+            );
+        }
     }
 
     #[test]
