@@ -1,4 +1,4 @@
-//! The two custom trigger types this worker emits, and the fan-out behind
+//! The session trigger types this worker emits, and the fan-out behind
 //! them. Consumers bind handlers with the standard two-step pattern; the
 //! engine routes each registration to our [`TriggerHandler`]. Delivery is
 //! fire-and-forget (`TriggerAction::Void`) and at-least-once; the optional
@@ -21,11 +21,16 @@ use crate::driver::Screen;
 
 pub const SESSION_STARTED: &str = "computer::session-started";
 pub const SESSION_STOPPED: &str = "computer::session-stopped";
+pub const ACTIVITY: &str = "computer::activity";
+pub const ACTIVITY_DESC: &str =
+    "A caller drove a desktop session (computer::act or computer::run); the console's live \
+     preview shows that session.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
     SessionStarted,
     SessionStopped,
+    Activity,
 }
 
 impl EventKind {
@@ -33,11 +38,16 @@ impl EventKind {
         match self {
             EventKind::SessionStarted => SESSION_STARTED,
             EventKind::SessionStopped => SESSION_STOPPED,
+            EventKind::Activity => ACTIVITY,
         }
     }
 
-    pub fn all() -> [EventKind; 2] {
-        [EventKind::SessionStarted, EventKind::SessionStopped]
+    pub fn all() -> [EventKind; 3] {
+        [
+            EventKind::SessionStarted,
+            EventKind::SessionStopped,
+            EventKind::Activity,
+        ]
     }
 }
 
@@ -73,6 +83,17 @@ pub struct SessionStartedEvent {
     /// Informational guest OS label (`linux`, `macos`, ...).
     pub os: String,
     pub screen: Screen,
+    pub timestamp: i64,
+}
+
+/// `computer::activity` — a caller drove a session: fired when a
+/// `computer::act` call reaches it, or a `computer::run` passed its checks and
+/// holds it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ActivityEvent {
+    pub session_id: String,
+    /// The function called: `computer::act` or `computer::run`.
+    pub function: String,
     pub timestamp: i64,
 }
 
@@ -196,7 +217,7 @@ impl TriggerHandler for ComputerTriggerHandler {
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 2] = [
+    let descriptions: [(EventKind, &str); 3] = [
         (
             EventKind::SessionStarted,
             "A desktop session connected and is ready to drive.",
@@ -205,6 +226,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
             EventKind::SessionStopped,
             "A desktop session ended (stopped or idle).",
         ),
+        (EventKind::Activity, ACTIVITY_DESC),
     ];
     for (kind, description) in descriptions {
         let _ = iii.register_trigger_type(

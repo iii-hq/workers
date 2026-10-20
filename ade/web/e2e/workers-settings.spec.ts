@@ -36,6 +36,7 @@ declare global {
       readsCompleted: number
       configurationReferenceMode: 'none' | 'identity' | 'catalog' | 'error'
       configurationReferenceFailures: number
+      settleEditor: () => Promise<void>
       editorSnapshot: () => Promise<{
         value: string
         position: { lineNumber: number; column: number } | null
@@ -1045,11 +1046,20 @@ test('keeps meaningful native Monaco YAML and JSON punctuation at AA contrast in
         .locator('.wk-code .view-line span:not(:has(span))')
         .filter({ hasText: /^[\s:{}[\],]+$/ })
         .filter({ hasText: /[:{}[\],]/ })
-      const text = (await punctuation.allTextContents()).join('')
-      for (const symbol of language === 'json'
-        ? [':', ',', '[', ']', '{', '}']
-        : [':', ',', '[', ']'])
-        expect(text).toContain(symbol)
+      const symbols =
+        language === 'json'
+          ? [':', ',', '[', ']', '{', '}']
+          : [':', ',', '[', ']']
+      // Bracket colouring splits brackets out before the language tokenizer
+      // loads; wait until every symbol is its own token.
+      await expect
+        .poll(async () => {
+          const tokens = (await punctuation.allTextContents()).map((token) =>
+            token.trim(),
+          )
+          return symbols.filter((symbol) => !tokens.includes(symbol))
+        })
+        .toEqual([])
       for (let index = 0; index < (await punctuation.count()); index++) {
         const token = punctuation.nth(index)
         await expect(token).toBeVisible()
@@ -4611,6 +4621,9 @@ async function nativeTouchSwipe(
   endY: number,
 ) {
   await page.bringToFront()
+  // A line Monaco repaints with its tokens mid-swipe detaches the touch
+  // target, and the rest of the gesture never reaches the editor.
+  await page.evaluate(() => window.__WORKERS_HARNESS__.settleEditor())
   const session = await page.context().newCDPSession(page)
   try {
     await session.send('Input.dispatchTouchEvent', {
@@ -5293,7 +5306,8 @@ test('blocks malformed YAML and accepts a corrected mapping', async ({
   page,
 }) => {
   await openSettings(page)
-  await replaceYaml(page, 'ui: [unterminated')
+  // Monaco auto-closes brackets and quotes, so the malformed input uses none.
+  await replaceYaml(page, 'ui: retries: 3')
   const save = page.getByRole('button', {
     name: 'Save and restart',
     exact: true,

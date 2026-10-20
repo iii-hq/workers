@@ -17,7 +17,8 @@ refs in which the optional judge worker classifies each step.
                                           ├─▶ semantic/ (native sessions) ─▶ xa11y
   console viewport ◀── frame-changed ◀────┘ screencast pump (newest frame only)
         └────── computer::frame ──────▶ reads the stored frame
-  sibling workers  ◀── session-started / session-stopped
+  sibling workers  ◀── session-started / session-stopped / activity
+  console overlay  ◀── activity (act / run) ─▶ live corner preview
   computer::run ─▶ semantic/ ◀─▶ judge::evaluate (optional)
 ```
 
@@ -39,8 +40,8 @@ refs in which the optional judge worker classifies each step.
 | `session.rs` | Session registry, driver selection, durable records in `state`, the screencast pump |
 | `semantic/` | Semantic computer use beside the `Driver` (native sessions only): a per-session executor thread owning the xa11y provider, the active snapshot and its ref table, budgeted walk + redaction, selector validation, tree text, error mapping, the provider factory and, on Linux, the read-only AT-SPI bus probe (`fake.rs` is the Linux test provider) — see internals.md "Semantic layer" |
 | `functions/run.rs` | `computer::run`: per step one judge evaluation (operation, completion check, a target per operation), one verb per element chosen by code, a content re-check before acting, stop rules |
-| `judge.rs` | Optional `judge::evaluate` client: the calling session's provider from baggage, a 30 s pause per provider after an outage |
-| `events.rs` | `computer::session-started` / `session-stopped` trigger types and their subscriber fan-out |
+| `judge.rs` | Optional `judge::evaluate` client: `computer::run`'s provider is the configured `judge_provider`, else the calling session's from baggage, else the hub default; a 30 s pause per provider after an outage |
+| `events.rs` | `computer::session-started` / `session-stopped` / `activity` trigger types and their subscriber fan-out |
 | `frames.rs` | `computer::frame-changed` trigger type: bounded bindings and per-binding coalescing delivery |
 | `functions/` | The `computer::*` wire surface, one module per function plus the golden-tested catalog |
 | `ui.rs` + `ui/` | The injected console page and chat renderer (see the injectable-console-UI SOP) |

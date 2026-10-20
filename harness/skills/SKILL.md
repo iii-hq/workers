@@ -79,7 +79,10 @@ Consumer-facing:
 - `harness::send` — ensure the session, persist the incoming message, and kick
   off a turn; returns fast or merges into a running turn (steering).
 - `harness::stop` — request cancellation of an in-flight turn; cascades to
-  spawned children.
+  spawned children and kills the `shell::exec_bg` jobs the stopped sessions
+  started through their own tool calls (the harness stamps those with the
+  session; jobs started by trigger deliveries or `fp::pipe` steps are unowned
+  and survive).
 - `harness::status` — read the current turn state for a session; `null` when no
   turn ever ran. For recovery and guards, not rendering.
 - `harness::spawn` — spawn a sub-agent in a child session. Model-facing (invoked

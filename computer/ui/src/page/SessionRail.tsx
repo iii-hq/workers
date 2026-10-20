@@ -16,7 +16,7 @@ import {
 } from '@iii-dev/console-ui'
 import type { KeyboardEvent } from 'react'
 import type { ComputerSessionInfo } from '../lib/computer'
-import { formatAge, shortEndpoint } from '../lib/format'
+import { describeEndpoint, formatAge } from '../lib/format'
 
 interface SessionRailProps {
   sessions: ComputerSessionInfo[]
@@ -25,6 +25,8 @@ interface SessionRailProps {
   busyId: string | null
   onSelect: (sessionId: string) => void
   onStop: (sessionId: string) => void
+  /** Open the launcher from the empty list (narrow, where the stage is hidden). */
+  onNew?: () => void
 }
 
 export function SessionRail({
@@ -34,6 +36,7 @@ export function SessionRail({
   busyId,
   onSelect,
   onStop,
+  onNew,
 }: SessionRailProps) {
   if (sessions.length === 0) {
     if (loading) {
@@ -55,8 +58,11 @@ export function SessionRail({
     return (
       <EmptyState
         compact
-        title="No sessions yet."
-        description="Desktops started here or from chat appear in this list live."
+        title="No desktops yet"
+        description="Ones you or agents start appear here live."
+        action={
+          onNew ? { label: 'Start a desktop', onClick: onNew } : undefined
+        }
       />
     )
   }
@@ -98,8 +104,8 @@ export function SessionRail({
                   <span className="cp-ui-rail-id">{session.session_id}</span>
                   <Badge variant="default">{session.os}</Badge>
                 </span>
-                <span className="cp-ui-rail-meta">
-                  {shortEndpoint(session.endpoint)} · {session.screen.width}x
+                <span className="cp-ui-rail-meta" title={session.endpoint}>
+                  {describeEndpoint(session.endpoint)} · {session.screen.width}x
                   {session.screen.height} · {formatAge(session.last_used_ms)}
                 </span>
               </button>
@@ -110,7 +116,7 @@ export function SessionRail({
                 disabled={busyId === session.session_id}
                 onClick={() => onStop(session.session_id)}
               >
-                stop
+                Stop
               </Button>
             </div>
           </li>

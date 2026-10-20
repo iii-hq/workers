@@ -1,5 +1,6 @@
 import {
   Button,
+  type Host,
   IconButton,
   Input,
   type JsonValue,
@@ -8,11 +9,14 @@ import {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
-import { Trash2 } from 'lucide-react'
+import { LoaderCircle, Trash2 } from 'lucide-react'
 import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { HUB_WORKER, type JudgeSetup, judgeOptions, useJudgeProviders, useJudgeSetup } from './judge-providers'
 import { ConfigurationHostContext, useModelCatalog, withStoredModel } from './model-catalog'
+import { mergeChoices, useRemoteChoices } from './remote-choices'
 import {
   emptyStructuredValue,
   renameStructuredKey,
@@ -24,6 +28,7 @@ import type {
   DynamicMapFieldSpec,
   FilterListFieldSpec,
   FormFieldSpec,
+  JudgeProviderFieldSpec,
   ModelFieldSpec,
   ObjectCollectionFieldSpec,
   ObjectMapFieldSpec,
@@ -137,6 +142,8 @@ function RawScalarControl({
 }
 
 function ScalarField({ field, basePath = [], ...context }: FieldProps) {
+  // Before any return: a hook runs on every render.
+  const remote = useRemoteChoices(field.kind === 'select' ? field.optionsFrom : undefined)
   if (
     field.kind !== 'text' &&
     field.kind !== 'password' &&
@@ -182,16 +189,18 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
       )
     }
   } else if (field.kind === 'select') {
-    const selected = typeof value === 'string' ? value : undefined
-    const knownSelection = field.options.some((option) => option.value === selected)
+    // An optional select stored as "" is unset, not an unknown literal.
+    const selected = typeof value === 'string' && !(field.optional && value === '') ? value : undefined
+    const choices = field.optionsFrom ? mergeChoices(field.options, remote, selected) : field.options
+    const knownSelection = choices.some((option) => option.value === selected)
     if (selected !== undefined && !knownSelection) {
-      const fallback = field.options[0]?.value ?? ''
+      const fallback = choices[0]?.value ?? ''
       const replacement = selectLiteralForRawValue(
         selected,
-        field.options.map((option) => option.value),
+        choices.map((option) => option.value),
         fallback,
       )
-      const replacementLabel = field.options.find((option) => option.value === replacement)?.label ?? replacement
+      const replacementLabel = choices.find((option) => option.value === replacement)?.label ?? replacement
       control = (
         <RawScalarControl
           id={id}
@@ -208,7 +217,7 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
       control = (
         <Select
           value={selected}
-          options={field.options.map(({ value, label, description }) => ({
+          options={choices.map(({ value, label, description }) => ({
             value,
             label,
             title: description,
@@ -249,6 +258,7 @@ function ScalarField({ field, basePath = [], ...context }: FieldProps) {
           min={field.min}
           max={field.max}
           step={field.step ?? 1}
+          placeholder={field.placeholder}
           value={displayValue(value)}
           onChange={(next) => {
             if (field.optional && next === '') {
@@ -391,6 +401,183 @@ function ModelField({
         </div>
       }
     />
+  )
+}
+
+function JudgeProviderField(
+  props: FieldRenderContext & {
+    field: JudgeProviderFieldSpec
+    basePath?: ConfigPath
+  },
+) {
+  const host = useContext(ConfigurationHostContext)
+  return host ? <JudgeProviderControl {...props} host={host} /> : null
+}
+
+/** `judge` and `judge-typesafe` → `judge and judge-typesafe`. */
+const setupNames = (names: readonly string[]) => names.join(' and ')
+
+function setupCopy(setup: JudgeSetup) {
+  const starting = setup.add.length === 0
+  const names = setupNames([...setup.start, ...setup.add])
+  const hub = [...setup.start, ...setup.add].includes(HUB_WORKER)
+  return {
+    headline: starting
+      ? `${names} ${setup.start.length > 1 ? 'are' : 'is'} not running`
+      : hub
+        ? 'No judge installed'
+        : 'No judge provider installed',
+    detail: starting
+      ? 'computer::run asks the judge to pick each step, so runs answer judge_unavailable until it is back.'
+      : hub
+        ? 'computer::run asks a judge to pick each step. Installing adds the judge hub with TypeSafe, which needs a TYPESAFE_API_KEY.'
+        : 'The judge hub is running but has no judge-<provider> worker to ask. TypeSafe needs a TYPESAFE_API_KEY.',
+    action: starting ? `Start ${names}` : `Install ${names}`,
+    busy: starting ? `Starting ${names}…` : `Installing ${names}…`,
+    failed: starting ? `Could not start ${names}` : `Could not install ${names}`,
+    command: [
+      ...setup.start.map((name) => `iii trigger compose::restart container=${name}`),
+      ...(setup.add.length > 0
+        ? [`iii trigger compose::add ${setup.add.map((name) => `worker=${name}`).join(' ')}`]
+        : []),
+    ].join('\n'),
+  }
+}
+
+function JudgeProviderControl({
+  field,
+  basePath = [],
+  host,
+  ...context
+}: FieldRenderContext & {
+  field: JudgeProviderFieldSpec
+  basePath?: ConfigPath
+  host: Host
+}) {
+  const judges = useJudgeProviders(host, field.owner)
+  const setup = useJudgeSetup(host, judges.setup !== null)
+  const path = joinPath(basePath, field.path)
+  const stored = atPath(context.root, path)
+  const selected = typeof stored === 'string' && stored !== '' ? stored : undefined
+  const error = errorFor(context.errors, path)
+  const errorId = error ? `${fieldId(path)}-error` : undefined
+  const loading = judges.providers === null && judges.error === null
+  const options = judgeOptions(judges.providers ?? [], selected)
+  const running = setup.state.phase === 'running'
+
+  let notice: ReactNode = null
+  if (judges.error && judges.providers === null) {
+    notice = (
+      <StatusPanel
+        variant="warn"
+        headline="Could not list judge providers"
+        detail={judges.error}
+        action={
+          <Button type="button" variant="ghost" size="sm" onClick={judges.reload}>
+            Retry
+          </Button>
+        }
+      />
+    )
+  } else if (judges.setup) {
+    const pending = judges.setup
+    const copy = setupCopy(pending)
+    const failed = setup.state.phase === 'failed' ? setup.state.error : null
+    notice = (
+      <StatusPanel
+        variant={failed ? 'alert' : 'warn'}
+        role={failed ? 'alert' : undefined}
+        headline={failed ? copy.failed : copy.headline}
+        detail={
+          <>
+            {failed ?? copy.detail}
+            <span className="console-worker-config-command">{copy.command}</span>
+            {setup.state.phase === 'running' && setup.state.note ? (
+              <span role="status" className="console-worker-config-progress">
+                {setup.state.note}
+              </span>
+            ) : null}
+          </>
+        }
+        action={
+          <Button type="button" variant="pill" size="sm" disabled={running} onClick={() => void setup.run(pending)}>
+            {running ? <LoaderCircle className="iii-ui-spin" aria-hidden /> : null}
+            {running ? copy.busy : failed ? 'Retry' : copy.action}
+          </Button>
+        }
+      />
+    )
+  } else if (selected && judges.providers && !judges.providers.some((provider) => provider.key === selected)) {
+    notice = (
+      <StatusPanel
+        variant="warn"
+        headline={`judge-${selected} is not installed`}
+        detail={
+          <>
+            computer::run answers judge_unavailable until it is. Pick an installed provider, or add it:
+            <span className="console-worker-config-command">iii trigger compose::add worker=judge-{selected}</span>
+          </>
+        }
+      />
+    )
+  } else if (
+    judges.providers &&
+    judges.providers.length > 0 &&
+    judges.providers.every((provider) => provider.problem)
+  ) {
+    notice = (
+      <StatusPanel
+        variant="warn"
+        headline="No judge provider is ready"
+        detail={`${judges.providers
+          .map((provider) => `judge-${provider.key}: ${provider.problem}`)
+          .join(
+            '. ',
+          )}. Set the key in that worker's settings, or add a local provider such as judge-decider, which needs no key.`}
+      />
+    )
+  }
+
+  const row = (
+    <SettingsRow
+      role={notice ? 'presentation' : undefined}
+      data-field={path[0]}
+      data-path={path.join('.')}
+      label={field.label}
+      description={field.description}
+      meta={
+        error ? (
+          <span id={errorId} className="console-worker-config-error">
+            {error}
+          </span>
+        ) : undefined
+      }
+      control={
+        <Select
+          value={selected}
+          options={options}
+          onChange={(next) => context.onChange(setAtPath(context.root, path, next))}
+          allowEmpty
+          emptyLabel="Judge default"
+          onClear={() => context.onChange(deleteAtPath(context.root, path))}
+          placeholder={loading ? 'Looking for judges…' : 'Judge default'}
+          disabled={loading || options.length === 0}
+          aria-busy={loading}
+          aria-label={field.label}
+          aria-invalid={Boolean(error)}
+          aria-describedby={errorId}
+          className="console-worker-config-select"
+        />
+      }
+    />
+  )
+  if (!notice) return row
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: SettingsList is an embeddable ARIA list rather than a semantic ul.
+    <div className="console-worker-config-composite" role="listitem">
+      {row}
+      <div className="console-worker-config-notice">{notice}</div>
+    </div>
   )
 }
 
@@ -2063,6 +2250,7 @@ export function FieldRenderer(props: FieldProps) {
     return <ScalarField {...props} />
   }
   if (field.kind === 'model') return <ModelField {...props} field={field} />
+  if (field.kind === 'judge-provider') return <JudgeProviderField {...props} field={field} />
   if (field.kind === 'string-list') return <StringListField {...props} field={field} />
   if (field.kind === 'dynamic-map') return <DynamicMapField {...props} field={field} />
   if (field.kind === 'filter-list') return <FilterListField {...props} field={field} />

@@ -1,6 +1,6 @@
 iii: v1
 name: iii/deepwork
-version: 0.3.0
+version: 0.4.4
 description: "Multi-agent workflows on iii with the kanban board as the task list: one lead per ticket with its own sub-agents, parallel waves, independent verify and review, and bounded rounds. Code goals get a dev flow: approved design and plan, test-first tickets each in its own git worktree, a branch review and a finish you choose."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/deepwork
@@ -15,6 +15,8 @@ workers:
   state: ">=0.22.18"
   # 0.1.21: subtasks + parent_id (#1396), compact writes (#1400), add_labels / remove_labels (#1384).
   kanban: ^0.1.21
-  # shell::exec and coder::* preloaded by the work and verify tiers. No caret: projects pin
-  # ide@latest, and ^0.12 would hold it below 0.13. Not `shell` (a registry alias) or `coder`.
-  ide: ">=0.12.0"
+  # shell::exec and coder::* preloaded by the work and verify tiers. 0.12.19, the first synced
+  # manifest after #1150, carries shell::job-finished, which long runs wait on instead of polling.
+  # No caret: projects pin ide@latest, and ^0.12 would hold it below 0.13. Not `shell` (a registry
+  # alias) or `coder`.
+  ide: ">=0.12.19"

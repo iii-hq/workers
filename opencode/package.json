@@ -1,6 +1,6 @@
 {
   "name": "opencode",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "private": true,
   "description": "OpenCode as an iii worker: headless turns over the iii bus, raw events on the opencode::raw-event trigger type, AgentEvent frames on opencode::agent-event.",
   "license": "Apache-2.0",
@@ -23,7 +23,7 @@
     "opencode-worker": "./dist/index.js"
   },
   "dependencies": {
-    "iii-sdk": "0.24.5",
+    "iii-sdk": "0.24.6",
     "yaml": "^2.6.0",
     "zod": "^4.0.0"
   },

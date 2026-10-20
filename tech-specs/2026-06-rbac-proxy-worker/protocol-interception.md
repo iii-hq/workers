@@ -51,14 +51,13 @@ enum TriggerAction { Enqueue { queue: String }, Void }
 - **Tracing.** `traceparent` / `baggage` (W3C Trace Context) ride both
   `InvokeFunction` and `InvocationResult`. The proxy forwards them untouched.
 - **`WorkerRegistered { worker_id }`** is the engine's first frame on a new
-  connection. The proxy forwards it downstream as-is (the upstream connection's
-  `worker_id` is the worker's identity).
-- **No `UnregisterTriggerType` variant exists in the Rust `Message` enum.** The
-  Node and Python SDKs do emit an `unregistertriggertype` wire frame, but the
-  Rust engine cannot deserialize it and **silently drops it** today
-  (`engine/mod.rs` logs a "json decode error" and continues). The proxy treats
-  it as an [unrecognised frame](#per-frame-interception) — forward unchanged —
-  not as a prefix-rewrite target.
+  connection. The proxy forwards it downstream (the upstream connection's
+  `worker_id` is the worker's identity), minus the protocol `features` it does
+  not enforce (see [iii 0.25 observe](#iii-025-observe)).
+- **`UnregisterTriggerType`.** Every SDK sends it when a provider retires a
+  trigger type. Engines before 0.25 cannot decode it and drop it; from 0.25 the
+  engine removes the type when the sender is its provider. It carries a trigger
+  type id, not a function id, so the proxy forwards it unchanged.
 
 ### The out-of-band rejection frame
 
@@ -92,9 +91,19 @@ message type, the direction it travels and what the proxy does.
 | `InvokeFunction` (`engine::*` discovery) | Forward; record `invocation_id → function_id` in the pending-override map so the matching result is rewritten. See [engine-overrides.md](engine-overrides.md). |
 | `InvokeFunction` (`engine::*` carve-out, e.g. `engine::channels::create`) | Allowed by carve-out → forward unchanged. |
 | `InvokeFunction` (other) | [Access resolution](rbac.md#access-resolution-order): deny → synthesize `InvocationResult{error: FORBIDDEN}` (matching the engine, which replies even for a `void` action — fabricate an `invocation_id` when it is `null`; the worker simply has no pending entry for it); allow + middleware set → invoke middleware on the control connection, reply with its result; allow + no middleware → resolve [prefix](#prefix-resolution) → forward. |
+| `InvokeFunction` (`engine::workers::register`) | Carve-out. When the auth result scopes the session to namespaces, the declared `data.namespace` (absent = `default`) must be one of them, else the engine's refusal is reproduced: the call's `FORBIDDEN` result, `RegistrationRejected{ code: NAMESPACE_FORBIDDEN }`, then Close. The declared namespace is recorded (an id is the session's own only in it), and `data.features` is reduced to what the proxy enforces. |
 | `InvocationResult` (worker answering a dispatched call) | Forward; correlation is by `invocation_id`, so the (bare) `function_id` is informational and passes through. |
+| `TriggerRegistrationResult` (a provider answering the engine) | Forward unchanged. |
+| `UnregisterTriggerType` | Forward unchanged. |
 | `RegisterService` | Forward unchanged (engine-internal service discovery; not gated). |
+| `Reattach` | Forward unchanged (carries the connection's own token). |
 | `Ping` / `Pong` | Forward unchanged. |
+| `Observe` | Refused: `ObserveResult{ state: "error", error: UNSUPPORTED }`. See [iii 0.25 observe](#iii-025-observe). |
+| anything else | Dropped. |
+
+Every `InvokeFunction` is gated in the namespace it names (`namespace`, absent =
+`default`); a non-string `namespace` is dropped, as the engine cannot decode
+it. `RegisterTrigger`'s target is checked in its `namespace` the same way.
 
 ### Engine → downstream (frames the engine sends)
 
@@ -104,11 +113,51 @@ message type, the direction it travels and what the proxy does.
 | `InvokeFunction` (engine dispatching a call **to** the worker) | Strip `{prefix}::` from `function_id` so the worker SDK finds its local handler → forward. Middleware does **not** apply to inbound dispatch. |
 | `InvocationResult` (result of a call the worker made) | If `invocation_id` is in the pending-override map → rewrite `result` per [engine-overrides.md](engine-overrides.md) and drop the map entry → forward; else forward unchanged. |
 | `TriggerRegistrationResult` | Strip `{prefix}::` from `function_id` (so the worker sees the id it sent) → forward. |
+| `RegistrationRejected`, `RegisterTrigger` / `UnregisterTrigger` (to a provider), `error` | Forward unchanged. |
 | `Ping` / `Pong` | Forward unchanged. |
+| anything else | Dropped. |
 
-Anything the proxy does not recognise is forwarded unchanged — the proxy never
-drops a frame it cannot classify, so protocol additions degrade to pass-through
-rather than breakage.
+**Unknown frame types are dropped, in both directions.** The engine behind the
+proxy has no RBAC session for the proxied connection, so it gates nothing: a
+frame type the proxy has not learned is a frame nobody gates. A protocol
+addition therefore stays closed through the proxy until the proxy learns it,
+rather than reaching the engine unchecked. Frames that are not JSON, or carry
+no `type`, are dropped too (the engine drops them anyway).
+
+### iii 0.25 observe
+
+iii 0.25 adds observers (`iii.observe`), owner delivery and local dispatch,
+negotiated per connection with protocol `features` (`observe.v1`,
+`local-dispatch.v1`). The proxy cannot gate them yet (the observed function,
+the target, the owner side), so it keeps them off:
+
+- **No features either way.** `data.features` of `engine::workers::register`
+  and `features` of `WorkerRegistered` are reduced to the features the proxy
+  enforces, which is none. The SDK then speaks the 0.24 protocol (`observe()`
+  fails with `UNSUPPORTED`, nothing runs in-process), and the engine sends the
+  connection none of the observe messages.
+- **`observe` is refused** with `ObserveResult{ state: "error", error:
+  UNSUPPORTED }`; `unobserve`, `observerack`, `invocationsobserved` and
+  `localinvocationstats` are dropped. The engine decodes these from any
+  connection, so a client that sends them anyway must not reach it.
+- **`InvokeFunction` with `activation`** (an owner delivery, which the engine
+  routes without a session) is refused with `UNSUPPORTED`. `caller` and
+  `observe_depth`, the SDK's own claims about the call chain that observers
+  read, are removed.
+- **`RegisterFunction.observe`** is removed (owner delivery, `args_format`, and
+  a `legacy_trigger_type` that would make the function a stand-in for another
+  provider's trigger type). Only an opt-out, `{ allow: false }`, is kept.
+- **`engine::observers::*`** is refused (`FORBIDDEN`) whatever
+  `expose_functions` says: the engine filters it by a session the proxied
+  connection does not have.
+- Engine → worker observe messages (`functionregistered`, `observeradded`,
+  `observerremoved`, `observeresult`, `observerstatechanged`) are dropped.
+
+The vendored wire fixtures (`rbac-proxy/tests/fixtures/protocol/observe/`) pin
+each case. Supporting observe (gating `observe` like `RegisterTrigger`, the
+owner frames, the observer builtins) is the next step; it needs the
+`on_observer_registration_function_id` hook, which the config already
+accepts.
 
 ## Registration frames
 

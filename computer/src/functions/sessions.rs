@@ -94,6 +94,10 @@ pub struct StartInput {
     /// the display under the cursor. Ignored with `endpoint` or `image`.
     #[serde(default)]
     pub monitor: Option<u32>,
+    /// Drive this machine even when the worker has a default `sandbox_image`
+    /// or `default_endpoint` configured. Refused with `image` or `endpoint`.
+    #[serde(default)]
+    pub native: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

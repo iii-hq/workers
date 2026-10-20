@@ -112,6 +112,23 @@ pub fn transient_recovery_entry_id(turn_id: &str, attempt: u32, outcome: &str) -
     )
 }
 
+/// A fresh explicit-compaction id (`cmp_<uuid>`), minted per `/compact`.
+pub fn new_compaction_id() -> String {
+    format!("cmp_{}", short_uuid())
+}
+
+/// The notice an explicit compaction appends when it starts, unless the
+/// request names the entry (the sender's `e_idem_` row).
+pub fn compaction_started_entry_id(compaction_id: &str) -> String {
+    format!("e_{}_started", sanitize(compaction_id))
+}
+
+/// The row an explicit compaction ends with: the `compaction` record, or the
+/// notice saying why there is none.
+pub fn compaction_outcome_entry_id(compaction_id: &str) -> String {
+    format!("e_{}_outcome", sanitize(compaction_id))
+}
+
 fn short_uuid() -> String {
     Uuid::new_v4().simple().to_string()
 }

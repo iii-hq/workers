@@ -62,6 +62,12 @@ struct LoadedSessionMeta {
     /// carries it from a parent onto the children it creates.
     #[serde(default)]
     kind: Option<String>,
+    /// Source session id when `session::fork` created this one.
+    #[serde(default)]
+    forked_from: Option<String>,
+    /// Milliseconds since epoch.
+    #[serde(default)]
+    created_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +189,16 @@ impl SessionClient {
             .meta(session_id)
             .await?
             .map(|meta| meta.metadata.unwrap_or_default()))
+    }
+
+    /// When `session::fork` created this session — `Ok(None)` for a session
+    /// it did not create, or one that does not exist.
+    pub async fn forked_at(&self, session_id: &str) -> Result<Option<i64>, HarnessError> {
+        Ok(self
+            .meta(session_id)
+            .await?
+            .filter(|meta| meta.forked_from.is_some())
+            .map(|meta| meta.created_at))
     }
 
     /// The coarse status the store holds (`idle` / `working` / `done` /

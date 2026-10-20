@@ -747,10 +747,15 @@ mod tests {
         ]
         .map(String::from)
         .into();
-        let resp =
-            crate::functions::exec_bg::spawn_host_job(None, Arc::new(test_cfg()), argv, overrides)
-                .await
-                .unwrap();
+        let resp = crate::functions::exec_bg::spawn_host_job(
+            None,
+            None,
+            Arc::new(test_cfg()),
+            argv,
+            overrides,
+        )
+        .await
+        .unwrap();
         let started = std::time::Instant::now();
         loop {
             let handle = crate::jobs::get(&resp.job_id).await.expect("job exists");

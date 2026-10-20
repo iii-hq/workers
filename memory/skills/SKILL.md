@@ -71,7 +71,9 @@ rule; point-in-time information belongs in memories.
   narrows to one label.
 - `memory::preview` — the FULL injection dry-run for a hypothetical chat
   message: the system-prompt rules section, the memories a turn would be
-  handed (floor + budget applied), and the appended message verbatim.
+  handed (floor + budget applied), and the appended message verbatim;
+  naming a directory's bank (`<name>-<6 hex>`) previews it with
+  `default_bank` read under it, as its turns get it.
 - `memory::tags` — a bank's distinct tags with counts. Add `tags` on save
   when the user wants memories organized within a bank.
 - `memory::bank::create / list / delete` — named memory scopes; delete trashes.

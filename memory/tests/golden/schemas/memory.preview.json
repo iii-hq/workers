@@ -6,7 +6,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to preview; omitted: the calling session's bank, else the configured default.",
+        "description": "Bank to preview; a directory's bank (`<name>-<6 hex>`) reads `default_bank` under it, as its turns do. Omitted: the calling session's bank, else the configured default.",
         "type": [
           "string",
           "null"
@@ -158,6 +158,13 @@
       },
       "PreviewMemory": {
         "properties": {
+          "bank": {
+            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "memory": {
             "$ref": "#/definitions/Memory"
           },

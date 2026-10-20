@@ -2,7 +2,7 @@
 
 [package]
 name = "ios-simulator"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 publish = false
 
@@ -15,7 +15,7 @@ name = "ios_simulator"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.5"
+iii-sdk = "=0.24.6"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"

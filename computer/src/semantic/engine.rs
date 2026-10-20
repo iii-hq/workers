@@ -88,8 +88,9 @@ pub struct Row {
     pub r#ref: String,
     /// Level below the walk root (1 = its child).
     pub depth: u32,
-    /// Its line without the ref, then up to three named ancestors (find's
-    /// line).
+    /// Its line without the ref.
+    pub line: String,
+    /// `line`, then up to three named ancestors (find's line).
     pub text: String,
     pub el: ElementData,
 }
@@ -277,6 +278,7 @@ impl Engine {
                             rows.push(Row {
                                 r#ref: r.clone(),
                                 depth,
+                                line: element_line(None, &el),
                                 text: described(&walk, &el),
                                 el: el.clone(),
                             });

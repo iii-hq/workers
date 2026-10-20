@@ -237,6 +237,21 @@ pub struct SendResponse {
     /// What `options.reasoning` resolved to; absent when the send named none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResolvedReasoning>,
+    /// Set when the message was the `/compact` command: nothing was appended
+    /// and no turn ran. The compaction runs in the background; its start and
+    /// outcome reach every client through the transcript and
+    /// `harness::compaction`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<CompactionStarted>,
+}
+
+/// What a `/compact` send started.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompactionStarted {
+    pub compaction_id: String,
+    /// The transcript row its start notice takes (the `idempotency_key`'s
+    /// `e_idem_` id when the send carried one).
+    pub entry_id: String,
 }
 
 /// The shared result of starting (or merging) a turn.
@@ -275,6 +290,9 @@ async fn handle_with_delivery_lock(
     req: SendRequest,
     caller_holds_target_session_lock: bool,
 ) -> Result<SendResponse, HarnessError> {
+    if let Some(command) = compact_command(&req.message) {
+        return start_compaction(deps, req, command).await;
+    }
     let out = start_with_delivery_lock(deps, req, caller_holds_target_session_lock).await?;
     Ok(SendResponse {
         session_id: out.session_id,
@@ -284,6 +302,99 @@ async fn handle_with_delivery_lock(
         queued: out.queued.then_some(true),
         deduplicated: out.deduplicated.then_some(true),
         reasoning: out.reasoning,
+        compaction: None,
+    })
+}
+
+/// The `/compact` command, whatever client typed it.
+fn compact_command(message: &MessageInput) -> Option<crate::compaction::Command> {
+    match message {
+        MessageInput::Text(text) => crate::compaction::parse(text),
+        MessageInput::Message(message) => crate::compaction::parse_message(message),
+    }
+}
+
+/// `/compact` is a command, not a prompt: the model never sees it (it used to
+/// answer it with a made-up "summary" and compact nothing). Starts the
+/// compaction in the background and returns at once, like any send.
+async fn start_compaction(
+    deps: &Deps,
+    req: SendRequest,
+    command: crate::compaction::Command,
+) -> Result<SendResponse, HarnessError> {
+    let session_id = req.session_id.clone().ok_or_else(|| {
+        HarnessError::InvalidRequest(
+            "nothing to compact: /compact needs an existing session (`session_id`)".into(),
+        )
+    })?;
+    let prev = super::compact::compactable_session(deps, &session_id).await?;
+    let cfg = deps.cfg().await;
+    if let Some(key) = &req.idempotency_key {
+        if let Some(existing) =
+            crate::state::get_idem(&deps.iii, key, cfg.session_timeout_ms).await?
+        {
+            return Ok(SendResponse {
+                session_id: existing.session_id,
+                turn_id: existing.turn_id,
+                accepted: true,
+                merged: None,
+                queued: None,
+                deduplicated: Some(true),
+                reasoning: None,
+                compaction: None,
+            });
+        }
+    }
+    let (model, provider) = resolve_model_route(
+        None,
+        &req,
+        prev.as_ref().map(|record| &record.options),
+        None,
+    )?;
+    let compaction_id = ids::new_compaction_id();
+    let entry_id = req
+        .idempotency_key
+        .as_deref()
+        .map(ids::idem_user_entry_id)
+        .unwrap_or_else(|| ids::compaction_started_entry_id(&compaction_id));
+    // No turn starts: answer with the session's current one.
+    let turn_id = prev
+        .map(|record| record.turn_id)
+        .unwrap_or_else(|| compaction_id.clone());
+    if let Some(key) = &req.idempotency_key {
+        let record = IdemRecord {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            entry_id: entry_id.clone(),
+            ts: AgentMessage::now_ms(),
+        };
+        let _ = crate::state::put_idem(&deps.iii, key, &record, cfg.session_timeout_ms).await;
+    }
+    let request = crate::compaction::Request {
+        session_id: session_id.clone(),
+        model,
+        provider,
+        instructions: command.instructions,
+        entry_id: Some(entry_id.clone()),
+        mark_working: true,
+    };
+    let background = deps.clone();
+    let id = compaction_id.clone();
+    tokio::spawn(async move {
+        crate::compaction::run(&background, request, id).await;
+    });
+    Ok(SendResponse {
+        session_id,
+        turn_id,
+        accepted: true,
+        merged: None,
+        queued: None,
+        deduplicated: None,
+        reasoning: None,
+        compaction: Some(CompactionStarted {
+            compaction_id,
+            entry_id,
+        }),
     })
 }
 
@@ -793,6 +904,13 @@ pub async fn edit_queued(
     deps: &Deps,
     req: EditQueuedRequest,
 ) -> Result<EditQueuedResponse, HarnessError> {
+    // A queued row drains into the transcript as a prompt: an edit to `/compact`
+    // would reach the model, which answers it with a made-up summary.
+    if compact_command(&req.message).is_some() {
+        return Err(HarnessError::InvalidRequest(
+            "/compact cannot replace a queued message; send it on its own".into(),
+        ));
+    }
     let cfg = deps.cfg().await;
     let rows =
         crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;

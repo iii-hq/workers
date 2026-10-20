@@ -285,6 +285,56 @@ describe('model switch confirmation', () => {
     await expect(pending).resolves.toBe(true)
     expect(s.onSwitch).toHaveBeenCalledTimes(1)
   })
+  // The harness writes a "compacting…" notice before the marker, and either
+  // may arrive before or after the outcome.
+  it('treats its own start notice and marker as its own change', async () => {
+    const s = setup()
+    let finish!: (value: unknown) => void
+    s.compact.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+    )
+    const { pending } = await s.request()
+    await act(async () => button('Compact and switch').click())
+    s.setTranscript([
+      { id: 'started', role: 'system', content: 'compacting…', createdAt: 9 },
+      marker(),
+    ])
+    await act(async () =>
+      finish({
+        status: 'ok',
+        compactionEntryId: 'marker',
+        ownEntryIds: ['started', 'marker'],
+      }),
+    )
+    await expect(pending).resolves.toBe(true)
+    expect(s.onSwitch).toHaveBeenCalledTimes(1)
+  })
+  it('still sees an external change beside its own rows', async () => {
+    const s = setup()
+    let finish!: (value: unknown) => void
+    s.compact.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+    )
+    const { pending } = await s.request()
+    await act(async () => button('Compact and switch').click())
+    s.setTranscript([
+      { id: 'started', role: 'system', content: 'compacting…', createdAt: 9 },
+      external(),
+    ])
+    await act(async () =>
+      finish({
+        status: 'ok',
+        compactionEntryId: 'marker',
+        ownEntryIds: ['started', 'marker'],
+      }),
+    )
+    await expect(pending).resolves.toBe(false)
+    expect(s.onSwitch).not.toHaveBeenCalled()
+  })
   it('rejects an external transcript change even when the own marker is present', async () => {
     const s = setup()
     let finish!: (value: unknown) => void

@@ -233,7 +233,7 @@ function formatCompactResult(result: CompactResult): string {
         result.autoContinued ? ' (continued)' : ''
       }`
     case 'busy':
-      return 'compact: another compaction is in progress — try again in a moment'
+      return 'compact: this conversation is already being compacted — try again when it finishes'
     case 'overflow':
       return `compact failed: ${result.message}`
     case 'empty':
@@ -1731,7 +1731,7 @@ export function ChatView({
       // session::message-added snapshot reconcile this optimistic row in place.
       const messageId = newMessageId()
       const trimmed = payload.text.trim()
-      // `/compact` is handled here, not by the harness: no turn follows, so
+      // `/compact` starts no turn (the harness runs it as a compaction), so
       // the row is flagged `command` and never marks the session working.
       // Text after the command is one-shot guidance for the summariser.
       const compact = parseCompactCommand(trimmed)
@@ -1749,7 +1749,7 @@ export function ChatView({
       // Mid-stream sends are queued by the harness (MOT-3837): the message
       // waits above the composer instead of rendering mid-transcript, and pops
       // into the chat when its drained row arrives via session events.
-      // `/compact` keeps the normal path (compactSession refuses while live).
+      // `/compact` is never parked: the harness compacts beside a live turn.
       const willQueue =
         !isCompact &&
         (isStreaming || serverWorking) &&
@@ -1783,6 +1783,30 @@ export function ChatView({
       }
 
       if (compact) {
+        // A server-backed session sends the command through `harness::send`:
+        // the harness compacts and every client watching the session sees it
+        // start (a notice that takes this row's entry id, and "compacting
+        // context" on the status line) and end (the marker, or a notice
+        // saying why not). Nothing here waits on the summariser.
+        if (backend.sendCompactCommand) {
+          try {
+            await backend.sendCompactCommand(
+              sessionId,
+              model,
+              trimmed,
+              messageId,
+            )
+          } catch (err) {
+            onAppendMessage(
+              conversationId,
+              makeSystemNotice(
+                `compact failed: ${err instanceof Error ? err.message : String(err)}`,
+                'error',
+              ),
+            )
+          }
+          return
+        }
         if (!backend.compactSession) {
           onAppendMessage(
             conversationId,
@@ -1809,15 +1833,7 @@ export function ChatView({
             contextWindow,
             compact.instructions,
           )
-          if (result.status === 'ok' && backend.id === 'real') {
-            // Server-backed transcript: the compaction custom entry arrives
-            // via session::message-added and renders the marker (which the
-            // CTX estimator anchors on); just resolve the pending notice.
-            onPatchMessage(conversationId, pendingId, {
-              content: formatCompactResult(result),
-              tone: 'info',
-            })
-          } else if (result.status === 'ok') {
+          if (result.status === 'ok') {
             const marker: SystemMessage = {
               id: uid(),
               role: 'system',

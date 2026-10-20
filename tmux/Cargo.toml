@@ -16,7 +16,7 @@ name = "tmux"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.24.5"
+iii-sdk = "=0.24.6"
 iii-console-ui = { path = "../crates/console-ui" }
 iii-config-client = { path = "../crates/config-client" }
 arc-swap = "1"

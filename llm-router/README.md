@@ -57,7 +57,7 @@ partial content, so consumers never hang on a half-open stream.
 | `router::models::list` | List catalog models, filterable by `provider` / `capability` / `modality` (`chat` by default, `stt`, `tts`, `any`). |
 | `router::models::get` | Fetch one model record (`null` when unknown). |
 | `router::models::supports` | Check one capability flag for one model. |
-| `router::embed` | Batch text embeddings through the first embed-capable provider in the registry (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
+| `router::embed` | Batch text embeddings through the first embed-capable provider in the registry, then embed-only workers (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
 | `router::transcribe` | Speech to text: `{model?, provider?, audio_base64, mime?, language?, prompt?}` → `{provider, model, text, segments[]?, language?, duration_secs?}`. The provider comes from the named `provider`, else from the catalog owner of the `stt` model, else the first provider that declared one. |
 | `router::speak` | Text to speech: `{model?, provider?, text, voice?, format?, language?, speed?}` → `{provider, model, audio_base64, mime, voice?, duration_secs?}`. Same resolution over `tts` models. |
 | `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
@@ -98,6 +98,25 @@ capable, `provider::<id>::refresh_models` (model discovery),
 `provider::<id>::count_tokens` (prompt token counting),
 `provider::<id>::embed` (embeddings), and the speech pair
 `provider::<id>::transcribe` / `provider::<id>::speak`.
+
+A worker that serves only embeddings registers `provider::<id>::embed` and
+never calls `router::provider::register`, so it stays out of
+`router::provider::list` and out of every model picker; iii-directory's local
+MiniLM (`minilm`) is one. A `router::embed` call that names no provider tries
+these embed-only surfaces last, alphabetically, found through
+`engine::functions::list` in the router's namespace, and only when every
+registered provider either has no embed surface (Anthropic only, say) or is
+not configured for good (provider-openai with no API key). Configuring that
+provider later moves callers to its vector space: memory re-embeds into the
+model the reply reports. One rule blocks the fallback with
+`router/provider_unavailable`, since another embedder would put the caller's
+vectors in another space, so the caller retries later: a registered provider
+whose `embed` has answered before (its registry record keeps an `embeds` flag)
+is not found and was live in the last 15 minutes (its registration, its last
+answered embed, or the first 3 minutes after the router starts), whatever else of it is live
+(restarting, partly re-registered, or the router just restarted). After that
+window it no longer blocks: the registry keeps every record, so a removed
+provider must not hold the fallback for good.
 
 `router::chat` accepts an optional structured prompt next to the flat
 `system_prompt`: `system_sections` (ordered `{text, cache_boundary}` blocks)

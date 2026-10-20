@@ -49,6 +49,7 @@ fn catalog_lists_all_functions_in_registration_order() {
         ids,
         vec![
             "harness::send",
+            "harness::compact",
             "harness::spawn",
             "harness::ask",
             "harness::turn",

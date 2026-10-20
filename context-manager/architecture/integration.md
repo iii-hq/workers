@@ -240,8 +240,8 @@ this directly — `assemble` applies compaction inline.
   | { status: "ok"; summary: string; tail_start_index: number | null;
       tokens_before: number; tokens_after: number; used_prior_summary: boolean }
   | { status: "busy" }       // a compaction lease is held; retry later
-  | { status: "empty" }      // nothing to compact (empty history / empty summary)
-  | { status: "overflow" };  // summariser unavailable (no llm-router) or it failed
+  | { status: "empty" }      // nothing to compact: no head older than the kept tail
+  | { status: "overflow" };  // summariser unavailable (no llm-router), failed, or returned nothing
 ```
 
 The summary follows a fixed Markdown template (Goal / Constraints & Preferences
@@ -253,6 +253,15 @@ emphasises, but the template and its sections always stay in force. It is
 trimmed, ignored when blank, cut past 2000 chars, and never carried forward —
 pass it again to steer a later compaction. Requires `llm-router`; without it you
 get `overflow`.
+
+The verbatim tail never takes the whole history and always starts at a safe
+cut (a user or assistant message, so a call stays with its result). When no
+suffix fits the verbatim budget — one prompt followed by a long tool run, or a
+turn that overflowed the window — the cut moves inside the turn, until the tail
+leaves at least half the input budget free. Pass no inline `limits` unless they
+are the model's real ones: the summariser's fragments are sized from them, and
+an understated `max_output_tokens` makes every large history `overflow` once
+the router adds the model's real output allowance to the request.
 
 ## 5. The compaction round trip
 

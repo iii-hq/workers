@@ -1189,7 +1189,7 @@ jobs:
 
       - name: Run the pr suite on the workers built from this PR
         id: e2e
-        uses: iii-hq/harness-e2e/.github/actions/verify-stack@e13e884fb6c292e5796e445be67157ef4bfce04e
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@8d40a4ead930cae748b6d1d822312633583ec514
         with:
           token: ${{ steps.app.outputs.token }}
           comment-token: ${{ github.token }}

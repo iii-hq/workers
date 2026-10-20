@@ -107,6 +107,35 @@ pub struct CountTokensOutput {
     pub by_role: Option<ByRoleTokens>,
 }
 
+pub struct CompactParams {
+    pub messages: Vec<Value>,
+    pub model_id: String,
+    pub provider: Option<String>,
+    pub previous_summary: Option<String>,
+    /// One-shot guidance for the summariser (the text after `/compact`).
+    pub instructions: Option<String>,
+    pub lease_key: String,
+}
+
+/// `context::compact`'s response, discriminated on `status`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CompactOutput {
+    Ok {
+        summary: String,
+        /// Index into the request `messages` where the verbatim tail begins;
+        /// `None` when everything was summarised.
+        #[serde(default)]
+        tail_start_index: Option<usize>,
+        tokens_before: u64,
+        #[serde(default)]
+        tokens_after: Option<u64>,
+    },
+    Busy,
+    Empty,
+    Overflow,
+}
+
 #[derive(Clone)]
 pub struct ContextClient {
     iii: Arc<IIIClient>,
@@ -165,6 +194,41 @@ impl ContextClient {
             Ok(v) => serde_json::from_value::<AssembleOutput>(v)
                 .map_err(|e| format!("context::assemble parse: {e}")),
             Err(e) => Err(format!("context::assemble: {e}")),
+        }
+    }
+
+    /// Summarise the head of `messages` under the session lease. No inline
+    /// limits: the router resolves the model's real output allowance, which
+    /// sizes every summariser fragment to what the provider accepts.
+    pub async fn compact(&self, params: CompactParams) -> Result<CompactOutput, String> {
+        let mut model = json!({ "id": params.model_id });
+        if let Some(p) = &params.provider {
+            model["provider"] = json!(p);
+        }
+        let mut options = json!({ "lease_key": params.lease_key });
+        if let Some(s) = &params.previous_summary {
+            options["previous_summary"] = json!(s);
+        }
+        if let Some(i) = &params.instructions {
+            options["instructions"] = json!(i);
+        }
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "context::compact".into(),
+                payload: json!({
+                    "messages": params.messages,
+                    "model": model,
+                    "options": options,
+                }),
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
+        match resp {
+            Ok(v) => serde_json::from_value::<CompactOutput>(v)
+                .map_err(|e| format!("context::compact parse: {e}")),
+            Err(e) => Err(format!("context::compact: {e}")),
         }
     }
 

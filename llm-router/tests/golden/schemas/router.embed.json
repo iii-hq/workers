@@ -1,5 +1,5 @@
 {
-  "description": "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider or discovers the first embed-capable one from the live registry; one vector per input, order preserved.",
+  "description": "Batch text embeddings through a provider's provider::<id>::embed surface. Names a provider or discovers the first embed-capable one from the live registry, then from embed-only workers; one vector per input, order preserved.",
   "function_id": "router::embed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

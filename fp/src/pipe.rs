@@ -152,9 +152,13 @@ fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'st
     }
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
-    // surface operator paths) and workspace::* is console picker plumbing —
-    // both ignore fs_scope, so the stamp gate below would admit them.
-    if function_id == "shell::config-status" || function_id.starts_with("shell::workspace::") {
+    // surface operator paths), kill-session-jobs is the harness::stop sweep
+    // (it reaps any session's jobs) and workspace::* is console picker
+    // plumbing — all ignore fs_scope, so the stamp gate below would admit them.
+    if function_id == "shell::config-status"
+        || function_id == "shell::kill-session-jobs"
+        || function_id.starts_with("shell::workspace::")
+    {
         return Some(
             "shell control-plane functions are not supported in a pipe — steps run with \
              worker authority, which would bypass the agent-level deny on them",
@@ -645,6 +649,7 @@ mod tests {
         // (iii-permissions.yaml), state::* excepted on purpose
         for (function, needle) in [
             ("shell::config-status", "control-plane"),
+            ("shell::kill-session-jobs", "control-plane"),
             ("shell::workspace::roots", "control-plane"),
             ("fp::pipe", "nest"),
             ("engine::register_trigger", "trigger control"),

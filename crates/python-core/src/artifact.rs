@@ -11,7 +11,7 @@ pub const PYTHON_WASI_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pyt
 /// sidecar file it wrote — so this can never drift from what was actually
 /// checked at build time (see build.rs's `SHA256` pin).
 pub const ZIP_SHA256: &str = include_str!(concat!(env!("OUT_DIR"), "/python-wasi.sha256"));
-pub const WASMTIME_VERSION: &str = "48.0.4";
+pub const WASMTIME_VERSION: &str = "48.0.6";
 
 /// How often the epoch ticker fires; deadlines are expressed in these ticks.
 pub const EPOCH_TICK_MS: u64 = 10;
@@ -63,7 +63,7 @@ pub fn ensure_extracted() -> Result<PathBuf> {
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
         let Some(rel) = entry.enclosed_name() else {
-            anyhow::bail!("zip entry {} has an unsafe path", entry.name());
+            anyhow::bail!("zip entry {i} has an unsafe path");
         };
         let dest = tmp.path().join(rel);
         if entry.is_dir() {

@@ -50,6 +50,8 @@ pub struct Deps {
     /// Coalesced wake-ups for the recovery passes the engine's worker
     /// connect/disconnect/announce feed drives; see [`crate::engine_events`].
     pub kicks: crate::engine_events::RecoveryKicks,
+    /// Explicit compactions running in this process; see [`crate::compaction`].
+    pub compactions: crate::compaction::Compactions,
 }
 
 impl Deps {
@@ -82,6 +84,7 @@ impl Deps {
             trigger_handles: crate::bindings::TriggerHandles::default(),
             expiry_timers: crate::timer::OneShots::new(),
             kicks: crate::engine_events::RecoveryKicks::default(),
+            compactions: crate::compaction::Compactions::default(),
         }
     }
 

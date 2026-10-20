@@ -147,6 +147,8 @@
 [data-iii-ui="console"] .console-worker-config-select {
   width: min(100%, 280px);
   min-width: 180px;
+  /* A % width doesn't bound the row's auto column: a long label would widen it. */
+  max-width: 280px;
 }
 /* Multi-line text: the Input recipe (surface fill, hover, focus border) on a textarea. */
 [data-iii-ui="console"] .console-worker-config-textarea {
@@ -236,6 +238,25 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+/* A status under its row, aligned with the row's own padding. */
+[data-iii-ui="console"] .console-worker-config-notice {
+  padding: 0 16px 14px;
+}
+[data-iii-ui="console"] .console-worker-config-command {
+  display: block;
+  margin-top: 6px;
+  font: 400 11.5px/1.5 var(--font-mono);
+  color: var(--color-ink-faint);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-iii-ui="console"] .console-worker-config-progress {
+  display: block;
+  margin-top: 4px;
+  font: 400 11.5px/1.45 var(--font-sans);
+  color: var(--color-ink-faint);
+  overflow-wrap: anywhere;
 }
 [data-iii-ui="console"] .console-worker-config-sublist,
 [data-iii-ui="console"] .console-worker-config-map-list {
@@ -467,6 +488,9 @@
   [data-iii-ui="console"] .console-worker-config-model-picker {
     width: 100%;
     min-width: 0;
+  }
+  [data-iii-ui="console"] .console-worker-config-select {
+    max-width: none;
   }
   [data-iii-ui="console"] .console-worker-config-model {
     justify-content: flex-start;

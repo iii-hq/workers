@@ -23,14 +23,14 @@ An unregistered provider returns `code: "provider_unavailable"`.
    `iii trigger engine::functions::info --json '{"function_id":"judge::evaluate"}'`.
    Use `judge::cancel` as `function_id` for that contract.
    For unfamiliar question/reply shapes,
-   read [the mixed request and typed response examples](../reference.md#evaluate).
+   read [the mixed request and typed response examples](https://github.com/iii-hq/workers/blob/main/judge/reference.md#evaluate).
 2. For evaluation, supply 1–512 evaluations with unique nonblank IDs, JSON state
    and a nonempty map of distinct question IDs. Choose primitives using the table
    below. Supply a positive `timeout_ms` within the operator's `max_timeout_ms`
    (default 300000). For queued work, also set `expires_at_unix_ms`, an absolute
    Unix deadline in milliseconds. Omit `model` to use the worker default.
    `options.attempt_timeout_ms` bounds each network attempt; retries are the
-   provider's fixed policy, see [Request options and retries](../reference.md#request-options-and-retries).
+   provider's fixed policy, see [Request options and retries](https://github.com/iii-hq/workers/blob/main/judge/reference.md#request-options-and-retries).
 3. Invoke using the positional function name and `--json`, then inspect `status`
    before reading results. Completion requires all requested typed answers or a
    reported failure; keep `stats.usage_complete` with the observed usage.
@@ -81,7 +81,7 @@ invocations may get different ids. `cancelled: true` means the signal was
 accepted, not that the provider rolled anything back; still await the original
 call, which answers `code: "cancelled"`. Absent, finished or other callers' ids
 return `cancelled: false`. Details and the bus example:
-[cancellation](../reference.md#cancellation).
+[cancellation](https://github.com/iii-hq/workers/blob/main/judge/reference.md#cancellation).
 
 ## Resolve chat mentions
 
@@ -93,7 +93,7 @@ worker-defined `@<name>(id="…")` mentions through their providers: each one's
 need it — the judge's harness hook already resolves the mentions users write
 into a `<mentions>` block — but it verifies a new provider
 (`ade/mentions`) and serves surfaces outside the harness. See
-[chat mentions](../reference.md#chat-mentions).
+[chat mentions](https://github.com/iii-hq/workers/blob/main/judge/reference.md#chat-mentions).
 
 ## Result and operational boundaries
 
@@ -101,10 +101,10 @@ into a `<mentions>` block — but it verifies a new provider
   `status: "error"`, `code`, optional `http_status`, a bounded and key-redacted
   `provider_error`, `retry_after_ms` and `stats`, with no partial answers. Bus
   invocation failures are separate. See
-  [results and failures](../reference.md#handle-results-and-failures).
+  [results and failures](https://github.com/iii-hq/workers/blob/main/judge/reference.md#handle-results-and-failures).
 - `usage` counters are independently nullable; `stats.usage_complete` is false
   whenever any counter is unknown, so zero never means free.
 - Deadlines, retries, permits and byte limits are in
-  [limits and compatibility](../reference.md#limits-and-compatibility).
+  [limits and compatibility](https://github.com/iii-hq/workers/blob/main/judge/reference.md#limits-and-compatibility).
   Credentials stay in the provider's configuration or environment; requests
   never carry keys, provider URLs or extra headers.

@@ -170,12 +170,16 @@ describe('namespaced browser connection', () => {
     await client.trigger('engine::functions::list', {})
     await client.trigger('configuration::get', {})
     await client.trigger('worker::list', {})
+    await client.trigger('sandbox::catalog::list', {})
+    await client.trigger('sandbox-code-runner::run', {})
 
     expect(triggers.map((request) => request.namespace)).toEqual([
       undefined,
       'default',
       'default',
       'default',
+      'default',
+      undefined,
     ])
   })
 

@@ -159,15 +159,17 @@ Feature: context::compact — summarise the head, keep a verbatim tail
     Then the response field "status" is "overflow"
     And no lease claim remains
 
-  # Prevents: persisting an empty string as the conversation's memory.
-  Scenario: an empty summary is reported as empty, never persisted as ok
+  # Prevents: persisting an empty string as the conversation's memory, and
+  # reporting it as `empty` ("nothing to compact"), which callers show as a
+  # session too small to summarise.
+  Scenario: an empty summary is reported as a summariser failure, never persisted as ok
     Given the router knows model "big" with context window 200000 and max output 8000
     And the summariser returns an empty summary
     And a user message of ~9000 tokens
     And a user message "q2"
     And a user message "q3"
     When I compact the history with model "big"
-    Then the response field "status" is "empty"
+    Then the response field "status" is "overflow"
     And no lease claim remains
 
   # Prevents: base64 image payloads being shipped to the summariser —

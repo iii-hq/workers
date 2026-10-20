@@ -34,6 +34,12 @@ use crate::frames::{FrameChange, FrameChangeKind, FrameNotifier};
 const STATE_SCOPE: &str = "computer_sessions";
 /// Bus RPC timeout for the state side-writes.
 const SIDE_WRITE_TIMEOUT_MS: u64 = 5_000;
+/// How long a screencast runs with no `computer::frame-changed` binding
+/// before the pump stops itself (a console window closed without a stop).
+#[cfg(not(test))]
+const UNWATCHED_STOP: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const UNWATCHED_STOP: Duration = Duration::from_millis(200);
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -161,6 +167,10 @@ pub struct Session {
     last_used_ms: AtomicI64,
     driver: Arc<dyn Driver>,
     screencast_active: AtomicBool,
+    /// Console viewers of the live screen (the page and the corner previews,
+    /// in any window): the pump runs while one remains. A mutex, not an
+    /// atomic, so a leave and a join never interleave around start/stop.
+    screencast_viewers: Mutex<usize>,
     frame_seq: AtomicU64,
     /// The ONLY frame storage: the newest frame, replaced on every capture.
     latest_frame: StdMutex<Option<Arc<LatestFrame>>>,
@@ -203,6 +213,7 @@ impl Session {
             last_used_ms: AtomicI64::new(now_ms()),
             driver,
             screencast_active: AtomicBool::new(false),
+            screencast_viewers: Mutex::new(0),
             frame_seq: AtomicU64::new(0),
             latest_frame: StdMutex::new(None),
             screencast_task: Mutex::new(None),
@@ -216,6 +227,11 @@ impl Session {
 
     pub fn driver(&self) -> &Arc<dyn Driver> {
         &self.driver
+    }
+
+    /// The worker configuration as it is now.
+    pub fn config(&self) -> Arc<crate::config::WorkerConfig> {
+        self.config.load_full()
     }
 
     pub fn touch(&self) {
@@ -262,6 +278,27 @@ impl Session {
         }
     }
 
+    /// A viewer joins the live screen (`computer::screencast::start`): the
+    /// pump starts with the first, and restarts if a capture error ended it.
+    pub async fn acquire_screencast(self: &Arc<Self>) {
+        let mut viewers = self.screencast_viewers.lock().await;
+        *viewers += 1;
+        self.start_screencast().await;
+    }
+
+    /// A viewer leaves (`computer::screencast::stop`): the last one out stops
+    /// the pump and clears the frame. Never underflows.
+    pub async fn release_screencast(&self) {
+        let mut viewers = self.screencast_viewers.lock().await;
+        if *viewers == 0 {
+            return;
+        }
+        *viewers -= 1;
+        if *viewers == 0 {
+            self.stop_screencast().await;
+        }
+    }
+
     /// Stop the screencast pump and clear the stored frame so a later viewer
     /// does not see a stale image. Idempotent.
     pub async fn stop_screencast(&self) {
@@ -278,8 +315,28 @@ impl Session {
     }
 
     async fn screencast_pump(self: Arc<Self>) {
+        let mut unwatched_since: Option<std::time::Instant> = None;
         loop {
             if !self.screencast_active.load(Ordering::Relaxed) {
+                break;
+            }
+            // A window that closed never says stop, but the engine drops its
+            // frame-changed binding: with nobody following for a while, stop.
+            if self.frames.watching(&self.id) {
+                unwatched_since = None;
+            } else if unwatched_since
+                .get_or_insert_with(std::time::Instant::now)
+                .elapsed()
+                >= UNWATCHED_STOP
+            {
+                tracing::info!(session = %self.id, "screencast unwatched; stopping pump");
+                self.screencast_active.store(false, Ordering::Relaxed);
+                // Never wait here: a leaving viewer may hold the count while
+                // it awaits this very task.
+                if let Ok(mut viewers) = self.screencast_viewers.try_lock() {
+                    *viewers = 0;
+                }
+                self.clear_frame();
                 break;
             }
             let interval = self.config.load().screencast_interval_ms().max(1);
@@ -380,6 +437,31 @@ impl Drop for SlotGuard {
     }
 }
 
+/// The `(image, endpoint)` a start drives: the call's own, else the configured
+/// `sandbox_image` / `default_endpoint`. A sandbox image boots a fresh desktop
+/// in an iii-sandbox and wins over an endpoint; neither drives this machine.
+/// `native` pins this machine, configured defaults included.
+fn target(
+    image: Option<String>,
+    endpoint: Option<String>,
+    native: bool,
+    cfg: &crate::config::WorkerConfig,
+) -> Result<(Option<String>, Option<String>), String> {
+    let given = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let (image, endpoint) = (given(image), given(endpoint));
+    if native {
+        if image.is_some() || endpoint.is_some() {
+            return Err("native drives this machine: drop image and endpoint".to_string());
+        }
+        return Ok((None, None));
+    }
+    let configured = |d: &str| given(Some(d.to_string()));
+    Ok((
+        image.or_else(|| configured(&cfg.sandbox_image)),
+        endpoint.or_else(|| configured(&cfg.default_endpoint)),
+    ))
+}
+
 pub struct Sessions {
     map: Mutex<HashMap<String, Arc<Session>>>,
     /// Sessions whose driver is still connecting; counted against the cap.
@@ -410,17 +492,18 @@ impl Sessions {
     }
 
     /// Connect a new desktop session. Enforces the concurrency cap, resolves
-    /// the endpoint (arg overrides `default_endpoint`), verifies the
-    /// connection with a `screen_size` probe, persists the record, and emits
-    /// `computer::session-started`.
+    /// the target ([`target`]), verifies the connection with a `screen_size`
+    /// probe, persists the record, and emits `computer::session-started`.
     pub async fn start(
         &self,
         image: Option<String>,
         endpoint: Option<String>,
         os: Option<String>,
         monitor: Option<u32>,
+        native: bool,
     ) -> Result<Arc<Session>, String> {
         let cfg = self.config.load_full();
+        let (image, endpoint) = target(image, endpoint, native, &cfg)?;
         // Claim a slot under the map lock, counting sessions still connecting:
         // the connect below can boot a whole microVM, so two concurrent starts
         // must not both get past the cap and then discover it at insert time.
@@ -436,23 +519,6 @@ impl Sessions {
             self.connecting.fetch_add(1, Ordering::SeqCst);
             SlotGuard(self.connecting.clone())
         };
-        // A sandbox image (arg or configured default) boots a fresh desktop in
-        // an iii-sandbox; it takes precedence over an endpoint.
-        let image = image
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                let d = cfg.sandbox_image.trim();
-                (!d.is_empty()).then(|| d.to_string())
-            });
-        let endpoint = endpoint
-            .map(|e| e.trim().to_string())
-            .filter(|e| !e.is_empty())
-            .or_else(|| {
-                let d = cfg.default_endpoint.trim();
-                (!d.is_empty()).then(|| d.to_string())
-            });
-
         // Driver selection: a sandbox image wins, else a remote endpoint,
         // else the local machine (native driver).
         let (driver, endpoint_used, default_os): (Arc<dyn Driver>, String, String) =
@@ -465,15 +531,22 @@ impl Sessions {
                     cfg.screenshot_quality as u8,
                     cfg.sandbox_network,
                     cfg.sandbox_idle_timeout_secs,
+                    cfg.sandbox_memory_mb,
+                    cfg.sandbox_cpus,
                     cfg.command_timeout_ms,
                 )
                 .await?;
                 let label = format!("sandbox:{}", host.sandbox_id());
                 (Arc::new(host), label, "linux".to_string())
             } else if let Some(ep) = &endpoint {
-                let client =
-                    RemoteClient::connect(ep, cfg.connect_timeout_ms, cfg.command_timeout_ms)
-                        .await?;
+                let client = RemoteClient::connect(
+                    ep,
+                    cfg.connect_timeout_ms,
+                    cfg.command_timeout_ms,
+                    cfg.max_screenshot_dimension as u32,
+                    cfg.screenshot_quality as u8,
+                )
+                .await?;
                 let label = client.endpoint().to_string();
                 (Arc::new(client), label, cfg.os.clone())
             } else {
@@ -523,6 +596,22 @@ impl Sessions {
             )
             .await;
         Ok(session)
+    }
+
+    /// A caller started driving `id` with `function`: the console's live
+    /// preview shows it. Fire-and-forget, like every event here.
+    pub async fn activity(&self, id: &str, function: &str) {
+        self.emitter
+            .emit(
+                EventKind::Activity,
+                id,
+                &crate::events::ActivityEvent {
+                    session_id: id.to_string(),
+                    function: function.to_string(),
+                    timestamp: now_ms(),
+                },
+            )
+            .await;
     }
 
     pub async fn get(&self, id: &str) -> Option<Arc<Session>> {
@@ -670,6 +759,8 @@ impl Sessions {
                 &rec.endpoint,
                 cfg.connect_timeout_ms,
                 cfg.command_timeout_ms,
+                cfg.max_screenshot_dimension as u32,
+                cfg.screenshot_quality as u8,
             )
             .await?;
             let label = client.endpoint().to_string();
@@ -986,6 +1077,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn viewers_share_one_screencast_and_the_last_one_out_stops_it() {
+        let notifier = FrameNotifier::new(Arc::new(Viewers::default()));
+        let (s, _) = session("c1", &notifier);
+        bind(&notifier, "page", "c1");
+        s.acquire_screencast().await; // the page
+        s.acquire_screencast().await; // a corner preview in another window
+        wait_until("a frame", || s.latest_frame().is_some()).await;
+        s.release_screencast().await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(s.screencast_active(), "the page still watches");
+        assert!(s.latest_frame().is_some());
+        s.release_screencast().await;
+        assert!(!s.screencast_active());
+        assert!(s.latest_frame().is_none());
+        // A stray leave never underflows into a stop of the next viewer.
+        s.release_screencast().await;
+        s.acquire_screencast().await;
+        assert!(s.screencast_active());
+        s.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_screencast_nobody_follows_stops_itself() {
+        let notifier = FrameNotifier::new(Arc::new(Viewers::default()));
+        let (s, _) = session("c1", &notifier);
+        // A window joined, then closed: no frame-changed binding, no stop.
+        s.acquire_screencast().await;
+        wait_until("pump stopped", || !s.screencast_active()).await;
+        assert!(s.latest_frame().is_none());
+        // Its count went with it: the next viewer's leave stops the pump.
+        bind(&notifier, "page", "c1");
+        s.acquire_screencast().await;
+        assert!(s.screencast_active());
+        s.release_screencast().await;
+        assert!(!s.screencast_active());
+    }
+
+    #[tokio::test]
     async fn stopping_without_a_frame_sends_nothing() {
         let viewers = Arc::new(Viewers::default());
         let notifier = FrameNotifier::new(viewers.clone());
@@ -1054,5 +1183,30 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), s2.shutdown())
             .await
             .expect("shutdown waited for the shared act lock");
+    }
+
+    #[test]
+    fn native_pins_this_machine_over_configured_defaults() {
+        let cfg = crate::config::WorkerConfig {
+            sandbox_image: "anthropic".into(),
+            default_endpoint: "guest:7000".into(),
+            ..Default::default()
+        };
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            target(None, None, false, &cfg),
+            Ok((some("anthropic"), some("guest:7000"))),
+            "a bare start takes the configured defaults"
+        );
+        assert_eq!(
+            target(some(" cua "), some(" "), false, &cfg),
+            Ok((some("cua"), some("guest:7000")))
+        );
+        assert_eq!(
+            target(None, Some(String::new()), true, &cfg),
+            Ok((None, None))
+        );
+        assert!(target(some("cua"), None, true, &cfg).is_err());
+        assert!(target(None, some("guest:7000"), true, &cfg).is_err());
     }
 }
