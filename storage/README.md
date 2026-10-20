@@ -407,15 +407,20 @@ read (the vault never returns values, stored literals come back
   stored bucket sends it to (entries that do not parse count too). `testBucket`
   counts every stored bucket, and so does `saveBucket`, except that a bucket
   moved to a new provider, endpoint or account takes its own `access_key_id`,
-  `secret_access_key` and `account_id` along in the same fields (only an
-  identifier and a signature leave); its `session_token`, `credentials_json`,
-  `credentials_file` and API token, sent in clear or as bearer credentials, must
-  be entered again. A value never changes field. A Duplicate to the same
-  endpoint keeps working.
+  `secret_access_key` and `account_id` along in the same fields when no other
+  bucket shares them (only an identifier and a signature leave; the access key
+  id follows even as a `secret://` reference because it is an identifier sent in
+  clear in every SigV4 request — storing it as a secret keeps it out of the
+  configuration, not out of requests). Its `session_token`, `credentials_json`
+  and `credentials_file`, sent in clear or as bearer credentials, must be
+  entered again, and a value another bucket shares (a Duplicate) needs a new
+  one. An r2 API token always goes to Cloudflare's API, so it follows. A value
+  never changes field. A Duplicate to the same endpoint keeps working.
 - A `credentials_file` is a file of the engine host: a regular JSON key file of
   at most 64 KiB (never a FIFO or device), of type `service_account` or
   `authorized_user`, whose `token_uri` is Google's; one no stored bucket uses
-  only goes to Google. Every failure gives the same message.
+  only goes to Google. Every failure gives the same message, including a key the
+  auth library or Google refuses.
 - The engine host's ambient credentials — the AWS default chain for an s3 bucket
   without keys, Google ADC for a gcs bucket without credentials — only go to the
   provider itself or to an endpoint a stored bucket already uses them with.
