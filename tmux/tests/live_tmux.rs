@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use iii_sdk::{scope, Caller, InvocationCtx};
 use tmux::collector::{Collector, ConsoleClients};
 use tmux::config::WorkerConfig;
 use tmux::events::Monitor;
@@ -454,6 +455,40 @@ async fn console_terminal_is_a_live_tmux_client() {
         })
         .await
         .unwrap_err();
+    assert!(foreign.contains("credentials are invalid"));
+
+    // On 0.25 engines the invocation's caller is the identity; the payload
+    // stamp only stands in without one.
+    let invoked_by = |worker_id: &str| InvocationCtx {
+        function_id: "tmux::terminal::replay".into(),
+        invocation_id: "inv-1".into(),
+        caller: Some(Caller {
+            worker_id: Some(worker_id.into()),
+            ..Caller::default()
+        }),
+        activation: None,
+        observe_depth: 0,
+        metadata: None,
+        traceparent: None,
+        baggage: None,
+    };
+    let replay_as = |terminal: TerminalRef| ReplayRequest {
+        terminal,
+        after_sequence: 0,
+    };
+    let unstamped = TerminalRef {
+        caller_worker_id: None,
+        ..reference.clone()
+    };
+    scope(invoked_by(CALLER), manager.replay(replay_as(unstamped)))
+        .await
+        .unwrap();
+    let foreign = scope(
+        invoked_by("someone-else"),
+        manager.replay(replay_as(reference.clone())),
+    )
+    .await
+    .unwrap_err();
     assert!(foreign.contains("credentials are invalid"));
 
     // switch moves only this client.
