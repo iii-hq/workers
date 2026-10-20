@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: cron
 tags: [cron, schedule, timer, job]
-description: Schedule functions with cron expressions - registers the `cron` trigger type.
+description: Schedule functions with cron expressions - registers the `cron` trigger type and the observable function `cron::on-tick` (iii 0.25).
 config:
   adapter:
     name: local

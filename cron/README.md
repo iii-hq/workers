@@ -3,7 +3,9 @@
 Schedules registered functions with cron expressions. Any function bound to a
 `cron` trigger is invoked by this worker at the next matching UTC time. The
 worker replaces the legacy built-in cron worker while keeping the trigger type
-and payload shape stable.
+and payload shape stable. On iii 0.25 engines it also hosts
+[`cron::on-tick`](#observable-function-cronon-tick), an observable function
+next to the trigger type.
 
 ## Install
 
@@ -94,8 +96,49 @@ with:
 All schedules use UTC. Missed fires while the worker is stopped are skipped;
 there is no catch-up replay.
 
+The trigger type is deprecated with `registerTrigger` in iii 0.25 and keeps
+working on 0.24 and 0.25 engines. New consumers on a 0.25 engine can observe
+`cron::on-tick` instead.
+
 Write the day of week as a name (`Mon` ... `Sun`). Numerically the crate counts
 Sunday as 1, so `0 0 9 * * 1` fires on Sunday, not Monday.
+
+## Observable function `cron::on-tick`
+
+On an iii 0.25 engine, observe `cron::on-tick` with the expression as args:
+
+```typescript
+iii.registerFunction('reports::daily', async ({ observer_id, input }) => {
+  // input: { trigger, expression, scheduled_time, actual_time }
+  await sendDigest(input.scheduled_time)
+})
+
+const digest = iii.observe(
+  { function_id: 'cron::on-tick', args: { expression: '0 0 9 * * Mon-Fri' } },
+  'reports::daily',
+)
+await digest.ready()
+// later: await digest.dispose()
+```
+
+| Arg | Required | Description |
+|---|---|---|
+| `expression` | yes | Same grammar and validation as the trigger config. A bad expression fails `ready()` with `INVALID_CRON_EXPRESSION`; a missing `expression` or any other arg fails with `INVALID_ARGS`. |
+
+- The target receives the tick in the envelope's `input`:
+  `{ trigger: "cron", expression, scheduled_time, actual_time }`. There is no
+  `job_id` (one tick serves every observer of the expression; the envelope's
+  `observer_id` says which observer fired) and no `condition_function_id`
+  (add `filters` to the observer, e.g.
+  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00Z' } }`, or check in
+  the target).
+- The observer's `metadata` arrives as each activation's sidecar.
+- Bindings and observers on the same expression share one job and one lock
+  operation per fire. The job stops when the last of them leaves.
+- `cron::on-tick` is an event source: invoking it directly is refused with
+  `FORBIDDEN`.
+- On an engine without observe (0.24), `observe` fails with `UNSUPPORTED`;
+  bind the `cron` trigger type there.
 
 ## Console trigger activity
 
@@ -147,4 +190,5 @@ fails loudly instead of silently racing the built-in worker for ownership of
 | Condition | only explicit `false` blocks | same |
 | Lock TTL | 30s | same |
 | Lock backends | kv (process-local), redis | local (process-local), redis |
-| Service functions | none | none |
+| Service functions | none | none (`cron::on-tick` is observed, never invoked) |
+| Jobs | one per trigger | one per distinct expression, shared by bindings and observers |
