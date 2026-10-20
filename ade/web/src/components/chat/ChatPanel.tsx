@@ -1,5 +1,6 @@
 import { SquarePen } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { AddProjectDialog } from '@/components/chat/AddProjectDialog'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
 import {
@@ -257,22 +258,20 @@ export function ChatPanel({
           setNarrowView('chat')
         },
       },
-      {
-        id: 'search-chats',
-        title: 'Search conversations',
-        detail: 'Put the caret in the sidebar search',
-        keywords: ['find', 'sessions', 'filter'],
-        run: () => {
-          setNarrowView('list')
-          window.requestAnimationFrame(() => {
-            surfaceRef.current
-              ?.querySelector<HTMLElement>('[data-conversation-search]')
-              ?.focus()
-          })
-        },
-      },
     ])
   }, [commands, createNew, pinned])
+
+  // Add project: a new chat scoped to the folder just added, so the first
+  // message lands where the user pointed.
+  const [addProjectOpen, setAddProjectOpen] = useState(false)
+  const handleProjectAdded = useCallback(
+    (path: string) => {
+      const id = createNew()
+      setWorkingDir(id, path)
+      setNarrowView('chat')
+    },
+    [createNew, setWorkingDir],
+  )
 
   const handleCreate = useCallback(() => {
     createNew()
@@ -383,6 +382,11 @@ export function ChatPanel({
         onOpenChange={setImportOpen}
         onImported={handleSelect}
       />
+      <AddProjectDialog
+        open={addProjectOpen}
+        onOpenChange={setAddProjectOpen}
+        onAdded={handleProjectAdded}
+      />
       <ConversationLoadNotice
         loading={conversationsLoading && connectionState === 'connected'}
         error={
@@ -427,6 +431,7 @@ export function ChatPanel({
               activeId={activeId}
               narrow={narrow}
               onCreate={handleCreate}
+              onAddProject={() => setAddProjectOpen(true)}
               onImport={() => setImportOpen(true)}
               onSelect={handleSelect}
               onRename={rename}

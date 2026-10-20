@@ -22,7 +22,10 @@ vi.mock('@/lib/sessions/removal-preview', () => ({
 vi.mock('@/hooks/use-container-narrow', () => ({
   useContainerNarrow: () => [() => {}, false],
 }))
-vi.mock('@/hooks/use-media-query', () => ({ useMediaQuery: () => false }))
+vi.mock('@/hooks/use-media-query', () => ({
+  DESKTOP_POINTER_QUERY: '(hover: hover) and (pointer: fine)',
+  useMediaQuery: () => false,
+}))
 vi.mock('@/components/sidebar/ConversationSidebar', () => ({
   ConversationSidebar: ({ onRemove }: { onRemove: (id: string) => void }) => (
     <button type="button" onClick={() => onRemove(mocks.target)}>

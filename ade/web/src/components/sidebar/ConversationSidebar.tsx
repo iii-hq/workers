@@ -2,15 +2,16 @@ import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
   CircleQuestionMark,
   Download,
+  FolderPlus,
   Search,
   Settings,
   SquarePen,
 } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { KeyCombo } from '@/components/ui/KeyCombo'
 import { hashForSettingsLanding } from '@/hooks/use-hash-route'
 import { hideSideChats } from '@/lib/chat-aside'
-import { filterConversations } from '@/lib/conversation-filter'
 import {
   countConversations,
   groupConversationRoots,
@@ -28,6 +29,7 @@ import {
   parseConversationListView,
   sortConversationRoots,
 } from '@/lib/conversation-view'
+import { bindingsFor } from '@/lib/keybindings/registry'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
@@ -46,6 +48,8 @@ interface ConversationSidebarProps {
   narrow?: boolean
   /** Start a conversation — the New chat row at the top of the sidebar. */
   onCreate?: () => void
+  /** Browse for a folder to remember as a project — the Add project row. */
+  onAddProject?: () => void
   /** Import conversations from a file — a quiet action beside the list title. */
   onImport?: () => void
   onSelect: (id: string) => void
@@ -119,6 +123,7 @@ export function ConversationSidebar({
   activeId,
   narrow = false,
   onCreate,
+  onAddProject,
   onImport,
   onSelect,
   onRename,
@@ -171,8 +176,6 @@ export function ConversationSidebar({
     })
   }, [])
 
-  const [query, setQuery] = useState('')
-
   /* A chat joins the list on its first send: an unsent "new chat" is a
      local draft with nothing to show yet. The kind filter runs on the flat
      list before the tree is built, judging each row by its root's kind, so
@@ -195,21 +198,12 @@ export function ConversationSidebar({
      show the tag would just repeat the filter. */
   const tagKinds = view.kinds.length > 1
 
-  const roots = useMemo<ConvNode[]>(() => {
-    const q = query.trim()
-    const nodes: ConvNode[] = q
-      ? /* Flat matches while searching: a matched child under an unmatched
-           parent has no tree context to render, so no indent/caret. Sections
-           still apply — they are what tells a match from last month apart
-           from one from this morning. */
-        filterConversations(visible, q).map((conversation) => ({
-          conversation,
-          children: [],
-          depth: 0,
-        }))
-      : buildConversationTree(visible)
-    return sortConversationRoots(nodes, view.sort)
-  }, [visible, query, view.sort])
+  /* Finding a chat by name is the palette's job (the Search row opens it);
+     the list itself always shows the whole tree. */
+  const roots = useMemo<ConvNode[]>(
+    () => sortConversationRoots(buildConversationTree(visible), view.sort),
+    [visible, view.sort],
+  )
 
   /* `Date.now()` is read here rather than held in state: the bucket a chat
      falls into is only ever read beside its own relative timestamp, which the
@@ -260,30 +254,37 @@ export function ConversationSidebar({
             New chat
           </button>
         ) : null}
-        {/* Search is a row like the others; the field is the row. */}
-        <div className="relative">
-          <Search
-            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-neutral-500 dark:text-neutral-400"
-            aria-hidden
-          />
-          <input
-            name="conversation-search"
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.currentTarget.value)}
-            placeholder="Search"
-            aria-label="search conversations"
-            data-conversation-search=""
+        {onAddProject ? (
+          <button
+            type="button"
+            onClick={onAddProject}
             className={cn(
               NAV_ROW,
-              'pl-9 placeholder:text-neutral-600 focus:bg-neutral-100 dark:placeholder:text-neutral-400 dark:focus:bg-neutral-900',
               narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
             )}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') setQuery('')
-            }}
-          />
-        </div>
+          >
+            <FolderPlus className="size-4 shrink-0" aria-hidden />
+            Add project
+          </button>
+        ) : null}
+        {/* Search is the console's one search: the ⌘K palette, which lists
+            every chat by name beside pages and commands. */}
+        <button
+          type="button"
+          onClick={() => requestPaletteOpen()}
+          aria-label="Search and commands"
+          className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-[13px]')}
+        >
+          <Search className="size-4 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">Search</span>
+          {narrow ? null : (
+            <KeyCombo
+              binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
+              className="gap-0.5"
+              capClassName="min-w-5 rounded-md bg-white px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700"
+            />
+          )}
+        </button>
       </nav>
 
       <div className="flex items-center justify-between gap-2 px-2 pt-4 pb-1 pl-[18px]">
@@ -313,9 +314,7 @@ export function ConversationSidebar({
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
         {sections.length === 0 ? (
           <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
-            {query.trim() ? (
-              'No matches.'
-            ) : started.length === 0 ? (
+            {started.length === 0 ? (
               'No conversations yet. Start one above.'
             ) : (
               <>
@@ -381,9 +380,9 @@ export function ConversationSidebar({
       <div className="flex shrink-0 items-center justify-end gap-1 px-2 py-2">
         <button
           type="button"
-          onClick={() => requestPaletteOpen()}
-          aria-label="Help: search and commands"
-          title="Help: search and commands"
+          onClick={() => requestPaletteOpen({ query: 'shortcuts' })}
+          aria-label="Help and keyboard shortcuts"
+          title="Help and keyboard shortcuts"
           className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
         >
           <CircleQuestionMark className="size-4" aria-hidden />
