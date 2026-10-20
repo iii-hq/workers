@@ -491,7 +491,6 @@ export function App({
             setPaletteQuery('')
             setPaletteOpen(true)
           }}
-          onSplit={() => splitWorkspacePanel('right')}
           theme={themePreference}
           onThemeChange={setThemePreference}
         />
@@ -1362,7 +1361,7 @@ function WorkspacePanes({
       <section
         ref={containerRef}
         onScroll={(event) => handleMobileScroll(event.currentTarget)}
-        className="relative flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden pb-0 sm:snap-none sm:px-4 sm:pb-1.5"
+        className="relative flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden pb-0 sm:snap-none sm:px-1 sm:pb-1.5"
         aria-label="workspace panels"
       >
         {Array.from({ length: columns }, (_, column) => {

@@ -449,7 +449,10 @@ export function EdgeAddZone({
         'absolute inset-y-0 z-20 hidden pb-1.5 sm:flex',
         disabled && 'pointer-events-none',
         side === 'left' ? 'left-0' : 'right-0',
-        revealed ? 'w-32' : 'w-3 sm:w-4',
+        // Idle, the strip is the 4px gutter plus the panel's outermost
+        // 4px — a mouse resting on the edge still finds it, and nothing
+        // interactive lives under that sliver of panel.
+        revealed ? 'w-32' : 'w-1.5 sm:w-2',
       )}
       onPointerEnter={(e) => {
         if (disabled) return
@@ -535,7 +538,7 @@ export function EdgeAddZone({
                 className={cn(
                   // rounded-[3px]: the system's one-radius 6px reads pill-like
                   // on a 16px sliver — deliberately tighter here.
-                  'flex w-3 items-center justify-center rounded-[3px] sm:w-4',
+                  'flex w-1.5 items-center justify-center rounded-[3px] sm:w-2',
                   'border border-edge bg-panel/85 backdrop-blur-[2px]',
                   'edge-nudge',
                   side === 'right' && '[animation-delay:-5s]',

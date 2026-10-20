@@ -1,4 +1,4 @@
-import { Columns2, Menu, Plus, Search, SquarePen } from 'lucide-react'
+import { Menu, Plus, Search, SquarePen } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { ThemeSwitch } from '@/components/ui/ThemeSwitch'
@@ -39,8 +39,6 @@ export interface WorkspaceHeaderProps {
   settingsOpen: boolean
   onToggleSettings: () => void
   onOpenPalette: () => void
-  /** Add an empty panel on the right of the active workspace. */
-  onSplit: () => void
   theme: ThemePreference
   onThemeChange: (theme: ThemePreference) => void
 }
@@ -65,7 +63,6 @@ export function WorkspaceHeader({
   settingsOpen,
   onToggleSettings,
   onOpenPalette,
-  onSplit,
   theme,
   onThemeChange,
 }: WorkspaceHeaderProps) {
@@ -213,11 +210,10 @@ export function WorkspaceHeader({
           />
         </div>
 
-        {/* The bar's right-hand cluster: search, then the two actions that
-            change the whole workspace rather than one pane — a split and the
-            theme. Search keeps a fixed pill and carries its own chord (the
-            caps teach ⌘K on sight); it sits right, not centre, so the tab
-            strip gets every other pixel of the bar. */}
+        {/* The bar's right-hand cluster: search, then the theme. Search
+            keeps a fixed pill and carries its own chord (the caps teach ⌘K
+            on sight); it sits right, not centre, so the tab strip gets every
+            other pixel of the bar. */}
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -232,17 +228,8 @@ export function WorkspaceHeader({
             <KeyCombo
               binding={paletteBinding}
               className="gap-2"
-              capClassName="min-w-0 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
+              capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
             />
-          </button>
-          <button
-            type="button"
-            onClick={onSplit}
-            aria-label={hoverTitle('Split right', 'panel.split')}
-            title={hoverTitle('Split right', 'panel.split')}
-            className={cn(GHOST_CONTROL, 'size-8')}
-          >
-            <Columns2 className="size-4 shrink-0" aria-hidden />
           </button>
           <ThemeSwitch value={theme} onChange={onThemeChange} />
         </div>
