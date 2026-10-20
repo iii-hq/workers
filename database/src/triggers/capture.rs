@@ -11,22 +11,14 @@
 //! nothing. The bus calls it in-process, from the invocation that made the
 //! write; the function itself refuses invocations.
 //!
-//! Old consumers keep working two ways:
-//!
-//! * against an engine with observe, the function declares the old trigger
-//!   type as its `legacy_trigger_type`, and the engine turns each
-//!   `registerTrigger({ type: 'database::row-changed' })` into an observer
-//!   whose `legacy.config` is the old config (the legacy shim);
-//! * against an older engine, `legacy.rs` registers the old trigger type and
-//!   files each binding in the same index as a [`Sink::Trigger`]. It follows
-//!   the engine across reconnects, so an engine upgraded or rolled back under
-//!   the running worker switches between the two.
-//!
-//! Either way a legacy binding receives the event in its pre-0.25 shape
+//! Old consumers keep working unchanged: `legacy.rs` registers the old
+//! `database::row-changed` trigger type on every engine and files each
+//! binding in the same index as a [`Sink::Trigger`], validated by the same
+//! code as an observer. A binding receives the event in its pre-0.25 shape
 //! ([`RowChangedEvent::legacy_view`]).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use async_trait::async_trait;
@@ -37,7 +29,7 @@ use iii_sdk::{
 };
 use serde_json::Value;
 
-use super::bus::{RowChangedArgs, RowChangedEvent, ROW_CHANGED_TYPE};
+use super::bus::{RowChangedArgs, RowChangedEvent};
 use super::native;
 use super::sql::{self, Op};
 use crate::config::{CaptureMode, WorkerConfig};
@@ -57,9 +49,9 @@ pub const ROW_CHANGED_DESCRIPTION: &str =
 
 /// Registers `database::on-row-changed` with `capture` as its hooks, and
 /// attaches the returned ref to `capture`. Its observers' args are what the
-/// trigger config was; the old trigger type is its `legacy_trigger_type`, so
-/// the engine turns old `registerTrigger` calls into observers (the legacy
-/// shim).
+/// trigger config was. It declares no `legacy_trigger_type`: the worker
+/// serves the old trigger type itself, on every engine, and a live provider
+/// of a type wins over a stand-in anyway.
 ///
 /// Events are routed in-process by [`RowChangeBus`](super::RowChangeBus),
 /// never by invoking the function: a worker allowed to invoke it could
@@ -83,7 +75,6 @@ pub fn register(iii: &IIIClient, capture: &Arc<NativeCapture>) -> FunctionRef {
         .observe(
             Observe::owner()
                 .args_format::<RowChangedArgs>()
-                .legacy_trigger_type(ROW_CHANGED_TYPE)
                 .handler(capture.clone()),
         ),
     );
@@ -97,19 +88,18 @@ pub mod codes {
     pub const NATIVE_CAPTURE_REQUIRES_TABLE: &str = "NATIVE_CAPTURE_REQUIRES_TABLE";
     pub const NON_CANONICAL_TABLE: &str = "NON_CANONICAL_TABLE";
     pub const CAPTURE_INSTALL_FAILED: &str = "CAPTURE_INSTALL_FAILED";
-    /// A legacy binding's config that does not parse (the shim skips the
-    /// engine's `args_format` check for it).
+    /// A binding's config that does not parse.
     pub const CONFIG_ERROR: &str = "CONFIG_ERROR";
 }
 
 /// Where a routed event goes.
 #[derive(Clone)]
 pub enum Sink {
-    /// An observer (new, or made by the engine's legacy shim).
+    /// An observer of the function: the event as it is.
     Observer(Observer),
-    /// A pre-0.25 binding, against an engine without observe (`legacy.rs`):
-    /// called with `void`, its stored metadata riding along (a harness
-    /// binding's `__binding` pointer).
+    /// A binding of the old trigger type (`legacy.rs`): called with `void`
+    /// and the event in its pre-0.25 shape, its stored metadata riding along
+    /// (a harness binding's `__binding` pointer).
     Trigger {
         function_id: String,
         metadata: Option<Value>,
@@ -125,8 +115,6 @@ pub struct Route {
     pub table: Option<String>,
     pub ops: Option<Vec<Op>>,
     pub sink: Sink,
-    /// Whether the event goes out in its pre-0.25 shape.
-    pub legacy: bool,
     /// `(db, table as installed)` whose native capture this route holds.
     installed: Option<(String, String)>,
 }
@@ -188,24 +176,6 @@ impl RouteIndex {
         removed
     }
 
-    /// Removes every [`Sink::Trigger`] route, observers left in place.
-    fn remove_trigger_sinks(&self) -> Vec<Arc<Route>> {
-        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        let ids: Vec<String> = inner
-            .by_id
-            .values()
-            .filter(|route| matches!(route.sink, Sink::Trigger { .. }))
-            .map(|route| route.id.clone())
-            .collect();
-        let removed: Vec<Arc<Route>> = ids
-            .iter()
-            .filter_map(|id| Self::take(&mut inner, id))
-            .collect();
-        self.trigger_sinks
-            .fetch_sub(removed.len(), Ordering::AcqRel);
-        removed
-    }
-
     fn take(inner: &mut IndexInner, id: &str) -> Option<Arc<Route>> {
         let route = inner.by_id.remove(id)?;
         let key = (route.db.clone(), route.table.clone());
@@ -262,14 +232,6 @@ pub struct NativeCapture {
     /// reinstall and an orphan notify per write is near-free).
     installed: Mutex<HashMap<(String, String), usize>>,
     function: OnceLock<FunctionRef>,
-    /// Whether the engine on the current connection supports observe, as
-    /// `legacy::Fallback` last heard it. Against one that does not, the
-    /// observers the SDK still holds from an earlier engine stay filed but
-    /// hear nothing: the engine has none of them, and the SDK would send
-    /// their reports to the next engine with observe, a second delivery of
-    /// what the fallback already delivered. An engine that kept them acks
-    /// them again without calling the hooks, so their routes must stay.
-    engine_observes: AtomicBool,
     dispatch_timeout_ms: u64,
 }
 
@@ -287,7 +249,6 @@ impl NativeCapture {
             index: RouteIndex::default(),
             installed: Mutex::new(HashMap::new()),
             function: OnceLock::new(),
-            engine_observes: AtomicBool::new(true),
             dispatch_timeout_ms,
         }
     }
@@ -313,25 +274,29 @@ impl NativeCapture {
     }
 
     /// Whether any event can reach anyone: an active observer, or a binding
-    /// through the pre-0.25 fallback. A few atomic loads.
+    /// of the old trigger type. A few atomic loads.
     #[inline]
     pub fn is_listened(&self) -> bool {
-        (self.engine_observes.load(Ordering::Acquire)
-            && self.function.get().is_some_and(FunctionRef::is_observed))
+        (self.observers_hear() && self.function.get().is_some_and(FunctionRef::is_observed))
             || self.index.has_trigger_sinks()
     }
 
-    /// Records whether the engine on the current connection supports
-    /// observe (see the field).
-    pub fn set_engine_observes(&self, observes: bool) {
-        self.engine_observes.store(observes, Ordering::Release);
+    /// Whether the function's observers can hear anything: not while the
+    /// engine on the current connection lacks observe. The observers the SDK
+    /// still holds from an earlier engine stay filed then, but silent: the
+    /// engine has none of them, and the SDK would send their reports to the
+    /// next engine with observe, late deliveries of writes made while it was
+    /// away. (An engine that kept them acks them again without calling the
+    /// hooks, so their routes must stay.)
+    fn observers_hear(&self) -> bool {
+        self.iii.engine_supports_observe() != Some(false)
     }
 
     pub fn route_count(&self) -> usize {
         self.index.len()
     }
 
-    /// Hand `event` to every routed observer (and fallback binding). A miss
+    /// Hand `event` to every routed observer and binding. A miss
     /// on an observer's filters, or an observer removed meanwhile, is
     /// `Ok(false)` from `emit`, so the loop needs no guard.
     pub async fn route(&self, event: &RowChangedEvent) {
@@ -342,17 +307,12 @@ impl NativeCapture {
             return;
         }
         let mut legacy_value: Option<Value> = None;
-        let engine_observes = self.engine_observes.load(Ordering::Acquire);
+        let observers_hear = self.observers_hear();
         for route in routes {
             match &route.sink {
-                Sink::Observer(_) if !engine_observes => {}
+                Sink::Observer(_) if !observers_hear => {}
                 Sink::Observer(obs) => {
-                    let sent = if route.legacy {
-                        obs.emit(&event.legacy_view())
-                    } else {
-                        obs.emit(event)
-                    };
-                    if let Err(e) = sent {
+                    if let Err(e) = obs.emit(event) {
                         tracing::warn!(observer = %obs.id(), error = %e, "row-changed emit failed");
                     }
                 }
@@ -488,7 +448,6 @@ impl NativeCapture {
         route_id: String,
         args: RowChangedArgs,
         sink: Sink,
-        legacy: bool,
         installed: Option<(String, String)>,
     ) {
         let replaced = self.index.insert(Route {
@@ -497,7 +456,6 @@ impl NativeCapture {
             table: args.table,
             ops: args.ops,
             sink,
-            legacy,
             installed,
         });
         if let Some(old) = replaced {
@@ -510,18 +468,6 @@ impl NativeCapture {
         if let Some(route) = self.index.remove(route_id) {
             self.release(&route);
         }
-    }
-
-    /// Removes every pre-0.25 binding ([`Sink::Trigger`]) and releases their
-    /// holds: the trigger type that served them was unregistered, and the
-    /// engine hands them to the function's legacy shim as observers. Returns
-    /// how many there were.
-    pub fn unfile_trigger_sinks(&self) -> usize {
-        let removed = self.index.remove_trigger_sinks();
-        for route in &removed {
-            self.release(route);
-        }
-        removed.len()
     }
 
     fn release(&self, route: &Route) {
@@ -542,20 +488,15 @@ impl NativeCapture {
 
     /// After a config reload: late-rejects every observer the new config no
     /// longer supports (its database was removed, or became native while the
-    /// observer names no table). Legacy bindings, shim observers or fallback
-    /// triggers, stay filed, as before.
+    /// observer names no table). Bindings of the old trigger type stay filed
+    /// and match again if their database comes back, as before: rejecting
+    /// one would remove it for good, and its registrant would never hear why.
     pub async fn revalidate(&self) {
         let Some(function) = self.function.get() else {
             return;
         };
         let live = self.config.read().await;
         for obs in function.observers() {
-            // A legacy binding keeps its pre-0.25 behavior: it stays filed and
-            // matches again if its database comes back. Rejecting it would
-            // remove it for good, and its registrant would never hear why.
-            if obs.legacy().is_some() {
-                continue;
-            }
             let Ok(args) = obs.args::<RowChangedArgs>() else {
                 continue;
             };
@@ -703,26 +644,12 @@ impl NativeCapture {
 #[async_trait]
 impl ObserveHandler for NativeCapture {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let (args, install, legacy) = match obs.legacy() {
-            // The engine's legacy shim: `config` is the old trigger config,
-            // not validated against args_format. Validate it as the trigger
-            // handler did and canonicalize its table.
-            Some(legacy) => {
-                let (args, install) = Self::legacy_args(&legacy.config)?;
-                (args, install, true)
-            }
-            None => {
-                let args = obs.args::<RowChangedArgs>()?; // db required: checked by the engine
-                Self::check_canonical(&args)?;
-                let install = args.table.clone();
-                (args, install, false)
-            }
-        };
-        let installed = self.admit(&args, install.as_deref()).await?;
+        let args = obs.args::<RowChangedArgs>()?; // db required: checked by the engine
+        Self::check_canonical(&args)?;
+        let installed = self.admit(&args, args.table.as_deref()).await?;
         tracing::info!(
             observer = %obs.id(),
             target = %obs.target(),
-            legacy,
             db = %args.db,
             table = ?args.table,
             "row-changed observer added"
@@ -733,7 +660,6 @@ impl ObserveHandler for NativeCapture {
             obs.id().to_string(),
             args,
             Sink::Observer(obs.clone()),
-            legacy,
             installed,
         );
         Ok(())
@@ -779,7 +705,6 @@ mod tests {
                 function_id: format!("app::{id}"),
                 metadata: None,
             },
-            legacy: true,
             installed: None,
         }
     }
@@ -987,7 +912,7 @@ mod tests {
             );
             let mut held = route(id, "watched", Some("orders"), None);
             held.installed = installed;
-            capture.file(id.into(), args.clone(), held.sink, false, held.installed);
+            capture.file(id.into(), args.clone(), held.sink, held.installed);
         }
         assert_eq!(holders(&capture), Some(2));
         assert_eq!(capture_triggers(), 3, "one insert/update/delete set");
@@ -1010,19 +935,6 @@ mod tests {
         capture.admit(&args, Some("orders")).await.unwrap();
         assert_eq!(holders(&capture), Some(1));
         assert_eq!(capture_triggers(), 3);
-    }
-
-    #[test]
-    fn the_fallback_bindings_leave_the_index_together() {
-        let index = RouteIndex::default();
-        index.insert(route("binding-1", "primary", Some("orders"), None));
-        index.insert(route("binding-2", "primary", None, None));
-        assert!(index.has_trigger_sinks());
-        let removed = index.remove_trigger_sinks();
-        assert_eq!(removed.len(), 2);
-        assert_eq!(index.len(), 0);
-        assert!(!index.has_trigger_sinks());
-        assert!(index.remove_trigger_sinks().is_empty());
     }
 
     #[test]

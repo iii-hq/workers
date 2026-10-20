@@ -22,14 +22,15 @@ use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{execute, AppState};
 use database::transaction::TxRegistry;
-use database::triggers::legacy::Fallback;
-use database::triggers::{self, NativeCapture, RowChangeBus};
+use database::triggers::{
+    self, LegacyRowChangedEvent, NativeCapture, RowChangeBus, RowChangedArgs,
+};
 use iii_helpers::observability::Logger;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
+use iii_sdk::runtime::{FunctionRef, TriggerTypeRef, WorkerMetadata};
 use iii_sdk::{
-    register_worker, Capture, IIIClient, InitOptions, ObserveSupportListener, Observed,
-    ObserverOptions, ObserverState, RegisterFunction, Source,
+    register_worker, Capture, IIIClient, InitOptions, Observed, ObserverOptions, ObserverState,
+    RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, RwLock};
@@ -82,10 +83,9 @@ struct DatabaseWorker {
     state: AppState,
     capture: Arc<NativeCapture>,
     row_changed: FunctionRef,
-    fallback: Arc<Fallback>,
     dir: tempfile::TempDir,
     _listeners: Arc<triggers::NativeListeners>,
-    _follower: ObserveSupportListener,
+    _row_changed_type: TriggerTypeRef<RowChangedArgs, LegacyRowChangedEvent>,
 }
 
 impl DatabaseWorker {
@@ -153,12 +153,8 @@ impl DatabaseWorker {
             );
         }
         let row_changed = triggers::capture::register(&iii, &capture);
-        // As `main.rs` does: the old trigger type while the engine lacks observe.
-        let fallback = Arc::new(Fallback::new((*iii).clone(), capture.clone()));
-        let follower = {
-            let fallback = fallback.clone();
-            iii.on_engine_supports_observe(move |observes| fallback.follow(observes))
-        };
+        // As `main.rs` does: the old trigger type on every engine.
+        let row_changed_type = triggers::legacy::register_trigger_type(&iii, capture.clone());
         iii.wait_until_registered(WAIT).await.unwrap();
         eventually("the engine's observe support known", || {
             iii.engine_supports_observe().is_some()
@@ -176,10 +172,9 @@ impl DatabaseWorker {
             state,
             capture,
             row_changed,
-            fallback,
             dir,
             _listeners: listeners,
-            _follower: follower,
+            _row_changed_type: row_changed_type,
         }
     }
 
@@ -460,10 +455,11 @@ async fn one_of_two_native_observers_leaving_keeps_the_other_hearing() {
 }
 
 /// (2) An old consumer's `register_trigger({ type: 'database::row-changed' })`
-/// is served by the engine's legacy shim: an observer with `legacy` set, its
-/// non-canonical table still matching, the event in its pre-0.25 shape.
+/// is served by the worker's own trigger type on a 0.25 engine too: a
+/// binding, not an observer, its non-canonical table still matching, the
+/// event in its pre-0.25 shape with the trigger's metadata alongside.
 #[tokio::test(flavor = "multi_thread")]
-async fn old_consumer_register_trigger_is_served_through_the_shim() {
+async fn old_consumer_register_trigger_is_served_by_the_trigger_type() {
     let Some(url) = engine_url() else {
         return eprintln!("skipping: III_TEST_ENGINE_URL not set");
     };
@@ -485,16 +481,14 @@ async fn old_consumer_register_trigger_is_served_through_the_shim() {
     input.metadata = Some(json!({ "__binding": "sub_abc" }));
     #[allow(deprecated)]
     let trigger = old.register_trigger(input).unwrap();
-    eventually("the shim observer is active on the owner", || {
-        db.row_changed.observers().iter().any(|o| {
-            o.legacy()
-                .is_some_and(|l| l.trigger_type == "database::row-changed")
-        })
+    eventually("the binding filed by the trigger type", || {
+        db.capture.route_count() == 1
     })
     .await;
-    let obs = db.row_changed.observers().pop().unwrap();
-    assert_eq!(obs.legacy().unwrap().config["table"], "public.Orders");
-    assert_eq!(obs.target(), "legacy::on-orders");
+    assert!(
+        db.row_changed.observers().is_empty(),
+        "no shim observer: the worker's trigger type serves the binding"
+    );
 
     db.sql("primary", "INSERT INTO orders (n) VALUES (7)").await;
     let delivery = next(&mut events, "legacy delivery").await;
@@ -502,7 +496,7 @@ async fn old_consumer_register_trigger_is_served_through_the_shim() {
     // `__binding` pointer).
     assert_eq!(delivery["metadata"]["__binding"], "sub_abc", "{delivery}");
     let event = delivery["payload"].clone();
-    // `deliver: input`: the event itself, in the pre-0.25 shape.
+    // The event itself, in the pre-0.25 shape.
     assert_eq!(event["table"], "orders");
     assert_eq!(event["op"], "insert");
     assert!(
@@ -518,8 +512,8 @@ async fn old_consumer_register_trigger_is_served_through_the_shim() {
     silent(&mut events, "delete on an insert-only binding").await;
 
     trigger.unregister();
-    eventually("unregister removes the observer", || {
-        db.row_changed.observers().is_empty()
+    eventually("unregister removes the binding", || {
+        db.capture.route_count() == 0
     })
     .await;
     old.shutdown_async().await;
@@ -928,10 +922,11 @@ async fn unobserved_writes_put_zero_frames_on_the_wire() {
     db.iii.shutdown_async().await;
 }
 
-/// The owner restarts (a deploy): its observers, new and legacy, wait and are
-/// replayed to the new connection, which indexes them again.
+/// The owner restarts (a deploy): its observers wait and are replayed to the
+/// new connection, and the old trigger type's bindings return to it when it
+/// registers the type again; it indexes both.
 #[tokio::test(flavor = "multi_thread")]
-async fn owner_restart_replays_new_and_legacy_observers() {
+async fn owner_restart_replays_observers_and_bindings() {
     let Some(url) = engine_url() else {
         return eprintln!("skipping: III_TEST_ENGINE_URL not set");
     };
@@ -961,7 +956,7 @@ async fn owner_restart_replays_new_and_legacy_observers() {
             json!({ "db": "primary", "table": "orders" }),
         ))
         .unwrap();
-    eventually("both observers on the first owner", || {
+    eventually("the observer and the binding on the first owner", || {
         first.capture.route_count() == 2
     })
     .await;
@@ -974,7 +969,7 @@ async fn owner_restart_replays_new_and_legacy_observers() {
     })
     .await;
     let second = DatabaseWorker::start_on(&url, &ns, dir).await;
-    eventually("both observers replayed to the new owner", || {
+    eventually("the observer and the binding back on the new owner", || {
         second.capture.route_count() == 2
     })
     .await;
@@ -1101,14 +1096,60 @@ impl Drop for Engine {
     }
 }
 
+/// A sink that also keeps every payload it receives, for counts over a run.
+fn logged_sink(
+    iii: &IIIClient,
+    id: &str,
+) -> (mpsc::UnboundedReceiver<Value>, Arc<Mutex<Vec<Value>>>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let kept = log.clone();
+    iii.register_function(
+        id,
+        RegisterFunction::new_async(move |payload: Value| {
+            kept.lock().unwrap().push(payload.clone());
+            let _ = tx.send(payload);
+            async { Ok::<(), iii_sdk::errors::Error>(()) }
+        }),
+    );
+    (rx, log)
+}
+
+/// The first event whose `returning[0].n` is `n` within `within`; other
+/// events (late probes) are skipped.
+async fn heard_n(rx: &mut mpsc::UnboundedReceiver<Value>, n: i64, within: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + within;
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        if event["returning"][0]["n"] == n {
+            return true;
+        }
+    }
+    false
+}
+
+/// How many events with `returning[0].n == n` arrive: waits for the first
+/// up to `WAIT` when one is expected, then for the silence after it.
+async fn deliveries_of(rx: &mut mpsc::UnboundedReceiver<Value>, n: i64, expected: bool) -> usize {
+    let mut count = 0;
+    let first = if expected { WAIT } else { SILENCE };
+    while let Ok(Some(event)) =
+        tokio::time::timeout(if count == 0 { first } else { SILENCE }, rx.recv()).await
+    {
+        if event["returning"][0]["n"] == n {
+            count += 1;
+        }
+    }
+    count
+}
+
 /// The engine changes under a running worker: upgraded to one with observe,
-/// rolled back, upgraded again. The worker registers its old trigger type
-/// only while the engine lacks observe; an old consumer's binding hears each
-/// write exactly once on every engine (the fallback, then the engine's
-/// shim), and a new consumer's observer hears them whenever the engine has
-/// observe.
+/// rolled back, upgraded again. The old trigger type stays registered on
+/// every engine, so an old consumer's binding hears each write exactly once
+/// throughout, served by the worker (never by the engine's shim); a new
+/// consumer's observer hears each write once whenever the engine has
+/// observe, and nothing while it does not.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_fallback_follows_the_engine_across_upgrades_and_rollbacks() {
+async fn bindings_and_observers_follow_the_engine_across_upgrades_and_rollbacks() {
     let (Some(bins), Some(port)) = (
         std::env::var("III_TEST_ENGINE_BINS").ok(),
         std::env::var("III_TEST_SWITCH_PORT")
@@ -1122,16 +1163,6 @@ async fn the_fallback_follows_the_engine_across_upgrades_and_rollbacks() {
         .expect("III_TEST_ENGINE_BINS=<engine without observe>,<engine with observe>");
     // Reconnects back off: give each switch more time than one delivery.
     const SWITCH: Duration = Duration::from_secs(30);
-    async fn settled(what: &str, mut check: impl FnMut() -> bool) {
-        let deadline = tokio::time::Instant::now() + SWITCH;
-        while !check() {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
 
     let url = format!("ws://127.0.0.1:{port}");
     let ns = namespace("switch");
@@ -1142,13 +1173,9 @@ async fn the_fallback_follows_the_engine_across_upgrades_and_rollbacks() {
         "CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)",
     )
     .await;
-    settled("the fallback on an engine without observe", || {
-        db.fallback.is_registered()
-    })
-    .await;
 
     let old = client(&url, &ns, "old-consumer");
-    let mut legacy = sink(&old, "legacy::on-orders");
+    let (mut legacy, legacy_log) = logged_sink(&old, "legacy::on-orders");
     #[allow(deprecated)]
     let _binding = old
         .register_trigger(RegisterTriggerInput::new(
@@ -1158,7 +1185,7 @@ async fn the_fallback_follows_the_engine_across_upgrades_and_rollbacks() {
         ))
         .unwrap();
     let new = client(&url, &ns, "new-consumer");
-    let mut fresh = sink(&new, "fresh::on-orders");
+    let (mut fresh, fresh_log) = logged_sink(&new, "fresh::on-orders");
     let observer = new.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
@@ -1170,21 +1197,17 @@ async fn the_fallback_follows_the_engine_across_upgrades_and_rollbacks() {
         .await
         .expect_err("no observe on this engine");
     assert!(err.to_string().contains("UNSUPPORTED"), "{err}");
-    settled("the binding on the fallback", || {
-        db.capture.route_count() == 1
-    })
-    .await;
 
-    let mut n = 0;
-    for step in [
-        "0.24",
-        "upgraded to 0.25",
-        "rolled back to 0.24",
-        "upgraded again",
+    let mut probe: i64 = 0;
+    for (step, n) in [
+        ("0.24", 1i64),
+        ("upgraded to 0.25", 2),
+        ("rolled back to 0.24", 3),
+        ("upgraded again", 4),
     ] {
-        if n > 0 {
+        let observes = n % 2 == 0;
+        if n > 1 {
             engine.stop().await;
-            let observes = n % 2 == 1;
             engine = Engine::start(
                 if observes {
                     with_observe
@@ -1194,49 +1217,77 @@ async fn the_fallback_follows_the_engine_across_upgrades_and_rollbacks() {
                 port,
             )
             .await;
-            settled(&format!("{step}: the worker follows"), || {
-                db.iii.engine_supports_observe() == Some(observes)
-                    && db.fallback.is_registered() != observes
-            })
+        }
+        let deadline = tokio::time::Instant::now() + SWITCH;
+        while db.iii.engine_supports_observe() != Some(observes)
+            || (observes && observer.state() != ObserverState::Active)
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{step}: the worker and the observer never settled"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // The consumers reconnect on their own schedule: write probes until
+        // each one that should hear does.
+        loop {
+            probe -= 1;
+            db.sql(
+                "primary",
+                &format!("INSERT INTO orders (n) VALUES ({probe}) RETURNING n"),
+            )
             .await;
-            if observes {
-                // The binding moved to the shim, the observer was replayed,
-                // and the fallback's route is gone: two observers filed.
-                settled(&format!("{step}: the observer is replayed"), || {
-                    observer.state() == ObserverState::Active
-                })
-                .await;
-                settled(&format!("{step}: the shim serves the binding"), || {
-                    let observers = db.row_changed.observers();
-                    observers.iter().any(|o| o.legacy().is_some())
-                        && observers.iter().any(|o| o.legacy().is_none())
-                        && db.capture.route_count() == 2
-                })
-                .await;
-            } else {
-                settled(&format!("{step}: the fallback serves the binding"), || {
-                    db.capture.is_listened()
-                })
-                .await;
+            let old_heard = heard_n(&mut legacy, probe, Duration::from_secs(1)).await;
+            let new_heard = !observes || heard_n(&mut fresh, probe, Duration::from_secs(1)).await;
+            if old_heard && new_heard {
+                break;
             }
-            // The consumers' own replays land too.
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{step}: the consumers never heard a probe"
+            );
         }
-        n += 1;
-        db.sql("primary", &format!("INSERT INTO orders (n) VALUES ({n})"))
-            .await;
-        let heard = next(&mut legacy, &format!("{step}: old consumer")).await;
-        assert_eq!(heard["table"], "orders", "{step}: {heard}");
         assert!(
-            heard.get("schema").is_none(),
-            "{step}: legacy shape {heard}"
+            db.row_changed
+                .observers()
+                .iter()
+                .all(|o| o.legacy().is_none()),
+            "{step}: no shim observer, the binding is the trigger type's"
         );
-        silent(&mut legacy, &format!("{step}: exactly once")).await;
-        if n % 2 == 0 {
-            let event = next(&mut fresh, &format!("{step}: new consumer")).await;
-            assert_eq!(event["affected_rows"], 1, "{step}: {event}");
-        }
-        silent(&mut fresh, &format!("{step}: new consumer, nothing more")).await;
+
+        db.sql(
+            "primary",
+            &format!("INSERT INTO orders (n) VALUES ({n}) RETURNING n"),
+        )
+        .await;
+        assert_eq!(
+            deliveries_of(&mut legacy, n, true).await,
+            1,
+            "{step}: the old consumer hears the write exactly once"
+        );
+        assert_eq!(
+            deliveries_of(&mut fresh, n, observes).await,
+            usize::from(observes),
+            "{step}: the new consumer hears it once with observe, never without"
+        );
+    }
+    // Over the whole run, late deliveries included (an observer the SDK held
+    // across the rollback must not report the write made without observe).
+    tokio::time::sleep(SILENCE).await;
+    let count = |log: &Mutex<Vec<Value>>, n: i64| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event["returning"][0]["n"] == n)
+            .count()
+    };
+    for n in 1..=4 {
+        assert_eq!(count(&legacy_log, n), 1, "old consumer, write {n}");
+        assert_eq!(
+            count(&fresh_log, n),
+            usize::from(n % 2 == 0),
+            "new consumer, write {n}"
+        );
     }
     old.shutdown_async().await;
     new.shutdown_async().await;

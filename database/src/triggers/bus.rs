@@ -17,7 +17,7 @@
 //!   `sqlite_watch.rs`, `mysql_binlog.rs`) and hand their events to
 //!   [`RowChangeBus::emit_event`] already shaped.
 //! * **Nothing is serialized for nobody.** With no active observer (and no
-//!   binding through the pre-0.25 fallback) an event costs one atomic load.
+//!   binding of the old trigger type) an event costs a few atomic loads.
 //!
 //! The event never invents row data. On the statements path `returning` is the
 //! writer's own `RETURNING` projection, forwarded verbatim; on the native path
@@ -33,9 +33,8 @@ use serde_json::Value;
 use super::capture::NativeCapture;
 use super::sql::{self, Op};
 
-/// The trigger type this worker registered before 0.25. Kept as the
-/// function's `legacy_trigger_type`, and registered as a trigger type only
-/// against an engine without observe (see `legacy.rs`).
+/// The trigger type this worker registered before 0.25, still registered on
+/// every engine for consumers that bind it (see `legacy.rs`).
 pub const ROW_CHANGED_TYPE: &str = "database::row-changed";
 
 /// How many changed-row keys one `capture: native` event carries at most.
@@ -101,10 +100,9 @@ pub struct RowChangedEvent {
     pub at: i64,
 }
 
-/// What a `database::row-changed` trigger received before 0.25, and what a
-/// legacy binding (shim observer or fallback trigger) still receives: no
-/// `schema`, and the table schema-qualified when a schema is known
-/// (`public.orders` from postgres native capture, as before).
+/// What a `database::row-changed` binding received before 0.25, and still
+/// receives: no `schema`, and the table schema-qualified when a schema is
+/// known (`public.orders` from postgres native capture, as before).
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct LegacyRowChangedEvent {
     pub db: String,

@@ -1,23 +1,21 @@
-//! The pre-0.25 fallback: the `database::row-changed` trigger type, for an
-//! engine without observe.
+//! The `database::row-changed` trigger type, for consumers that still bind
+//! it: `registerTrigger` from a worker, `engine::register_trigger` (the CLI,
+//! a script), harness subscriptions.
 //!
-//! Against an engine that speaks `observe.v1` nothing here runs: the function
-//! declares `legacy_trigger_type: database::row-changed`, and the engine's
-//! legacy shim turns old `registerTrigger` calls into observers. An older
-//! engine has no shim, and the SDK registers the function as a plain one
-//! (its observe hooks never run), so old consumers would hear nothing. For
-//! that engine the worker registers the old trigger type as before; each
-//! binding is validated by the same code as an observer and filed in the
-//! same routing index, as a [`Sink::Trigger`].
+//! The worker registers it on every engine, 0.24 and 0.25 alike, so all of
+//! them are served exactly as before the migration. Each binding is
+//! validated by the same code as an observer of `database::on-row-changed`
+//! and filed in the same routing index, as a [`Sink::Trigger`]; it receives
+//! the event in its pre-0.25 shape. The function declares no
+//! `legacy_trigger_type`: the engine's legacy shim would serve only bindings
+//! registered over a worker connection (an ownerless one made through
+//! `engine::register_trigger` stays pending), and a live provider of the type
+//! wins over a stand-in anyway.
 //!
-//! [`Fallback`] follows the engine on the current connection, as the SDK
-//! reports it (`IIIClient::on_engine_supports_observe`), so an engine
-//! upgraded or rolled back under the running worker is handled without a
-//! restart.
-//!
-//! Delete this module once the minimum supported engine is 0.25.
+//! Delete this module, and declare `legacy_trigger_type`, in the release that
+//! retires the trigger type.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
@@ -30,82 +28,17 @@ use super::capture::{NativeCapture, Sink};
 
 pub const ROW_CHANGED_TYPE_DESCRIPTION: &str =
     "Fires after a row change commits, filtered by `db`, optional `table`, and optional `ops`. \
-     Kept for engines older than 0.25; observe database::on-row-changed instead.";
+     Kept for consumers that still bind it; new code observes database::on-row-changed.";
 
-/// A binding's id in the routing index. Kept apart from observer ids: the
-/// shim gives the observer it makes from a binding the binding's own id, and
-/// while the worker is on an engine without observe the SDK still holds that
-/// observer. Its route must survive the binding's: an engine with observe
-/// that kept the observer while the worker was away acks it again without
-/// calling the hooks (see [`NativeCapture::set_engine_observes`]).
+/// A binding's id in the routing index. Bindings and observers are two id
+/// spaces, each chosen by its registrant: kept apart, one never replaces the
+/// other.
 fn route_id(trigger_id: &str) -> String {
     format!("\0trigger:{trigger_id}")
 }
 
-/// The old trigger type, registered while the engine on the current
-/// connection lacks observe.
-pub struct Fallback {
-    iii: IIIClient,
-    capture: Arc<NativeCapture>,
-    registered: Mutex<Option<TriggerTypeRef<RowChangedArgs, LegacyRowChangedEvent>>>,
-}
-
-impl Fallback {
-    pub fn new(iii: IIIClient, capture: Arc<NativeCapture>) -> Self {
-        Self {
-            iii,
-            capture,
-            registered: Mutex::new(None),
-        }
-    }
-
-    /// Registers the trigger type for an engine without observe, and
-    /// unregisters it for one with observe. Idempotent; called with each
-    /// value `IIIClient::on_engine_supports_observe` reports.
-    ///
-    /// Unregistering covers an engine upgraded under the running worker: the
-    /// SDK replays the type on reconnect, and a live old-style provider wins
-    /// over the shim. Retired, the type's bindings park, the engine hands them
-    /// to the function's shim as observers, and the index drops their trigger
-    /// routes. A rollback registers the type again and the parked bindings
-    /// return to it.
-    pub fn follow(&self, engine_observes: bool) {
-        let mut registered = self.registered.lock().unwrap_or_else(|e| e.into_inner());
-        self.capture.set_engine_observes(engine_observes);
-        match (engine_observes, registered.is_some()) {
-            (false, false) => {
-                tracing::warn!(
-                    "the engine does not support observe; registering the deprecated \
-                     database::row-changed trigger type for old consumers"
-                );
-                *registered = Some(register_trigger_type(&self.iii, self.capture.clone()));
-            }
-            (true, true) => {
-                *registered = None;
-                // Kept until the minimum engine is 0.25.
-                #[allow(deprecated)]
-                self.iii.unregister_trigger_type(ROW_CHANGED_TYPE);
-                let bindings = self.capture.unfile_trigger_sinks();
-                tracing::info!(
-                    bindings,
-                    "the engine supports observe; unregistered the database::row-changed \
-                     trigger type, the engine's legacy shim serves old consumers"
-                );
-            }
-            _ => {}
-        }
-    }
-
-    /// Whether the trigger type is registered.
-    pub fn is_registered(&self) -> bool {
-        self.registered
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-    }
-}
-
-/// Registers the old trigger type over `capture`'s index.
+/// Registers the old trigger type over `capture`'s index. Kept until the
+/// trigger type is retired: old consumers bind it on 0.24 and 0.25 engines.
 #[allow(deprecated)]
 pub fn register_trigger_type(
     iii: &IIIClient,
@@ -136,7 +69,7 @@ impl TriggerHandler for LegacyRowChanged {
             instance = %config.id,
             function = %config.function_id,
             table = ?args.table,
-            "row-changed trigger registered (pre-0.25 engine)"
+            "row-changed trigger registered"
         );
         self.capture.file(
             route_id(&config.id),
@@ -145,7 +78,6 @@ impl TriggerHandler for LegacyRowChanged {
                 function_id: config.function_id.clone(),
                 metadata: config.metadata.clone(),
             },
-            true,
             installed,
         );
         Ok(())
@@ -277,39 +209,7 @@ mod tests {
         assert_eq!(handler.capture.route_count(), 0);
     }
 
-    /// The type is registered only while the engine lacks observe: an
-    /// upgrade under the worker unregisters it and drops its bindings' routes
-    /// (the engine's shim takes them over), a rollback registers it again.
-    #[tokio::test]
-    async fn the_fallback_follows_the_engines_observe_support() {
-        let (handler, _) = handler_with(WorkerConfig::default());
-        let fallback = Fallback::new(IIIClient::new("ws://127.0.0.1:9"), handler.capture.clone());
-        fallback.follow(true);
-        assert!(!fallback.is_registered());
-
-        fallback.follow(false);
-        fallback.follow(false);
-        assert!(fallback.is_registered());
-        handler
-            .register_trigger(trigger("binding", "primary"))
-            .await
-            .unwrap();
-        assert_eq!(handler.capture.route_count(), 1);
-        assert!(handler.capture.is_listened());
-
-        fallback.follow(true);
-        assert!(!fallback.is_registered());
-        assert_eq!(handler.capture.route_count(), 0);
-        assert!(!handler.capture.is_listened());
-        fallback.follow(true);
-        assert!(!fallback.is_registered());
-
-        fallback.follow(false);
-        assert!(fallback.is_registered());
-    }
-
-    /// A binding is filed apart from an observer with its id: the shim's
-    /// observer for a binding has the binding's id.
+    /// A binding is filed apart from an observer with the same id.
     #[tokio::test]
     async fn bindings_do_not_replace_observers_with_their_id() {
         let (handler, _) = handler_with(WorkerConfig::default());
@@ -325,7 +225,6 @@ mod tests {
                 function_id: "app::observer-stand-in".into(),
                 metadata: None,
             },
-            true,
             None,
         );
         handler

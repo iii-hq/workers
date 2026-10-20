@@ -144,8 +144,7 @@ async fn main() -> Result<()> {
     let pools = Arc::new(RwLock::new(std::collections::HashMap::new()));
     let live_config = Arc::new(RwLock::new(cfg.clone()));
     // Native capture and the routing index of `database::on-row-changed`,
-    // driven by its observers (and, against a pre-0.25 engine, by the old
-    // trigger type's bindings).
+    // driven by its observers and by the old trigger type's bindings.
     let capture = Arc::new(NativeCapture::new(
         iii.clone(),
         live_config.clone(),
@@ -882,21 +881,20 @@ async fn main() -> Result<()> {
     // can attribute it.
     database::triggers::capture::register(&iii, &capture);
 
-    // What depends on the engine's observe support follows it, as the SDK
-    // learns it on each connection: an engine older than 0.25 gets the old
-    // trigger type over the same index (old consumers keep hearing their
-    // writes) and the old `configuration` trigger. An engine upgraded or
-    // rolled back under the worker switches both without a restart.
-    let fallback = Arc::new(database::triggers::legacy::Fallback::new(
-        iii.as_ref().clone(),
-        capture.clone(),
-    ));
+    // The old trigger type, on every engine: consumers that still bind
+    // `database::row-changed` (`registerTrigger`, `engine::register_trigger`,
+    // harness subscriptions) are served by the worker as before.
+    let _row_changed_type =
+        database::triggers::legacy::register_trigger_type(&iii, capture.clone());
+
+    // The configuration binding follows the engine's observe support, as the
+    // SDK learns it on each connection: an observer with observe, the old
+    // `configuration` trigger without. An engine upgraded or rolled back
+    // under the worker switches without a restart.
     let config_binding =
         configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()));
-    let _engine_follower = iii.on_engine_supports_observe(move |engine_observes| {
-        fallback.follow(engine_observes);
-        config_binding.follow(engine_observes);
-    });
+    let _engine_follower = iii
+        .on_engine_supports_observe(move |engine_observes| config_binding.follow(engine_observes));
     configuration::register_secret_trigger(&iii, state.clone(), Some(native_listeners.clone()));
     let _maintenance =
         configuration::spawn_maintenance(state.clone(), Some(native_listeners.clone()));
