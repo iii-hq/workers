@@ -369,6 +369,75 @@ async fn native_path_events_have_no_caller_parent() {
     db.iii.shutdown_async().await;
 }
 
+/// A write by another client on the database's file, as `native` capture
+/// hears it.
+async fn external_insert(path: std::path::PathBuf, n: i64) {
+    tokio::task::spawn_blocking(move || {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute("INSERT INTO orders (n) VALUES (?1)", [n])
+            .unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// The direct refcount test, live: two observers on one native table share
+/// its capture, and one leaving does not take it from the other.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_of_two_native_observers_leaving_keeps_the_other_hearing() {
+    let Some(url) = engine_url() else {
+        return eprintln!("skipping: III_TEST_ENGINE_URL not set");
+    };
+    let ns = namespace("refcount");
+    let db = DatabaseWorker::start(&url, &ns, &["native:watched"]).await;
+    db.sql(
+        "primary",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)",
+    )
+    .await;
+    let consumer = client(&url, &ns, "consumer");
+    let mut first = sink(&consumer, "consumer::first");
+    let mut second = sink(&consumer, "consumer::second");
+    let observe = |target: &str| {
+        consumer.observe(
+            Source::function("database::on-row-changed")
+                .args(json!({ "db": "watched", "table": "orders" }))
+                .deliver(iii_sdk::Deliver::Input),
+            target,
+        )
+    };
+    let leaving = observe("consumer::first");
+    let staying = observe("consumer::second");
+    leaving.ready().await.unwrap();
+    staying.ready().await.unwrap();
+    let file = db.dir.path().join("primary.db");
+
+    external_insert(file.clone(), 1).await;
+    assert_eq!(
+        next(&mut first, "first observer").await["returning"][0]["id"],
+        1
+    );
+    assert_eq!(
+        next(&mut second, "second observer").await["returning"][0]["id"],
+        1
+    );
+
+    leaving.dispose().await.unwrap();
+    eventually("one observer left on the owner", || {
+        db.capture.route_count() == 1
+    })
+    .await;
+    external_insert(file, 2).await;
+    assert_eq!(
+        next(&mut second, "the remaining observer").await["returning"][0]["id"],
+        2
+    );
+    silent(&mut first, "the observer that left").await;
+    silent(&mut second, "one event per write").await;
+    consumer.shutdown_async().await;
+    db.iii.shutdown_async().await;
+}
+
 /// (2) An old consumer's `register_trigger({ type: 'database::row-changed' })`
 /// is served by the engine's legacy shim: an observer with `legacy` set, its
 /// non-canonical table still matching, the event in its pre-0.25 shape.

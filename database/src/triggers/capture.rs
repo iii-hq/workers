@@ -936,6 +936,84 @@ mod tests {
         assert!(err.message.contains("no pool"), "{}", err.message);
     }
 
+    /// The direct refcount test: two observers on one native table share one
+    /// install; removing one leaves the other routed and the capture in place.
+    #[tokio::test]
+    async fn native_capture_is_installed_once_and_outlives_one_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("watched.db");
+        rusqlite::Connection::open(&file)
+            .unwrap()
+            .execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)")
+            .unwrap();
+        let cfg = WorkerConfig::from_yaml(&format!(
+            "databases:\n  watched:\n    url: \"sqlite:{}\"\n    capture: native\n",
+            file.display()
+        ))
+        .unwrap();
+        let pools = crate::configuration::build_pools(&cfg).await.unwrap();
+        let capture = NativeCapture::new(
+            Arc::new(IIIClient::new("ws://127.0.0.1:9")),
+            Arc::new(tokio::sync::RwLock::new(cfg)),
+            Arc::new(tokio::sync::RwLock::new(pools)),
+            100,
+        );
+        let capture_triggers = || -> i64 {
+            rusqlite::Connection::open(&file)
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'orders'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let holders = |capture: &NativeCapture| {
+            capture
+                .installed
+                .lock()
+                .unwrap()
+                .get(&("watched".to_string(), "orders".to_string()))
+                .copied()
+        };
+        let args = RowChangedArgs {
+            db: "watched".into(),
+            table: Some("orders".into()),
+            ops: None,
+        };
+        for id in ["first", "second"] {
+            let installed = capture.admit(&args, Some("orders")).await.unwrap();
+            assert_eq!(
+                installed,
+                Some(("watched".to_string(), "orders".to_string()))
+            );
+            let mut held = route(id, "watched", Some("orders"), None);
+            held.installed = installed;
+            capture.file(id.into(), args.clone(), held.sink, false, held.installed);
+        }
+        assert_eq!(holders(&capture), Some(2));
+        assert_eq!(capture_triggers(), 3, "one insert/update/delete set");
+
+        capture.unfile("first");
+        assert_eq!(holders(&capture), Some(1));
+        assert_eq!(capture_triggers(), 3);
+        assert_eq!(
+            ids(capture
+                .index
+                .matching("watched", Some("orders"), Op::Insert)),
+            ["second"],
+            "the other observer still hears"
+        );
+
+        capture.unfile("second");
+        assert_eq!(holders(&capture), None);
+        // The DDL stays when the last holder leaves; installing again is a no-op.
+        assert_eq!(capture_triggers(), 3);
+        capture.admit(&args, Some("orders")).await.unwrap();
+        assert_eq!(holders(&capture), Some(1));
+        assert_eq!(capture_triggers(), 3);
+    }
+
     #[test]
     fn the_fallback_bindings_leave_the_index_together() {
         let index = RouteIndex::default();
