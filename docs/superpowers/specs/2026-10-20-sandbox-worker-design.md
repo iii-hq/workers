@@ -35,7 +35,7 @@ This serves sandbox consumers (computer, sandbox-code-runner, ide, harness, the 
 - Musl hosts at launch. [User Q3: a product choice, not a firmware limit (8.5)]
 - Intel Mac and Windows hosts. [Designer's call: libkrun/libkrunfw ship no x86_64-darwin or Windows build]
 - A shell into worker VMs (today's `iii-worker exec` for managed workers). `worker::exec` stays reserved. [Designer's call S6]
-- Cut from v1 because nothing uses them yet [Designer, ponytail review]: capability negotiation (5.7), the JSON Schema bundle, an `iii compose migrate` command (7.9), hot-applied adapter config (7.6), moving the guest env off the kernel cmdline (8.3), `create.guest_engine_url`, the `worker::{wait, list, renew}` operations, leases, and archive or upload worker sources. Each can return as an additive change when an adapter or consumer needs it.
+- Cut from v1 because nothing uses them yet [Designer, ponytail review]: capability negotiation (5.7), the JSON Schema bundle, an `iii compose migrate` command (7.9), hot-applied adapter config (7.6), moving the guest env off the kernel cmdline (8.3), `create.guest_engine_url`, the `worker::{wait, list, renew}` operations, leases, archive or upload worker sources, consumer soft needs (7.1, User Q2 revised), a separate `SANDBOX_ADAPTER_IS_A_VM` error, and hiding the router's ids on an unbound engine. Each can return as an additive change when an adapter or consumer needs it.
 
 **Anti-goals**
 - Changing any `sandbox::*` request or response shape, or the S-code error wire format.
@@ -174,7 +174,7 @@ Handshake:
   - A different major gives S302.
   - The cache is cleared on S301 or `invocation_stopped`.
   - There is no attach protocol: the router finds the adapter by its ids.
-- **Compose**: `adapter::info` is a live function, so its check runs at start time. At plan time Compose checks only what needs no adapter of its own: an adapter build exists for this host (7.2) and the adapter is not itself a VM. An attached project (7.7) also reads `sandbox::adapter::info` from the router at plan time: its adapter is the owner's, which is already running. Once the adapter is up, and before any `worker::prepare`, Compose calls `<adapter>::adapter::info` and checks the major (S302) and the name (7.2). A failed check fails the start of each VM container exactly as a failed spawn fails a process container today. The adapter and non-VM containers keep running.
+- **Compose**: `adapter::info` is a live function, so its check runs at start time. At plan time Compose checks only that an adapter build exists for this host (7.2). Once the adapter is up, and before any `worker::prepare`, Compose calls `<adapter>::adapter::info` and checks the major (S302) and the name (7.2). A failed check fails the start of each VM container exactly as a failed spawn fails a process container today. The adapter and non-VM containers keep running.
 
 ### 5.8 Guaranteed vs adapter-defined
 
@@ -197,7 +197,7 @@ Handshake:
 - Registered with `register_worker!("iii-sandbox", SandboxRouter, …, mandatory)`.
   - Keeping the name keeps the registry package, `engine::workers::list`, iii-directory skill lookup (`iii-directory/src/functions/skills.rs`) and `skills: [iii-sandbox]` working. [Designer's call S7]
 - Registration: every ephemeral id plus `sandbox::adapter::info` is registered through `EngineTrait::register_function` (namespace `default`), with schemas from the crate.
-  - With no binding, which happens only on an engine no Compose file manages (S1), the ids are still registered, so ownership stays pinned, but they are tagged `metadata.internal = true` and hidden from discovery (`engine_fn/mod.rs:1697-1720`).
+  - With no binding, which happens only on an engine no Compose file manages (S1), the ids are still registered, so ownership stays pinned; calls get S303.
 - `handle_function(id, input, metadata)`:
   1. No binding: return S303 "no sandbox adapter configured: this engine is not managed by a Compose file; set sandbox.adapter in its engine config (Compose-managed engines default to sandbox-builtin)".
   2. If `functions.get_handler(ns, adapter_function_id(adapter, id))` is missing: return S301 "adapter sandbox-builtin not connected in namespace my-proj; compose::add iii-sandbox in that project installs it".
@@ -211,7 +211,7 @@ Handshake:
   - the comment at `mod.rs:2271-2273` ("the ownership conflict with the builtin already blocks the shadow") does not hold for in-process built-ins (*inference*, from reading).
 - Add `ENGINE_RESERVED_PREFIXES = ["sandbox::"]` beside the `engine::` check (`mod.rs:2267-2300`).
   - A WebSocket registration of `sandbox::*` **in `default`** gets `RegistrationRejected{FUNCTION_NAMESPACE_CONFLICT, owner_worker_id: ""}` and is logged as "sandbox::* is served by the engine's sandbox router; adapters register <adapter>::*".
-  - Other namespaces stay allowed, so the ide e2e mocks keep working. [Designer]
+  - Other namespaces stay allowed. [Designer]
 - Fix the stale comment.
 
 ### 6.3 Config [Designer; default binding: Designer's call S1]
@@ -235,7 +235,7 @@ engine:
 - Remove `"iii-sandbox"` from `CONFIGURABLE_ENGINE_WORKERS`.
 - Compose `validate_engine` (`config.rs:473-498`) raises `SANDBOX_CONFIG_MOVED` before its generic check: "engine.workers.iii-sandbox was removed in iii 0.25: sandboxes now run in the sandbox-builtin worker, which Compose installs for you. Replace the block with `engine.sandbox.adapter: sandbox-builtin` (optional, the default) and move image_allowlist/custom_images/default_* to `containers.sandbox-builtin.config_override`. Guide: https://iii.dev/docs/upgrading/sandbox-worker". It also prints the replacement YAML built from the old block.
 - Update the texts in `UnsupportedEngineWorker` (`error.rs:46-50`) and `EngineWorkerIsBuiltin` (`daemon.rs:2178-2191`).
-- `expand_graph` handles an `iii-sandbox` root before the `EngineWorkerIsBuiltin` check: it becomes a hard sandbox need (7.2) that resolves to the configured adapter package. `compose::add iii-sandbox` therefore keeps working after `iii-sandbox` leaves `CONFIGURABLE_ENGINE_WORKERS`, and the remediation texts in 6.1, 7.7 and 9 stay valid.
+- `expand_graph` handles an `iii-sandbox` root before the `EngineWorkerIsBuiltin` check: it becomes the `Added` need (7.1) that resolves to the configured adapter package. `compose::add iii-sandbox` therefore keeps working after `iii-sandbox` leaves `CONFIGURABLE_ENGINE_WORKERS`, and the remediation texts in 6.1, 7.7 and 9 stay valid.
 - Engine: add an `"iii-sandbox"` arm to `migration_guidance` (`engine/src/workers/config.rs:206-222`).
 
 ### 6.5 Engine deletions (iii repo)
@@ -274,11 +274,11 @@ engine:
 ## 7. Compose changes
 
 ### 7.1 Need detection
-`iii_compose::sandbox::needs(file) -> Vec<Need>`. Each need is hard or soft (7.2):
-- hard `VmBundle(key)`: the resolved package kind is `bundle`, known offline from the lock (`lockfile.rs:168-188`).
-- hard `VmLocal(key)`: a `path://` manifest has `runtime.base_image`.
-- hard `Explicit`: the owning file sets `engine.sandbox`. A managed engine is bound either way (S1). Setting the section only asks Compose to install that adapter.
-- soft `Requires(key)`: the registry graph reached the `iii-sandbox` interface node (7.2). [User Q2]
+`iii_compose::sandbox::needs(file) -> Vec<Need>`. Every need installs the adapter (7.2); consumers that only call `sandbox::*` declare nothing and get S301 with the fix when no adapter runs [User, revising Q2]:
+- `VmBundle(key)`: the resolved package kind is `bundle`, known offline from the lock (`lockfile.rs:168-188`).
+- `VmLocal(key)`: a `path://` manifest has `runtime.base_image`.
+- `Explicit`: the owning file sets `engine.sandbox`. A managed engine is bound either way (S1). Setting the section only asks Compose to install that adapter.
+- `Added`: `compose::add iii-sandbox` (6.4).
 
 ### 7.2 Auto-install [User 5; mechanics Designer]
 The adapter is **persisted as a generated container**, not injected at plan time, so lock, `--frozen`, `ps`, logs, restart, `config_override`, console config and GC all work unchanged:
@@ -300,27 +300,19 @@ The adapter is **persisted as a generated container**, not injected at plan time
   - Compose recognizes an existing adapter container (registry or `path://` dev checkout) by its manifest name, never by its container key. The key only becomes `III_WORKER_NAME` (`spawn.rs:241`).
   - Once the adapter is up, Compose checks that `AdapterInfo.adapter` equals the prefix, and fails with `SANDBOX_ADAPTER_MISMATCH` otherwise.
   - The operator's declaration wins.
-- `SANDBOX_ADAPTER_IS_A_VM` if the adapter would itself be a VM container.
+- An adapter that would itself be a VM container fails `dag::validate_dependencies` as a cycle (7.3); no separate error.
 - **Triggers.**
   - `compose::add` / `update` run the step in the same atomic edit.
   - `up` runs it in `prepare_start_project`, under the mutation lock (`daemon.rs:717-737`). It writes the container and prints one line. [Designer's call S5]
-  - `compose::add iii-sandbox` runs it as a hard need (handled before the engine-kind rejection, 6.4).
+  - `compose::add iii-sandbox` runs it (handled before the engine-kind rejection, 6.4).
   - Outcomes by case:
 
-| Need | Supported host, adapter not declared | No adapter build for this host (`UnsupportedPlatform`, `registry.rs:611`) | `--frozen`, adapter not declared |
-|---|---|---|---|
-| Hard | Write and install | Fail `UNSUPPORTED_PLATFORM` | Refuse `SANDBOX_ADAPTER_NOT_DECLARED`, printing the one-line fix [S5] |
-| Soft | Write and install (owner project only, 7.7) | Warn and continue; calls return S301 [Q2] | Warn and continue |
-
-- **Soft need signal.** [User Q2]
-  - The engine-kind `iii-sandbox` registry entry becomes the interface node, republished from `engine/src/workers/sandbox/iii.worker.yaml`.
-  - A consumer declares a soft need as `dependencies: { iii-sandbox: ">=0.25.0" }`. Compose never installs engine-kind nodes (`expand_graph` skips them, `daemon.rs:2215-2220`), so this entry cannot fail `up` or `add` on any host.
-  - `expand_graph` records reached `iii-sandbox` nodes as `Requires`, where today it just skips them. Older Compose versions still skip them, so this is backward compatible.
-  - Consumers never depend on `sandbox-builtin` directly. That hard entry would break `add` on hosts with no adapter build: Intel macOS, Windows, musl and armv7. On Alpine, `host_targets()` never falls back to gnu (`registry.rs:228-241`).
+| Supported host, adapter not declared | No adapter build for this host (`UnsupportedPlatform`, `registry.rs:611`) | `--frozen`, adapter not declared |
+|---|---|---|
+| Write and install | Fail `UNSUPPORTED_PLATFORM` | Refuse `SANDBOX_ADAPTER_NOT_DECLARED`, printing the one-line fix [S5] |
 
 ### 7.3 Start ordering
 - `sandbox::wire(&mut ComposeFile, adapter_key)` appends the adapter key to the **in-memory** `start_after` of every VM container, then re-runs `dag::validate_dependencies`. It is called from `Project::open`, `commit_prepared_packages`, `reconcile_file` and `reconcile_removals`. Nothing is written to operator-owned containers.
-- In the project that runs the adapter, registry consumers get an explicit `start_after: [sandbox-builtin]`: the interface node is retargeted to the adapter key in `plan_resolved`.
 - The adapter starts first and stops last. An adapter crash cascades to its VM containers (`project.rs:381-639`).
 
 ### 7.4 VM containers through the contract
@@ -365,13 +357,9 @@ Adapter readiness means its worker name is registered, which is not proof that i
   - It comes from the Compose file that manages the engine: `sandbox-builtin` in the owner's namespace unless `engine.sandbox` says otherwise.
   - An External-mode engine has no binding unless its operator configures one (6.3), so its consumers get S303.
 - **Consumer calls.** [User Q1]
-  - One adapter per engine, running in the binding namespace, serves every project's `sandbox::*` calls.
-  - An attached project with a soft need installs nothing for it. At plan time it reads `sandbox::adapter::info`:
-    - if `info` is `null`, it fails, naming the owner's file: "container computer needs sandboxes, but adapter sandbox-builtin is not running in namespace owner-proj; add it in <owner file> (compose::add iii-sandbox) or set engine.sandbox.namespace there";
-    - with no binding at all, it warns (S303);
-    - on hosts with no adapter build, it warns (Q2).
+  - One adapter per engine, running in the binding namespace, serves every project's `sandbox::*` calls. An attached project installs nothing for them; with the owner's adapter down, calls get S301 naming that namespace.
   - Rejected alternative: route each call to the caller's project adapter. That needs the engine to pass caller identity to built-in handlers, which it does not do today (`function.rs:75-83`).
-- **Worker VMs are per project.** An attached project with a hard need reads the adapter name from `sandbox::adapter::info` (`sandbox-builtin` when there is no binding), installs that adapter in its own namespace, and runs its own VMs there.
+- **Worker VMs are per project.** An attached project with a VM need reads the adapter name from `sandbox::adapter::info` (`sandbox-builtin` when there is no binding), installs that adapter in its own namespace, and runs its own VMs there.
 
 ### 7.8 Guarding the worker-VM family [Designer]
 `host_path` lets a caller pull host directories into a VM, and `sandbox-builtin::worker::*` is callable by any worker. Two guards:
@@ -473,7 +461,7 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
 - **Linux, glibc.**
   - The Compose user needs read/write access to `/dev/kvm` (`vm_boot.rs:248-263`).
   - `libcap-ng0` must be installed (*inference*: dynamic linking).
-- **Anything else** gets a clear `UnsupportedPlatform` error for hard needs; soft needs warn (7.2).
+- **Anything else** gets a clear `UnsupportedPlatform` error when a project needs the adapter (7.2).
 
 ### 8.7 Tests that move
 - Sandbox tests, about 3.8k LOC: `sandbox_*`, `fake_sandbox_relay`, `fixtures/sandbox_error_codes.json`.
@@ -492,7 +480,7 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
 
 **Consumers**
 - computer, sandbox-code-runner, ide and harness keep pinning `default`, where the router lives.
-- They declare a soft sandbox need (7.2). [User Q2]
+- They declare nothing new (7.1).
 - ide accepts `exit_code: null`.
 - sandbox-code-runner's startup probe (`src/main.rs:128-155`) asks `engine::functions::info` about `sandbox::create`. The router always registers that id, so the probe would log "iii-sandbox detected" even with no adapter.
   - The probe moves to `sandbox::adapter::info` and checks `info != null`. On engines older than 0.25 it falls back to today's probe.
@@ -509,7 +497,7 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
   - a new `docs/upgrading/sandbox-worker.mdx`
 - Workers repo:
   - `template/worker-compose.yaml:6-17`
-  - `ide/{README.md, ARCHITECTURE.md, skills/SKILL.md, config.yaml}` and `ide/tests/e2e/*`
+  - `ide/{README.md, ARCHITECTURE.md, skills/SKILL.md, config.yaml}`; `ide/tests/e2e/*` stays standalone: its mocks register `sandbox-mock::*` instead of `sandbox::*`, and its `config.yaml` replaces the `iii-sandbox` entry with `sandbox: {adapter: sandbox-mock}`
   - the harness `shell_coder_sandbox` scenario, and `harness/tests/e2e/run-ci.sh:15`, whose companion check requires `iii-init` and `iii-worker` and fails once `engine/install.sh` stops shipping them
   - `README.md:127`
   - `.github/workflows/_worker-e2e.yml:250-252`
@@ -523,7 +511,7 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
 | 2 | iii | Router, reserved prefix, `engine.sandbox` with its default binding, migration errors, Compose client, auto-install; remove `KNOWN_EXTERNAL` and the prefetch | Router tests use a fake adapter (`fake::*`); a Compose e2e pulls `sandbox-builtin` 1.0.0 |
 | 3 | iii | Delete the VM crates, firmware, jobs, `engine/install.sh` sections and Makefile targets (`.cargo/config.toml` stays); update docs | Nothing references them after step 2 |
 | 4 | iii | Release engine 0.25.0 (steps 2 and 3) | The adapter is already in the registry |
-| 5 | workers | Consumer soft needs (the `iii-sandbox` interface dependency), the sandbox-code-runner probe, the ide `exit_code` fix, template, ide e2e on a mock adapter (`sandbox-mock::*` via `engine.sandbox`), harness text and `run-ci.sh`, `III_RELEASE_TAG` pins, `_worker-e2e.yml`, the isolation e2e under Compose on `sandbox::*` | Needs 0.25.0 |
+| 5 | workers | The sandbox-code-runner probe, the ide `exit_code` fix, template, the ide e2e mocks renamed to `sandbox-mock::*` with `sandbox: {adapter: sandbox-mock}`, harness text and `run-ci.sh`, `III_RELEASE_TAG` pins, `_worker-e2e.yml`, the isolation e2e under Compose on `sandbox::*` | Needs 0.25.0 |
 
 Steps 2 and 3 are separate PRs in one engine release. Never release an engine without `iii-worker` before `sandbox-builtin` is in the registry.
 
@@ -541,7 +529,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 - ide: `shell::exec` with a sandbox target, and `shell::fs::*` forwarding.
 - The ADE and computer pickers list `sandbox::catalog::list`.
 - harness: `shell_coder_sandbox`.
-- `sandbox-isolation-e2e.sh` under Compose.
+- One `sandbox::exec` smoke through the router inside the section-11 Compose e2e.
 - Error JSON matches `fixtures/sandbox_error_codes.json`.
 
 **Engine and Compose tests**
@@ -551,9 +539,8 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 - `invocation_stopped` on adapter disconnect.
 - Both migration messages, and the replacement YAML printed for a 0.24 file.
 - The generated adapter container: exact marker, removed by GC with its last owner, resolved within `^<CONTRACT_MAJOR>` (S2).
-- `--frozen`: refuses hard needs, warns for soft needs.
-- A registry fixture with no build for the host: a hard need fails with `UNSUPPORTED_PLATFORM`, while a soft need warns and `up` continues (Q2).
-- An attached project with a soft need fails at plan time when the owner's adapter is not running (Q1).
+- `--frozen` refuses an undeclared adapter that a need requires.
+- A registry fixture with no build for the host: a need fails with `UNSUPPORTED_PLATFORM`.
 - The contract's `StreamChannelRef` serializes to the same JSON as iii-sdk's.
 
 **Release check**
@@ -579,7 +566,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | Build drift: the iii repo builds this code on floating `stable` (`dtolnay/rust-toolchain@stable` everywhere, no rust-toolchain file; only `build-worker-musl.sh:14` pins 1.98.1), while the workers repo pins 1.97.1; a fresh lock could pull `msb_krun_devices` 0.1.39 | Compile under 1.97.1 first; seed the lock from iii |
 | Each firmware update adds about 33 MB to the 364 MiB pack | Accepted [User]; never use LFS, and the header/SHA check catches pointer files |
 | A new contract operation needs an engine release (fixed router id table) | Additive fields do not; plan operations with releases |
-| The ide e2e registers mock `sandbox::fs::*` and runs standalone `iii -c` with `iii-sandbox` (`ide/tests/e2e/config.yaml:18`) | Mocks outside `default` stay legal; move the suite to Compose and a mock adapter (step 5) |
+| The ide e2e registers mock `sandbox::fs::*` and runs standalone `iii -c` with `iii-sandbox` (`ide/tests/e2e/config.yaml:18`) | The mocks become `sandbox-mock::*` and the config binds `sandbox: {adapter: sandbox-mock}`; the suite stays standalone (step 5) |
 | The router forwards through `call_value_with_metadata_ns`, which starts a fresh invocation with no invocation id, session or timeout (`engine/src/engine/mod.rs:2536-2548`). A consumer's timeout or cancellation does not stop adapter-side work: create, long exec, fs streams (*inference*). An adapter disconnect mid-exec surfaces as `invocation_stopped`, and a retry can repeat side effects | Documented; not an S-code. [Builder: router ceiling and cancellation] |
 | `_publish-engine-workers.yml` boots standalone `iii --config` to capture interfaces | Keep it working, or move it to Compose before standalone is removed |
 
@@ -619,8 +606,8 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | S5 | `up` without `--frozen` writes the generated adapter container; `--frozen` refuses with a one-line fix | Designer's call | One-step start; a frozen file never changes |
 | S6 | No shell into worker VMs in v1; `worker::exec` stays reserved | Designer's call | Not needed for acceptance |
 | S7 | The router keeps the public worker name `iii-sandbox` | Designer's call | Registry package, skills and docs keep resolving |
-| Q1 | One adapter per engine, in the binding namespace, serves every project's `sandbox::*` calls; an attached project whose need it leaves unmet fails at plan time, naming the owner | User | Per-caller routing would need caller identity in built-in handlers (`function.rs:75-83`) |
-| Q2 | Consumers declare a soft need; Compose installs the adapter for it, and on hosts with no adapter build warns and continues (calls return S301); consumers never hard-depend on an adapter | User | Consumers ship on hosts the adapter does not |
+| Q1 | One adapter per engine, in the binding namespace, serves every project's `sandbox::*` calls; an attached project installs nothing for those calls, which get S301 when the owner's adapter is down | User | Per-caller routing would need caller identity in built-in handlers (`function.rs:75-83`) |
+| Q2 | Revised: consumers declare no sandbox need. Compose installs the adapter only for VM containers, `engine.sandbox` or `compose::add iii-sandbox`; other callers get S301 with the fix | User (ponytail review) | Less Compose code; the S301 message already says how to install it |
 | Q3 | No musl at launch (gnu and `aarch64-apple-darwin` only); musl later | User | A product choice; the firmware already covers musl |
 | Q4 | Compose drives bundle and local VMs through the `worker::*` family over the bus, not by exec'ing the adapter binary | User | Fits remote adapters such as iii-cloud |
 | P1 | The v1 cuts listed in 2 | Designer, ponytail review | Nothing uses them yet; each can return additively |
