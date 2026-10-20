@@ -23,25 +23,29 @@ impl IiiTriggerFwd {
     }
 }
 
-/// Where iii-sandbox's `sandbox::*` functions resolve. iii-sandbox is
-/// engine-owned, so they exist only in `default`, whatever namespace this
-/// worker runs in (a Compose project's, say). A suite that stands in for
-/// iii-sandbox with its own `sandbox::*` points this at its namespace through
-/// `III_SANDBOX_NAMESPACE`.
-static SANDBOX_NAMESPACE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    std::env::var("III_SANDBOX_NAMESPACE")
+/// iii-sandbox is engine-owned: its `sandbox::*` functions exist only in
+/// `default`, whatever namespace this worker runs in (a Compose project's,
+/// say). A suite that stands in for its file operations (`sandbox::fs::*`)
+/// names its own namespace through `III_SANDBOX_FS_NAMESPACE`; create, exec
+/// and stop always reach the real daemon.
+static SANDBOX_FS_NAMESPACE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    std::env::var("III_SANDBOX_FS_NAMESPACE")
         .ok()
         .map(|namespace| namespace.trim().to_string())
         .filter(|namespace| !namespace.is_empty())
         .unwrap_or_else(|| "default".to_string())
 });
 
-/// `sandbox::*` goes to `sandbox_namespace`; everything else (`compose::*`
-/// included) keeps the SDK's routing.
-fn forward_namespace<'a>(function_id: &str, sandbox_namespace: &'a str) -> Option<&'a str> {
-    function_id
-        .starts_with("sandbox::")
-        .then_some(sandbox_namespace)
+/// `sandbox::fs::*` goes to `fs_namespace`, the rest of `sandbox::*` to
+/// `default`; everything else (`compose::*` included) keeps the SDK's routing.
+fn forward_namespace<'a>(function_id: &str, fs_namespace: &'a str) -> Option<&'a str> {
+    if function_id.starts_with("sandbox::fs::") {
+        Some(fs_namespace)
+    } else if function_id.starts_with("sandbox::") {
+        Some("default")
+    } else {
+        None
+    }
 }
 
 #[async_trait]
@@ -53,7 +57,7 @@ impl TriggerFwd for IiiTriggerFwd {
             action: None,
             timeout_ms: None,
         };
-        match forward_namespace(function_id, &SANDBOX_NAMESPACE) {
+        match forward_namespace(function_id, &SANDBOX_FS_NAMESPACE) {
             Some(namespace) => self.iii.trigger(request.namespace(namespace)).await,
             None => self.iii.trigger(request).await,
         }
@@ -67,14 +71,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn sandbox_calls_resolve_in_the_sandbox_namespace_and_compose_stays_in_the_project() {
-        for function_id in ["sandbox::exec", "sandbox::fs::read", "sandbox::fs::write"] {
+    fn sandbox_calls_reach_default_and_only_fs_follows_the_override() {
+        for function_id in ["sandbox::create", "sandbox::exec", "sandbox::stop"] {
             assert_eq!(
-                forward_namespace(function_id, "default"),
+                forward_namespace(function_id, "ide-e2e"),
                 Some("default"),
                 "{function_id}"
             );
         }
+        assert_eq!(
+            forward_namespace("sandbox::fs::ls", "default"),
+            Some("default")
+        );
         assert_eq!(
             forward_namespace("sandbox::fs::ls", "ide-e2e"),
             Some("ide-e2e")

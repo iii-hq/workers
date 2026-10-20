@@ -206,9 +206,10 @@ echo "[run-tests] engine listening"
 
 # 8. Start the shell worker as a host process. Project workers are no longer
 # accepted in config.yaml by iii 0.23. The harness's sandbox::fs::* mocks live
-# in ide-e2e, so the worker looks for iii-sandbox there instead of `default`.
+# in ide-e2e, so the worker looks for those there; create/exec/stop still reach
+# the real iii-sandbox in `default`.
 echo "[run-tests] starting shell worker"
-(cd "$RUN_ROOT" && III_NAMESPACE=ide-e2e III_SANDBOX_NAMESPACE=ide-e2e "$WORKER_BIN_TARGET" \
+(cd "$RUN_ROOT" && III_NAMESPACE=ide-e2e III_SANDBOX_FS_NAMESPACE=ide-e2e "$WORKER_BIN_TARGET" \
   --url "ws://127.0.0.1:$E2E_PORT" --config "$WORKER_CONFIG") \
   >"$WORKER_LOG" 2>&1 &
 WORKER_PID=$!
