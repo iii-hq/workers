@@ -44,6 +44,22 @@ const SEMANTIC_FLOOR: f32 = 0.25;
 /// update becomes a ratio past what the recency multiplier corrects (recall
 /// eval: 3-4 traps at every weight from 2 to 24, against 2).
 const SEMANTIC_ANCHOR: f32 = 0.2;
+/// iii-directory's local embedder, reported as `<name>@<revision>`.
+const MINILM_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
+
+/// The semantic arm's `(floor, anchor, weight)` for the model the query was
+/// embedded with; the constants above were measured on text-embedding-3-small.
+/// MiniLM spreads a stale fact and its update further apart, so from 0.2 the
+/// gap outgrew recency (recall eval: 4 traps against 2): raw cosine at a
+/// quarter of the slope keeps BM25 and recency in the vote (2 traps), and its
+/// relevant matches start lower, so the floor does too.
+fn semantic_scale(model: &str) -> (f32, f32, f32) {
+    if model.split('@').next() == Some(MINILM_MODEL) {
+        (0.2, 0.0, 5.0)
+    } else {
+        (SEMANTIC_FLOOR, SEMANTIC_ANCHOR, SEMANTIC_WEIGHT)
+    }
+}
 
 pub struct Store {
     root: PathBuf,
@@ -789,6 +805,7 @@ impl Bank {
             }
         }
         // Semantic candidates join the pool even without a lexical hit.
+        let (floor, anchor, weight) = semantic_scale(embedding_model);
         let mut sem: HashMap<String, f32> = HashMap::new();
         if let Some(qv) = query_vec {
             for (id, (model, v)) in &inner.vectors {
@@ -796,7 +813,7 @@ impl Bank {
                     continue;
                 }
                 let c = cosine(qv, v);
-                if c > SEMANTIC_FLOOR {
+                if c > floor {
                     sem.insert(id.clone(), c);
                     bm25.entry(id.clone()).or_insert(0.0);
                 }
@@ -824,8 +841,8 @@ impl Bank {
             .map(|(f, s, c)| {
                 // Semantic joins lexical BEFORE fusion so recency decays
                 // both alike.
-                let sem = ((c - SEMANTIC_ANCHOR) / (1.0 - SEMANTIC_ANCHOR)).max(0.0);
-                let relevance = s / max_bm25 + SEMANTIC_WEIGHT * sem;
+                let sem = ((c - anchor) / (1.0 - anchor)).max(0.0);
+                let relevance = s / max_bm25 + weight * sem;
                 let fused =
                     crate::index::fused_score(relevance, &f, &query_tokens, now, half_life_days);
                 (f, fused)
@@ -866,8 +883,8 @@ impl Bank {
         scored
     }
 
-    /// The raw semantic arm: cosine against the vector sidecar, above
-    /// `SEMANTIC_FLOOR`, same model-acceptance rule as [`Bank::recall`].
+    /// The raw semantic arm: cosine against the vector sidecar, above the
+    /// model's floor, same model-acceptance rule as [`Bank::recall`].
     /// Scores are the cosine itself, so callers can reason about them.
     pub async fn semantic(
         &self,
@@ -876,6 +893,7 @@ impl Bank {
         limit: usize,
         include_superseded: bool,
     ) -> Vec<(Memory, f32)> {
+        let (floor, _, _) = semantic_scale(embedding_model);
         let inner = self.inner.read().await;
         let mut scored: Vec<(Memory, f32)> = inner
             .vectors
@@ -884,7 +902,7 @@ impl Bank {
             .filter_map(|(id, (_, v))| {
                 let c = cosine(query_vec, v);
                 let m = inner.memories.get(id)?;
-                (c > SEMANTIC_FLOOR && (include_superseded || m.is_live())).then(|| (m.clone(), c))
+                (c > floor && (include_superseded || m.is_live())).then(|| (m.clone(), c))
             })
             .collect();
         rank_desc(&mut scored, limit);
@@ -1524,6 +1542,32 @@ mod tests {
         bank.commit(retired).await.unwrap();
         let live = bank.semantic(&[1.0, 0.0], "m", 10, false).await;
         assert!(live.iter().all(|(m, _)| m.id != near.id));
+    }
+
+    #[tokio::test]
+    async fn minilm_vectors_use_their_own_semantic_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let minilm = format!("{MINILM_MODEL}@c9745ed1d9f2");
+        let a = memory("weak match a");
+        let b = memory("weak match b");
+        // Cosine 0.22 with the query: under the default floor, over MiniLM's.
+        let v = vec![0.22, (1.0f32 - 0.22 * 0.22).sqrt()];
+        for (m, model) in [(&a, minilm.as_str()), (&b, "text-embedding-3-small")] {
+            bank.commit(m.clone()).await.unwrap();
+            bank.set_vector(&m.id, model, &m.text, v.clone())
+                .await
+                .unwrap();
+        }
+        for model in [minilm.as_str(), "text-embedding-3-small"] {
+            let semantic = bank.semantic(&[1.0, 0.0], model, 10, false).await;
+            let recalled = bank
+                .recall("", Some(&[1.0, 0.0]), model, 10, 60, false)
+                .await;
+            let want = usize::from(model == minilm);
+            assert_eq!((semantic.len(), recalled.len()), (want, want), "{model}");
+        }
     }
 
     #[tokio::test]
