@@ -1,6 +1,6 @@
 //! Boot sequence: builtin guard → build adapter → trigger table → register the
-//! `state` trigger type → restore persisted private-namespace claims →
-//! register the state::* functions.
+//! `state` trigger type and `state::on-changed` → restore persisted
+//! private-namespace claims → register the state::* functions.
 
 use std::sync::Arc;
 
@@ -13,6 +13,7 @@ use crate::adapters::{self, StateAdapter};
 use crate::config::StateConfig;
 use crate::events::{Invoker, SdkInvoker};
 use crate::functions::{self, ConfigCell, StateCtx};
+use crate::on_changed::{self, ChangeEmitter, Emissions, SdkChangeEmitter};
 use crate::trigger::{StateTriggerHandler, StateTriggerSpec, TriggerTable};
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
@@ -58,6 +59,15 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
             .trigger_request_format::<StateTriggerSpec>(),
     );
 
+    // The same change events as an observable function (iii 0.25). On an
+    // engine without observe it is a plain function nobody observes.
+    let emissions = Arc::new(Emissions::default());
+    let on_changed: Arc<dyn ChangeEmitter> = Arc::new(SdkChangeEmitter {
+        iii: iii.clone(),
+        function: on_changed::register(&iii, emissions.clone()),
+        emissions,
+    });
+
     // Private namespaces are CLAIMED at runtime (`state::claim-namespace`),
     // not configured: this starts empty and is refilled from the persisted
     // ledger below.
@@ -69,6 +79,7 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
         triggers: triggers.clone(),
         config: cell.clone(),
         invoker,
+        on_changed,
         private,
     });
     // Re-arm namespaces claimed by earlier runs BEFORE the public state::*

@@ -134,8 +134,9 @@ pub(crate) async fn fan_out_lazy<F>(
 }
 
 // All fields already contain JSON or strings: move them instead of recursively
-// serializing old/new values into a second identical tree.
-fn event_json(event: StateEventData) -> Value {
+// serializing old/new values into a second identical tree. Also the input of
+// `state::on-changed`, so observers and trigger handlers get one document.
+pub(crate) fn event_json(event: StateEventData) -> Value {
     use crate::structs::StateEventType;
     let kind = match event.event_type {
         StateEventType::Created => "state:created",

@@ -41,7 +41,8 @@ schemars = "0.8"
 indexmap = { version = "2", features = ["serde"] }
 rkyv = "0.8"
 redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
+# Single-use tokens of state::on-changed emissions (unguessable, see on_changed.rs).
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 serial_test = "3"
-uuid = { version = "1", features = ["v4"] }
