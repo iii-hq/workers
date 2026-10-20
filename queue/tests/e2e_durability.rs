@@ -86,6 +86,9 @@ fn register_subscriber_with_config(
     if let Some(qc) = queue_config {
         config["queue_config"] = qc;
     }
+    // The old consumer path: `durable:subscriber` stays served on 0.24 and
+    // 0.25 engines.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         TRIGGER_TYPE.to_string(),
         function_id.to_string(),

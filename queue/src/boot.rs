@@ -73,6 +73,9 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
     runtime.start().await?;
 
     crate::functions::register_all(&project_iii, adapter.clone(), runtime.clone());
+    // Kept until the trigger type is retired; old consumers bind it on 0.24
+    // and 0.25 engines.
+    #[allow(deprecated)]
     let _ = project_iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,

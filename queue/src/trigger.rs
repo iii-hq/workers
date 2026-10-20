@@ -175,11 +175,16 @@ pub fn bind_engine_events(iii: &IIIClient) -> EngineEvents {
         .metadata(json!({ "internal": true })),
     );
     for trigger_type in [FUNCTIONS_AVAILABLE_TRIGGER, WORKERS_AVAILABLE_TRIGGER] {
-        match iii.register_trigger(RegisterTriggerInput::new(
+        // Deprecated in iii 0.25 (`engine::on-functions-changed` /
+        // `engine::on-workers-changed`), still served by 0.24 and 0.25
+        // engines; kept until this worker drops 0.24 support.
+        #[allow(deprecated)]
+        let registered = iii.register_trigger(RegisterTriggerInput::new(
             trigger_type.to_string(),
             ENGINE_CHANGE_FN_ID.to_string(),
             json!({}),
-        )) {
+        ));
+        match registered {
             Ok(_) => tracing::debug!(trigger_type, "bound engine change trigger"),
             Err(error) => tracing::warn!(
                 trigger_type,

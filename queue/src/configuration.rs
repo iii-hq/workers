@@ -147,6 +147,9 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
+    // Deprecated in iii 0.25 (`configuration::on-updated`), still served by
+    // 0.24 and 0.25 engines; kept until this worker drops 0.24 support.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
