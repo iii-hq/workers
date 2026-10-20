@@ -72,6 +72,25 @@ pub fn redact_entry(entry: &mut Value) {
             }
         }
     }
+    // Keys that are not fields (a hand-edited entry, `secret_access_key_old`)
+    // are shown as the placeholder too; a save keeps them with it. An entry
+    // without a known provider shows nothing but its provider.
+    let provider_known = entry
+        .get("provider")
+        .and_then(Value::as_str)
+        .and_then(crate::config::entry_keys)
+        .is_some();
+    if provider_known {
+        for path in crate::config::unknown_entry_keys(entry) {
+            set_at(entry, &path, Value::String(REDACTED.into()));
+        }
+    } else if let Some(fields) = entry.as_object_mut() {
+        for (key, value) in fields.iter_mut() {
+            if key != "provider" {
+                *value = Value::String(REDACTED.into());
+            }
+        }
+    }
     if let Some(endpoint) = entry.get_mut("endpoint_url") {
         if endpoint.as_str().is_some_and(has_userinfo) {
             let stripped = crate::config::redact_url(endpoint.as_str().unwrap_or_default());
@@ -109,6 +128,13 @@ pub fn template_paths(value: &Value, prefix: &str) -> Vec<String> {
 /// The value at a dotted path.
 pub fn at<'a>(value: Option<&'a Value>, path: &str) -> Option<&'a Value> {
     path.split('.').try_fold(value?, |v, k| v.get(k))
+}
+
+/// Replace the value at a dotted path that exists.
+pub fn set_at(entry: &mut Value, path: &str, value: Value) {
+    if let Some(slot) = path.split('.').try_fold(entry, |v, k| v.get_mut(k)) {
+        *slot = value;
+    }
 }
 
 /// Credential fields holding a malformed `secret://` / `env://` reference.
@@ -292,9 +318,12 @@ mod tests {
             vec!["secret_access_key", "session_token"]
         );
         let mut shown = entry.clone();
+        shown["provider"] = json!("s3");
         redact_entry(&mut shown);
         assert!(!shown.to_string().contains("hunter2"), "{shown}");
-        assert_eq!(shown["credentials_json"], "${GCS_JSON}");
+        let mut gcs = json!({ "provider": "gcs", "credentials_json": "${GCS_JSON}" });
+        redact_entry(&mut gcs);
+        assert_eq!(gcs["credentials_json"], "${GCS_JSON}");
         assert!(!names_a_value("${}"));
     }
 
@@ -375,6 +404,21 @@ mod tests {
         redact_entry(&mut shown);
         assert!(!shown.to_string().contains("pw"), "{shown}");
         assert!(has_userinfo("https://u@h") && !has_userinfo("https://h"));
+    }
+
+    #[test]
+    fn unknown_keys_are_redacted_whatever_they_hold() {
+        let mut entry = json!({ "provider": "s3", "region": "r", "secret_access_key_old": "OLD-SECRET",
+                                "_secret_access_key": { "v": "X" }, "display": { "icon": "a", "note": "N" } });
+        redact_entry(&mut entry);
+        assert_eq!(entry["secret_access_key_old"], REDACTED);
+        assert_eq!(entry["_secret_access_key"], REDACTED);
+        assert_eq!(entry["display"]["note"], REDACTED);
+        assert_eq!(entry["display"]["icon"], "a");
+        assert_eq!(entry["region"], "r");
+        let mut odd = json!({ "provider": "ftp", "password": "P" });
+        redact_entry(&mut odd);
+        assert_eq!(odd, json!({ "provider": "ftp", "password": REDACTED }));
     }
 
     #[test]

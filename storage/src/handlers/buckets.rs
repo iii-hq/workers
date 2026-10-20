@@ -158,7 +158,11 @@ pub(crate) async fn stored_buckets_both(
 
 /// Refuse keys that are not fields of the entry's provider, naming them
 /// (never their values).
-pub(crate) fn refuse_unknown_keys(entry: &Value, prefix: &str) -> Result<(), String> {
+pub(crate) fn refuse_unknown_keys(
+    entry: &Value,
+    prefix: &str,
+    allowed: &[String],
+) -> Result<(), String> {
     let Some(obj) = entry.as_object() else {
         return Err(format!("`{prefix}` must be an object"));
     };
@@ -168,7 +172,10 @@ pub(crate) fn refuse_unknown_keys(entry: &Value, prefix: &str) -> Result<(), Str
             "`{prefix}.provider` must be one of s3, r2, gcs, local"
         ));
     }
-    let unknown = unknown_entry_keys(entry);
+    let unknown: Vec<String> = unknown_entry_keys(entry)
+        .into_iter()
+        .filter(|key| !allowed.contains(key))
+        .collect();
     if unknown.is_empty() {
         return Ok(());
     }
@@ -199,7 +206,22 @@ pub(crate) fn prepare_candidate(
     credentials: Option<&Value>,
     stored: Option<&Value>,
 ) -> Result<Candidate, String> {
-    refuse_unknown_keys(&entry, "bucket")?;
+    // Keys that are not fields come back from getBucket as "__redacted__"
+    // (a hand-edited entry may keep anything there): that placeholder keeps
+    // the stored value; any other unknown key is refused.
+    let mut kept_unknown = Vec::new();
+    if entry.is_object() {
+        for path in unknown_entry_keys(&entry) {
+            let placeholder = redaction::at(Some(&entry), &path)
+                .and_then(Value::as_str)
+                .is_some_and(|v| v.trim() == redaction::REDACTED);
+            if let (true, Some(value)) = (placeholder, redaction::at(stored, &path).cloned()) {
+                redaction::set_at(&mut entry, &path, value);
+                kept_unknown.push(path);
+            }
+        }
+    }
+    refuse_unknown_keys(&entry, "bucket", &kept_unknown)?;
     if entry
         .get("endpoint_url")
         .and_then(Value::as_str)
@@ -251,7 +273,10 @@ pub(crate) fn prepare_candidate(
     redaction::merge_credentials(&mut entry, credentials)?;
     // A credential the provider has no field for (`session_token` on r2).
     let provider = entry["provider"].as_str().unwrap_or("").to_string();
-    if let Some(key) = unknown_entry_keys(&entry).first() {
+    if let Some(key) = unknown_entry_keys(&entry)
+        .iter()
+        .find(|key| !kept_unknown.contains(key))
+    {
         return Err(format!(
             "`credentials` sets `{key}`, which is not a {provider} bucket field"
         ));
@@ -996,6 +1021,34 @@ pub(crate) mod tests {
             &save_req(json!({ "name": "bare", "bucket": { "provider": "s3", "region": "r" } })),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn redacted_unknown_keys_keep_their_stored_values_and_others_are_refused() {
+        let raw = json!({ "buckets": { "a": { "provider": "local", "secret_access_key_old": "OLD",
+                                              "display": { "icon": "x", "note": "N" } } } });
+        let plan = plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "a", "previous_name": "a", "bucket": {
+                "provider": "local", "secret_access_key_old": "__redacted__",
+                "display": { "icon": "y", "note": "__redacted__" } } })),
+        )
+        .unwrap();
+        assert_eq!(plan.value["buckets"]["a"]["secret_access_key_old"], "OLD");
+        assert_eq!(plan.value["buckets"]["a"]["display"]["note"], "N");
+        assert_eq!(plan.value["buckets"]["a"]["display"]["icon"], "y");
+        // Another value, or the placeholder with nothing stored: refused.
+        for bucket in [
+            json!({ "provider": "local", "secret_access_key_old": "NEW" }),
+            json!({ "provider": "local", "other": "__redacted__" }),
+        ] {
+            let err = plan_save(
+                raw.clone(),
+                &save_req(json!({ "name": "a", "previous_name": "a", "bucket": bucket })),
+            )
+            .unwrap_err();
+            assert!(err.contains("is not a local bucket field"), "{err}");
+        }
     }
 
     #[test]
