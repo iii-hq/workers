@@ -4,10 +4,11 @@
 //! upcoming fire from now -- missed runs while down are skipped, never
 //! replayed).
 //!
-//! Each fire takes the lock once for its expression, then fans out: every
-//! binding is called as the trigger type always did (its own `job_id`,
-//! condition and metadata sidecar), every observer gets the [`CronTick`]
-//! through [`TickObserver::emit`]. The job stops when its last binding or
+//! Each fire fans out, and each sink takes its own lock ([`LockKey`]): every
+//! binding is fired as the trigger type always did (its trigger-id lock held
+//! through the fire, its own `job_id`, condition and metadata sidecar), every
+//! observer gets the [`CronTick`] through [`TickObserver::emit`] under a
+//! lock for that observer and fire. The job stops when its last binding or
 //! observer leaves.
 
 use std::collections::{BTreeMap, HashMap};
@@ -21,7 +22,7 @@ use cron::Schedule;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::locks::CronLock;
+use crate::locks::{CronLock, LockKey};
 use crate::on_tick::CronTick;
 
 /// `metadata` is the binding's registration metadata, delivered as the
@@ -220,8 +221,12 @@ impl Scheduler {
         if now_empty {
             if let Some(entry) = jobs.by_expression.remove(&expression) {
                 entry.handle.abort();
-                self.lock.release(&expression).await;
             }
+        }
+        if let SinkKey::Trigger(trigger_id) = key {
+            self.lock
+                .release(&LockKey::Trigger(trigger_id.clone()))
+                .await;
         }
         true
     }
@@ -255,12 +260,14 @@ impl Scheduler {
         let mut moved = Vec::new();
         for (expression, entry) in jobs.by_expression.drain() {
             entry.handle.abort();
-            self.lock.release(&expression).await;
             let sinks = std::mem::take(&mut *lock_sinks(&entry.sinks));
             moved.push((expression, sinks));
         }
         jobs.expression_of.clear();
         drop(jobs);
+        for (_, sinks) in &moved {
+            release_bindings(self.lock.as_ref(), sinks.keys()).await;
+        }
 
         let mut next_jobs = next.jobs.lock().await;
         for (expression, sinks) in moved {
@@ -285,11 +292,21 @@ impl Scheduler {
 
     pub async fn shutdown(&self) {
         let mut jobs = self.jobs.lock().await;
-        for (expression, entry) in jobs.by_expression.drain() {
+        for (_, entry) in jobs.by_expression.drain() {
             entry.handle.abort();
-            self.lock.release(&expression).await;
         }
+        release_bindings(self.lock.as_ref(), jobs.expression_of.keys()).await;
         jobs.expression_of.clear();
+    }
+}
+
+/// Releases the trigger-id locks of the bindings among `keys`, as stopping a
+/// binding's job always did. Observer fire locks expire on their own.
+async fn release_bindings(lock: &dyn CronLock, keys: impl Iterator<Item = &SinkKey>) {
+    for key in keys {
+        if let SinkKey::Trigger(trigger_id) = key {
+            lock.release(&LockKey::Trigger(trigger_id.clone())).await;
+        }
     }
 }
 
@@ -314,11 +331,6 @@ fn spawn_job(
             let wait = (next - now).to_std().unwrap_or(std::time::Duration::ZERO);
             tokio::time::sleep(wait).await;
 
-            // One lock op per expression and fire, however many sinks.
-            if !lock.try_acquire(&expression).await {
-                continue;
-            }
-
             let tick = CronTick {
                 trigger: "cron".to_string(),
                 expression: expression.clone(),
@@ -328,24 +340,46 @@ fn spawn_job(
             let targets: Vec<Sink> = lock_sinks(&sinks).values().cloned().collect();
             for sink in targets {
                 match sink {
-                    // Filters are checked inside emit; a miss, or an observer
-                    // removed meanwhile, is Ok(false).
-                    Sink::Observer(observer) => {
-                        if let Err(e) = observer.emit(&tick) {
-                            tracing::warn!(observer = %observer.id(), expression = %expression, error = %e, "cron tick emit failed");
-                        }
+                    Sink::Observer(observer) => emit_tick(observer, &tick, lock.clone()),
+                    Sink::Binding(binding) => {
+                        fire_binding(binding, &tick, lock.clone(), invoker.clone())
                     }
-                    Sink::Binding(binding) => fire_binding(binding, &tick, invoker.clone()),
                 }
             }
-            lock.release(&expression).await;
         }
     })
 }
 
+/// Hands the tick to one observer, on its own task, once per fire across
+/// every instance sharing the lock: the key is the observer's id and the
+/// fire's scheduled time, and it is left to expire.
+fn emit_tick(observer: Arc<dyn TickObserver>, tick: &CronTick, lock: Arc<dyn CronLock>) {
+    let tick = tick.clone();
+    tokio::spawn(async move {
+        let key = LockKey::ObserverFire {
+            observer_id: observer.id().to_string(),
+            scheduled_time: tick.scheduled_time.clone(),
+        };
+        if !lock.try_acquire(&key).await {
+            return;
+        }
+        // Filters are checked inside emit; a miss, or an observer removed
+        // meanwhile, is Ok(false).
+        if let Err(e) = observer.emit(&tick) {
+            tracing::warn!(observer = %observer.id(), expression = %tick.expression, error = %e, "cron tick emit failed");
+        }
+    });
+}
+
 /// Fires one binding with the trigger type's payload, on its own task so a
-/// slow target never delays the other sinks of its expression.
-fn fire_binding(binding: Arc<Binding>, tick: &CronTick, invoker: Arc<dyn Invoker>) {
+/// slow target never delays the other sinks of its expression. Its lock is
+/// the trigger id's, held through the fire, as before `cron::on-tick`.
+fn fire_binding(
+    binding: Arc<Binding>,
+    tick: &CronTick,
+    lock: Arc<dyn CronLock>,
+    invoker: Arc<dyn Invoker>,
+) {
     if binding.in_flight.swap(true, Ordering::AcqRel) {
         tracing::debug!(trigger_id = %binding.spec.trigger_id, "previous cron fire still running; skipping this one");
         return;
@@ -359,14 +393,22 @@ fn fire_binding(binding: Arc<Binding>, tick: &CronTick, invoker: Arc<dyn Invoker
     tokio::spawn(async move {
         let _busy = InFlight(binding.clone());
         let spec = &binding.spec;
+        let key = LockKey::Trigger(spec.trigger_id.clone());
+        if !lock.try_acquire(&key).await {
+            return;
+        }
         if let Some(cond) = &spec.condition_function_id {
             // Conditions are plain function calls, not trigger fires — no
             // sidecar.
             match invoker.call(cond, payload.clone(), None).await {
-                Ok(Some(v)) if v.as_bool() == Some(false) => return,
+                Ok(Some(v)) if v.as_bool() == Some(false) => {
+                    lock.release(&key).await;
+                    return;
+                }
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(trigger_id = %spec.trigger_id, error = %e, "condition check failed; skipping fire");
+                    lock.release(&key).await;
                     return;
                 }
             }
@@ -378,6 +420,7 @@ fn fire_binding(binding: Arc<Binding>, tick: &CronTick, invoker: Arc<dyn Invoker
         {
             tracing::error!(trigger_id = %spec.trigger_id, function_id = %spec.function_id, error = %e, "cron fire failed");
         }
+        lock.release(&key).await;
     });
 }
 
@@ -636,7 +679,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// Records each call per function; `slow::*` targets take 2.5 s.
+    /// Records each call per function; `slow::*` targets take 2.5 s,
+    /// `held::*` ones 300 ms.
     #[derive(Default)]
     pub(crate) struct RecordingInvoker {
         calls: std::sync::Mutex<Vec<(String, serde_json::Value, Option<serde_json::Value>)>>,
@@ -681,6 +725,9 @@ pub(crate) mod tests {
             if function_id.starts_with("slow::") {
                 tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
             }
+            if function_id.starts_with("held::") {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
             if function_id.starts_with("cond::never") {
                 return Ok(Some(serde_json::json!(false)));
             }
@@ -692,23 +739,23 @@ pub(crate) mod tests {
     #[derive(Default)]
     struct CountingLock {
         inner: crate::locks::LocalLock,
-        acquired: std::sync::Mutex<HashMap<String, usize>>,
+        acquired: std::sync::Mutex<HashMap<LockKey, usize>>,
     }
 
     #[async_trait]
     impl CronLock for CountingLock {
-        async fn try_acquire(&self, job_id: &str) -> bool {
+        async fn try_acquire(&self, key: &LockKey) -> bool {
             *self
                 .acquired
                 .lock()
                 .unwrap()
-                .entry(job_id.to_string())
+                .entry(key.clone())
                 .or_default() += 1;
-            self.inner.try_acquire(job_id).await
+            self.inner.try_acquire(key).await
         }
 
-        async fn release(&self, job_id: &str) {
-            self.inner.release(job_id).await
+        async fn release(&self, key: &LockKey) {
+            self.inner.release(key).await
         }
     }
 
@@ -878,32 +925,182 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn each_fire_takes_the_lock_once_for_its_expression() {
+    async fn each_sink_takes_its_own_lock_on_each_fire() {
         let lock = Arc::new(CountingLock::default());
         let inv = Arc::new(RecordingInvoker::default());
         let s = Scheduler::new(lock.clone(), inv.clone());
-        let obs = Arc::new(RecordingObserver::new("o1"));
+        let o1 = Arc::new(RecordingObserver::new("o1"));
+        let o2 = Arc::new(RecordingObserver::new("o2"));
         for id in ["t1", "t2", "t3"] {
             s.register(binding(id, every_second(), "app::bound"))
                 .await
                 .unwrap();
         }
-        s.add_observer(every_second(), obs.clone()).await.unwrap();
-        s.add_observer(every_second(), Arc::new(RecordingObserver::new("o2")))
+        s.add_observer(every_second(), o1.clone()).await.unwrap();
+        s.add_observer(every_second(), o2.clone()).await.unwrap();
+        wait_until("three fires", || o1.count() >= 3 && o2.count() >= 3).await;
+        s.shutdown().await;
+        // Sinks fire on their own tasks: let the last ones run.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let fires = o1.count();
+        let acquired = lock.acquired.lock().unwrap().clone();
+        for id in ["t1", "t2", "t3"] {
+            assert_eq!(
+                acquired[&LockKey::Trigger(id.into())],
+                fires,
+                "each binding takes its trigger-id lock on each fire"
+            );
+        }
+        for obs in [&o1, &o2] {
+            for tick in obs.ticks.lock().unwrap().iter() {
+                let key = LockKey::ObserverFire {
+                    observer_id: obs.id.clone(),
+                    scheduled_time: tick.scheduled_time.clone(),
+                };
+                assert_eq!(acquired.get(&key), Some(&1), "{key:?}");
+            }
+        }
+        assert_eq!(acquired.len(), 3 + o1.count() + o2.count(), "{acquired:?}");
+        assert_eq!(inv.count("app::bound"), 3 * fires);
+    }
+
+    // ── instances sharing one lock backend (redis in production) ──────────
+
+    fn shared_lock_pair() -> (
+        Scheduler,
+        Arc<RecordingInvoker>,
+        Scheduler,
+        Arc<RecordingInvoker>,
+    ) {
+        let lock: Arc<dyn CronLock> = Arc::new(crate::locks::LocalLock::new());
+        let (a, b) = (
+            Arc::new(RecordingInvoker::default()),
+            Arc::new(RecordingInvoker::default()),
+        );
+        (
+            Scheduler::new(lock.clone(), a.clone()),
+            a,
+            Scheduler::new(lock, b.clone()),
+            b,
+        )
+    }
+
+    fn fired_at(inv: &RecordingInvoker, function_id: &str) -> Vec<String> {
+        inv.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(f, _, _)| f == function_id)
+            .map(|(_, p, _)| p["scheduled_time"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn heard_at(obs: &RecordingObserver) -> Vec<String> {
+        obs.ticks
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|t| t.scheduled_time.clone())
+            .collect()
+    }
+
+    fn periods(times: &[String]) -> std::collections::BTreeSet<String> {
+        times.iter().cloned().collect()
+    }
+
+    #[tokio::test]
+    async fn instances_sharing_a_lock_fire_their_own_bindings_every_period() {
+        let (a, ia, b, ib) = shared_lock_pair();
+        a.register(binding("on-a", every_second(), "app::a"))
             .await
             .unwrap();
-        wait_until("three fires", || obs.count() >= 3).await;
-        s.shutdown().await;
-        // Binding fires run on their own tasks: let the last ones start.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let acquired = lock.acquired.lock().unwrap().clone();
-        assert_eq!(acquired.len(), 1, "keyed by expression: {acquired:?}");
-        assert_eq!(
-            acquired[every_second()],
-            obs.count(),
-            "one lock op per fire, not per sink"
+        b.register(binding("on-b", every_second(), "app::b"))
+            .await
+            .unwrap();
+        wait_until("both fired three times", || {
+            ia.count("app::a") >= 3 && ib.count("app::b") >= 3
+        })
+        .await;
+        a.shutdown().await;
+        b.shutdown().await;
+        let (on_a, on_b) = (fired_at(&ia, "app::a"), fired_at(&ib, "app::b"));
+        let shared = periods(&on_a).intersection(&periods(&on_b)).count();
+        assert!(
+            shared + 1 >= on_a.len().min(on_b.len()),
+            "different bindings on one expression never exclude each other: {on_a:?} {on_b:?}"
         );
-        assert_eq!(inv.count("app::bound"), 3 * obs.count());
+    }
+
+    #[tokio::test]
+    async fn the_same_binding_on_two_instances_fires_once_per_period() {
+        let (a, ia, b, ib) = shared_lock_pair();
+        // The target takes 300 ms: the trigger-id lock is held through the
+        // fire, as before, so the other instance finds it taken.
+        a.register(binding("same", every_second(), "held::target"))
+            .await
+            .unwrap();
+        b.register(binding("same", every_second(), "held::target"))
+            .await
+            .unwrap();
+        wait_until("three periods", || {
+            ia.count("held::target") + ib.count("held::target") >= 3
+        })
+        .await;
+        a.shutdown().await;
+        b.shutdown().await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let mut all = fired_at(&ia, "held::target");
+        all.extend(fired_at(&ib, "held::target"));
+        assert_eq!(
+            periods(&all).len(),
+            all.len(),
+            "one fire per period between both instances: {all:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_observer_on_two_instances_emits_once_per_period() {
+        let (a, _, b, _) = shared_lock_pair();
+        let same_on_a = Arc::new(RecordingObserver::new("same"));
+        let same_on_b = Arc::new(RecordingObserver::new("same"));
+        let only_a = Arc::new(RecordingObserver::new("only-a"));
+        let only_b = Arc::new(RecordingObserver::new("only-b"));
+        a.add_observer(every_second(), same_on_a.clone())
+            .await
+            .unwrap();
+        b.add_observer(every_second(), same_on_b.clone())
+            .await
+            .unwrap();
+        a.add_observer(every_second(), only_a.clone())
+            .await
+            .unwrap();
+        b.add_observer(every_second(), only_b.clone())
+            .await
+            .unwrap();
+        wait_until("three periods", || {
+            only_a.count() >= 3 && only_b.count() >= 3
+        })
+        .await;
+        a.shutdown().await;
+        b.shutdown().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let mut same = heard_at(&same_on_a);
+        same.extend(heard_at(&same_on_b));
+        assert_eq!(
+            periods(&same).len(),
+            same.len(),
+            "one emit per period between both instances: {same:?}"
+        );
+        let (heard_a, heard_b) = (periods(&heard_at(&only_a)), periods(&heard_at(&only_b)));
+        assert!(
+            periods(&same).len() + 1 >= heard_a.len().min(heard_b.len()),
+            "the shared observer still hears every period: {same:?}"
+        );
+        assert!(
+            heard_a.intersection(&heard_b).count() + 1 >= heard_a.len().min(heard_b.len()),
+            "different observers never exclude each other: {heard_a:?} {heard_b:?}"
+        );
     }
 
     #[tokio::test]

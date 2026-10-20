@@ -133,8 +133,14 @@ await digest.ready()
   `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00Z' } }`, or check in
   the target).
 - The observer's `metadata` arrives as each activation's sidecar.
-- Bindings and observers on the same expression share one job and one lock
-  operation per fire. The job stops when the last of them leaves.
+- Bindings and observers on the same expression share one job, which stops
+  when the last of them leaves. Each still takes its own lock on every fire:
+  a binding its trigger id (`cron_lock:<trigger_id>`, held through the fire,
+  as before), an observer its id and the fire's scheduled time
+  (`cron_observer_lock:<observer_id>@<scheduled_time>`, left to expire, so
+  one emit per observer and period). With the `redis` backend, instances
+  sharing it exclude each other per binding and per observer, never per
+  expression.
 - `cron::on-tick` is an event source: invoking it directly is refused with
   `FORBIDDEN`.
 - On an engine without observe (0.24), `observe` fails with `UNSUPPORTED`;
