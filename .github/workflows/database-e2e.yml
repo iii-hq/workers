@@ -34,13 +34,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The worker serves old consumers on both: through its fallback
-        # trigger type on an engine without observe, through the engine's
-        # legacy shim on 0.25 (iii-hq/iii#2330; its alpha until 0.25.0 is
-        # released). The 0.24 release provides configuration::ensure.
+        # The worker serves old consumers through its fallback trigger type
+        # on an engine without observe (0.24) and through the engine's legacy
+        # shim on 0.25. Legs: the oldest supported engine (the atomic
+        # configuration release, configuration::ensure), the latest 0.24, and
+        # the 0.25 release candidate until 0.25.0 is released.
         engine:
           - 'iii/v0.24.0-rc.2'
-          - 'iii-alpha/v0.24.5-alpha.3'
+          - 'iii/v0.24.6'
+          - 'iii/v0.25.0-rc.4'
     env:
       III_RELEASE_TAG: ${{ matrix.engine }}
     steps:
