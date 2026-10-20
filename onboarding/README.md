@@ -10,7 +10,34 @@ Three parts:
 | --- | --- | --- |
 | Content | `src/tours.mjs` | which tours exist, their steps, and the console element each step points at |
 | Progress | the `state` worker, scope `onboarding` | how far each operator got, so a reload resumes mid-tour |
-| Rendering | `ui/page.tsx` (injected into the console) | the step list and the spotlight box |
+| Rendering | `ui/page.tsx` (injected into the console) | the tour card, the spotlight box, and the page an older console falls back to |
+
+## How it shows
+
+On a console with the `overlays` slot the tour is a card floating in a corner
+of the window (`ui/src/overlay.tsx`): one step at a time, Back and Next across
+the steps already reached, a bar with a segment per step. It is a non-modal
+dialog that never takes focus, and no pane opens for it, so following the tour
+leaves the workspace being taught as the operator arranged it. The card moves
+to another corner only when the spotlight would land under it, folds to a
+pill, and closes until it is asked for again; which of those it is lives in
+this browser's storage. Closing only stops the drawing: the tour, and the
+triggers its steps wait on, run for as long as the worker's script is
+loaded, so a step the agent finishes meanwhile is closed when the card comes
+back. A step that waits on a `state` key also reads the key once when it is
+bound, so one finished while no console was open closes on the next load
+(Restart deletes those keys first). When the step being read closes, the
+reader moves on; a step closing while they read another leaves them where
+they are. A workspace saved while the tour was a pane has that
+pane closed on load, and the card comes up in its place.
+
+On a console without the slot the same tour renders as a page in a pane
+(`ui/src/page.tsx`). Both run on `ui/src/use-tour.ts`.
+
+`Open onboarding` (the palette row, `onboarding.open`) shows it either way.
+The setup wizard runs that command when the operator starts the tour on its
+Ready step, or — after they pick an example prompt instead — once that chat's
+agent has answered or five minutes have passed, whichever comes first.
 
 ## Functions
 
@@ -18,6 +45,7 @@ Three parts:
 - `onboarding::tours::get` — one tour with all of its steps.
 - `onboarding::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
 - `onboarding::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
+- `onboarding::steps::observe` — report a trigger that fired before the tour was listening; every open step whose condition matches it closes, with the event as evidence. The console calls it with the example chat's completed turn when it opens the tour on its own, so step one does not ask for a message the operator already sent.
 - `onboarding::steps::reset` — forget one tour and start it again.
 - `onboarding::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
 
@@ -87,7 +115,9 @@ running when the prompt goes out.
 
 A step's `anchors` are selectors for the console element it talks about, best
 first. The first is always a class the console carries **for this tour**: `onboarding-menu-bar`, `onboarding-tabs`, `onboarding-palette`,
-`onboarding-conversations`, `onboarding-composer`, `onboarding-traces`. Each
+`onboarding-conversations`, `onboarding-composer`, `onboarding-traces`,
+`onboarding-new-tab`, `onboarding-workspaces` (the tabs and the `+`
+together). Each
 one sits in `ade/web/src` beside a short comment that says it is a tour
 anchor. `pnpm test` fails if a step points at a class the console no longer
 has. The selectors after the first are the console's own stable hooks, so the
@@ -95,7 +125,11 @@ box still lands on a console build older than the anchor classes.
 
 The spotlight is one fixed box in `document.body` that follows the anchor's
 rectangle, animated with CSS transitions on the console's motion tokens (see
-`ui/src/spotlight.ts`). No animation library: it is one moving rectangle.
+`ui/src/spotlight.ts`). No animation library: it is one moving rectangle. It
+carries a breathing halo and a label naming the step (`6 · Observability`),
+so a lit element reads at a glance without the card. The label takes the
+first side — above, beside, under — that fits and covers no control; when
+none does it stays off, since the card names the step anyway.
 
 ## Styling
 
@@ -117,14 +151,18 @@ one palette), **Extensible** (this page is a worker's page; install more from
 the package repo), **Reactive** (the trigger step). The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
 links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
-"Clean up" asks the agent to remove this worker and close the pane — the same
-composition move as adding one, run backwards. It carries no condition: the
-worker that would report the step done is the worker being removed.
+"Clean up" asks the agent to remove this worker, and the card goes with it —
+the same composition move as adding one, run backwards. It carries no
+condition: the worker that would report the step done is the worker being
+removed.
 
-The Observability step takes two clicks. The first places the traces panel
-beside the tour; the button then becomes a green, briefly pulsing `Continue`,
-which is what closes the step. Opening a panel and having read it are
-different things, and one click could only say the first.
+The Observability step never opens Traces for the operator. A fresh workspace
+already has it beside the chat, and the step frames it; when it is gone, the
+step's `to_open` points at where it opens instead — the new-tab `+`, then the
+`traces` row of the new tab's picker (on a phone, its search button) — and its
+button waits until it is open. Open only in a tab that is not showing, the
+step says so and lights that tab. Traces then opens on the latest turn of the
+running chat (else the active one) by itself.
 
 ## Build
 

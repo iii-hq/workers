@@ -32,7 +32,7 @@ import {
   readableError,
   saveOnboardingState,
 } from '@/lib/onboarding/api'
-import { type JudgeOption, TOUR_PAGE } from '@/lib/onboarding/catalog'
+import type { JudgeOption } from '@/lib/onboarding/catalog'
 import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
   type KitInstall,
@@ -57,7 +57,12 @@ import {
   type SetupStepId,
   type SetupStepProperties,
 } from '@/lib/onboarding/telemetry'
-import { prepareTour } from '@/lib/onboarding/tour'
+import { openTour, prepareTour } from '@/lib/onboarding/tour'
+import {
+  clearTourSchedule,
+  scheduleTour,
+  useScheduledTour,
+} from '@/lib/onboarding/tour-schedule'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
 import { fetchNewChatWorkingDir } from '@/lib/working-dir'
@@ -138,7 +143,9 @@ export function stepPosition(
  * (see `openExamplePrompt`). Once a model is connected it also offers the
  * guided tour. Accepting adds the `onboarding` worker that carries it —
  * quietly: it is how the tour is delivered, not a choice in setup — and
- * opens its page beside the chat.
+ * shows its overlay. Picking an example instead schedules the tour: it
+ * opens once that chat has its answer, or after a few minutes (see
+ * `useScheduledTour`).
  */
 export function OnboardingWizardHost() {
   const reduceMotion = useReducedMotion()
@@ -155,6 +162,7 @@ export function OnboardingWizardHost() {
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
   const [tour, setTour] = useState<TourState>({ kind: 'idle' })
+  useScheduledTour()
   // The template's kits install in the background from the moment the
   // wizard first opens; the run outlives the dialog (this host stays
   // mounted), so skipping or closing setup does not stop it.
@@ -428,7 +436,11 @@ export function OnboardingWizardHost() {
     if (open) starting.current = false
   }, [open])
 
-  /** Close setup and open a new chat that sends the prompt. */
+  /**
+   * Close setup and open a new chat that sends the prompt. The tour waits
+   * for that chat: it opens once the agent has answered, or after a few
+   * minutes, so the first answer is not crowded by it.
+   */
   const startPrompt = useCallback(
     async (prompt: ExamplePrompt) => {
       if (starting.current) return
@@ -453,7 +465,7 @@ export function OnboardingWizardHost() {
       ])
       const api = ctxRef.current
       if (!api) return
-      openExamplePrompt(api, prompt, profiles, workingDir)
+      scheduleTour(openExamplePrompt(api, prompt, profiles, workingDir))
       window.requestAnimationFrame(requestComposerFocus)
     },
     [agents],
@@ -483,7 +495,9 @@ export function OnboardingWizardHost() {
     setTour({ kind: 'idle' })
     reportRef.current('finish', { outcome: 'tour' })
     setOpen(false)
-    requestPanelOpen({ pageId: TOUR_PAGE })
+    // Asked for now, so an example's pending tour is superseded.
+    clearTourSchedule()
+    openTour()
   }, [])
 
   const content = useRef<HTMLDivElement>(null)

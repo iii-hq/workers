@@ -335,6 +335,9 @@ export function ReadyStep({
             <p className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
               Send your first message and see your agent use tools, react to
               events, and trace its work. We’ll show you around as you go.
+              {offerPrompts
+                ? ' Pick an example and the tour opens once the agent has answered.'
+                : null}
             </p>
             {tour.kind === 'failed' ? (
               <p

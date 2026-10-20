@@ -601,7 +601,13 @@ export interface ComposerControlRegistration {
 export interface OverlayRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
-  render: React.ComponentType
+  render: React.ComponentType<OverlayRenderProps>
+}
+
+/** What the console hands an overlay on every render. */
+export interface OverlayRenderProps {
+  /** Active chat session id, as pages get it; absent on older consoles. */
+  conversationId?: string | null
 }
 
 /** One labelled value of a mention preview card. */

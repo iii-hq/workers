@@ -277,9 +277,9 @@ function makeHost(
             ...overlay,
             scope,
             path,
-            render: () => (
+            render: (renderProps) => (
               <ScopedExtension scope={scope} path={path}>
-                <Overlay />
+                <Overlay {...renderProps} />
               </ScopedExtension>
             ),
           }),

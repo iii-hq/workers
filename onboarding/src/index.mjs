@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
 import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
-import { findStep, getTour, listTours } from './tours.mjs'
+import { conditionMatches, findStep, getTour, listTours, TOURS } from './tours.mjs'
 
 const WORKER = 'onboarding'
 const STATE_SCOPE = 'onboarding'
@@ -178,52 +178,55 @@ const publishStep = (data) =>
       console.error(`[${WORKER}] could not publish ${STEP_TOPIC}: ${cause?.message ?? cause}`)
     })
 
+/** Close one step for one subject; the body of `onboarding::steps::complete`. */
+async function completeStep(input) {
+  const found = findStep(input.tour_id, input.step_id)
+  if (!found) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
+  const { tour, step } = found
+  const subject = input.subject ?? 'local'
+  // A step closes once per subject, so a reload or a second report from the
+  // agent must not announce it again.
+  // ponytail: read-then-publish, not atomic — two reports racing around this
+  // await can both announce. Move the check into `state::update` if a
+  // duplicate ever matters more than the round trip does.
+  const announced =
+    (await readProgress(subject)).tours?.[input.tour_id]?.steps?.[input.step_id]?.status ===
+    'complete'
+  const at = Date.now()
+  const record = {
+    status: 'complete',
+    at,
+    // Present only when a trigger closed the step, so the page can tell a
+    // condition apart from a step the operator closed by hand.
+    fired: input.fired
+      ? {
+          trigger_type: input.fired.trigger_type ?? step.condition?.type ?? null,
+          function_id: input.fired.function_id ?? null,
+          payload: cap(input.fired.payload),
+          at,
+        }
+      : null,
+  }
+  await stateUpdate(progressKey(subject), [
+    { type: 'merge', path: ['tours', input.tour_id, 'steps'], value: { [input.step_id]: record } },
+    { type: 'merge', path: ['tours', input.tour_id], value: { updated_at: at } },
+    { type: 'merge', value: { updated_at: at } },
+  ])
+  if (!announced) {
+    await publishStep({
+      tour_id: input.tour_id,
+      tour_title: tour.title,
+      step_number: found.number,
+      step_id: input.step_id,
+      step_title: step.title,
+    })
+  }
+  return { step: record }
+}
+
 iii.registerFunction(
   'onboarding::steps::complete',
-  async (input) => {
-    const found = findStep(input.tour_id, input.step_id)
-    if (!found) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
-    const { tour, step } = found
-    const subject = input.subject ?? 'local'
-    // A step closes once per subject, so a reload or a second report from the
-    // agent must not announce it again.
-    // ponytail: read-then-publish, not atomic — two reports racing around this
-    // await can both announce. Move the check into `state::update` if a
-    // duplicate ever matters more than the round trip does.
-    const announced =
-      (await readProgress(subject)).tours?.[input.tour_id]?.steps?.[input.step_id]?.status ===
-      'complete'
-    const at = Date.now()
-    const record = {
-      status: 'complete',
-      at,
-      // Present only when a trigger closed the step, so the page can tell a
-      // condition apart from a step the operator closed by hand.
-      fired: input.fired
-        ? {
-            trigger_type: input.fired.trigger_type ?? step.condition?.type ?? null,
-            function_id: input.fired.function_id ?? null,
-            payload: cap(input.fired.payload),
-            at,
-          }
-        : null,
-    }
-    await stateUpdate(progressKey(subject), [
-      { type: 'merge', path: ['tours', input.tour_id, 'steps'], value: { [input.step_id]: record } },
-      { type: 'merge', path: ['tours', input.tour_id], value: { updated_at: at } },
-      { type: 'merge', value: { updated_at: at } },
-    ])
-    if (!announced) {
-      await publishStep({
-        tour_id: input.tour_id,
-        tour_title: tour.title,
-        step_number: found.number,
-        step_id: input.step_id,
-        step_title: step.title,
-      })
-    }
-    return { step: record }
-  },
+  completeStep,
   {
     description:
       'Mark one tour step complete. Pass `fired` when a trigger closed it \u2014 its type and payload are kept as the evidence the tour shows back.',
@@ -241,6 +244,44 @@ iii.registerFunction(
       ['tour_id', 'step_id'],
     ),
     response_format: object({ step: object() }, ['step']),
+  },
+)
+
+/**
+ * A trigger that fired before the tour was listening. The console reports
+ * it when it opens the tour on its own after an example prompt: the
+ * example's turn has already completed, and the tour's first step waits on
+ * exactly that event — without this, it would ask for a message the
+ * operator has already sent. Every open step waiting on a matching
+ * condition closes, with the event as its evidence, the same as if the
+ * page's own binding had caught it.
+ */
+iii.registerFunction(
+  'onboarding::steps::observe',
+  async (input) => {
+    const subject = input.subject ?? 'local'
+    const progress = await readProgress(subject)
+    const closed = []
+    for (const tour of TOURS) {
+      for (const step of tour.steps) {
+        if (progress.tours?.[tour.id]?.steps?.[step.id]?.status === 'complete') continue
+        if (!conditionMatches(step.condition, input.trigger_type, input.payload)) continue
+        await completeStep({
+          subject,
+          tour_id: tour.id,
+          step_id: step.id,
+          fired: { trigger_type: input.trigger_type, payload: input.payload },
+        })
+        closed.push({ tour_id: tour.id, step_id: step.id })
+      }
+    }
+    return { closed }
+  },
+  {
+    description:
+      'Report a trigger that fired before the tour was listening: every open step whose condition matches it closes, with the event as its evidence.',
+    request_format: object({ subject: string, trigger_type: string, payload: {} }, ['trigger_type']),
+    response_format: object({ closed: { type: 'array' } }, ['closed']),
   },
 )
 

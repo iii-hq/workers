@@ -16,6 +16,13 @@
  *     console's `console::workspace::changed` trigger, which rings after
  *     every layout write, so a closed pane is reported as it happens. Never
  *     required to finish the step.
+ *   - `to_open` (optional): a console screen the step talks about and the
+ *     operator opens THEMSELVES. While it is on screen the step frames its
+ *     own anchors; while it is not, the page shows this body and frames
+ *     these anchors instead — where the screen opens — and the step's
+ *     button waits until it is there. Open only in a tab that is not
+ *     showing, the page shows `elsewhere` and frames that tab. Watched the
+ *     same way as `on_closed`.
  *   - `condition` (optional): a real engine trigger the step waits for. The
  *     page binds it, shows what it is waiting for, and when it fires shows
  *     the trigger and its payload. A step with no condition is closed by the
@@ -26,7 +33,8 @@
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
  * @typedef {{ text: string, label: string }} Ask
  * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
- * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, on_closed?: OnClosed }} Step
+ * @typedef {{ screen: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, ask?: Ask, on_closed?: OnClosed, to_open?: ToOpen }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
@@ -81,7 +89,7 @@ export const TOURS = [
         id: "message",
         ask: {
           text: "hello",
-          label: "Say hi",
+          label: "Say hello",
         },
         title: "Send a message",
         body: "Say 'hello' to the agent. We've setup a trigger to run when you get the agent's response. The iii ade (agentic development environment) is an example of a iii Worker. Database and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
@@ -96,8 +104,11 @@ export const TOURS = [
       {
         id: "tabs",
         title: "Workspaces",
-        body: "Each tab is a workspace of one or more panes, side by side. You can open as many or as you need.",
+        body: "Each tab is a workspace: one or more panes, side by side, that you arrange for one piece of work. The + at the end of the row opens another, and you can keep as many as you need.",
+        // The tabs AND the + — the body talks about both, so the box takes in
+        // both. The tab row alone is the fallback for an older console.
         anchors: [
+          ".onboarding-workspaces",
           ".onboarding-tabs",
           '[role="tablist"][aria-label="Workspace tabs"]',
         ],
@@ -129,11 +140,24 @@ export const TOURS = [
       {
         id: "observability",
         title: "Observability",
-        body: "Open Traces to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
+        body: "Traces follows the chat you are in and opens its latest turn. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
         anchors: [".onboarding-traces", 'section[aria-label="traces"]'],
-        // The step's button places this console screen beside the tour, so the
-        // operator reads the trace instead of hunting for the palette row.
-        screen: "traces",
+        // Opened by the operator, not for them: a fresh workspace already has
+        // Traces beside the chat, and when it is gone the page points at where
+        // it opens — the + first, then the traces row of the new tab's picker
+        // (best match first, so the box moves on once the picker is up). A
+        // phone has no tab row: its search button is how Traces opens there.
+        to_open: {
+          screen: "traces",
+          body: "Traces is not open. Open a new tab and pick traces from its list, or search for traces.",
+          elsewhere: "Traces is open in another tab. Switch to that tab, lit up in the tab row, to see it.",
+          anchors: [
+            '[role="option"][data-screen="traces"]',
+            ".onboarding-new-tab",
+            '[aria-label="New workspace"]',
+            '[aria-label="search the ADE"]',
+          ],
+        },
       },
       agentStep({
         id: "discoverability",
@@ -175,11 +199,11 @@ export const TOURS = [
       {
         id: "clean-up",
         ask: {
-          text: "Remove the onboarding worker from this project, then close the onboarding pane.",
+          text: "Remove the onboarding worker from this project.",
           label: "Ask the agent",
         },
         title: "Clean up",
-        body: "Removing a worker is the same move as adding one. Ask the agent to take the tour back out, and it will close this pane on the way.",
+        body: "Removing a worker is the same move as adding one. Ask the agent to take the tour back out, and this card goes with it.",
         // No condition, and this is the one step where that is not a choice:
         // the worker this page waits on is the worker being removed, so
         // nothing survives to report the step done. Sending the prompt IS the
@@ -216,4 +240,16 @@ export function findStep(tourId, stepId) {
   const index = tour?.steps.findIndex((step) => step.id === stepId) ?? -1;
   if (!tour || index < 0) return undefined;
   return { tour, step: tour.steps[index], number: index + 1 };
+}
+
+/**
+ * A step's condition matches an event when every key its config filters on
+ * has the same value in the payload; an empty config matches any event of
+ * the type, the way the engine applies the binding.
+ */
+export function conditionMatches(condition, triggerType, payload) {
+  return (
+    condition?.type === triggerType &&
+    Object.entries(condition.config ?? {}).every(([key, value]) => payload?.[key] === value)
+  );
 }

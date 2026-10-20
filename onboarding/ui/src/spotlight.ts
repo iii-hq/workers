@@ -7,15 +7,51 @@
  * library would add a dependency and a bundle for one moving rectangle. If
  * springs or a timeline are ever wanted, Motion One (`motion`, MIT, ~5 kB)
  * drops in here without touching the callers.
+ *
+ * The box carries what it frames: a halo that breathes (the shared pulse,
+ * so reduced motion stills it) and a label naming the step, so the eye
+ * lands on the element and knows why it is lit without reading the card.
  */
+
+import { uiClasses } from '@iii-dev/console-ui'
 
 const BOX_CLASS = 'onboarding-spotlight'
 /** Breathing room between the target's edge and the box. */
 const PAD = 6
+/** Room the label keeps from the window's right edge when it sits beside the box. */
+const LABEL_EDGE = 16
+
+/** Where the box sits, in viewport px; `null` while it frames nothing. */
+export interface SpotlightRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
 
 let box: HTMLDivElement | null = null
+let label: HTMLSpanElement | null = null
 let frame = 0
 let painted = ''
+let rect: SpotlightRect | null = null
+const movers = new Set<(rect: SpotlightRect | null) => void>()
+
+function moved(next: SpotlightRect | null): void {
+  rect = next
+  for (const mover of [...movers]) mover(next)
+}
+
+/**
+ * Hear where the box goes — the tour card keeps out of its way. Called at
+ * once with where it is now, then on every move; returns the remover.
+ */
+export function onSpotlightMove(listener: (rect: SpotlightRect | null) => void): () => void {
+  movers.add(listener)
+  listener(rect)
+  return () => {
+    movers.delete(listener)
+  }
+}
 
 function ensureBox(): HTMLDivElement {
   if (box?.isConnected) return box
@@ -25,9 +61,21 @@ function ensureBox(): HTMLDivElement {
   // the injectable-UI rule for custom portals (styles.css is scope-only).
   box.setAttribute('data-iii-ui', 'onboarding')
   box.setAttribute('aria-hidden', 'true')
+  const halo = document.createElement('span')
+  halo.className = `onboarding-spotlight-halo ${uiClasses.pulse}`
+  label = document.createElement('span')
+  label.className = 'onboarding-spotlight-label'
+  box.append(halo, label)
   document.body.appendChild(box)
   return box
 }
+
+/**
+ * How often, in frames, the label's side is checked again while the box sits
+ * still: what lies around the target changes without the target moving (a
+ * tab switch mounts a new pane under the label).
+ */
+const LABEL_RECHECK_FRAMES = 30
 
 /**
  * ponytail: one `getBoundingClientRect` per frame while a step is showing,
@@ -37,6 +85,7 @@ function ensureBox(): HTMLDivElement {
  * scroll listeners if a profile ever blames this.
  */
 function track(selectors: readonly string[]) {
+  let sinceCheck = 0
   const step = () => {
     frame = requestAnimationFrame(step)
     // Best selector first: the tour's own `onboarding-*` class, then the
@@ -48,6 +97,10 @@ function track(selectors: readonly string[]) {
       // The element can come back — a collapsed sidebar, another tab — so keep
       // watching and just stop drawing.
       element.dataset.visible = 'false'
+      if (painted) {
+        painted = ''
+        moved(null)
+      }
       return
     }
     const rect = target.getBoundingClientRect()
@@ -55,14 +108,74 @@ function track(selectors: readonly string[]) {
       rect.width + PAD * 2,
     )},${Math.round(rect.height + PAD * 2)}`
     element.dataset.visible = 'true'
-    if (next === painted) return
+    const [left, top, width, height] = next.split(',').map(Number)
+    if (next === painted) {
+      sinceCheck += 1
+      if (sinceCheck >= LABEL_RECHECK_FRAMES) {
+        sinceCheck = 0
+        element.dataset.labelSide = labelSide(target, { left, top, width, height })
+      }
+      return
+    }
     painted = next
-    const [left, top, width, height] = next.split(',')
+    sinceCheck = 0
     element.style.translate = `${left}px ${top}px`
     element.style.width = `${width}px`
     element.style.height = `${height}px`
+    element.dataset.labelSide = labelSide(target, { left, top, width, height })
+    moved({ left, top, width, height })
   }
   frame = requestAnimationFrame(step)
+}
+
+type LabelSide = 'above' | 'end' | 'below' | 'none'
+
+/** What the label must not sit on: anything the operator clicks or types in. */
+const CONTROL = 'button, a[href], input, textarea, select, [role="tab"], [role="option"], [role="menuitem"]'
+
+/**
+ * Where the label goes: above the box, beside it, or under it — the first
+ * that fits in the window and covers no control outside the target (the
+ * tab next to a lit tab, the button under the tab row). When every side
+ * would cover one, the label stays off: the card names the step anyway, and
+ * a label over the control the operator is about to press is worse than
+ * none.
+ */
+function labelSide(target: Element, box: SpotlightRect): LabelSide {
+  if (!label || label.hidden) return 'none'
+  const w = label.offsetWidth
+  const h = label.offsetHeight
+  const at: Record<Exclude<LabelSide, 'none'>, SpotlightRect> = {
+    above: { left: box.left - 2, top: box.top - 8 - h, width: w, height: h },
+    end: { left: box.left + box.width + 8, top: box.top + box.height / 2 - h / 2, width: w, height: h },
+    below: { left: box.left - 2, top: box.top + box.height + 8, width: w, height: h },
+  }
+  for (const side of ['above', 'end', 'below'] as const) {
+    const spot = at[side]
+    const fits =
+      spot.left >= 0 &&
+      spot.top >= 0 &&
+      spot.left + spot.width + LABEL_EDGE <= window.innerWidth &&
+      spot.top + spot.height <= window.innerHeight
+    if (fits && !coversControl(spot, target)) return side
+  }
+  return 'none'
+}
+
+/**
+ * Whether a control outside `target` lies under `spot`, sampled at its two
+ * ends and middle. The box and label are `pointer-events: none`, so the
+ * hit test looks straight through them at the console.
+ */
+function coversControl(spot: SpotlightRect, target: Element): boolean {
+  const y = spot.top + spot.height / 2
+  for (const x of [spot.left + 2, spot.left + spot.width / 2, spot.left + spot.width - 2]) {
+    for (const hit of document.elementsFromPoint(x, y)) {
+      const control = hit.closest(CONTROL)
+      if (control && !target.contains(control)) return true
+    }
+  }
+  return false
 }
 
 /**
@@ -137,10 +250,18 @@ export function waitForAnchor(selectors: readonly string[] | null | undefined, t
  */
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
 
-/** Frame the first selector that matches; an empty list clears the box. */
-export function showSpotlight(selectors: readonly string[] | null | undefined): void {
+/**
+ * Frame the first selector that matches, named by `caption` (`2 · Workspaces`);
+ * an empty list clears the box.
+ */
+export function showSpotlight(selectors: readonly string[] | null | undefined, caption?: string): void {
   hideSpotlight()
   if (!selectors || selectors.length === 0) return
+  ensureBox()
+  if (label) {
+    label.textContent = caption ?? ''
+    label.hidden = !caption
+  }
   firstMatch(selectors)?.scrollIntoView({
     block: 'center',
     inline: 'nearest',
@@ -154,6 +275,7 @@ export function hideSpotlight(): void {
   frame = 0
   painted = ''
   if (box) box.dataset.visible = 'false'
+  if (rect) moved(null)
 }
 
 /** Drop the box entirely — for when the page unmounts. */
@@ -161,4 +283,5 @@ export function disposeSpotlight(): void {
   hideSpotlight()
   box?.remove()
   box = null
+  label = null
 }

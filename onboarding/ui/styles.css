@@ -32,6 +32,331 @@
   opacity: 1;
 }
 
+/* A soft second ring that breathes (the shared pulse, stilled under reduced
+   motion), so a lit element reads at a glance across a busy console. */
+[data-iii-ui='onboarding'] .onboarding-spotlight-halo {
+  position: absolute;
+  inset: -6px;
+  border-radius: var(--radius-lg);
+  outline: 4px solid var(--color-accent-muted);
+  pointer-events: none;
+}
+
+/* What is lit and why: the step's number and title, on the box's edge. It
+   hangs under the box when the target sits at the top of the window. */
+[data-iii-ui='onboarding'] .onboarding-spotlight-label {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: -2px;
+  max-width: 20rem;
+  overflow: hidden;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='onboarding'].onboarding-spotlight[data-label-side='below'] .onboarding-spotlight-label {
+  top: calc(100% + 0.5rem);
+  bottom: auto;
+}
+
+[data-iii-ui='onboarding'].onboarding-spotlight[data-label-side='end'] .onboarding-spotlight-label {
+  top: 50%;
+  bottom: auto;
+  left: calc(100% + 0.5rem);
+  transform: translateY(-50%);
+}
+
+/* Kept in layout when no side is clear, only not shown: the next check
+   measures the label, and a `display: none` one measures 0×0 — which fits
+   anywhere, comes back, and flickers. */
+[data-iii-ui='onboarding'].onboarding-spotlight[data-label-side='none'] .onboarding-spotlight-label {
+  visibility: hidden;
+}
+
+[data-iii-ui='onboarding'] .onboarding-spotlight-label[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------- overlay --- */
+
+/* The tour as a card over the console: fixed to one corner, 368px wide,
+   never taller than the window allows. The overlay layer lets clicks
+   through; the card and the pill opt back in. */
+
+[data-iii-ui='onboarding'] .ob-overlay,
+[data-iii-ui='onboarding'] .ob-pill {
+  position: fixed;
+  pointer-events: auto;
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-floating);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+[data-iii-ui='onboarding'] .ob-overlay {
+  display: flex;
+  width: min(23rem, calc(100vw - 2rem));
+  max-height: min(36rem, calc(100vh - 5.5rem));
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  animation: onboarding-card-enter var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+/* 1rem from the edges; 4.5rem from the top, under the masthead and tabs. */
+[data-iii-ui='onboarding'] :is(.ob-overlay, .ob-pill)[data-corner='bottom-right'] {
+  right: 1rem;
+  bottom: 1rem;
+}
+
+[data-iii-ui='onboarding'] :is(.ob-overlay, .ob-pill)[data-corner='bottom-left'] {
+  bottom: 1rem;
+  left: 1rem;
+}
+
+[data-iii-ui='onboarding'] :is(.ob-overlay, .ob-pill)[data-corner='top-right'] {
+  top: 4.5rem;
+  right: 1rem;
+}
+
+[data-iii-ui='onboarding'] :is(.ob-overlay, .ob-pill)[data-corner='top-left'] {
+  top: 4.5rem;
+  left: 1rem;
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.5rem 0.375rem 0.875rem;
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-mark {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-count {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+}
+
+/* The bar: a segment per step. Each is a 12px-tall button drawing a 4px
+   track, so a short bar is still an easy target. */
+[data-iii-ui='onboarding'] .ob-progress {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+  margin: 0;
+  padding: 0 0.875rem 0.25rem;
+  list-style: none;
+}
+
+[data-iii-ui='onboarding'] .ob-progress-item {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+
+/* The bar says where the operator is: segments up to the step being read
+   are filled, the rest are empty, so stepping back drains it. A step done
+   ahead of that point keeps a faint track, so completion still shows.
+
+   Each segment is a 12px button: a 4px track (::before) and an ink fill
+   (::after) over it that grows from the left. The fill is a transform, and
+   `--ob-seg-order` (set per move by the page) staggers the segments, so the
+   fill sweeps forward when the operator advances and drains back when they
+   step back, instead of segments blinking one colour to another. The
+   delays ride the motion tokens, so reduced motion makes the move instant. */
+[data-iii-ui='onboarding'] .ob-progress-seg {
+  position: relative;
+  width: 100%;
+  height: 0.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='onboarding'] .ob-progress-seg:disabled {
+  cursor: default;
+}
+
+[data-iii-ui='onboarding'] .ob-progress-seg::before,
+[data-iii-ui='onboarding'] .ob-progress-seg::after {
+  content: '';
+  position: absolute;
+  inset: 0.25rem 0;
+  border-radius: var(--radius-full);
+}
+
+[data-iii-ui='onboarding'] .ob-progress-seg::before {
+  background: var(--color-edge);
+  transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+/* Done, but ahead of the step being read. */
+[data-iii-ui='onboarding'] .ob-progress-seg[data-done]::before {
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui='onboarding'] .ob-progress-seg::after {
+  background: var(--color-ink);
+  transform: scaleX(0);
+  /* Left in both directions: filling grows rightward, draining pulls the
+     right edge back. */
+  transform-origin: left center;
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard)
+    calc(var(--ob-seg-order, 0) * var(--motion-duration-fast) / 3);
+}
+
+[data-iii-ui='onboarding'] .ob-progress-seg[data-filled]::after {
+  transform: scaleX(1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui='onboarding'] .ob-progress-seg:not(:disabled):hover::before {
+    background: var(--color-ink-faint);
+  }
+}
+
+[data-iii-ui='onboarding'] .ob-progress-seg:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem 0.875rem 0.875rem;
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  animation: onboarding-step-enter var(--motion-duration-control) var(--motion-ease-enter);
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.375rem;
+  letter-spacing: -0.01em;
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-title-text {
+  min-width: 0;
+  flex: 1;
+  text-wrap: balance;
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-foot {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-top: 1px solid var(--color-rule);
+}
+
+[data-iii-ui='onboarding'] .ob-overlay-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+
+/* What the operator does next, when the step waits on them: open a screen. */
+[data-iii-ui='onboarding'] .ob-note--todo {
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-muted);
+  color: var(--color-ink);
+}
+
+/* The folded card: a pill in the same corner. */
+[data-iii-ui='onboarding'] .ob-pill {
+  display: inline-flex;
+  height: 2.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.875rem;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui='onboarding'] .ob-pill:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui='onboarding'] .ob-pill:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+[data-iii-ui='onboarding'] .ob-pill-count {
+  color: var(--color-ink-faint);
+  font-weight: 500;
+}
+
+@keyframes onboarding-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem) scale(0.98);
+  }
+}
+
+@keyframes onboarding-step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='onboarding'] .ob-overlay,
+  [data-iii-ui='onboarding'] .ob-overlay-step {
+    animation: none;
+  }
+}
+
 /* ---------------------------------------------------------------- page --- */
 
 /* The tour wears the setup dialog's clothes: the console sans at a 13px
@@ -446,28 +771,126 @@
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='onboarding'] .ob-form {
+/* ------------------------------------------------------------- signup --- */
+
+/* The signup is one inset panel: a step darker than the card, so the field
+   reads as a field in both themes and the field and its two actions read as
+   one group. The follow-along links sit outside it, as the quieter option. */
+[data-iii-ui='onboarding'] .ob-signup {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
 }
 
-[data-iii-ui='onboarding'] .ob-grow {
-  flex: 1;
-  min-width: 12rem;
+[data-iii-ui='onboarding'] .ob-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+[data-iii-ui='onboarding'] .ob-signup-label {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+}
+
+[data-iii-ui='onboarding'] .ob-field {
+  width: 100%;
+  height: 2.25rem;
   border-radius: var(--radius-xl);
+}
+
+[data-iii-ui='onboarding'] .ob-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+/* The quiet action's label lines up with the field's edge above it: its
+   padding becomes a hover area that extends outward instead. */
+[data-iii-ui='onboarding'] .ob-form-actions .ob-ghost {
+  margin-left: -0.5rem;
+  padding-inline: 0.5rem;
+}
+
+/* Press feedback the shared button does not carry: a slight give, on the
+   transform alone, so the press reads as heard. */
+[data-iii-ui='onboarding'] .ob-signup .ob-action,
+[data-iii-ui='onboarding'] .ob-link {
+  transition-property: background-color, color, border-color, transform;
+  transition-duration: var(--motion-duration-control);
+  transition-timing-function: var(--motion-ease-enter);
+}
+
+[data-iii-ui='onboarding'] .ob-signup .ob-action:active:not(:disabled),
+[data-iii-ui='onboarding'] .ob-link:active {
+  transform: scale(0.97);
+}
+
+/* Signed up: the same panel says so, arriving rather than swapping in. */
+[data-iii-ui='onboarding'] .ob-signup-done {
+  display: flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  animation: onboarding-signup-done var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+@keyframes onboarding-signup-done {
+  from {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='onboarding'] .ob-signup-done {
+    animation: none;
+  }
+}
+
+/* The quieter way to keep up: a label on the left, the marks on the right. */
+[data-iii-ui='onboarding'] .ob-follow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 0.25rem 0 0.75rem;
+}
+
+[data-iii-ui='onboarding'] .ob-follow-label {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
 [data-iii-ui='onboarding'] .ob-links {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.125rem;
 }
 
 [data-iii-ui='onboarding'] .ob-link {
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-md);
+  color: var(--color-ink-faint);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui='onboarding'] .ob-link:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-ink);
+  }
 }
 
 /* ---------------------------------------------------------- disclosure --- */

@@ -1,19 +1,53 @@
 import type { Host } from '@iii-dev/console-ui'
+import { TourOverlay } from './src/overlay'
 import { OnboardingPage } from './src/page'
+import { showTour } from './src/visibility'
 
+/**
+ * The tour floats over the console as a card where the console has the
+ * overlay slot, and is a page in a pane where it does not. Either way
+ * `Open onboarding` is how it is shown — the palette row, and the command
+ * the setup wizard runs when the tour is accepted or comes due.
+ */
 export default function setup(host: Host) {
-  host.pages.register({
-    id: 'onboarding',
-    title: 'onboarding',
-    render: (props) => <OnboardingPage host={host} {...props} />,
-  })
+  if (host.overlays?.register) {
+    host.overlays.register({
+      id: 'onboarding-tour',
+      render: (props) => <TourOverlay host={host} {...props} />,
+    })
+    void adoptOldPane(host)
+  } else {
+    host.pages.register({
+      id: 'onboarding',
+      title: 'onboarding',
+      render: (props) => <OnboardingPage host={host} {...props} />,
+    })
+  }
+  const overlay = Boolean(host.overlays?.register)
   host.commands?.register('onboarding', [
     {
       id: 'open',
       title: 'Open onboarding',
       detail: 'Guided walkthrough of the console',
       keywords: ['onboarding', 'tour', 'walkthrough', 'help', 'tutorial'],
-      run: () => host.panels?.open({ pageId: 'onboarding' }),
+      run: () => (overlay ? showTour() : host.panels?.open({ pageId: 'onboarding' })),
     },
   ])
+}
+
+/**
+ * A workspace saved while the tour was a page still has its pane, which no
+ * longer has a page to show. Close it and bring the tour up as the card, so
+ * an operator mid-tour carries on instead of finding an empty pane. Best
+ * effort: a console that cannot list or close panes just keeps the pane.
+ */
+async function adoptOldPane(host: Host): Promise<void> {
+  try {
+    const ws = await host.iii.trigger<{ tabs: { screens: string[] }[] }>('console::workspace::list')
+    if (!ws.tabs.some((tab) => tab.screens.includes('ext:onboarding'))) return
+    await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' })
+    showTour()
+  } catch {
+    // Nothing to adopt, or nothing that can do it.
+  }
 }
