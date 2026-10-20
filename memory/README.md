@@ -124,7 +124,7 @@ III_NAMESPACE=<ns> cargo test --test recall_quality -- --ignored embed_golden_se
 Run it before and after a prompt change; it needs an engine with a router and a provider, and no memory worker.
 
 ```bash
-III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns> EXTRACTION_MODEL=<id> cargo test --lib extract::eval -- --ignored --nocapture
+III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns> EXTRACTION_MODEL=<id> cargo test -p memory --lib extract::eval -- --ignored --nocapture
 ```
 
 ## Permissions
