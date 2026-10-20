@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/Switch'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import { useTabLimit } from '@/hooks/use-tab-limit'
-import type { Theme } from '@/hooks/use-theme'
+import type { ThemePreference } from '@/hooks/use-theme'
 import { getDefaultBackend } from '@/lib/backend'
 import {
   autoAllowSeedFromRules,
@@ -48,8 +48,8 @@ const TAB_LIMIT_CONFIG_HASH = hashForWorkersConfiguration('console', [
 ])
 
 interface ConsoleSettingsTabProps {
-  theme: Theme
-  onThemeChange: (next: Theme) => void
+  theme: ThemePreference
+  onThemeChange: (next: ThemePreference) => void
 }
 
 /**
@@ -184,16 +184,17 @@ export function ConsoleSettingsTab({
           <SettingsList>
             <SettingsRow
               label="Theme"
-              description="Applied immediately and stored for this browser."
+              description="Applied immediately and stored for this browser. System follows the OS as it changes."
               layout="inline"
               control={
-                <ModeToggle<Theme>
+                <ModeToggle<ThemePreference>
                   value={theme}
                   onChange={onThemeChange}
                   variant="radio"
                   aria-label="Theme"
                   options={[
                     { value: 'light', label: 'Light' },
+                    { value: 'system', label: 'System' },
                     { value: 'dark', label: 'Dark' },
                   ]}
                 />

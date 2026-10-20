@@ -1,18 +1,12 @@
-import {
-  Columns2,
-  Menu,
-  Moon,
-  Plus,
-  Search,
-  SquarePen,
-  Sun,
-} from 'lucide-react'
+import { Columns2, Menu, Plus, Search, SquarePen } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { KeyCombo } from '@/components/ui/KeyCombo'
+import { ThemeSwitch } from '@/components/ui/ThemeSwitch'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
 import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
+import type { ThemePreference } from '@/hooks/use-theme'
 import type { UseWorkspaceTabsReturn } from '@/hooks/use-workspace-tabs'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { bindingsFor, hoverTitle } from '@/lib/keybindings/registry'
@@ -47,8 +41,8 @@ export interface WorkspaceHeaderProps {
   onOpenPalette: () => void
   /** Add an empty panel on the right of the active workspace. */
   onSplit: () => void
-  theme: 'light' | 'dark'
-  onThemeChange: (theme: 'light' | 'dark') => void
+  theme: ThemePreference
+  onThemeChange: (theme: ThemePreference) => void
 }
 
 /**
@@ -250,27 +244,7 @@ export function WorkspaceHeader({
           >
             <Columns2 className="size-4 shrink-0" aria-hidden />
           </button>
-          <button
-            type="button"
-            onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')}
-            aria-label={
-              theme === 'dark'
-                ? 'Switch to light theme'
-                : 'Switch to dark theme'
-            }
-            title={
-              theme === 'dark'
-                ? 'Switch to light theme'
-                : 'Switch to dark theme'
-            }
-            className={cn(GHOST_CONTROL, 'size-8')}
-          >
-            {theme === 'dark' ? (
-              <Sun className="size-4 shrink-0" aria-hidden />
-            ) : (
-              <Moon className="size-4 shrink-0" aria-hidden />
-            )}
-          </button>
+          <ThemeSwitch value={theme} onChange={onThemeChange} />
         </div>
       </header>
     </>

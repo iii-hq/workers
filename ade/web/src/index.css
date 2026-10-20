@@ -330,6 +330,16 @@
     cursor: pointer;
   }
 
+  /* The theme flip: one short crossfade of the whole page (the hook
+     starts a view transition around the swap). Normal blending, so the
+     mid-fade never flashes lighter than either theme. */
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 180ms;
+    animation-timing-function: var(--motion-ease-standard);
+    mix-blend-mode: normal;
+  }
+
   /* Scrollbars stay system-default — no ::-webkit-scrollbar restyling. */
 
   /* flatten the native optgroup label so it doesn't introduce bold/italic

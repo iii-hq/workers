@@ -46,7 +46,7 @@ import {
   useWorkersConfigurationRoute,
   type WorkersConfigurationRoute,
 } from '@/hooks/use-hash-route'
-import type { Theme } from '@/hooks/use-theme'
+import type { ThemePreference } from '@/hooks/use-theme'
 import { configurationFormFamily } from '@/lib/configuration-family'
 import { useExtConfigForms, useUiAssetsStatus } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
@@ -175,8 +175,8 @@ const CONFIGURATION_NAMES: Record<string, string> = {
 }
 
 interface ConfigurationProps {
-  theme: Theme
-  onThemeChange: (next: Theme) => void
+  theme: ThemePreference
+  onThemeChange: (next: ThemePreference) => void
   onDirtyChange: (dirty: boolean) => void
   tryNavigate: (action: () => void) => boolean
 }

@@ -35,7 +35,7 @@ export function ConversationGroupHeader({
       onClick={onToggle}
       className={cn(
         'iii-ui-motion-control mt-2 flex w-full min-w-0 items-center rounded-sm border-0 bg-transparent pr-3 pl-[10px] text-left font-sans font-medium text-ink-ghost transition-colors first:mt-0 hover:bg-surface-hover hover:text-ink-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink/55',
-        narrow ? 'min-h-11 text-[13px]' : 'min-h-6 text-[11px]',
+        narrow ? 'min-h-11 text-[13px]' : 'min-h-7 text-xs',
       )}
     >
       <span className="truncate">{label}</span>
@@ -48,7 +48,7 @@ export function ConversationGroupHeader({
       />
       <span
         aria-hidden
-        className="ml-auto pl-2 font-normal text-[11px] text-ink-ghost tabular-nums"
+        className="ml-auto pl-2 font-normal text-xs text-ink-ghost tabular-nums"
       >
         {count}
       </span>

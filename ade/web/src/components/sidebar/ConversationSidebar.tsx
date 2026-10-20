@@ -359,7 +359,9 @@ export function ConversationSidebar({
           <div
             className={cn(
               uiClasses.tree,
-              '[--iii-ui-tree-row:2.25rem] [&_.iii-ui-tree-item]:rounded-xl',
+              // 14px/500 titles on 36px rows, 12px timestamps: the list
+              // reads at the sidebar's own size, not the tree recipe's 13px.
+              '[--iii-ui-tree-row:2.25rem] [&_.iii-ui-tree-item]:rounded-xl [&_.iii-ui-tree-item]:text-sm [&_.iii-ui-tree-item__meta]:text-xs',
             )}
             data-narrow={narrow || undefined}
           >

@@ -52,7 +52,11 @@ import {
 import { useKeybindings } from '@/hooks/use-keybindings'
 import { REDUCED_MOTION_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { useTabLimit } from '@/hooks/use-tab-limit'
-import { useTheme } from '@/hooks/use-theme'
+import {
+  type ThemePreference,
+  useTheme,
+  useThemePreference,
+} from '@/hooks/use-theme'
 import {
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
@@ -197,7 +201,10 @@ export function App({
 }: {
   injectableUiRuntime?: Promise<InjectableUiRuntime>
 }) {
-  const [theme, setTheme] = useTheme()
+  // The preference (light / dark / system) is what the switch and settings
+  // edit; the resolved theme is what surfaces that only know two render in.
+  const [themePreference, setThemePreference] = useThemePreference()
+  const [theme] = useTheme()
   useEffect(() => armCompletionBell(), [])
   const { setDirty: setSettingsDirty, tryNavigate: trySettingsNavigation } =
     useUnsavedGuard({ guardHashNavigation: true })
@@ -485,8 +492,8 @@ export function App({
             setPaletteOpen(true)
           }}
           onSplit={() => splitWorkspacePanel('right')}
-          theme={theme}
-          onThemeChange={setTheme}
+          theme={themePreference}
+          onThemeChange={setThemePreference}
         />
         <ConnectionNotice />
         <WorkspacePanes
@@ -511,8 +518,8 @@ export function App({
         />
         {view === 'configuration' ? (
           <ConfigurationOverlay
-            theme={theme}
-            onThemeChange={setTheme}
+            theme={themePreference}
+            onThemeChange={setThemePreference}
             onDirtyChange={setSettingsDirty}
             tryNavigate={trySettingsNavigation}
             onClose={requestCloseSettings}
@@ -529,7 +536,7 @@ export function App({
           onOpenSettings={openSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
-          onThemeChange={setTheme}
+          onThemeChange={setThemePreference}
           initialQuery={paletteQuery}
         />
       </Sheet>
@@ -1657,8 +1664,8 @@ function ScreenBody({
 }
 
 interface ConfigurationOverlayProps {
-  theme: ReturnType<typeof useTheme>[0]
-  onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  theme: ThemePreference
+  onThemeChange: (next: ThemePreference) => void
   onDirtyChange: (dirty: boolean) => void
   tryNavigate: (action: () => void) => boolean
   onClose: () => void
