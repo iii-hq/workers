@@ -11,7 +11,7 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { errorCode } from './errors'
+import { innerError } from './errors'
 
 export interface BucketSummary {
   name: string
@@ -179,7 +179,8 @@ export async function readThroughWorker(
         { timeoutMs: 60_000 },
       )
     } catch (error) {
-      if (errorCode(error) === 'OBJECT_TOO_LARGE') throw new RelayError(RELAY_TOO_OLD)
+      // The worker's error may carry no `message` (`{"code":…,"size":…,"cap":…}`).
+      if (innerError(error)?.code === 'OBJECT_TOO_LARGE') throw new RelayError(RELAY_TOO_OLD)
       throw error
     }
     const bytes = decodeBase64(response.body_base64 ?? '')

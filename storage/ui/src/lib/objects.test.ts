@@ -205,9 +205,10 @@ describe('reads through the worker', () => {
     const host = {
       iii: {
         trigger: async () => {
+          // As the published worker sends it: no `message` inside.
           throw {
             code: 'invocation_failed',
-            message: 'handler error: {"code":"OBJECT_TOO_LARGE","size":10485761,"cap":10485760,"message":"too large"}',
+            message: 'handler error: {"code":"OBJECT_TOO_LARGE","size":59468103,"cap":10485760}',
           }
         },
       },

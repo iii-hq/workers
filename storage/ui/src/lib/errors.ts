@@ -52,7 +52,9 @@ export function innerError(err: unknown): Body | null {
  * or it predates the function. Never a worker's own `*_NOT_FOUND` code.
  */
 export function isMissingFunction(err: unknown): boolean {
-  const codes = [errorCode(err), record(err)?.code].filter((c): c is string => typeof c === 'string')
+  const codes = [errorCode(err), innerError(err)?.code, record(err)?.code].filter(
+    (c): c is string => typeof c === 'string',
+  )
   if (codes.some((code) => code.toLowerCase() === 'function_not_found')) return true
   if (codes.some((code) => /^[A-Z][A-Z0-9_]+$/.test(code))) return false
   return /function[_ ]not[_ ]found|no such function|function \S+ (?:is )?not (?:found|registered)/i.test(
