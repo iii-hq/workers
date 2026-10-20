@@ -76,6 +76,22 @@ pub trait Backend: Send + Sync {
     }
 }
 
+/// An error and its causes, `: `-joined (SDK errors' Display alone hides
+/// why), skipping a cause whose text the chain already holds.
+pub fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = cause.source();
+    }
+    out
+}
+
 /// Why a probe failed, as data for `storage::testBucket`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeFailure {

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-use super::buckets::{prepare_candidate, stored_entry};
+use super::buckets::{prepare_candidate, stored_entry_both};
 use super::AppState;
 use crate::backend::factory::{self, Purpose};
 use crate::config::{parse_bucket, BucketConfig, WorkerConfig};
@@ -109,13 +109,14 @@ async fn run(
     req: &TestBucketReq,
     budget: Duration,
 ) -> TestBucketResp {
-    let stored = match &req.name {
-        Some(name) => stored_entry(runtime, name).await.unwrap_or_default(),
-        None => None,
+    let (stored, stored_expanded) = match &req.name {
+        Some(name) => stored_entry_both(runtime, name).await.unwrap_or_default(),
+        None => (None, None),
     };
     let candidate = match (&req.bucket, &stored) {
         (Some(bucket), _) => bucket.clone(),
-        (None, Some(stored)) => stored.clone(),
+        // The stored bucket as the worker runs it: templates expanded.
+        (None, Some(stored)) => stored_expanded.clone().unwrap_or_else(|| stored.clone()),
         (None, None) => {
             return TestBucketResp::failed(
                 "unknown",
@@ -152,6 +153,28 @@ async fn run(
     } else {
         (candidate, Vec::new())
     };
+    // `${VAR}` templates kept from the stored entry take the value the
+    // configuration worker expanded for it; a new template cannot be
+    // expanded here (the engine's environment is not the worker's).
+    let mut entry = entry;
+    let mut restored = restored;
+    if req.bucket.is_some() {
+        restored.extend(expand_stored_templates(
+            &mut entry,
+            stored.as_ref(),
+            stored_expanded.as_ref(),
+        ));
+    }
+    if let Some(path) = template_paths(&entry, "").first() {
+        return TestBucketResp::failed(
+            &provider_hint,
+            Stage::Config,
+            format!(
+                "`bucket.{path}` is a ${{VAR}} template, which the configuration worker expands \
+                 when the bucket is saved; save it first, or use env://VAR"
+            ),
+        );
+    }
 
     let label = req.name.clone().unwrap_or_else(|| "candidate".into());
     if req.name.is_none()
@@ -313,6 +336,56 @@ async fn probe_local(
     }
 }
 
+/// Where a string holds a `${…}` template, as dotted paths.
+fn template_paths(value: &Value, prefix: &str) -> Vec<String> {
+    match value {
+        Value::String(s) if s.contains("${") && s.contains('}') => vec![prefix.to_string()],
+        Value::Object(map) => map
+            .iter()
+            .flat_map(|(k, v)| {
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                template_paths(v, &path)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn at<'a>(value: Option<&'a Value>, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(value?, |v, k| v.get(k))
+}
+
+/// Replace every template the candidate kept from the stored entry with its
+/// expanded stored value; returns the fields replaced.
+fn expand_stored_templates(
+    candidate: &mut Value,
+    raw: Option<&Value>,
+    expanded: Option<&Value>,
+) -> Vec<String> {
+    let mut replaced = Vec::new();
+    for path in template_paths(candidate, "") {
+        let kept = at(Some(candidate), &path) == at(raw, &path);
+        let Some(value) = at(expanded, &path).filter(|v| v.is_string()).cloned() else {
+            continue;
+        };
+        if !kept {
+            continue;
+        }
+        let slot = path
+            .split('.')
+            .try_fold(&mut *candidate, |v, k| v.get_mut(k));
+        if let Some(slot) = slot {
+            *slot = value;
+            replaced.push(path);
+        }
+    }
+    replaced
+}
+
 /// Credential fields bound to where they are sent (an access key id and an
 /// account id are identifiers, sent in clear anyway).
 const BOUND_FIELDS: [&str; 3] = ["secret_access_key", "session_token", "credentials_json"];
@@ -365,9 +438,9 @@ fn restored_targets_match(
             || destination(candidate) != destination(stored)
         {
             return Err(format!(
-                "`{field}` is \"__redacted__\", but this test targets a different endpoint or \
-                 account than bucket `{name}`; re-enter the value to test against a different \
-                 endpoint"
+                "`{field}` keeps bucket `{name}`'s stored value (\"__redacted__\" or its ${{VAR}} \
+                 template), but this test targets a different endpoint or account; re-enter the \
+                 value to test against a different endpoint"
             ));
         }
     }
@@ -608,6 +681,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.stage, Some(Stage::Config));
+    }
+
+    #[test]
+    fn kept_templates_take_the_stored_expanded_values() {
+        let raw = json!({ "provider": "s3", "access_key_id": "${AK}", "secret_access_key": "${SK}", "region": "r" });
+        let expanded = json!({ "provider": "s3", "access_key_id": "ak-value", "secret_access_key": "sk-value", "region": "r" });
+        let mut candidate = json!({ "provider": "s3", "access_key_id": "${AK}", "secret_access_key": "${OTHER}", "region": "r" });
+        let replaced = expand_stored_templates(&mut candidate, Some(&raw), Some(&expanded));
+        assert_eq!(replaced, vec!["access_key_id"]);
+        assert_eq!(candidate["access_key_id"], "ak-value");
+        assert_eq!(template_paths(&candidate, ""), vec!["secret_access_key"]);
+    }
+
+    #[tokio::test]
+    async fn a_new_template_cannot_be_tested_before_it_is_saved() {
+        let f = fixture(json!({ "buckets": {} })).await;
+        let resp = handle(
+            &f.state,
+            &f.runtime,
+            req(json!({ "bucket": {
+            "provider": "s3", "region": "r", "bucket": "b", "endpoint_url": "http://127.0.0.1:1",
+            "access_key_id": "${AK}", "secret_access_key": "env://SK" } })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.stage, Some(Stage::Config));
+        assert!(resp
+            .message
+            .unwrap()
+            .contains("`bucket.access_key_id` is a ${VAR} template"));
     }
 
     #[tokio::test]

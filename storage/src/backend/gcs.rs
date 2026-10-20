@@ -386,21 +386,6 @@ impl Backend for GcsBackend {
     }
 }
 
-/// An error and its causes, `: `-joined (reqwest's Display alone hides why).
-fn error_chain(error: &dyn std::error::Error) -> String {
-    let mut out = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        let text = cause.to_string();
-        if !out.contains(&text) {
-            out.push_str(": ");
-            out.push_str(&text);
-        }
-        source = cause.source();
-    }
-    out
-}
-
 /// Map a `gcloud_storage::http::Error` into our `BackendError`. 404 / NotFound
 /// service responses fold into `BackendError::NotFound`; 401/403 into
 /// `AuthFailed`; everything else into `Provider`.

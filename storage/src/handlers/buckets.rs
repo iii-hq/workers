@@ -130,6 +130,34 @@ pub(crate) async fn stored_entry(
         .cloned())
 }
 
+/// One stored entry as written (raw) and as applied (`${VAR}` templates
+/// expanded by the configuration worker; `None` when the value cannot be
+/// expanded).
+pub(crate) async fn stored_entry_both(
+    runtime: &StorageRuntime,
+    name: &str,
+) -> Result<(Option<Value>, Option<Value>), String> {
+    let store = store(runtime)?;
+    let raw = store
+        .get(true)
+        .await
+        .map_err(|e| config_error(format!("reading the stored configuration failed: {e}")))?;
+    let raw_entry = stored_buckets(&raw)
+        .map_err(config_error)?
+        .get(name)
+        .cloned();
+    if raw_entry.is_none() {
+        return Ok((None, None));
+    }
+    let expanded = store
+        .get(false)
+        .await
+        .ok()
+        .and_then(|value| stored_buckets(&value).ok())
+        .and_then(|buckets| buckets.get(name).cloned());
+    Ok((raw_entry, expanded))
+}
+
 /// Refuse keys that are not fields of the entry's provider, naming them
 /// (never their values).
 pub(crate) fn refuse_unknown_keys(entry: &Value, prefix: &str) -> Result<(), String> {

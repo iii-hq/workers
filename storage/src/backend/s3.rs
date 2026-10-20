@@ -9,7 +9,7 @@ use aws_config::retry::RetryConfig;
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::SharedCredentialsProvider;
-use aws_sdk_s3::error::{DisplayErrorContext, SdkError};
+use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
@@ -234,8 +234,23 @@ where
                 _ => format!("HTTP {status}"),
             }
         }
-        other => DisplayErrorContext(other).to_string(),
+        other => error_chain(other),
     }
+}
+
+/// Whether the failure is the credential provider having nothing to sign
+/// with (no keys and no AWS default chain on the engine host).
+fn credentials_missing(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(e) = current {
+        if e.downcast_ref::<aws_credential_types::provider::error::CredentialsError>()
+            .is_some()
+        {
+            return true;
+        }
+        current = e.source();
+    }
+    false
 }
 
 /// Classify a failed probe request for `storage::testBucket`.
@@ -244,6 +259,15 @@ where
     E: std::error::Error + ProvideErrorMetadata + Send + Sync + 'static,
 {
     let message = describe_sdk_error(&error);
+    if credentials_missing(&error) {
+        return ProbeFailure::new(
+            Stage::Auth,
+            format!(
+                "no credentials to sign with: set access_key_id and secret_access_key, or \
+                 configure the AWS default credential chain on the engine host ({message})"
+            ),
+        );
+    }
     match &error {
         SdkError::DispatchFailure(_) | SdkError::TimeoutError(_) | SdkError::ResponseError(_) => {
             ProbeFailure::new(Stage::Endpoint, message)

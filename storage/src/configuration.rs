@@ -475,7 +475,11 @@ async fn build_buckets(
             )
             .await
             .map_err(|error| BucketError::from_build(error, &material))?;
-            tracing::info!(bucket = %name, provider = backend.provider(), "backend ready");
+            if current.contains_key(name) {
+                tracing::debug!(bucket = %name, provider = backend.provider(), "backend rebuilt");
+            } else {
+                tracing::info!(bucket = %name, provider = backend.provider(), "backend ready");
+            }
             Ok(BuiltBucket {
                 backend,
                 fingerprint,
@@ -809,7 +813,7 @@ pub fn register_config_trigger(
             async move {
                 let result = runtime.reload(&state).await;
                 match &result {
-                    Ok(()) => tracing::info!("storage configuration reloaded without restart"),
+                    Ok(()) => tracing::debug!("storage configuration reloaded without restart"),
                     Err(error) => tracing::error!(
                         error = %error,
                         "storage configuration reload failed; keeping previous runtime"

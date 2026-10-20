@@ -19,7 +19,7 @@ pub async fn build(opts: R2BackendOpts, bucket: String) -> Result<Arc<dyn Backen
         .endpoint_url
         .clone()
         .unwrap_or_else(|| format!("https://{}.r2.cloudflarestorage.com", opts.account_id));
-    if opts.endpoint_url.is_some() {
+    if opts.endpoint_url.is_some() && !opts.fast_fail {
         tracing::warn!(
             target = "storage::r2",
             endpoint = %endpoint,
