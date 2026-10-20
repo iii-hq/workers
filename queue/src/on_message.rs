@@ -31,6 +31,8 @@ use iii_sdk::errors::Error;
 use iii_sdk::protocol::observe_codes;
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::trigger::{
@@ -64,10 +66,47 @@ pub fn register(iii: &IIIClient, subscribers: QueueTriggerHandler) -> FunctionRe
     )
 }
 
+/// What a `queue::on-message` target receives: the data published to the
+/// topic, unchanged. Published data is not always an object, so this keeps a
+/// lossless `Value` while publishing a real schema (the registry publish gate
+/// rejects `AnyValue`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct QueueMessage(pub Value);
+
+impl JsonSchema for QueueMessage {
+    fn schema_name() -> String {
+        "QueueMessage".to_string()
+    }
+
+    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, Metadata, SchemaObject};
+        SchemaObject {
+            instance_type: Some(
+                vec![
+                    InstanceType::Null,
+                    InstanceType::Boolean,
+                    InstanceType::Number,
+                    InstanceType::String,
+                    InstanceType::Array,
+                    InstanceType::Object,
+                ]
+                .into(),
+            ),
+            metadata: Some(Box::new(Metadata {
+                description: Some("The data published to the topic, as published.".to_string()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 /// The function's handler. Messages are delivered by the consumers with
 /// `obs.call`, never by invoking the function: a caller allowed to invoke it
 /// could otherwise inject messages that were never published.
-fn refuse_invocation(_message: Value) -> Result<Value, Error> {
+fn refuse_invocation(_message: QueueMessage) -> Result<(), Error> {
     Err(Error::Remote {
         code: observe_codes::FORBIDDEN.to_string(),
         message: format!(
@@ -425,13 +464,20 @@ mod tests {
 
     #[test]
     fn direct_invocation_is_forbidden() {
-        match refuse_invocation(json!({ "forged": true })) {
+        match refuse_invocation(QueueMessage(json!({ "forged": true }))) {
             Err(Error::Remote { code, message, .. }) => {
                 assert_eq!(code, observe_codes::FORBIDDEN);
                 assert!(message.contains("iii.observe"));
             }
             other => panic!("expected FORBIDDEN, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_message_schema_is_typed() {
+        // The registry publish gate rejects an AnyValue request schema.
+        let schema = serde_json::to_value(schemars::schema_for!(QueueMessage)).unwrap();
+        assert!(schema.get("type").is_some(), "{schema}");
     }
 
     #[test]
