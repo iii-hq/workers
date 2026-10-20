@@ -52,6 +52,9 @@ pub struct ExecuteResp {
     /// The rows the SQL's `RETURNING` clause produced (or a `SELECT`/`VALUES`
     /// sent here). Empty without such a clause.
     pub returned_rows: Vec<serde_json::Map<String, Value>>,
+    /// Time the database spent running the statement (pool acquisition
+    /// excluded), in milliseconds.
+    pub elapsed_ms: u64,
 }
 
 pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, String> {
@@ -70,6 +73,7 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
         }));
     }
     crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
+    crate::handlers::reject_session_prepared_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let result = match &pool {
@@ -89,6 +93,7 @@ pub async fn handle(state: &AppState, req: ExecuteReq) -> Result<ExecuteResp, St
         affected_rows: result.affected_rows,
         last_insert_id: result.last_insert_id,
         returned_rows,
+        elapsed_ms: result.elapsed_ms,
     })
 }
 
@@ -115,6 +120,7 @@ mod tests {
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         }
     }
 

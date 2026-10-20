@@ -40,6 +40,7 @@ async fn build_state() -> AppState {
         transactions: TxRegistry::new(),
         log: Logger::new(),
         row_changes: None,
+        runtime: Default::default(),
     }
 }
 
@@ -229,6 +230,7 @@ async fn build_pool_creates_missing_sqlite_parent_dir() {
         transactions: TxRegistry::new(),
         log: Logger::new(),
         row_changes: None,
+        runtime: Default::default(),
     };
 
     // The freshly-created on-disk db is usable end-to-end.

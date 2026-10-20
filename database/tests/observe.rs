@@ -130,6 +130,7 @@ impl DatabaseWorker {
             transactions: TxRegistry::new(),
             log: Logger::new(),
             row_changes: Some(bus),
+            runtime: Default::default(),
         };
         {
             let st = state.clone();

@@ -14,22 +14,32 @@
 import type { IIIClient } from 'iii-sdk'
 import type { TestCase, CaseContext } from './cases.ts'
 import { expect, expectEqual } from './cases.ts'
+import { CONNECTION_CASES } from './cases-connections.ts'
 
-/** Every `database::*` id the worker registers. Keep in step with the guard case. */
+/**
+ * Every `database::*` id the worker registers. Keep in step with the guard
+ * case. Internal functions (the reload sinks, `database::mention::*`) are not
+ * in the default listing; the mention pair still has a case.
+ */
 const DATABASE_FUNCTIONS = [
   'database::beginTransaction',
   'database::browseTable',
   'database::columnStats',
   'database::commitTransaction',
+  'database::deleteConnection',
   'database::deleteSavedQuery',
   'database::describeSchema',
   'database::describeTable',
+  'database::distinctValues',
   'database::execute',
   'database::executeBatch',
   'database::explain',
+  'database::formatSql',
+  'database::getConnection',
   'database::getTableView',
   'database::health',
   'database::history',
+  'database::insertRow',
   'database::listDatabases',
   'database::listSavedQueries',
   'database::listTables',
@@ -38,6 +48,7 @@ const DATABASE_FUNCTIONS = [
   'database::query',
   'database::rollbackTransaction',
   'database::runStatement',
+  'database::saveConnection',
   'database::saveQuery',
   'database::saveTableView',
   'database::schemaDiagram',
@@ -128,6 +139,12 @@ export const CATALOG_CASES: TestCase[] = [
         expectEqual(desc.columns.length, 3, 'three columns')
         const id = desc.columns.find((c: any) => c.name === 'id')
         expect(id !== undefined && id.primary_key === true, 'id is the primary key')
+        expect(id.auto_increment === true, `the database fills id in: ${JSON.stringify(id)}`)
+        const label = desc.columns.find((c: any) => c.name === 'label')
+        expect(
+          label.auto_increment === false && label.generated === false,
+          `label is a plain column: ${JSON.stringify(label)}`,
+        )
         expect(
           desc.columns.every((c: any) => typeof c.type === 'string' && c.type.length > 0),
           `every column reports a type: ${JSON.stringify(desc.columns)}`,
@@ -202,6 +219,20 @@ export const CATALOG_CASES: TestCase[] = [
         })
         expectEqual(filtered.total, 1, 'total honours filters')
         expectEqual(Number(filtered.rows[0].qty), 20, 'the filtered row')
+
+        // Values compare as the column's type (a numeric string on an INT
+        // column, a pattern over an INT's text form, a set of labels).
+        const count = async (filters: unknown[]) =>
+          (await call('database::browseTable', { db: driver, table: TABLE, page_size: 1, filters })).total
+        expectEqual(await count([{ column: 'qty', op: 'gt', value: '15' }]), 2, 'qty > "15" is numeric')
+        expectEqual(
+          await count([{ column: 'qty', op: 'between', value: 10, value2: '20' }]),
+          2,
+          'between takes numbers and numeric strings',
+        )
+        expectEqual(await count([{ column: 'qty', op: 'contains', value: '0' }]), 3, 'pattern over an INT')
+        expectEqual(await count([{ column: 'label', op: 'in', values: ['a', 'c'] }]), 2, 'in over text')
+        expectEqual(await count([{ column: 'label', op: 'starts_with', value: 'b' }]), 1, 'starts_with')
 
         const stats = await call('database::columnStats', {
           db: driver,
@@ -363,6 +394,7 @@ export const CATALOG_CASES: TestCase[] = [
       expectEqual(bad.driver, 'unknown', 'and names the driver unknown')
     },
   },
+  ...CONNECTION_CASES,
   {
     // The enforcement half: registering a new database::* function without a
     // case above (and an entry in DATABASE_FUNCTIONS) fails here, so the
@@ -377,8 +409,8 @@ export const CATALOG_CASES: TestCase[] = [
       const ids = (listed.functions ?? [])
         .map((f) => f.function_id)
         .filter((id): id is string => typeof id === 'string' && id.startsWith('database::'))
-        // The config-reload handler every worker registers; not a capability.
-        .filter((id) => !id.endsWith('::on-config-change'))
+        // The config-reload and secret-change handlers; not capabilities.
+        .filter((id) => !id.endsWith('::on-config-change') && !id.endsWith('::on-secret-change'))
         .sort()
       expectEqual(
         ids,

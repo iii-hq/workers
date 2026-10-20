@@ -1,20 +1,28 @@
 //! MySQL pool wrapping `mysql_async::Pool`.
 
 use crate::config::{PoolConfig, TlsConfig};
+use crate::connector::Connector;
 use crate::error::DbError;
-use crate::pool::tls::make_mysql_ssl_opts;
 use mysql_async::{Pool as MyPool, PoolConstraints, PoolOpts};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct MysqlPool {
     inner: Arc<MyPool>,
+    /// `tls.mode: prefer` only: the plaintext twin, used once the server
+    /// turned out not to offer TLS. Pools are lazy, so the unused one costs
+    /// nothing.
+    fallback: Option<Arc<MyPool>>,
+    use_fallback: Arc<AtomicBool>,
     db_name: Arc<str>,
     acquire_timeout: Duration,
     /// Configured ceiling. `mysql_async` exposes no live counters, so this is
     /// the only pool figure `database::health` can report for mysql.
     max_size: u32,
+    /// Keeps the entry's SSH tunnel (if any) alive as long as the pool.
+    connector: Arc<Connector>,
 }
 
 pub type MysqlConn = mysql_async::Conn;
@@ -32,7 +40,22 @@ impl MysqlPool {
         }
     }
 
+    /// A pool over a url with literal credentials (tests, tools).
     pub fn new(url: &str, pool_cfg: &PoolConfig, tls_cfg: &TlsConfig) -> Result<Self, DbError> {
+        let mut db = crate::config::DatabaseConfig::from_url(url);
+        db.pool = pool_cfg.clone();
+        db.tls = tls_cfg.clone();
+        db.validate("(unset)")
+            .map_err(|message| DbError::ConfigError { message })?;
+        let connector = Connector::literal("(unset)", &db)?;
+        Self::from_connector(Arc::new(connector), pool_cfg)
+    }
+
+    /// A pool over a resolved connector. Connections open lazily.
+    pub fn from_connector(
+        connector: Arc<Connector>,
+        pool_cfg: &PoolConfig,
+    ) -> Result<Self, DbError> {
         let constraints =
             PoolConstraints::new(0, pool_cfg.max as usize).ok_or_else(|| DbError::ConfigError {
                 message: "mysql pool constraints invalid".into(),
@@ -40,28 +63,34 @@ impl MysqlPool {
         let opts = PoolOpts::default()
             .with_constraints(constraints)
             .with_inactive_connection_ttl(Duration::from_millis(pool_cfg.idle_timeout_ms));
-        // Don't echo the underlying parse error — mysql_async's error message
-        // includes the offending URL verbatim, which would leak any embedded
-        // password into logs. Surface a generic message; the operator knows
-        // which db they configured.
-        let mut url_opts = mysql_async::OptsBuilder::from_opts(
-            mysql_async::Opts::from_url(url).map_err(|_| DbError::ConfigError {
-                message: "mysql url parse failed; check the configured url".into(),
-            })?,
-        );
-        url_opts = url_opts.pool_opts(opts);
-        // `make_mysql_ssl_opts` returns None for `mode: disable`; in that
-        // case we leave the SSL knob untouched (= no TLS).
-        if let Some(ssl) = make_mysql_ssl_opts(tls_cfg)? {
-            url_opts = url_opts.ssl_opts(ssl);
-        }
-        let pool = MyPool::new(url_opts);
+        let (tls, plain) = connector.mysql().ok_or_else(|| DbError::ConfigError {
+            message: "internal: mysql pool built from a non-mysql connector".into(),
+        })?;
+        let make = |builder: &mysql_async::OptsBuilder| {
+            Arc::new(MyPool::new(builder.clone().pool_opts(opts.clone())))
+        };
+        let (inner, fallback) = match (tls, plain) {
+            (Some(tls), plain) => (make(tls), plain.map(make)),
+            (None, Some(plain)) => (make(plain), None),
+            (None, None) => {
+                return Err(DbError::ConfigError {
+                    message: "internal: mysql connector without options".into(),
+                })
+            }
+        };
         Ok(Self {
-            inner: Arc::new(pool),
+            inner,
+            fallback,
+            use_fallback: Arc::new(AtomicBool::new(false)),
             db_name: Arc::from("(unset)"),
             acquire_timeout: Duration::from_millis(pool_cfg.acquire_timeout_ms),
             max_size: pool_cfg.max,
+            connector,
         })
+    }
+
+    pub fn connector(&self) -> &Arc<Connector> {
+        &self.connector
     }
 
     pub fn with_db_name(mut self, name: &str) -> Self {
@@ -69,14 +98,36 @@ impl MysqlPool {
         self
     }
 
+    async fn get_conn(&self) -> Result<MysqlConn, mysql_async::Error> {
+        if let Some(fallback) = &self.fallback {
+            if self.use_fallback.load(Ordering::Relaxed) {
+                return fallback.get_conn().await;
+            }
+            return match self.inner.get_conn().await {
+                Err(mysql_async::Error::Driver(
+                    mysql_async::DriverError::NoClientSslFlagFromServer,
+                )) => {
+                    // `prefer`: the server offers no TLS at all — the one
+                    // case that falls back. A failed certificate check never
+                    // lands here.
+                    self.use_fallback.store(true, Ordering::Relaxed);
+                    fallback.get_conn().await
+                }
+                other => other,
+            };
+        }
+        self.inner.get_conn().await
+    }
+
     pub async fn acquire(&self) -> Result<MysqlConn, DbError> {
         let db_name = self.db_name.to_string();
         let waited_ms = self.acquire_timeout.as_millis() as u64;
-        let fut = self.inner.get_conn();
+        let fut = self.get_conn();
         match tokio::time::timeout(self.acquire_timeout, fut).await {
             Ok(Ok(conn)) => Ok(conn),
             Ok(Err(e)) => {
-                let class = classify_mysql_error(&e);
+                let class = crate::pool::tunnel_class(&self.connector)
+                    .unwrap_or_else(|| classify_mysql_error(&e));
                 // `mysql_async::Error::Display` can echo the server address,
                 // username, and other connection details. Log the full error
                 // operator-side via tracing; surface a generic message plus
@@ -126,6 +177,8 @@ fn classify_mysql_error(err: &mysql_async::Error) -> &'static str {
         Error::Server(s) if matches!(s.code, 1045 | 1129 | 1130 | 1156 | 1251 | 1698) => "auth",
         Error::Server(_) => "server-policy",
         Error::Driver(DriverError::ConnectionClosed) => "network",
+        // `require`/`verify-*` against a server that offers no TLS.
+        Error::Driver(DriverError::NoClientSslFlagFromServer) => "tls",
         // `Url(_)` shouldn't happen here — pool construction already
         // parsed the URL via `Opts::from_url`. Classify defensively.
         _ => "unknown",
