@@ -153,6 +153,27 @@ fn content_text(content: &Value, block_type: &str) -> String {
         .join("\n")
 }
 
+/// Claude Code files bash-mode and slash-command activity (what the person ran, and what it
+/// printed) as user rows that open with one of these tags: none of it is words they typed.
+const CLAUDE_COMMAND_TAGS: [&str; 9] = [
+    "bash-input",
+    "bash-stdout",
+    "bash-stderr",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+];
+
+fn is_claude_command_row(body: &str) -> bool {
+    body.trim_start()
+        .strip_prefix('<')
+        .and_then(|rest| rest.split_once('>'))
+        .is_some_and(|(tag, _)| CLAUDE_COMMAND_TAGS.contains(&tag))
+}
+
 /// A Codex tool item as one call: the source's tool name and the arguments it ran with.
 /// `None` for item kinds this import does not carry (image views, sub-agent chatter).
 fn codex_call(kind: &str, entry_id: &str, item: &Value) -> Option<ExternalCall> {
@@ -495,7 +516,7 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                             result.is_error = block["is_error"] == true;
                             out.push(result);
                         }
-                        if !body.trim().is_empty() {
+                        if !body.trim().is_empty() && !is_claude_command_row(&body) {
                             out.push(ExternalMessage::new(entry_id, role, body, when));
                         }
                         Ok(out)
@@ -884,6 +905,56 @@ mod tests {
         assert_eq!(result.messages[0].text, result.messages[4].text);
         assert_eq!(result.messages[0].timestamp, 1789473600000);
         assert_eq!(result.conversation.title, "repeat");
+    }
+
+    #[test]
+    fn claude_skips_bash_mode_and_slash_command_rows_but_keeps_typed_text() {
+        let bytes = jsonl(vec![
+            claude(
+                "command",
+                None,
+                "user",
+                json!(
+                    "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>"
+                ),
+            ),
+            claude(
+                "command-output",
+                Some("command"),
+                "user",
+                json!("<local-command-stdout>Set model to example</local-command-stdout>"),
+            ),
+            claude("typed", Some("command-output"), "user", json!("fix the build")),
+            claude(
+                "bash",
+                Some("typed"),
+                "user",
+                json!("<bash-input>cat NOTES.md</bash-input>"),
+            ),
+            claude(
+                "bash-output",
+                Some("bash"),
+                "user",
+                json!([{"type":"text","text":"<bash-stdout>Always rebase first</bash-stdout><bash-stderr></bash-stderr>"}]),
+            ),
+            claude("answer", Some("bash-output"), "assistant", json!("fixed")),
+            claude(
+                "quoted",
+                Some("answer"),
+                "user",
+                json!("why is <bash-stdout> shown as mine?"),
+            ),
+        ]);
+        let result = parse(Source::ClaudeCode, ID, bytes.as_slice(), 0).unwrap();
+        assert_eq!(
+            result
+                .messages
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["typed", "answer", "quoted"]
+        );
+        assert_eq!(result.conversation.title, "fix the build");
     }
 
     #[test]
