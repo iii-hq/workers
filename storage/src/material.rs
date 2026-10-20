@@ -71,6 +71,7 @@ impl BucketError {
     pub fn from_build(error: BackendError, material: &Material) -> Self {
         let (stage, message) = match error {
             BackendError::AuthFailed(message) => (Stage::Auth, message),
+            BackendError::Provider { message, .. } => (Stage::Config, message),
             other => (Stage::Config, other.to_string()),
         };
         Self::new(stage, material.scrub(&message))
