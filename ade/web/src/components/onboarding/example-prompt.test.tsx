@@ -169,6 +169,11 @@ describe('openExamplePrompt', () => {
     expect(chat.thinkingLevel).toBe(usual.thinkingLevel)
   })
 
+  it('takes `lowest` for a prompt that names no model: the harness resolves it', async () => {
+    const { chat } = await open({ ...TODO, models: [], effort: 'lowest' })
+    expect(chat.thinkingLevel).toBe('lowest')
+  })
+
   it('leaves out an effort the chosen model does not offer', async () => {
     const { chat } = await open({
       ...TODO,

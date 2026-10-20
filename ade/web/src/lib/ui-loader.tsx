@@ -109,6 +109,7 @@ export interface ConversationAdapter {
     text: string
     agent?: string
     models?: { provider: string; model: string; effort?: string }[]
+    effort?: string
   }): Promise<string>
 }
 

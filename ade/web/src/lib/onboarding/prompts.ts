@@ -34,6 +34,13 @@ export interface ExamplePrompt {
   /** The message the new chat sends. */
   prompt: string
   models: PromptModel[]
+  /**
+   * The chat's thinking level when the chosen `models` entry names none:
+   * an ADE level, or `lowest`, which the harness resolves against whatever
+   * model the chat runs on. For a chat a worker page starts without naming
+   * a model.
+   */
+  effort?: string
 }
 
 export const PROMPTS_FUNCTION = 'console::onboarding::prompts'

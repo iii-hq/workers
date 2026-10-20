@@ -762,14 +762,17 @@ export interface Host {
      * does: `agent` (a profile id; the default profile when absent) is
      * selected, the first of `models` this machine serves is chosen with its
      * effort (the chat's usual model when none is), and the chat is shown.
-     * A profile that is not served leaves the text as a draft to send by
-     * hand. Resolves to the chat's session id. Absent on older consoles;
-     * feature-detect.
+     * `effort` is the thinking level when the chosen model names none: an
+     * ADE level, or `lowest`, which the harness resolves against the model
+     * the chat runs on. A profile that is not served leaves the text as a
+     * draft to send by hand. Resolves to the chat's session id. Absent on
+     * older consoles; feature-detect.
      */
     startChat?(request: {
       text: string
       agent?: string
       models?: { provider: string; model: string; effort?: string }[]
+      effort?: string
     }): Promise<string>
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
