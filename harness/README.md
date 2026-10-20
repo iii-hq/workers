@@ -5,7 +5,7 @@
 **A thin, durable turn loop that turns a model plus a few iii workers into an agent.**
 
 <p>
-  <a href="#install"><img alt="Install: iii trigger compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
+  <a href="#quickstart"><img alt="Install: iii trigger compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://workers.iii.dev/workers/harness"><img alt="harness on the workers registry" src="https://workers.iii.dev/workers/harness/badge.svg"></a>
@@ -88,7 +88,7 @@ schema) lives in the code and `iii worker info harness`.
 Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
 any event-driven loop on top of the harness? Start with the integration
 contract in
-[`architecture/integration.md`](architecture/integration.md): the functions to
+`architecture/integration.md`: the functions to
 trigger, the triggers to bind, and the canonical consumer patterns.
 
 ## Local development
@@ -442,7 +442,7 @@ so default-identity sessions keep sharing their stable prefix. Its digests join
 the preloaded-contract stale notice.
 
 The harness ships one profile of its own, `worker-builder`
-([`agents/worker-builder.md`](agents/worker-builder.md)): an identity that
+(`agents/worker-builder.md`): an identity that
 extends the bundled `iii` base and takes a new worker for this repository from
 scope to scaffold, CI gates, live verification on the bus, pull request, and an
 experimental registry release, asking before every irreversible step. It is

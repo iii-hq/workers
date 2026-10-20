@@ -52,5 +52,5 @@ locale and motion frozen, so the same inputs give the same pixels.
 
 ## How-tos
 
-- [component-review.md](component-review.md) — the review workflow: scope
+- [component-review.md](skills/component-review.md) — the review workflow: scope
   the impact, verify each affected state, write the report.
