@@ -32,7 +32,7 @@ carries that name in place of `kanban`:
 - functions `kanban-todo-local::ticket::create`, `kanban-todo-local::ticket::move`, `kanban-todo-local::config::info`, and so on;
 - trigger types `kanban-todo-local:change` and `kanban-todo-local:comment`;
 - console pages `kanban-todo-local-board` and `kanban-todo-local-ticket`;
-- the configuration entry `kanban-todo-local` (same form as `kanban`);
+- the configuration entry `default-kanban-todo-local` (the `default` namespace prefix plus the container name; same form as `default-kanban`);
 - the data folder `data/kanban-todo-local`.
 
 Steps:

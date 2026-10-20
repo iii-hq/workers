@@ -181,7 +181,7 @@ export const TOURS = [
       agentStep({
         id: "discoverability",
         ask: {
-          text: "What can this system do right now? List the workers that are registered and the functions each one exposes.",
+          text: "What can this system do right now? List the workers that are registered and the functions each one exposes. Use one unfiltered functions list for the whole answer, not one call per worker.",
           label: "Ask the agent",
         },
         title: "Discoverability",
