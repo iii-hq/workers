@@ -785,12 +785,20 @@ pub(crate) fn ambient_header(bank_name: &str) -> String {
 /// the model.
 fn rule_body(rule: &crate::types::Rule) -> String {
     let redacted = crate::redact::redact(rule.content.trim()).text;
-    redacted
-        .strip_prefix(crate::extract::LEARNED_HEADER)
+    // Trimmed like the content: a learned rule with every line gone is the
+    // header alone.
+    [crate::extract::LEARNED_HEADER, OLD_LEARNED_HEADER]
+        .iter()
+        .find_map(|h| redacted.strip_prefix(h.trim_end()))
         .unwrap_or(&redacted)
         .trim()
         .to_string()
 }
+
+/// The header learned rules were created with before extraction rewrote
+/// lines; existing files keep it.
+const OLD_LEARNED_HEADER: &str = "# Learned\nStanding instructions captured automatically from \
+conversations. Edit or delete lines freely — extraction only ever appends new ones.\n";
 
 /// Opens the per-turn rules reminder.
 pub(crate) const REMINDER_OPEN: &str = "Standing instructions — apply every one to this reply:";
@@ -1603,20 +1611,22 @@ Formal."
 
     #[test]
     fn the_learned_rules_boilerplate_is_not_injected() {
-        let learned = format!(
-            "{}- Never use emoji in replies.\n",
-            crate::extract::LEARNED_HEADER
-        );
-        let (section, _) = build_rules_section(&[rule("learned", &learned)], 6_000);
-        assert!(
-            section.contains("## learned\n- Never use emoji in replies."),
-            "{section}"
-        );
-        assert!(
-            !section.contains("Edit or delete lines freely"),
-            "{section}"
-        );
-        assert!(!section.contains("# Learned"), "{section}");
+        // A file created before the header changed keeps the old one.
+        for header in [crate::extract::LEARNED_HEADER, OLD_LEARNED_HEADER] {
+            for lines in ["- Never use emoji in replies.\n", ""] {
+                let learned = format!("{header}{lines}");
+                let (section, _) = build_rules_section(&[rule("learned", &learned)], 6_000);
+                assert!(
+                    section.contains(&format!("## learned\n{}", lines.trim())),
+                    "{section}"
+                );
+                assert!(
+                    !section.contains("Edit or delete lines freely"),
+                    "{section}"
+                );
+                assert!(!section.contains("# Learned"), "{section}");
+            }
+        }
     }
 
     #[test]
