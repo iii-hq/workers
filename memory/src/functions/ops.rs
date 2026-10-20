@@ -38,7 +38,8 @@ pub async fn doctor(deps: &Deps, _req: DoctorRequest) -> Result<DoctorResponse, 
     let mut checks = Vec::new();
 
     // 1. REQUIRED: full save → recall → delete roundtrip in a scratch bank.
-    let roundtrip = roundtrip_check(&*deps.store().await).await;
+    let scratch = format!("doctor-{}", now_ms() % 1_000_000);
+    let roundtrip = roundtrip_check(&*deps.store().await, &scratch).await;
     let roundtrip_ok = roundtrip.ok;
     checks.push(roundtrip);
 
@@ -140,35 +141,37 @@ fn extraction_check(enabled: bool, health: &PassHealth) -> DoctorCheck {
     }
 }
 
-async fn roundtrip_check(store: &Store) -> DoctorCheck {
-    let scratch = format!("doctor-{}", now_ms() % 1_000_000);
-    let probe_text = "doctor probe memory: memory roundtrip";
+fn stated(text: &str) -> Memory {
+    let now = now_ms();
+    Memory {
+        tags: vec![],
+        id: fingerprint(text),
+        text: text.into(),
+        entities: vec![],
+        confidence: Confidence::Stated,
+        corroboration: 0,
+        pinned: false,
+        source: None,
+        created_at: now,
+        updated_at: now,
+        invalid_at: None,
+        superseded_by: None,
+        revision: 0,
+        stated_at: Some(now),
+    }
+}
+
+async fn roundtrip_check(store: &Store, scratch: &str) -> DoctorCheck {
     let result: Result<String, MemoryError> = async {
-        let (bank, created) = store.ensure_bank(&scratch, Some("doctor scratch")).await?;
+        let (bank, created) = store.ensure_bank(scratch, Some("doctor scratch")).await?;
         if !created {
             // Not a scratch bank: never write to it, let alone delete it.
             return Err(MemoryError::Storage(format!(
                 "scratch bank {scratch} already exists"
             )));
         }
-        let now = now_ms();
         let saved = bank
-            .commit(Memory {
-                tags: vec![],
-                id: fingerprint(probe_text),
-                text: probe_text.into(),
-                entities: vec![],
-                confidence: Confidence::Stated,
-                corroboration: 0,
-                pinned: false,
-                source: None,
-                created_at: now,
-                updated_at: now,
-                invalid_at: None,
-                superseded_by: None,
-                revision: 0,
-                stated_at: Some(now),
-            })
+            .commit(stated("doctor probe memory: memory roundtrip"))
             .await;
         let hits = match saved {
             Ok(_) => {
@@ -179,7 +182,7 @@ async fn roundtrip_check(store: &Store) -> DoctorCheck {
         };
         // Deleted outright, a failed save included: a scratch bank in
         // .trash is litter nobody will recover.
-        store.destroy_bank(&scratch).await?;
+        store.destroy_bank(scratch).await?;
         saved?;
         if hits.is_empty() {
             return Err(MemoryError::Storage(
@@ -256,7 +259,7 @@ mod tests {
     async fn the_roundtrip_leaves_nothing_behind() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();
-        let check = roundtrip_check(&store).await;
+        let check = roundtrip_check(&store, "doctor-1").await;
         assert!(check.ok, "{}", check.detail);
         assert!(store.bank_names().await.is_empty());
         let left: Vec<_> = std::fs::read_dir(dir.path())
@@ -264,6 +267,23 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert!(left.is_empty(), "no scratch bank, no .trash: {left:?}");
+    }
+
+    #[tokio::test]
+    async fn the_roundtrip_never_touches_a_bank_it_did_not_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("doctor-42", None).await.unwrap();
+        let kept = stated("the user keeps release notes in docs/releases");
+        bank.commit(kept.clone()).await.unwrap();
+
+        let check = roundtrip_check(&store, "doctor-42").await;
+        assert!(!check.ok, "{}", check.detail);
+        assert_eq!(store.bank_names().await, ["doctor-42"]);
+        // Read back from disk, not the bank's in-memory copy.
+        let reopened = Store::open(dir.path().to_path_buf()).unwrap();
+        let bank = reopened.bank("doctor-42").await.unwrap();
+        assert_eq!(bank.get(&kept.id).await.map(|m| m.text), Some(kept.text));
     }
 
     #[test]

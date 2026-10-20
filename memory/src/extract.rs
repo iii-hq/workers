@@ -502,10 +502,12 @@ pub struct PassHealth {
 }
 
 impl PassHealth {
-    fn record(&mut self, result: &Result<(), String>) {
-        self.passes += 1;
+    /// `Ok(false)` is a pass that never asked the model: it says nothing
+    /// about whether extraction works, so it is not counted.
+    fn record(&mut self, result: &Result<bool, String>) {
         match result {
-            Ok(()) => {
+            Ok(false) => return,
+            Ok(true) => {
                 self.failed_in_a_row = 0;
                 self.last_error = None;
             }
@@ -514,6 +516,7 @@ impl PassHealth {
                 self.last_error = Some(e.clone());
             }
         }
+        self.passes += 1;
     }
 }
 
@@ -541,10 +544,11 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .record(&result);
-    result
+    result.map(|_| ())
 }
 
-async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
+/// `Ok(true)` once the model was asked for the span's items.
+async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
     let session_id = job.session_id.as_str();
     let pass = session_pass(session_id);
     let _pass = pass.lock().await;
@@ -591,7 +595,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         if let Some(id) = newest.filter(|_| until_seen || job.until.is_none()) {
             cursor_set(&deps.iii, session_id, id).await;
         }
-        return Ok(());
+        return Ok(false);
     };
     let bank_name = resolved.bank.as_str();
     let layer_name = resolved.layer(&cfg.default_bank);
@@ -610,7 +614,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
-        return Ok(());
+        return Ok(false);
     }
     // Fail-soft semantic signal; lexical-only when it misses.
     let query_vec = crate::embed_client::query_vector(deps, &crate::store::cap_query(&query)).await;
@@ -639,7 +643,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
-        return Ok(());
+        return Ok(true);
     }
 
     let store = deps.store().await;
@@ -839,7 +843,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             crate::embed_client::spawn_backfill(deps, name);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Whether a session of `kind` is extracted: the user's own (`user`, or no
@@ -2336,13 +2340,29 @@ mod tests {
             health.last_error.as_deref(),
             Some("router::complete: timeout")
         );
-        health.record(&Ok(()));
+        health.record(&Ok(true));
         assert_eq!(
             health,
             PassHealth {
                 passes: 3,
                 failed_in_a_row: 0,
                 last_error: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pass_that_never_asks_the_model_keeps_the_failure_streak() {
+        let mut health = PassHealth::default();
+        health.record(&Err("router::complete: no provider".into()));
+        // An automation session's turn, or a span under 20 characters.
+        health.record(&Ok(false));
+        assert_eq!(
+            health,
+            PassHealth {
+                passes: 1,
+                failed_in_a_row: 1,
+                last_error: Some("router::complete: no provider".into()),
             }
         );
     }
