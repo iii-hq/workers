@@ -130,9 +130,31 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), String> {
     Ok(())
 }
 
-fn require_caller(caller: Option<&str>) -> Result<&str, String> {
-    caller
+/// The worker calling a terminal function, as the engine stamped it: the
+/// invocation's `caller.worker_id` (0.25 engines), else the payload's
+/// `_caller_worker_id` (0.24 engines; 0.25 still sends it for one
+/// deprecation window). Fails closed without either, and for an observer
+/// activation: terminal calls come straight from the page that opened the
+/// terminal, and an activation carries the engine's or an owner's identity,
+/// not the page's.
+///
+/// Reads the task-local invocation, so call it in the handler's own future.
+fn require_caller(stamped: Option<&str>) -> Result<String, String> {
+    let invocation = iii_sdk::current_invocation();
+    if invocation
+        .as_ref()
+        .is_some_and(|invocation| invocation.activation.is_some())
+    {
+        return Err("terminal calls cannot come from an observer activation".to_string());
+    }
+    invocation
+        .and_then(|invocation| invocation.caller?.worker_id)
         .filter(|caller| !caller.is_empty())
+        .or_else(|| {
+            stamped
+                .filter(|caller| !caller.is_empty())
+                .map(str::to_string)
+        })
         .ok_or_else(|| "terminal calls require engine-stamped caller identity".to_string())
 }
 
@@ -233,7 +255,7 @@ impl TerminalManager {
     }
 
     pub async fn open(&self, request: OpenRequest) -> Result<OpenResponse, String> {
-        let caller = require_caller(request.caller_worker_id.as_deref())?.to_string();
+        let caller = require_caller(request.caller_worker_id.as_deref())?;
         validate_size(request.cols, request.rows)?;
         validate_output_function_id(&request.output_function_id)?;
         let max = self.collector.config().max_terminals;
@@ -681,6 +703,7 @@ pub fn register(iii: &IIIClient, manager: TerminalManager) {
 mod tests {
     use super::*;
     use crate::tmux_cli::Socket;
+    use iii_sdk::{scope, Activation, Caller, InvocationCtx};
 
     #[test]
     fn output_target_is_this_pages_console_handler() {
@@ -696,6 +719,86 @@ mod tests {
         validate_size(80, 24).unwrap();
         assert!(validate_size(1, 24).is_err());
         assert!(validate_size(80, 501).is_err());
+    }
+
+    fn invocation(caller: Option<Caller>, activation: Option<Activation>) -> InvocationCtx {
+        InvocationCtx {
+            function_id: "tmux::terminal::write".into(),
+            invocation_id: "inv-1".into(),
+            caller,
+            activation,
+            observe_depth: 0,
+            metadata: None,
+            traceparent: None,
+            baggage: None,
+        }
+    }
+
+    fn stamped_caller(worker_id: &str) -> Option<Caller> {
+        Some(Caller {
+            worker_id: Some(worker_id.into()),
+            ..Caller::default()
+        })
+    }
+
+    async fn caller_in(ctx: InvocationCtx, stamped: Option<&str>) -> Result<String, String> {
+        scope(ctx, async { require_caller(stamped) }).await
+    }
+
+    #[tokio::test]
+    async fn invocation_caller_wins_over_the_payload_stamp() {
+        for stamped in [Some("forged"), Some(""), None] {
+            assert_eq!(
+                caller_in(invocation(stamped_caller("page"), None), stamped).await,
+                Ok("page".to_string())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn payload_stamp_is_the_fallback_without_an_invocation_caller() {
+        // A 0.24 engine sends no caller, or one without a worker id.
+        for caller in [None, stamped_caller(""), Some(Caller::default())] {
+            assert_eq!(
+                caller_in(invocation(caller, None), Some("page")).await,
+                Ok("page".to_string())
+            );
+        }
+        // Outside any invocation.
+        assert_eq!(require_caller(Some("page")), Ok("page".to_string()));
+    }
+
+    #[tokio::test]
+    async fn no_caller_at_all_fails_closed() {
+        for stamped in [None, Some("")] {
+            for result in [
+                require_caller(stamped),
+                caller_in(invocation(None, None), stamped).await,
+                caller_in(invocation(stamped_caller(""), None), stamped).await,
+            ] {
+                assert!(result
+                    .unwrap_err()
+                    .contains("require engine-stamped caller identity"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_activations_are_refused() {
+        let activation = Activation {
+            observer_id: "obs-1".into(),
+            activation_id: Some("act-1".into()),
+        };
+        for (caller, stamped) in [
+            (stamped_caller("page"), Some("page")),
+            (None, Some("page")),
+            (None, None),
+        ] {
+            let refused = caller_in(invocation(caller, Some(activation.clone())), stamped)
+                .await
+                .unwrap_err();
+            assert!(refused.contains("observer activation"));
+        }
     }
 
     #[test]
