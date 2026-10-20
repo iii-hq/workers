@@ -41,6 +41,12 @@ export interface PageSidebarProps
   header?: React.ReactNode
   /** Compact actions rendered below the toggle in the collapsed rail. */
   collapsedActions?: React.ReactNode
+  /**
+   * Where the collapse toggle sits in the top row. `inner` (default) hugs
+   * the edge against the main column; `outer` hugs the pane's outer edge,
+   * so the toggle leads the row and the header content follows it.
+   */
+  togglePlacement?: 'inner' | 'outer'
 
   /** Controlled expanded width. Existing fixed-width usages remain supported. */
   width?: number
@@ -165,6 +171,7 @@ export function PageSidebar({
   children,
   header,
   collapsedActions,
+  togglePlacement = 'inner',
   width: controlledWidth,
   defaultWidth = controlledWidth ?? DEFAULT_WIDTH,
   minWidth = DEFAULT_MIN_WIDTH,
@@ -546,8 +553,14 @@ export function PageSidebar({
 
   const showResize = resizable && !effectiveNarrow && !effectiveCollapsed
   const showToggle = (collapsible && !effectiveNarrow) || hostDrawer
+  // An outer toggle never shifts with the drawer: it already sits on the
+  // edge the drawer opens away from.
   const drawerToggleOffset =
-    hostDrawer && drawerOpen ? drawerWidth - COLLAPSED_WIDTH : undefined
+    hostDrawer && drawerOpen && togglePlacement === 'inner'
+      ? drawerWidth - COLLAPSED_WIDTH
+      : undefined
+  const toggleAtLeft =
+    togglePlacement === 'outer' ? side === 'left' : side === 'right'
   const enterFrom = side === 'left' ? '-translate-x-1' : 'translate-x-1'
   const ExpandedIcon = side === 'left' ? PanelLeftClose : PanelRightClose
   const CollapsedIcon = side === 'left' ? PanelLeftOpen : PanelRightOpen
@@ -645,7 +658,7 @@ export function PageSidebar({
         <div
           className={cn(
             'flex min-h-11 shrink-0 items-center gap-2 px-3',
-            showToggle && (side === 'left' ? 'pr-11' : 'pl-11'),
+            showToggle && (toggleAtLeft ? 'pl-11' : 'pr-11'),
           )}
         >
           {header ?? (
@@ -700,7 +713,7 @@ export function PageSidebar({
           className={cn(
             'absolute top-2 z-30 size-7',
             drawerToggleOffset === undefined &&
-              (side === 'left' ? 'right-1' : 'left-1'),
+              (toggleAtLeft ? 'left-1' : 'right-1'),
           )}
         >
           <span className="relative block size-4" aria-hidden>

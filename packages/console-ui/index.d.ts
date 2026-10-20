@@ -1368,6 +1368,12 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
   header?: React.ReactNode
   /** Compact actions rendered below the toggle in the collapsed rail. */
   collapsedActions?: React.ReactNode
+  /**
+   * Where the collapse toggle sits in the top row: `inner` (default) hugs the
+   * edge against the main column, `outer` hugs the pane's outer edge so the
+   * toggle leads the row.
+   */
+  togglePlacement?: 'inner' | 'outer'
   /** Controlled expanded width. */
   width?: number
   /** Initial expanded width for host-owned state. */

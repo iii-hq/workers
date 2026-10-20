@@ -407,8 +407,9 @@ export function ChatPanel({
             collapsible
             resizable
             narrow={narrow}
-            /* The top row holds only the collapse toggle; New chat, search
-               and import are navigation rows inside the sidebar itself. */
+            /* The toggle leads the top row from the outer edge; New chat,
+               search and import are navigation rows inside the sidebar. */
+            togglePlacement="outer"
             header={<span className="sr-only">Conversations</span>}
             collapsedActions={
               <IconButton

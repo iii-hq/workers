@@ -49,6 +49,28 @@ describe('PageSidebar', () => {
     expect(html).toContain('aria-valuemax="360"')
   })
 
+  it('leads the top row with the toggle on the outer edge when asked', () => {
+    const inner = renderSidebar(
+      <PageSidebar label="projects" collapsible>
+        navigation
+      </PageSidebar>,
+    )
+    const outer = renderSidebar(
+      <PageSidebar label="projects" collapsible togglePlacement="outer">
+        navigation
+      </PageSidebar>,
+    )
+
+    /* Default: the toggle hugs the edge against the main column and the
+       header row keeps room for it on the right. */
+    expect(inner).toMatch(/right-1"[^>]*aria-label="collapse projects"/)
+    expect(inner).toContain('pr-11')
+    /* Outer: the toggle hugs the pane's edge and the row clears it on the left. */
+    expect(outer).toMatch(/left-1"[^>]*aria-label="collapse projects"/)
+    expect(outer).toContain('pl-11')
+    expect(outer).not.toContain('pr-11')
+  })
+
   it('keeps expanded content mounted and inert while collapsed', () => {
     const html = renderSidebar(
       <PageSidebar label="sessions" collapsible defaultCollapsed>
