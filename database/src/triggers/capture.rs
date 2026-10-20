@@ -312,10 +312,6 @@ impl NativeCapture {
         let _ = self.function.set(function);
     }
 
-    pub fn function(&self) -> Option<&FunctionRef> {
-        self.function.get()
-    }
-
     /// Whether any event can reach anyone: an active observer, or a binding
     /// through the pre-0.25 fallback. A few atomic loads.
     #[inline]

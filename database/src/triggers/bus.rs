@@ -66,9 +66,6 @@ pub struct RowChangedArgs {
     pub ops: Option<Vec<Op>>,
 }
 
-/// The pre-0.25 name of [`RowChangedArgs`]: a legacy binding's config.
-pub type RowChangedConfig = RowChangedArgs;
-
 /// One committed write statement: the input of `database::on-row-changed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RowChangedEvent {

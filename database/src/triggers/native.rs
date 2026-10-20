@@ -683,10 +683,10 @@ mod tests {
         assert_eq!(events[2].op, Op::Delete);
         assert_eq!(events[2].affected_rows, 1);
         for ev in &events {
-            assert!(crate::triggers::sql::same_table(
-                ev.table.as_deref().unwrap(),
-                &table
-            ));
+            assert_eq!(
+                crate::triggers::sql::canonical_table(ev.table.as_deref().unwrap()),
+                crate::triggers::sql::canonical_table(&table)
+            );
             // `(id int, n int)` has no primary key: count-only, as before.
             assert!(ev.returning.is_none(), "{ev:?}");
             assert!(!ev.truncated, "{ev:?}");
@@ -754,10 +754,10 @@ mod tests {
             "b": "AQID"
         });
         for ev in &keyed_events[..2] {
-            assert!(crate::triggers::sql::same_table(
-                ev.table.as_deref().unwrap(),
-                &keyed
-            ));
+            assert_eq!(
+                crate::triggers::sql::canonical_table(ev.table.as_deref().unwrap()),
+                crate::triggers::sql::canonical_table(&keyed)
+            );
             let keys = ev.returning.as_ref().expect("keyed table carries keys");
             assert_eq!(keys.len(), 1, "{ev:?}");
             assert_eq!(serde_json::Value::Object(keys[0].clone()), expected_key);
@@ -767,10 +767,10 @@ mod tests {
         assert_eq!(keyed_events[1].op, Op::Delete);
 
         let capped = &keyed_events[2];
-        assert!(crate::triggers::sql::same_table(
-            capped.table.as_deref().unwrap(),
-            &wide
-        ));
+        assert_eq!(
+            crate::triggers::sql::canonical_table(capped.table.as_deref().unwrap()),
+            crate::triggers::sql::canonical_table(&wide)
+        );
         assert_eq!(capped.op, Op::Insert);
         assert_eq!(capped.affected_rows, 20, "the count stays exact");
         let keys = capped.returning.as_ref().expect("some keys still fit");

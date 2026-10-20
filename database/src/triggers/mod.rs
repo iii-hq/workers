@@ -33,8 +33,7 @@ pub mod sql;
 pub mod sqlite_watch;
 
 pub use bus::{
-    LegacyRowChangedEvent, RowChangeBus, RowChangedArgs, RowChangedConfig, RowChangedEvent,
-    ROW_CHANGED_TYPE,
+    LegacyRowChangedEvent, RowChangeBus, RowChangedArgs, RowChangedEvent, ROW_CHANGED_TYPE,
 };
 pub use capture::{NativeCapture, ROW_CHANGED_DESCRIPTION, ROW_CHANGED_FN};
 pub use native::NativeListeners;

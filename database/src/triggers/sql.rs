@@ -217,13 +217,6 @@ fn mentions_dml(sql: &str) -> bool {
         .any(|k| skip_until_keyword(&upper, k).is_some())
 }
 
-/// Whether two table references name the same table, ignoring case and any
-/// schema qualifier. `public.orders`, `"Orders"` and `orders` all match — a
-/// subscriber should not have to guess how the writer spelled it.
-pub fn same_table(a: &str, b: &str) -> bool {
-    canonical_table(a) == canonical_table(b)
-}
-
 /// One identifier part, unquoted and lowercased.
 fn bare_part(t: &str) -> String {
     let t = t.trim();
@@ -235,8 +228,9 @@ fn bare_part(t: &str) -> String {
 }
 
 /// The canonical spelling of a table reference: the last dotted segment,
-/// unquoted, lowercased (the rule [`same_table`] matches by). Events carry it
-/// and observers' args must use it, so routing and filters compare exactly.
+/// unquoted, lowercased, so `public.orders`, `"Orders"` and `orders` are one
+/// table. Events carry it and observers' args must use it, so routing and
+/// filters compare exactly.
 pub fn canonical_table(t: &str) -> String {
     bare_part(t.rsplit('.').next().unwrap_or(t))
 }
@@ -425,14 +419,18 @@ mod tests {
     }
 
     #[test]
-    fn table_matching_ignores_case_and_schema() {
-        assert!(same_table("orders", "ORDERS"));
-        assert!(same_table("public.orders", "orders"));
-        assert!(same_table("orders", "public.orders"));
-        assert!(same_table("\"Orders\"", "orders"));
-        assert!(same_table("`orders`", "orders"));
-        assert!(same_table("[orders]", "orders"));
-        assert!(!same_table("orders", "order_items"));
+    fn table_references_canonicalize_ignoring_case_schema_and_quotes() {
+        for spelling in [
+            "orders",
+            "ORDERS",
+            "public.orders",
+            "\"Orders\"",
+            "`orders`",
+            "[orders]",
+        ] {
+            assert_eq!(canonical_table(spelling), "orders", "{spelling}");
+        }
+        assert_ne!(canonical_table("order_items"), "orders");
     }
 
     #[test]
