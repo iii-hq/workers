@@ -37,7 +37,8 @@ export function parseBucketSummary(raw: unknown): BucketSummary | null {
   const rec = raw as Record<string, unknown>
   const name = text(rec.name)
   if (!name) return null
-  const display = typeof rec.display === 'object' && rec.display !== null ? (rec.display as Record<string, unknown>) : null
+  const display =
+    typeof rec.display === 'object' && rec.display !== null ? (rec.display as Record<string, unknown>) : null
   const color = text(display?.color)
   return {
     name,
@@ -45,7 +46,9 @@ export function parseBucketSummary(raw: unknown): BucketSummary | null {
     bucket: text(rec.bucket),
     region: text(rec.region),
     endpoint_url: text(rec.endpoint_url),
-    display: display ? { icon: text(display.icon), color: color && /^#[0-9A-Fa-f]{6}$/.test(color) ? color : undefined } : undefined,
+    display: display
+      ? { icon: text(display.icon), color: color && /^#[0-9A-Fa-f]{6}$/.test(color) ? color : undefined }
+      : undefined,
     uses_secrets: rec.uses_secrets === true,
     direct_downloads: typeof rec.direct_downloads === 'boolean' ? rec.direct_downloads : undefined,
     error: text(rec.error),
@@ -197,6 +200,11 @@ export async function readThroughWorker(
 /** `attachment; filename="…"` for a presigned download, quotes dropped and non-ASCII spelled per RFC 5987. */
 export function attachmentDisposition(filename: string): string {
   const plain = filename.replaceAll('"', '').replace(/[^\x20-\x7e]/g, '_')
-  const encoded = encodeURIComponent(filename).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
-  return plain === filename ? `attachment; filename="${plain}"` : `attachment; filename="${plain}"; filename*=UTF-8''${encoded}`
+  const encoded = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  )
+  return plain === filename
+    ? `attachment; filename="${plain}"`
+    : `attachment; filename="${plain}"; filename*=UTF-8''${encoded}`
 }

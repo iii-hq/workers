@@ -31,6 +31,7 @@ import { ChevronLeft, Database, Plus, Trash2 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { BucketIcon } from '../lib/bucket-icons'
 import { errorMessage, isMissingFunction } from '../lib/errors'
+import { ColorPicker, IconPicker } from './BucketAppearance'
 import {
   applyPreset,
   bucketDisplay,
@@ -45,6 +46,7 @@ import {
   PROVIDER_CHOICES,
   type PresetId,
   type ProviderChoice,
+  parseTestOutcome,
   presetById,
   providerChoiceOf,
   providerLabel,
@@ -58,16 +60,14 @@ import {
   testBucketPayload,
   testOutcomeHint,
   testOutcomeText,
-  parseTestOutcome,
   underlyingBucket,
   withDisplay,
   withField,
   withRegion,
 } from './bucket'
-import { ColorPicker, IconPicker } from './BucketAppearance'
 import { CredentialField } from './CredentialField'
 import { CheckField, Field, SelectField, TextField } from './fields'
-import { type TestState, TestBucketRow } from './TestBucketRow'
+import { TestBucketRow, type TestState } from './TestBucketRow'
 
 type Selection = { kind: 'local' } | { kind: 'bucket'; name: string }
 
@@ -189,7 +189,9 @@ function ConfigNav({
                   label={name}
                   description={providerLabel(providerChoiceOf(bucket))}
                   trailing={
-                    error ? <StatusDot tone="alert" title={error} aria-label="The worker could not build it" /> : undefined
+                    error ? (
+                      <StatusDot tone="alert" title={error} aria-label="The worker could not build it" />
+                    ) : undefined
                   }
                   onClick={() => onSelect({ kind: 'bucket', name })}
                 />
@@ -239,7 +241,17 @@ function EditorHeader({
   )
 }
 
-function Section({ title, description, chip, children }: { title: string; description: string; chip?: string; children: ReactNode }) {
+function Section({
+  title,
+  description,
+  chip,
+  children,
+}: {
+  title: string
+  description: string
+  chip?: string
+  children: ReactNode
+}) {
   return (
     <section className="storage-cfg-section">
       <div className="storage-cfg-section-head">
@@ -438,7 +450,10 @@ function NotificationFields({
   }
 
   return (
-    <Section title="Object events" description="Connect provider notifications to object-created and object-deleted triggers.">
+    <Section
+      title="Object events"
+      description="Connect provider notifications to object-created and object-deleted triggers."
+    >
       <CheckField
         id={`storage-cfg-${name}-notifications`}
         path={`buckets/${name}/notifications`}
@@ -549,7 +564,9 @@ function BucketEditor({
       {credential(ctx, 'access_key_id', 'Access key ID', {
         mode: 'identifier',
         placeholder: idPlaceholder,
-        hint: required ? undefined : 'Leave both keys empty to use the engine host’s credentials (environment, profile or instance role).',
+        hint: required
+          ? undefined
+          : 'Leave both keys empty to use the engine host’s credentials (environment, profile or instance role).',
       })}
       {credential(ctx, 'secret_access_key', 'Secret access key')}
     </>
@@ -618,13 +635,20 @@ function BucketEditor({
             label="Provider bucket name"
             value={asString(bucket.bucket)}
             placeholder={name}
-            hint={provider === 'local' ? 'Optional override of the folder under the data directory. Empty uses the worker bucket name.' : 'Optional override. Empty uses the worker bucket name.'}
+            hint={
+              provider === 'local'
+                ? 'Optional override of the folder under the data directory. Empty uses the worker bucket name.'
+                : 'Optional override. Empty uses the worker bucket name.'
+            }
             error={fieldError(errors, 'buckets', name, 'bucket')}
             onChange={(next) => setOptional('bucket', next)}
           />
         </Section>
 
-        <Section title="Appearance" description="How apps draw this bucket: the iii app and this console use the same icon and colour.">
+        <Section
+          title="Appearance"
+          description="How apps draw this bucket: the iii app and this console use the same icon and colour."
+        >
           <Field label="Icon">
             <IconPicker
               value={display.icon}
@@ -643,7 +667,11 @@ function BucketEditor({
         </Section>
 
         {provider === 'local' ? (
-          <Section title="Native local bucket" description="This bucket uses the filesystem and HTTP settings from local storage." chip="local">
+          <Section
+            title="Native local bucket"
+            description="This bucket uses the filesystem and HTTP settings from local storage."
+            chip="local"
+          >
             <div className="storage-cfg-info-note">
               Direct upload and download URLs are available only when the local HTTP transfer server is enabled in the
               runtime section.
@@ -690,7 +718,9 @@ function BucketEditor({
                     path={`buckets/${name}/endpoint_url`}
                     label="Endpoint URL"
                     value={asString(bucket.endpoint_url)}
-                    placeholder={preset.endpoint ? preset.endpoint.replaceAll('{region}', preset.region) : 'https://s3.example.com'}
+                    placeholder={
+                      preset.endpoint ? preset.endpoint.replaceAll('{region}', preset.region) : 'https://s3.example.com'
+                    }
                     hint="Must be reachable from the engine host. Download links point here too."
                     error={fieldError(errors, 'buckets', name, 'endpoint_url')}
                     onChange={(next) => setOptional('endpoint_url', next)}
@@ -713,7 +743,10 @@ function BucketEditor({
                 />
               ) : null}
             </Section>
-            <Section title="Credentials" description="Stored in the secrets worker; the configuration keeps a reference.">
+            <Section
+              title="Credentials"
+              description="Stored in the secrets worker; the configuration keeps a reference."
+            >
               <div className="storage-cfg-field-grid">{accessKeys(compatible ? 'Access key' : 'AKIA…', false)}</div>
               {credential(ctx, 'session_token', 'Session token', {
                 hint: 'Only for temporary credentials (STS).',
@@ -724,7 +757,11 @@ function BucketEditor({
 
         {provider === 'r2' ? (
           <>
-            <Section title="Connection" description="The standard endpoint is derived from the Cloudflare account ID." chip="r2">
+            <Section
+              title="Connection"
+              description="The standard endpoint is derived from the Cloudflare account ID."
+              chip="r2"
+            >
               {credential(ctx, 'account_id', 'Account ID', {
                 mode: 'identifier',
                 preferText: true,
@@ -749,7 +786,11 @@ function BucketEditor({
 
         {provider === 'gcs' ? (
           <>
-            <Section title="Connection" description="The engine host’s Application Default Credentials apply when no key is set." chip="gcs">
+            <Section
+              title="Connection"
+              description="The engine host’s Application Default Credentials apply when no key is set."
+              chip="gcs"
+            >
               <TextField
                 id={`storage-cfg-${name}-endpoint`}
                 path={`buckets/${name}/endpoint_url`}
@@ -761,7 +802,10 @@ function BucketEditor({
                 onChange={(next) => setOptional('endpoint_url', next)}
               />
             </Section>
-            <Section title="Credentials" description="A service-account key, pasted into the secrets worker or read from a file on the engine host.">
+            <Section
+              title="Credentials"
+              description="A service-account key, pasted into the secrets worker or read from a file on the engine host."
+            >
               {credential(ctx, 'credentials_json', 'Service-account key', {
                 mode: 'json',
                 hint: 'The JSON key file’s contents. A key also lets the worker sign download links.',
@@ -780,7 +824,10 @@ function BucketEditor({
           </>
         ) : null}
 
-        <Section title="Test" description="Builds this draft in the worker and lists one object at the root; nothing is saved.">
+        <Section
+          title="Test"
+          description="Builds this draft in the worker and lists one object at the root; nothing is saved."
+        >
           <TestBucketRow state={test} blocker={testBlocker(bucketProblems(bucket))} onTest={onTest} />
         </Section>
 

@@ -8,9 +8,12 @@ import { StorageConfigForm } from './index'
 import { TestBucketRow } from './TestBucketRow'
 
 vi.mock('@iii-dev/console-ui', () => ({
-  Button: ({ children, variant: _variant, size: _size, ...props }: ComponentProps<'button'> & { variant?: string; size?: string }) => (
-    <button {...props}>{children}</button>
-  ),
+  Button: ({
+    children,
+    variant: _variant,
+    size: _size,
+    ...props
+  }: ComponentProps<'button'> & { variant?: string; size?: string }) => <button {...props}>{children}</button>,
   Chip: ({ children, tone: _tone, ...props }: ComponentProps<'span'> & { tone?: string }) => (
     <span {...props}>{children}</span>
   ),
@@ -29,7 +32,9 @@ vi.mock('@iii-dev/console-ui', () => ({
   Input: ({
     onChange: _onChange,
     ...props
-  }: { onChange?: (next: string) => void } & Omit<ComponentProps<'input'>, 'onChange'>) => <input readOnly {...props} />,
+  }: { onChange?: (next: string) => void } & Omit<ComponentProps<'input'>, 'onChange'>) => (
+    <input readOnly {...props} />
+  ),
   List: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ListItem: ({
     leading,
@@ -200,7 +205,9 @@ describe('Test bucket', () => {
   })
 
   it('explains a worker without storage::testBucket', () => {
-    const html = renderToStaticMarkup(<TestBucketRow state={{ status: 'unsupported' }} blocker={null} onTest={() => {}} />)
+    const html = renderToStaticMarkup(
+      <TestBucketRow state={{ status: 'unsupported' }} blocker={null} onTest={() => {}} />,
+    )
     expect(html).toContain('storage::testBucket')
     expect(html).toContain('iii worker update storage')
   })

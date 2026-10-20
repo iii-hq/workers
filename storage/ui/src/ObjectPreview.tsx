@@ -11,14 +11,7 @@
  * before it gives up and says why.
  */
 
-import {
-  Button,
-  type Host,
-  ImageThumbnailButton,
-  ImageViewer,
-  Skeleton,
-  StatusPanel,
-} from '@iii-dev/console-ui'
+import { Button, type Host, ImageThumbnailButton, ImageViewer, Skeleton, StatusPanel } from '@iii-dev/console-ui'
 import { formatBytes } from '@iii-dev/console-ui/format'
 import { Download } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -113,7 +106,18 @@ export function ObjectPreview({
       alive = false
       if (blobUrl) URL.revokeObjectURL(blobUrl)
     }
-  }, [host, bucket.name, objectKey, metadata.etag, metadata.size, metadata.content_type, kind, direct, relayed, attempt])
+  }, [
+    host,
+    bucket.name,
+    objectKey,
+    metadata.etag,
+    metadata.size,
+    metadata.content_type,
+    kind,
+    direct,
+    relayed,
+    attempt,
+  ])
 
   if (!kind) return null
 

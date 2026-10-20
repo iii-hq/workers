@@ -71,7 +71,10 @@ export function TextField({
           onChange={onChange}
         />
         {secret ? (
-          <IconButton label={`${revealed ? 'Hide' : 'Show'} ${label}`} onClick={() => setRevealed((current) => !current)}>
+          <IconButton
+            label={`${revealed ? 'Hide' : 'Show'} ${label}`}
+            onClick={() => setRevealed((current) => !current)}
+          >
             {revealed ? <EyeOff /> : <Eye />}
           </IconButton>
         ) : null}

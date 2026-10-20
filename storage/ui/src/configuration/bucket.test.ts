@@ -93,9 +93,9 @@ describe('secret names', () => {
       'STORAGE_A_B_SECRET_ACCESS_KEY',
       'STORAGE_DOCS_CREDENTIALS_JSON',
     ])
-    expect(secretNamesInUse(buckets, { bucket: 'a-b', field: 'secret_access_key' }).has('STORAGE_A_B_SECRET_ACCESS_KEY')).toBe(
-      false,
-    )
+    expect(
+      secretNamesInUse(buckets, { bucket: 'a-b', field: 'secret_access_key' }).has('STORAGE_A_B_SECRET_ACCESS_KEY'),
+    ).toBe(false)
   })
 
   it('picks _2 when another bucket derives the same name', () => {
@@ -226,7 +226,12 @@ describe('providers', () => {
     }
     // A hosted service's region means nothing to AWS.
     expect(switchProvider(b2, 's3')).toEqual({ provider: 's3', region: 'us-east-1', secret_access_key: 'secret://K' })
-    const ceph: JsonObject = { provider: 's3', region: 'default', endpoint_url: 'http://ceph:7480', force_path_style: true }
+    const ceph: JsonObject = {
+      provider: 's3',
+      region: 'default',
+      endpoint_url: 'http://ceph:7480',
+      force_path_style: true,
+    }
     expect(switchProvider(ceph, 's3')).toEqual({ provider: 's3', region: 'default' })
   })
 })
@@ -254,7 +259,12 @@ describe('S3-compatible presets', () => {
   })
 
   it('applies a preset: endpoint, region and addressing', () => {
-    const base: JsonObject = { provider: 's3', region: 'us-east-1', secret_access_key: 'secret://K', force_path_style: true }
+    const base: JsonObject = {
+      provider: 's3',
+      region: 'us-east-1',
+      secret_access_key: 'secret://K',
+      force_path_style: true,
+    }
     expect(applyPreset(base, 'spaces')).toEqual({
       provider: 's3',
       region: 'nyc3',
@@ -350,14 +360,17 @@ describe('problems', () => {
       'secret_access_key',
     ])
     expect(bucketProblems({ provider: 's3', region: 'x', access_key_id: 'AKIA' })).toEqual([
-      { field: 'secret_access_key', message: 'Static credentials need both the access key ID and the secret access key.' },
+      {
+        field: 'secret_access_key',
+        message: 'Static credentials need both the access key ID and the secret access key.',
+      },
     ])
     expect(bucketProblems({ provider: 's3', region: 'x', session_token: 'secret://T' })[0].field).toBe('session_token')
     expect(bucketProblems({ provider: 's3', region: 'x', endpoint_url: 'minio:9000' })[0].field).toBe('endpoint_url')
     expect(bucketProblems({ provider: 's3', region: 'x', endpoint_url: '${S3_URL}' })).toEqual([])
-    expect(bucketProblems({ provider: 'gcs', credentials_file: '/k.json', credentials_json: 'secret://K' })[0].field).toBe(
-      'credentials_json',
-    )
+    expect(
+      bucketProblems({ provider: 'gcs', credentials_file: '/k.json', credentials_json: 'secret://K' })[0].field,
+    ).toBe('credentials_json')
   })
 
   it('says in one line why the test cannot run', () => {
@@ -430,7 +443,10 @@ describe('testBucket', () => {
       name: 'photos',
       timeout_ms: 10_000,
     })
-    expect(testBucketPayload('photos', { provider: 'local' })).toEqual({ bucket: { provider: 'local' }, timeout_ms: 10_000 })
+    expect(testBucketPayload('photos', { provider: 'local' })).toEqual({
+      bucket: { provider: 'local' },
+      timeout_ms: 10_000,
+    })
   })
 
   it('reads the staged result', () => {
@@ -478,8 +494,8 @@ describe('worker generation', () => {
       },
     }
     expect(supportsSecretReferences(current)).toBe(true)
-    expect(supportsSecretReferences({ $defs: { Display: {}, Local: { properties: { bucket: {}, display: {} } } } })).toBe(
-      true,
-    )
+    expect(
+      supportsSecretReferences({ $defs: { Display: {}, Local: { properties: { bucket: {}, display: {} } } } }),
+    ).toBe(true)
   })
 })

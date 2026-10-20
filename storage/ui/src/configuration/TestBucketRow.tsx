@@ -42,8 +42,8 @@ export function TestBucketRow({
       ) : null}
       {state?.status === 'unsupported' ? (
         <div className="storage-cfg-notice" role="status">
-          This storage worker predates <code>storage::testBucket</code>. Update it (<code>iii worker update storage</code>)
-          to test buckets from here; the configuration still saves without it.
+          This storage worker predates <code>storage::testBucket</code>. Update it (
+          <code>iii worker update storage</code>) to test buckets from here; the configuration still saves without it.
         </div>
       ) : null}
     </div>

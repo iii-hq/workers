@@ -26,7 +26,11 @@ export const PROVIDERS: readonly ProviderName[] = ['local', 's3', 'gcs', 'r2']
 export type ProviderChoice = 'local' | 's3' | 's3-compatible' | 'r2' | 'gcs'
 
 export const PROVIDER_CHOICES: ReadonlyArray<{ value: ProviderChoice; label: string; description: string }> = [
-  { value: 'local', label: 'Local filesystem', description: 'Files on the engine host, under the local data directory.' },
+  {
+    value: 'local',
+    label: 'Local filesystem',
+    description: 'Files on the engine host, under the local data directory.',
+  },
   { value: 's3', label: 'Amazon S3', description: 'An AWS bucket in one region.' },
   {
     value: 's3-compatible',
@@ -34,7 +38,11 @@ export const PROVIDER_CHOICES: ReadonlyArray<{ value: ProviderChoice; label: str
     description: 'MinIO, Backblaze B2, Wasabi, DigitalOcean Spaces, Ceph, SeaweedFS…',
   },
   { value: 'r2', label: 'Cloudflare R2', description: 'An R2 bucket of a Cloudflare account.' },
-  { value: 'gcs', label: 'Google Cloud Storage', description: 'A GCS bucket, with a service account or the host’s credentials.' },
+  {
+    value: 'gcs',
+    label: 'Google Cloud Storage',
+    description: 'A GCS bucket, with a service account or the host’s credentials.',
+  },
 ]
 
 /** What `storage::getBucket` puts where a stored literal secret was. */
@@ -317,7 +325,11 @@ export const MAX_SECRET_NAME = 128
  */
 export function secretNameFor(bucket: string, field: CredentialField): string {
   const suffix = `_${FIELD_SUFFIX[field]}`
-  const handle = bucket.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_') || 'NEW'
+  const handle =
+    bucket
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_]/g, '_') || 'NEW'
   const room = MAX_SECRET_NAME - 'STORAGE_'.length - suffix.length
   return `STORAGE_${handle.slice(0, room)}${suffix}`
 }
@@ -436,8 +448,10 @@ export function checkServiceAccountJson(text: string): ServiceAccountCheck {
     return { ok: false, reason: 'Expected a JSON object.' }
   }
   const rec = parsed as Record<string, unknown>
-  if (rec.type !== 'service_account') return { ok: false, reason: 'Not a service-account key (type is not “service_account”).' }
-  if (typeof rec.client_email !== 'string' || !rec.client_email) return { ok: false, reason: 'The key has no client_email.' }
+  if (rec.type !== 'service_account')
+    return { ok: false, reason: 'Not a service-account key (type is not “service_account”).' }
+  if (typeof rec.client_email !== 'string' || !rec.client_email)
+    return { ok: false, reason: 'The key has no client_email.' }
   if (typeof rec.private_key !== 'string' || !rec.private_key.includes('PRIVATE KEY')) {
     return { ok: false, reason: 'The key has no private_key.' }
   }

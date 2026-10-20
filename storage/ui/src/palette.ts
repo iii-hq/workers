@@ -34,9 +34,7 @@ export function registerStoragePalette(host: Host): void {
     minQuery: 2,
     async search(query, { signal }) {
       const needle = query.trim().toLowerCase()
-      const buckets = parseBucketList(
-        await host.iii.trigger<unknown>('storage::listBuckets', {}),
-      )
+      const buckets = parseBucketList(await host.iii.trigger<unknown>('storage::listBuckets', {}))
       if (signal.aborted) return []
       const out: { bucket: string; key: string }[] = []
       for (const bucket of buckets) {

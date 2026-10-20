@@ -243,8 +243,8 @@ function CredentialControl({
         ) : null}
         {legacyWorker ? (
           <div className="storage-cfg-notice" role="note">
-            This storage worker reads credentials only as plain values or <code>{TEMPLATE_SYNTAX}</code> templates. Update it
-            (<code>iii worker update storage</code>) to keep them in the secrets store.
+            This storage worker reads credentials only as plain values or <code>{TEMPLATE_SYNTAX}</code> templates.
+            Update it (<code>iii worker update storage</code>) to keep them in the secrets store.
           </div>
         ) : secretsUp === false ? (
           <div className="storage-cfg-notice" role="alert">
@@ -272,7 +272,13 @@ function CredentialControl({
                   event.target.value = ''
                 }}
               />
-              <Button type="button" variant="ghost" size="sm" disabled={locked} onClick={() => fileRef.current?.click()}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={locked}
+                onClick={() => fileRef.current?.click()}
+              >
                 <Upload size={16} aria-hidden />
                 Upload file
               </Button>
@@ -329,7 +335,9 @@ function CredentialControl({
       <>
         <span className="storage-cfg-secret-ref">{text}</span>
         <span className={meta === null && secretsUp !== false ? 'storage-cfg-warn' : 'storage-cfg-secret-status'}>
-          {legacyWorker ? 'This storage worker cannot resolve references — update it' : secretStatusText(meta, secretsUp)}
+          {legacyWorker
+            ? 'This storage worker cannot resolve references — update it'
+            : secretStatusText(meta, secretsUp)}
         </span>
       </>,
       <>

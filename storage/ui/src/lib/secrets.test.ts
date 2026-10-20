@@ -131,7 +131,9 @@ describe('status lines', () => {
   })
 
   it('says whether the env file sets a variable, from the hint’s presence alone', () => {
-    expect(envStatusText({ name: 'V', consumers: [], hint: 'ab…cd' }, true)).toBe('Set in the secrets worker’s env file')
+    expect(envStatusText({ name: 'V', consumers: [], hint: 'ab…cd' }, true)).toBe(
+      'Set in the secrets worker’s env file',
+    )
     expect(envStatusText({ name: 'V', consumers: [], hint: '' }, true)).toBe('Not set in the secrets worker’s env file')
     expect(envStatusText(null, true)).toBe('Not shared with the storage worker')
     expect(envStatusText(undefined, undefined)).toBe('A variable of the secrets worker’s env file')

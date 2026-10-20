@@ -24,20 +24,9 @@ import {
 } from '@iii-dev/console-ui'
 import { copyText, formatBytes } from '@iii-dev/console-ui/format'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import {
-  ChevronLeft,
-  ChevronRight,
-  Database,
-  Download,
-  File,
-  Folder,
-  RefreshCw,
-  Trash2,
-  Upload,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, Database, Download, File, Folder, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { stageLabel } from './configuration/bucket'
-import { ObjectPreview } from './ObjectPreview'
 import { BucketIcon } from './lib/bucket-icons'
 import { bucketUnavailable, errorMessage } from './lib/errors'
 import {
@@ -47,6 +36,7 @@ import {
   parseBucketList,
   readThroughWorker,
 } from './lib/objects'
+import { ObjectPreview } from './ObjectPreview'
 import { parseStoragePanelContext } from './panel-context'
 import { leafName, parentPrefix } from './widgets'
 
@@ -91,9 +81,7 @@ function describeError(error: unknown): CallError {
   if (unavailable) {
     return {
       headline: 'Bucket unavailable',
-      detail: [stageLabel(unavailable.stage), unavailable.message]
-        .filter(Boolean)
-        .join(' · '),
+      detail: [stageLabel(unavailable.stage), unavailable.message].filter(Boolean).join(' · '),
     }
   }
   return { detail: errorMessage(error) }
@@ -115,9 +103,7 @@ function saveBlob(blob: Blob, filename: string) {
 function readPersisted(tabId: string): PersistedState {
   if (!tabId) return {}
   try {
-    return JSON.parse(
-      localStorage.getItem(`iii:storage-ui:${tabId}`) ?? '{}',
-    ) as PersistedState
+    return JSON.parse(localStorage.getItem(`iii:storage-ui:${tabId}`) ?? '{}') as PersistedState
   } catch {
     return {}
   }
@@ -142,19 +128,13 @@ function StorageExplorer({
   const [buckets, setBuckets] = useState<BucketSummary[] | null>(null)
   const [bucketError, setBucketError] = useState<string | null>(null)
   const { confirm, dialog } = useConfirm()
-  const [bucketName, setBucketName] = useState<string | null>(
-    persisted.bucket ?? null,
-  )
+  const [bucketName, setBucketName] = useState<string | null>(persisted.bucket ?? null)
   const [prefix, setPrefix] = useState(persisted.prefix ?? '')
   const [listing, setListing] = useState<Listing | null>(null)
   const [listingError, setListingError] = useState<CallError | null>(null)
-  const [objectKey, setObjectKey] = useState<string | null>(
-    persisted.objectKey ?? null,
-  )
+  const [objectKey, setObjectKey] = useState<string | null>(persisted.objectKey ?? null)
   const [metadata, setMetadata] = useState<ObjectMetadata | null>(null)
-  const [metadataError, setMetadataError] = useState<CallError | null>(
-    null,
-  )
+  const [metadataError, setMetadataError] = useState<CallError | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [transfer, setTransfer] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -166,18 +146,14 @@ function StorageExplorer({
   prefixRef.current = prefix
   objectRef.current = objectKey
 
-  const selectedBucket =
-    buckets?.find((bucket) => bucket.name === bucketName) ?? null
+  const selectedBucket = buckets?.find((bucket) => bucket.name === bucketName) ?? null
   // Listed but not built: its calls would only fail with BUCKET_UNAVAILABLE.
   const bucketBroken = Boolean(selectedBucket?.error)
 
   useEffect(() => {
     if (!tabId) return
     try {
-      localStorage.setItem(
-        `iii:storage-ui:${tabId}`,
-        JSON.stringify({ bucket: bucketName, prefix, objectKey }),
-      )
+      localStorage.setItem(`iii:storage-ui:${tabId}`, JSON.stringify({ bucket: bucketName, prefix, objectKey }))
     } catch {
       // Per-tab persistence is best-effort.
     }
@@ -191,10 +167,7 @@ function StorageExplorer({
         const list = parseBucketList(response)
         setBuckets(list)
         setBucketError(null)
-        if (
-          bucketRef.current &&
-          !list.some((bucket) => bucket.name === bucketRef.current)
-        ) {
+        if (bucketRef.current && !list.some((bucket) => bucket.name === bucketRef.current)) {
           setBucketName(null)
           setPrefix('')
           setObjectKey(null)
@@ -225,30 +198,19 @@ function StorageExplorer({
           ...(cursor ? { cursor } : {}),
         })
         .then((response) => {
-          if (
-            bucketRef.current !== currentBucket ||
-            prefixRef.current !== currentPrefix
-          )
-            return
+          if (bucketRef.current !== currentBucket || prefixRef.current !== currentPrefix) return
           setListing((previous) =>
             append && previous
               ? {
                   objects: [...previous.objects, ...response.objects],
-                  common_prefixes: [
-                    ...previous.common_prefixes,
-                    ...response.common_prefixes,
-                  ],
+                  common_prefixes: [...previous.common_prefixes, ...response.common_prefixes],
                   next_cursor: response.next_cursor,
                 }
               : response,
           )
         })
         .catch((error: unknown) => {
-          if (
-            bucketRef.current !== currentBucket ||
-            prefixRef.current !== currentPrefix
-          )
-            return
+          if (bucketRef.current !== currentBucket || prefixRef.current !== currentPrefix) return
           setListingError(describeError(error))
           if (!append) setListing({ objects: [], common_prefixes: [] })
         })
@@ -278,18 +240,12 @@ function StorageExplorer({
         key: currentObject,
       })
       .then((response) => {
-        if (
-          bucketRef.current === currentBucket &&
-          objectRef.current === currentObject
-        ) {
+        if (bucketRef.current === currentBucket && objectRef.current === currentObject) {
           setMetadata(response)
         }
       })
       .catch((error: unknown) => {
-        if (
-          bucketRef.current === currentBucket &&
-          objectRef.current === currentObject
-        ) {
+        if (bucketRef.current === currentBucket && objectRef.current === currentObject) {
           setMetadataError(describeError(error))
         }
       })
@@ -365,30 +321,24 @@ function StorageExplorer({
           expires_in_seconds: 600,
         })
         const body = new FormData()
-        for (const [field, value] of Object.entries(signed.fields))
-          body.append(field, value)
+        for (const [field, value] of Object.entries(signed.fields)) body.append(field, value)
         body.append('file', file)
         const response = await fetch(signed.url, { method: 'POST', body })
-        if (!response.ok)
-          throw new Error(`upload failed with HTTP ${response.status}`)
+        if (!response.ok) throw new Error(`upload failed with HTTP ${response.status}`)
       } else {
-        const signed = await host.iii.trigger<{ url: string }>(
-          'storage::presignUrl',
-          {
-            bucket: bucketName,
-            key,
-            method: 'PUT',
-            content_type: contentType,
-            expires_in_seconds: 600,
-          },
-        )
+        const signed = await host.iii.trigger<{ url: string }>('storage::presignUrl', {
+          bucket: bucketName,
+          key,
+          method: 'PUT',
+          content_type: contentType,
+          expires_in_seconds: 600,
+        })
         const response = await fetch(signed.url, {
           method: 'PUT',
           headers: { 'Content-Type': contentType },
           body: file,
         })
-        if (!response.ok)
-          throw new Error(`upload failed with HTTP ${response.status}`)
+        if (!response.ok) throw new Error(`upload failed with HTTP ${response.status}`)
       }
       loadListing()
       setObjectKey(key)
@@ -416,10 +366,7 @@ function StorageExplorer({
             })
       const blob = await readThroughWorker(host, bucket, key, head.size, {
         contentType: head.content_type,
-        onProgress: (done, total) =>
-          setTransfer(
-            `reading ${name} · ${formatBytes(done)} of ${formatBytes(total)}`,
-          ),
+        onProgress: (done, total) => setTransfer(`reading ${name} · ${formatBytes(done)} of ${formatBytes(total)}`),
       })
       saveBlob(blob, name)
     } catch (error) {
@@ -439,18 +386,13 @@ function StorageExplorer({
     setTransfer(`preparing ${leafName(objectKey)}`)
     setActionError(null)
     try {
-      const signed = await host.iii.trigger<{ url: string }>(
-        'storage::presignUrl',
-        {
-          bucket: bucketName,
-          key: objectKey,
-          method: 'GET',
-          expires_in_seconds: 600,
-          response_content_disposition: attachmentDisposition(
-            leafName(objectKey),
-          ),
-        },
-      )
+      const signed = await host.iii.trigger<{ url: string }>('storage::presignUrl', {
+        bucket: bucketName,
+        key: objectKey,
+        method: 'GET',
+        expires_in_seconds: 600,
+        response_content_disposition: attachmentDisposition(leafName(objectKey)),
+      })
       if (popup) popup.location.href = signed.url
       else window.location.assign(signed.url)
     } catch (error) {
@@ -519,8 +461,7 @@ function StorageExplorer({
   const showBuckets = !narrow || bucketName === null
   const showContents = !narrow || (bucketName !== null && objectKey === null)
   const showDetail = !narrow || objectKey !== null
-  const rowCount =
-    (listing?.common_prefixes.length ?? 0) + (listing?.objects.length ?? 0)
+  const rowCount = (listing?.common_prefixes.length ?? 0) + (listing?.objects.length ?? 0)
 
   return (
     <>
@@ -540,9 +481,7 @@ function StorageExplorer({
               <div className="storage-ui-head">
                 <Eyebrow>buckets</Eyebrow>
                 <span className="storage-ui-spacer" />
-                {buckets ? (
-                  <span className="storage-ui-count">{buckets.length}</span>
-                ) : null}
+                {buckets ? <span className="storage-ui-count">{buckets.length}</span> : null}
                 <IconButton label="Refresh buckets" onClick={loadBuckets}>
                   <RefreshCw />
                 </IconButton>
@@ -551,11 +490,7 @@ function StorageExplorer({
           >
             <div className="storage-ui-scroll">
               {buckets === null ? (
-                <div
-                  className="storage-ui-skeleton"
-                  role="status"
-                  aria-label="Loading buckets"
-                >
+                <div className="storage-ui-skeleton" role="status" aria-label="Loading buckets">
                   <Skeleton />
                   <Skeleton />
                   <Skeleton />
@@ -585,28 +520,16 @@ function StorageExplorer({
                     <ListItem
                       key={bucket.name}
                       selected={bucket.name === bucketName}
-                      aria-current={
-                        bucket.name === bucketName ? 'true' : undefined
-                      }
-                      leading={
-                        <BucketIcon
-                          name={bucket.display?.icon}
-                          color={bucket.display?.color}
-                        />
-                      }
+                      aria-current={bucket.name === bucketName ? 'true' : undefined}
+                      leading={<BucketIcon name={bucket.display?.icon} color={bucket.display?.color} />}
                       label={bucket.name}
                       description={
-                        bucket.error
-                          ? `${bucketProviderLabel(bucket)} · unavailable`
-                          : bucketProviderLabel(bucket)
+                        bucket.error ? `${bucketProviderLabel(bucket)} · unavailable` : bucketProviderLabel(bucket)
                       }
                       title={bucket.error}
                       trailing={
                         bucket.error ? (
-                          <StatusDot
-                            tone="alert"
-                            aria-label="The worker could not build this bucket"
-                          />
+                          <StatusDot tone="alert" aria-label="The worker could not build this bucket" />
                         ) : (
                           <ChevronRight className="iii-ui-icon" />
                         )
@@ -621,10 +544,7 @@ function StorageExplorer({
         ) : null}
 
         {showContents ? (
-          <section
-            className={`storage-ui-contents${narrow ? ' narrow' : ''}`}
-            aria-label="Bucket contents"
-          >
+          <section className={`storage-ui-contents${narrow ? ' narrow' : ''}`} aria-label="Bucket contents">
             {bucketName === null ? (
               <>
                 <Toolbar as="header" aria-label="Objects">
@@ -644,13 +564,8 @@ function StorageExplorer({
                   aria-label="Folder"
                   end={
                     <>
-                      {listing ? (
-                        <span className="storage-ui-count">{rowCount}</span>
-                      ) : null}
-                      <IconButton
-                        label="Refresh folder"
-                        onClick={() => loadListing()}
-                      >
+                      {listing ? <span className="storage-ui-count">{rowCount}</span> : null}
+                      <IconButton label="Refresh folder" onClick={() => loadListing()}>
                         <RefreshCw />
                       </IconButton>
                       <Button
@@ -665,10 +580,7 @@ function StorageExplorer({
                   }
                 >
                   {narrow || prefix ? (
-                    <IconButton
-                      label={prefix ? 'Go to parent folder' : 'Back to buckets'}
-                      onClick={goBack}
-                    >
+                    <IconButton label={prefix ? 'Go to parent folder' : 'Back to buckets'} onClick={goBack}>
                       <ChevronLeft />
                     </IconButton>
                   ) : null}
@@ -714,10 +626,7 @@ function StorageExplorer({
                     <StatusPanel
                       variant="alert"
                       headline="Bucket unavailable"
-                      detail={[
-                        stageLabel(selectedBucket.error_stage),
-                        selectedBucket.error,
-                      ]
+                      detail={[stageLabel(selectedBucket.error_stage), selectedBucket.error]
                         .filter(Boolean)
                         .join(' · ')}
                       className="storage-ui-status"
@@ -728,11 +637,7 @@ function StorageExplorer({
                       }
                     />
                   ) : listing === null ? (
-                    <div
-                      className="storage-ui-skeleton listing"
-                      role="status"
-                      aria-label="Loading objects"
-                    >
+                    <div className="storage-ui-skeleton listing" role="status" aria-label="Loading objects">
                       <Skeleton />
                       <Skeleton />
                       <Skeleton />
@@ -741,17 +646,11 @@ function StorageExplorer({
                   ) : listingError ? (
                     <StatusPanel
                       variant="alert"
-                      headline={
-                        listingError.headline ?? 'Could not load this folder'
-                      }
+                      headline={listingError.headline ?? 'Could not load this folder'}
                       detail={listingError.detail}
                       className="storage-ui-status"
                       action={
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => loadListing()}
-                        >
+                        <Button variant="ghost" size="sm" onClick={() => loadListing()}>
                           retry
                         </Button>
                       }
@@ -784,9 +683,7 @@ function StorageExplorer({
                         <ListItem
                           key={`object:${object.key}`}
                           selected={object.key === objectKey}
-                          aria-current={
-                            object.key === objectKey ? 'true' : undefined
-                          }
+                          aria-current={object.key === objectKey ? 'true' : undefined}
                           leading={<File />}
                           label={leafName(object.key)}
                           description={`${formatBytes(object.size)} · ${new Date(
@@ -804,18 +701,14 @@ function StorageExplorer({
                         variant="ghost"
                         size="sm"
                         disabled={loadingMore}
-                        onClick={() =>
-                          loadListing(listing.next_cursor ?? undefined, true)
-                        }
+                        onClick={() => loadListing(listing.next_cursor ?? undefined, true)}
                       >
                         {loadingMore ? 'loading…' : 'load more'}
                       </Button>
                     </div>
                   ) : null}
                 </div>
-                {transfer && !objectKey ? (
-                  <StatusBar role="status">{transfer}…</StatusBar>
-                ) : null}
+                {transfer && !objectKey ? <StatusBar role="status">{transfer}…</StatusBar> : null}
               </>
             )}
           </section>
@@ -845,12 +738,7 @@ function StorageExplorer({
                   </div>
                 </header>
                 <Toolbar aria-label="Object actions">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={transfer !== null}
-                    onClick={() => void download()}
-                  >
+                  <Button variant="ghost" size="sm" disabled={transfer !== null} onClick={() => void download()}>
                     <Download /> download
                   </Button>
                   <Button
@@ -861,12 +749,7 @@ function StorageExplorer({
                   >
                     copy key
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={transfer !== null}
-                    onClick={() => void remove()}
-                  >
+                  <Button variant="ghost" size="sm" disabled={transfer !== null} onClick={() => void remove()}>
                     <Trash2 /> delete
                   </Button>
                 </Toolbar>
@@ -896,11 +779,7 @@ function StorageExplorer({
                     className="storage-ui-status"
                   />
                 ) : metadata === null ? (
-                  <div
-                    className="storage-ui-skeleton"
-                    role="status"
-                  aria-label="Loading metadata"
-                  >
+                  <div className="storage-ui-skeleton" role="status" aria-label="Loading metadata">
                     <Skeleton />
                     <Skeleton />
                     <Skeleton />
@@ -926,11 +805,7 @@ function StorageExplorer({
                     </div>
                     <div>
                       <dt>Provider</dt>
-                      <dd>
-                        {selectedBucket
-                          ? bucketProviderLabel(selectedBucket)
-                          : 'unknown'}
-                      </dd>
+                      <dd>{selectedBucket ? bucketProviderLabel(selectedBucket) : 'unknown'}</dd>
                     </div>
                   </dl>
                 )}
@@ -947,9 +822,7 @@ function StorageExplorer({
                     className="storage-ui-status"
                   />
                 )}
-                {transfer ? (
-                  <StatusBar role="status">{transfer}…</StatusBar>
-                ) : null}
+                {transfer ? <StatusBar role="status">{transfer}…</StatusBar> : null}
               </div>
             )}
           </PageMain>

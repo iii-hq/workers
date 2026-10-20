@@ -26,7 +26,13 @@ export function IconPicker({
       {custom ? (
         // Written by another client: kept as stored, shown as the fallback glyph.
         // biome-ignore lint/a11y/useSemanticElements: icon buttons styled as a radio group; native radios would need the whole control restyled
-        <button type="button" role="radio" aria-checked className="storage-cfg-icon" title={`${value} (kept as stored)`}>
+        <button
+          type="button"
+          role="radio"
+          aria-checked
+          className="storage-cfg-icon"
+          title={`${value} (kept as stored)`}
+        >
           <BucketIcon name={value} color={color} />
         </button>
       ) : null}

@@ -6,7 +6,9 @@ describe('missing functions', () => {
     expect(isMissingFunction({ code: 'function_not_found', message: 'Function storage::testBucket not found' })).toBe(
       true,
     )
-    expect(isMissingFunction({ code: 'invocation_failed', message: 'function not found: storage::testBucket' })).toBe(true)
+    expect(isMissingFunction({ code: 'invocation_failed', message: 'function not found: storage::testBucket' })).toBe(
+      true,
+    )
     expect(isMissingFunction(new Error('Function storage::testBucket is not registered'))).toBe(true)
   })
 

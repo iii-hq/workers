@@ -76,11 +76,7 @@ export function parseSecretMeta(raw: unknown): SecretMeta | null {
  * `null` when it runs but holds nothing by that name (for the `env` store:
  * the variable is not shared with anyone).
  */
-export async function getSecret(
-  host: Host,
-  name: string,
-  store?: 'env',
-): Promise<SecretMeta | null | undefined> {
+export async function getSecret(host: Host, name: string, store?: 'env'): Promise<SecretMeta | null | undefined> {
   let raw: unknown
   try {
     raw = await host.iii.trigger<unknown>('secrets::get', store ? { name, store } : { name }, { timeoutMs: 10_000 })

@@ -121,7 +121,7 @@ describe('previews', () => {
       'attachment; filename="say hi.txt"; filename*=UTF-8\'\'say%20%22hi%22.txt',
     )
     const unicode = attachmentDisposition('praia 🌊.jpg')
-    expect(unicode).toBe("attachment; filename=\"praia __.jpg\"; filename*=UTF-8''praia%20%F0%9F%8C%8A.jpg")
+    expect(unicode).toBe('attachment; filename="praia __.jpg"; filename*=UTF-8\'\'praia%20%F0%9F%8C%8A.jpg')
     // Every character is a valid header byte.
     expect(/^[\x20-\x7e]+$/.test(unicode)).toBe(true)
   })
@@ -161,7 +161,13 @@ describe('reads through the worker', () => {
           const offset = Number(payload.offset ?? 0)
           const length = payload.length === undefined ? object.length - offset : Number(payload.length)
           const slice = object.slice(offset, offset + length)
-          return { body_base64: b64(slice), content_type: 'video/mp4', size: object.length, offset, length: slice.length }
+          return {
+            body_base64: b64(slice),
+            content_type: 'video/mp4',
+            size: object.length,
+            offset,
+            length: slice.length,
+          }
         },
       },
     } as unknown as Host
