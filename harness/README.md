@@ -88,7 +88,7 @@ schema) lives in the code and `iii worker info harness`.
 Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
 any event-driven loop on top of the harness? Start with the integration
 contract in
-[`architecture/integration.md`](architecture/integration.md): the functions to
+`architecture/integration.md`: the functions to
 trigger, the triggers to bind, and the canonical consumer patterns.
 
 ## Local development
@@ -442,7 +442,7 @@ so default-identity sessions keep sharing their stable prefix. Its digests join
 the preloaded-contract stale notice.
 
 The harness ships one profile of its own, `worker-builder`
-([`agents/worker-builder.md`](agents/worker-builder.md)): an identity that
+(`agents/worker-builder.md`): an identity that
 extends the bundled `iii` base and takes a new worker for this repository from
 scope to scaffold, CI gates, live verification on the bus, pull request, and an
 experimental registry release, asking before every irreversible step. It is
