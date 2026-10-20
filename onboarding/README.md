@@ -157,10 +157,11 @@ kanban board, namespaced `todo-local` with `KANBAN_NAMESPACE`, so it sits apart
 from any board the operator runs), **Observable** (the traces
 step, anchored on the console's traces screen), **Discoverable** (one engine,
 one palette), **Extensible** (the agent builds a TODO worker on that board: a
-sidebar-like page beside it, with a due date, a due time, a priority, a repeat
-and an alarm per item, shown as pills on the cards; Done moves the ticket on
-the board at once; alarms run through the `cron` worker), **Reactive** (three
-items, and a trigger that fires when the operator checks one off). The recipe
+narrow sidebar of controls left of it, with a due date, a due time, a
+priority, a repeat and an alarm per item, shown as pills on the cards, and the
+same controls as a web page; the board is the list and Done is a status set
+on it; alarms run through the `cron` worker), **Reactive** (three items, and
+a trigger that fires when the operator moves one to Done). The recipe
 for the two build steps is `skills/SKILL.md`, which lands in the project as
 `skills/onboarding/SKILL.md`; the prompts point the agent at it. The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon

@@ -201,11 +201,11 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Add 3 items to the TODO list, each with a due date and a priority, and set a Trigger that fires when each one is checked off by the user, not you the agent. Pre-existing triggers should work, and were tested in the last step.",
+          text: "Add 3 items to the TODO list, each with a due date and a priority, and set a Trigger that fires when each one is moved to Done on the board by the user, not you the agent. Pre-existing triggers should work, and were tested in the last step.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you check each one off yourself. The agent adds the items and the Triggers; you tick the boxes. Watch the Triggers react, and the cards move on the board, as you do.",
+        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you move each one to Done yourself. The agent adds the items and the Triggers; you set the status on the card, or drag it to Done. Watch the Triggers react as you do.",
       }),
       {
         id: "clean-up",
