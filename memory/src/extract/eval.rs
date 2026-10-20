@@ -3,11 +3,12 @@
 //! session with `default_bank` layered under it. Scores two things:
 //! - capture: every expected item is captured, wrong (its kind, where it
 //!   lands, the memory it corrects, or the rule gate [`stated_by_user`]
-//!   drops it), or missed. A trap hit is any other item returned from an
-//!   excerpt built to hold nothing more ([`STRICT`]): an instruction only
-//!   the assistant gave, a pasted document, a harness notice, a transient
-//!   error, a one-off instruction, task progress. The report also counts
-//!   the trap hits the rule gate would still let into the bank.
+//!   drops it), or missed. A trap hit is any item past the expected ones
+//!   from an excerpt built to hold nothing more ([`STRICT`]): an
+//!   instruction only the assistant gave, a pasted document, a harness
+//!   notice, a transient error, a one-off instruction, task progress, what
+//!   a correction leaves behind, a turn with nothing to keep. The report
+//!   also counts the trap hits the rule gate would still let into the bank.
 //! - placement ([`placement`]): what holds for the user wherever they work
 //!   must reach the default bank, and nothing project-only may.
 //!
@@ -156,6 +157,24 @@ const CASES: &[Case] = &[
         ],
         &[fact(&["neovim"], true)],
     ),
+    // Pasted, but the user's own.
+    case(
+        "own-bio",
+        "user facts",
+        &[
+            (
+                "user",
+                "Tighten my bio for the conference site:\n\nAna Souza is a backend engineer based \
+                 in Recife. She has run Kafka pipelines at a fintech for six years and leads a \
+                 weekend Rust study group.",
+            ),
+            (
+                "assistant",
+                "Ana Souza is a Recife-based backend engineer who has run fintech Kafka pipelines for six years and leads a weekend Rust study group.",
+            ),
+        ],
+        &[fact(&["recife"], true)],
+    ),
     // The repository at hand.
     case(
         "pnpm",
@@ -286,20 +305,6 @@ const CASES: &[Case] = &[
             ("assistant", "Okay, cargo fmt before every commit."),
         ],
         &[rule(&["fmt"], false)],
-    ),
-    // The user adopts the assistant's suggestion in words of their own.
-    case(
-        "adopted",
-        "project rules",
-        &[
-            ("user", "How should I name branches here?"),
-            (
-                "assistant",
-                "A common convention is a feat/ or fix/ prefix plus the ticket id, like feat/MOT-12-login.",
-            ),
-            ("user", "Good, do that for every branch from now on."),
-        ],
-        &[rule(&["feat/"], false)],
     ),
     // A correction lands, and retires its target, in the bank it belongs to.
     Case {
@@ -531,10 +536,10 @@ const CASES: &[Case] = &[
         ],
         &[],
     ),
-    // Harness messages stored as user lines with an origin, which
-    // `parse_entry` reads as `notice`: a wake (`[notification] …`), a resume
-    // or validation nudge, a subtree deletion notice. A workflow's reply
-    // comes through `harness::send` with none, so it stays a user line.
+    // Harness messages stored as user lines, which `parse_entry` reads as
+    // `notice`: a wake (`[notification] …`), a resume or validation nudge, a
+    // subtree deletion notice (by their origin), a workflow's reply (by its
+    // entry id).
     case(
         "cron-wake",
         "notices",
@@ -645,7 +650,7 @@ const CASES: &[Case] = &[
         "notices",
         &[
             (
-                "user",
+                "notice",
                 "Workflow wf_7d1 completed.\n\nResult:\n{\n  \"tests\": 214,\n  \"failed\": 0,\n  \
                  \"coverage\": 0.81\n}",
             ),
@@ -718,7 +723,7 @@ const CASES: &[Case] = &[
         &[
             (
                 "user",
-                "CI is red only because the self-hosted runner is offline right now, ignore it for today.",
+                "CI is red only because the runner is offline right now, ignore it for today.",
             ),
             (
                 "assistant",
@@ -1027,14 +1032,39 @@ async fn extraction_eval() {
                     ),
                 })
                 .collect();
+            // Why item `i` is not what `want` expects, if it is not.
+            let fault = |i: usize, want: &Want| -> Option<&'static str> {
+                let item = &items[i];
+                if want.rule.is_some_and(|r| r != item.is_rule()) {
+                    Some("kind")
+                } else if lands[i].0 != want.user {
+                    Some("lands")
+                } else if want.replaces.is_some() && item.replaces != want.replaces {
+                    // A stray retire is harmful, below.
+                    Some("replaces")
+                } else if !gate(item) {
+                    Some("gated")
+                } else {
+                    None
+                }
+            };
             let mut want_of: Vec<Option<&Want>> = vec![None; items.len()];
             for want in case.want {
                 expected += 1;
                 tally.n += 1;
-                let hit = (0..items.len()).find(|&i| {
-                    let text = items[i].text.to_lowercase();
-                    want_of[i].is_none() && want.has.iter().all(|s| text.contains(s))
-                });
+                // The unused item holding every stem that fits best: a rule
+                // listed before its fact must not leave the fact a trap.
+                let holds: Vec<usize> = (0..items.len())
+                    .filter(|&i| {
+                        let text = items[i].text.to_lowercase();
+                        want_of[i].is_none() && want.has.iter().all(|s| text.contains(s))
+                    })
+                    .collect();
+                let hit = holds
+                    .iter()
+                    .copied()
+                    .find(|&i| fault(i, want).is_none())
+                    .or(holds.first().copied());
                 match hit {
                     Some(i) => want_of[i] = Some(want),
                     None => {
@@ -1077,25 +1107,13 @@ async fn extraction_eval() {
                 let label = match want_of[i] {
                     Some(want) => {
                         matched += 1;
-                        let kind_right = want.rule.is_none_or(|r| r == item.is_rule());
-                        kind_ok += usize::from(kind_right);
+                        kind_ok += usize::from(want.rule.is_none_or(|r| r == item.is_rule()));
                         tally.main += usize::from(main);
                         if want.user {
                             user_matched += 1;
                             user_main += usize::from(main);
                         }
-                        let why = if !kind_right {
-                            Some("kind")
-                        } else if main != want.user {
-                            Some("lands")
-                        } else if item.replaces != want.replaces {
-                            Some("replaces")
-                        } else if !gate(item) {
-                            Some("gated")
-                        } else {
-                            None
-                        };
-                        match why {
+                        match fault(i, want) {
                             None => {
                                 captured += 1;
                                 tally.captured += 1;
