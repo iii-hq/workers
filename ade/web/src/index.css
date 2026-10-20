@@ -31,6 +31,12 @@
   --font-geist-mono:
     "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
+  /* The workspace header is set in Inter (already loaded above as the sans
+     fallback); `font-inter` pins it there while the rest of the console
+     keeps Geist first. */
+  --font-inter:
+    "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
 
   /* ── Surface ramp ─────────────────────────────────────────────────────
      Layered surfaces communicate hierarchy before borders do:

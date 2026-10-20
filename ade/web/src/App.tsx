@@ -1,4 +1,4 @@
-import { Menu, Plus, Search, SettingsIcon, SquarePen } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import {
   type CSSProperties,
   Fragment,
@@ -27,9 +27,7 @@ import {
 import { Eyebrow } from '@/components/ui/Eyebrow'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Sheet } from '@/components/ui/Sheet'
-import { Wordmark } from '@/components/ui/Wordmark'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
-import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
 import {
   EdgeAddZone,
   PanelDragHandle,
@@ -44,8 +42,8 @@ import {
   type PanelMotionDirection,
   panelMotionDirection,
 } from '@/components/workspace/panel-motion'
-import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
+import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
 import {
   hashForSettingsLanding,
   replaceHash,
@@ -67,7 +65,6 @@ import {
 import { shortcutPlatform } from '@/lib/keybindings/bindings'
 import {
   bindingsFor,
-  hoverTitle,
   keybindingGroups,
   resolveBindings,
 } from '@/lib/keybindings/registry'
@@ -462,7 +459,7 @@ export function App({
       }}
     >
       <Sheet>
-        <Header
+        <WorkspaceHeader
           workspace={workspace}
           onOpenScreen={openWorkspaceScreen}
           mobilePanelIndex={mobilePanelIndex}
@@ -1640,175 +1637,6 @@ function ScreenBody({
       />
     )
   return <TracesV2 onRequestClose={onClose} commands={commands} />
-}
-
-interface HeaderProps {
-  workspace: UseWorkspaceTabsReturn
-  /** Close a workspace after the dirty-work guard has had its say. */
-  onCloseTab: (id: string) => void
-  onOpenScreen: (screen: TabScreen) => void
-  mobilePanelIndex: number
-  settingsOpen: boolean
-  onToggleSettings: () => void
-  onOpenPalette: () => void
-}
-
-function Header({
-  workspace,
-  onCloseTab,
-  onOpenScreen,
-  mobilePanelIndex,
-  settingsOpen,
-  onToggleSettings,
-  onOpenPalette,
-}: HeaderProps) {
-  const { extPageTitles } = useScreenOptions()
-  const { createNew } = useConversationsCtx()
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const columns = tabColumns(workspace.activeTab)
-  const mobileScreen = workspace.activeTab.screens[mobilePanelIndex] ?? null
-  const mobileIsChat = mobileScreen !== null && isChatScreen(mobileScreen)
-
-  return (
-    <>
-      <header className="grid h-16 shrink-0 grid-cols-[1fr_auto_1fr] items-center px-3 sm:hidden">
-        <button
-          type="button"
-          onClick={() => setMobileMenuOpen(true)}
-          aria-label="open workspace menu"
-          className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-        >
-          <Menu className="size-6" aria-hidden />
-        </button>
-
-        <div className="flex size-12 items-center justify-center">
-          {columns > 1 ? (
-            <span
-              className="flex items-center gap-1.5"
-              role="status"
-              aria-label={`panel ${mobilePanelIndex + 1} of ${columns}`}
-            >
-              {columns <= 7 ? (
-                Array.from({ length: columns }, (_, index) => (
-                  <span
-                    // biome-ignore lint/suspicious/noArrayIndexKey: panel dots are positional
-                    key={index}
-                    className={cn(
-                      'size-1.5 rounded-full',
-                      index === mobilePanelIndex ? 'bg-ink' : 'bg-ink-ghost/60',
-                    )}
-                    aria-hidden
-                  />
-                ))
-              ) : (
-                <span className="font-mono text-sm text-ink-faint" aria-hidden>
-                  {mobilePanelIndex + 1} / {columns}
-                </span>
-              )}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="flex items-center justify-end">
-          {/* A phone has no ⌘K. Search is the console's way of reaching
-              anything, so it gets a first-class affordance rather than a row
-              buried in the workspace menu. */}
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            aria-label="search the ADE"
-            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-          >
-            <Search className="size-6" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (mobileScreen === CHAT_SCREEN) {
-                createNew()
-              } else if (mobileIsChat) {
-                createNew()
-                onOpenScreen(CHAT_SCREEN)
-              } else {
-                workspace.createTab({ columns: 1 })
-              }
-            }}
-            aria-label={mobileIsChat ? 'new chat' : 'new workspace'}
-            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-          >
-            {mobileIsChat ? (
-              <SquarePen className="size-6" aria-hidden />
-            ) : (
-              <Plus className="size-6" aria-hidden />
-            )}
-          </button>
-        </div>
-      </header>
-
-      <MobileWorkspaceMenu
-        open={mobileMenuOpen}
-        onOpenChange={setMobileMenuOpen}
-        workspace={workspace}
-        extPageTitles={extPageTitles}
-        settingsOpen={settingsOpen}
-        onActivate={workspace.activateTab}
-        onCloseTab={onCloseTab}
-        onToggleSettings={onToggleSettings}
-        onOpenPalette={onOpenPalette}
-      />
-
-      {/* onboarding-menu-bar: tour anchor (workers/onboarding) — a selector,
-          not styling. Do not remove. */}
-      <header className="onboarding-menu-bar hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <Wordmark />
-          <TabStrip
-            tabs={workspace.tabs}
-            activeTabId={workspace.activeTabId}
-            extPageTitles={extPageTitles}
-            onActivate={workspace.activateTab}
-            onClose={onCloseTab}
-            onCreate={() => workspace.createTab({ columns: 1 })}
-            onRename={workspace.renameTab}
-            onReorder={workspace.reorderTab}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          {/* The key itself is the button: the console is reached through
-              the palette, and the cap teaches the chord on sight. */}
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            aria-label={hoverTitle('Search and commands', 'palette.toggle')}
-            title={hoverTitle('Search and commands', 'palette.toggle')}
-            /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-            className="onboarding-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-rule-focus focus-visible:outline-none active:scale-[0.97]"
-          >
-            <KeyCombo
-              binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
-              capClassName="min-w-6 px-1.5 py-0.5 text-[0.72rem] text-current"
-            />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleSettings}
-            aria-pressed={settingsOpen}
-            aria-label="ADE settings"
-            title="ADE settings"
-            className={cn(
-              // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
-              'onboarding-settings relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
-              settingsOpen
-                ? 'border-transparent bg-ink text-bg'
-                : 'border-transparent bg-transparent text-ink-faint hover:bg-surface-hover hover:text-ink',
-            )}
-          >
-            <SettingsIcon className="size-4 shrink-0" aria-hidden />
-          </button>
-        </div>
-      </header>
-    </>
-  )
 }
 
 interface ConfigurationOverlayProps {

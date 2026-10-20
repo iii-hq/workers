@@ -521,17 +521,17 @@ export function TabStrip({
               }}
               style={transform ? { transform } : undefined}
               className={cn(
-                'group/tab flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-md pl-4 font-sans text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:h-9 sm:gap-1.5 sm:pl-3',
-                tabs.length > 1 ? 'pr-2 sm:pr-1.5' : 'pr-4 sm:pr-3',
+                'group/tab flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-md pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:h-8 sm:gap-1 sm:pl-3 dark:focus-visible:ring-neutral-400',
+                tabs.length > 1 ? 'pr-2 sm:pr-1' : 'pr-4 sm:pr-3',
                 active
-                  ? 'bg-surface-selected text-ink'
-                  : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
-                dragging &&
-                  !isDragged &&
-                  'transition-transform duration-[var(--motion-duration-control)]',
+                  ? 'bg-neutral-200/80 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50'
+                  : 'text-neutral-500 hover:bg-neutral-200/50 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-100',
+                dragging && !isDragged && 'transition-transform',
                 isDragged &&
-                  'relative z-10 shadow-floating cursor-grabbing transition-none',
-                isDragged && !active && 'bg-panel-raised text-ink',
+                  'relative z-10 cursor-grabbing shadow-floating transition-none',
+                isDragged &&
+                  !active &&
+                  'bg-neutral-100 text-neutral-900 dark:bg-neutral-900 dark:text-neutral-50',
               )}
             >
               {renamingId === tab.id ? (
@@ -563,7 +563,7 @@ export function TabStrip({
                     closeTab(tab.id)
                   }}
                   className={cn(
-                    'relative flex size-10 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink sm:size-7',
+                    'relative flex size-10 items-center justify-center rounded text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
                     !active &&
                       'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
                   )}
@@ -585,7 +585,7 @@ export function TabStrip({
         aria-label="New workspace"
         title={hoverTitle('New workspace', 'workspace.create')}
         onClick={onCreate}
-        className="relative flex size-12 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-9"
+        className="relative flex size-12 shrink-0 items-center justify-center rounded-md text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
       >
         <span
           className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -711,7 +711,7 @@ function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
       onBlur={() => settle(true)}
       aria-label="Rename workspace"
       name="tab-name"
-      className="w-[160px] bg-transparent font-sans text-sm text-ink outline-none"
+      className="w-[160px] bg-transparent font-inter text-sm text-neutral-900 outline-none dark:text-neutral-50"
     />
   )
 }
@@ -756,7 +756,7 @@ function TabContextMenu({
   }, [onDismiss])
 
   const itemCls =
-    'w-full flex items-center gap-2 rounded-xs px-2 py-1.5 text-left font-sans text-[12px] text-ink cursor-pointer hover:bg-surface-hover transition-colors'
+    'flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left font-inter text-[13px] text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50'
 
   return createPortal(
     <div
@@ -768,7 +768,7 @@ function TabContextMenu({
         left: Math.min(x, window.innerWidth - 160),
         zIndex: 60,
       }}
-      className="min-w-[140px] rounded-md bg-panel-raised p-1 shadow-floating"
+      className="min-w-[150px] rounded-lg bg-white p-1 font-inter shadow-floating ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-800"
     >
       <button
         type="button"

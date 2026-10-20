@@ -22,9 +22,9 @@ const SHEET =
 
 const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'App.tsx': {
-    max: 16,
+    max: 14,
     reason:
-      'phone chrome: the workspace strip snaps one panel at a time on phones, phone header vs desktop menu bar, dialog sized against the viewport',
+      'phone chrome: the workspace strip snaps one panel at a time on phones, dialog sized against the viewport',
   },
   'components/CommandPalette.tsx': {
     max: 31,
@@ -106,6 +106,10 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/ui/SettingsDeck.tsx': { max: 4, reason: TOUCH },
   'components/workspace/EmptyPane.tsx': { max: 2, reason: TOUCH },
   'components/workspace/TabStrip.tsx': { max: 7, reason: TOUCH },
+  'components/workspace/WorkspaceHeader.tsx': {
+    max: 2,
+    reason: 'phone chrome: phone header vs desktop menu bar',
+  },
   'components/workspace/pane-controls.tsx': {
     max: 5,
     reason: 'phone chrome: split handles and pane rails need a pointer',

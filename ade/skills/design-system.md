@@ -125,6 +125,7 @@ border, text or a selection/status state; `neutral` means the glyph keeps `ink-g
 | `--font-mono` | Geist Mono, Chivo Mono, ui-monospace | Machine values in chrome: IDs, times, eyebrows, keys |
 | `--font-code` | Monaco, SF Mono, Menlo, Consolas | Editor, terminal, `pre`, `code` — not the chrome mono |
 | `--font-geist-mono` | Geist Mono, ui-monospace | Alias used by function-trigger chrome |
+| `--font-inter` | Inter, ui-sans-serif, system-ui | The workspace header (`WorkspaceHeader`, `TabStrip`), pinned to Inter on the Tailwind neutral palette |
 
 Ligatures are off on every mono/code surface (`liga clig calt dlig 0`). Do not add a family.
 
