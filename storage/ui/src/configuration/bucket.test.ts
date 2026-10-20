@@ -7,6 +7,7 @@ import {
   bucketProblems,
   checkServiceAccountJson,
   detectPreset,
+  hasTemplates,
   type JsonObject,
   MAX_SECRET_NAME,
   namesAValue,
@@ -18,6 +19,7 @@ import {
   providerChoiceOf,
   providerLabel,
   REDACTED,
+  sameEntry,
   secretNameFor,
   secretNamesInUse,
   storeTarget,
@@ -421,6 +423,7 @@ describe('testBucket', () => {
         endpoint_url: 'http://minio:9000',
         session_token: 'secret://STORAGE_PHOTOS_SESSION_TOKEN',
         display: { icon: 'cloud' },
+        bucket: 'photos',
       },
       credentials: { access_key_id: 'minioadmin', secret_access_key: 'minio-secret' },
       timeout_ms: 10_000,
@@ -431,10 +434,15 @@ describe('testBucket', () => {
 
   it('sends a pasted key, a queue token and leaves templates and env references alone', () => {
     const gcs = testBucketPayload('docs', { provider: 'gcs', credentials_json: SA_KEY }, 5000)
-    expect(gcs).toEqual({ bucket: { provider: 'gcs' }, credentials: { credentials_json: SA_KEY }, timeout_ms: 5000 })
+    expect(gcs).toEqual({
+      bucket: { provider: 'gcs', bucket: 'docs' },
+      credentials: { credentials_json: SA_KEY },
+      timeout_ms: 5000,
+    })
 
     const r2 = testBucketPayload('cdn', {
       provider: 'r2',
+      bucket: 'cdn-assets',
       account_id: 'abc123',
       access_key_id: '${R2_ID}',
       secret_access_key: 'env://R2_SECRET',
@@ -443,6 +451,7 @@ describe('testBucket', () => {
     expect(r2).toEqual({
       bucket: {
         provider: 'r2',
+        bucket: 'cdn-assets',
         account_id: 'abc123',
         access_key_id: '${R2_ID}',
         secret_access_key: 'env://R2_SECRET',
@@ -462,13 +471,13 @@ describe('testBucket', () => {
       session_token: 'token-${SUFFIX}',
     })
     expect(payload).toEqual({
-      bucket: { provider: 's3', region: 'x', access_key_id: '${KEY_ID}' },
+      bucket: { provider: 's3', region: 'x', access_key_id: '${KEY_ID}', bucket: 'legacy' },
       credentials: { secret_access_key: '${SECRET:fallback-secret}', session_token: 'token-${SUFFIX}' },
       timeout_ms: 10_000,
     })
     const kept = testBucketPayload('legacy', { provider: 's3', region: 'x', secret_access_key: '${SECRET:}' })
     expect(kept).toEqual({
-      bucket: { provider: 's3', region: 'x', secret_access_key: '${SECRET:}' },
+      bucket: { provider: 's3', region: 'x', secret_access_key: '${SECRET:}', bucket: 'legacy' },
       timeout_ms: 10_000,
     })
   })
@@ -476,14 +485,43 @@ describe('testBucket', () => {
   it('names the stored entry only when the draft holds the sentinel', () => {
     const redacted = testBucketPayload('photos', { provider: 's3', region: 'x', secret_access_key: REDACTED })
     expect(redacted).toEqual({
-      bucket: { provider: 's3', region: 'x', secret_access_key: REDACTED },
+      bucket: { provider: 's3', region: 'x', secret_access_key: REDACTED, bucket: 'photos' },
       name: 'photos',
       timeout_ms: 10_000,
     })
-    expect(testBucketPayload('photos', { provider: 'local' })).toEqual({
-      bucket: { provider: 'local' },
+  })
+
+  it('spells out the provider-side bucket, which defaults to the entry name', () => {
+    // The worker requires it when testing without `name` (found on the test engine).
+    expect(testBucketPayload('scratch', { provider: 'local' })).toEqual({
+      bucket: { provider: 'local', bucket: 'scratch' },
       timeout_ms: 10_000,
     })
+    expect(testBucketPayload('photos', { provider: 's3', region: 'x', bucket: '  ' }).bucket).toEqual({
+      provider: 's3',
+      region: 'x',
+      bucket: 'photos',
+    })
+    expect(testBucketPayload('photos', { provider: 's3', region: 'x', bucket: 'photos-prod' }).bucket).toEqual({
+      provider: 's3',
+      region: 'x',
+      bucket: 'photos-prod',
+    })
+  })
+
+  it('compares a draft with the stored entry, key order aside', () => {
+    const stored: JsonObject = { provider: 's3', region: 'x', display: { icon: 'cloud', color: '#2563EB' } }
+    expect(sameEntry(stored, { display: { color: '#2563EB', icon: 'cloud' }, region: 'x', provider: 's3' })).toBe(true)
+    expect(sameEntry(stored, { ...stored, region: 'y' })).toBe(false)
+    expect(sameEntry(stored, { ...stored, bucket: 'b' })).toBe(false)
+    expect(sameEntry({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] })).toBe(true)
+    expect(sameEntry({ a: [1, 2] }, { a: [2, 1] })).toBe(false)
+  })
+
+  it('finds templates anywhere in an entry', () => {
+    expect(hasTemplates({ provider: 's3', secret_access_key: '${KEY}' })).toBe(true)
+    expect(hasTemplates({ provider: 'r2', notifications: { api_token: 'x-${T}' } })).toBe(true)
+    expect(hasTemplates({ provider: 's3', secret_access_key: 'secret://K' })).toBe(false)
   })
 
   it('reads the staged result', () => {
@@ -499,6 +537,10 @@ describe('testBucket', () => {
     const missing = parseTestOutcome({ ok: false, stage: 'bucket', message: 'NoSuchBucket', bucket_missing: true })
     expect(missing && testOutcomeText(missing)).toBe('Bucket failed · NoSuchBucket')
     expect(missing && testOutcomeHint(missing, 'photos-prod')).toContain('no bucket “photos-prod”')
+
+    const auth2 = parseTestOutcome({ ok: false, stage: 'auth', message: 'InvalidAccessKeyId' })
+    expect(auth2 && testOutcomeHint(auth2, 'legacy', true)).toContain('save it, then test again')
+    expect(auth2 && testOutcomeHint(auth2, 'legacy', false)).toBeNull()
 
     const relay = parseTestOutcome({ ok: true, latency_ms: 3, direct_downloads: false })
     expect(relay && testOutcomeHint(relay, 'docs')).toContain('cannot sign download URLs')

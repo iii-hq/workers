@@ -30,7 +30,6 @@ import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
 import { ChevronLeft, Database, Plus, Trash2 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { BucketIcon } from '../lib/bucket-icons'
-import { errorText, isMissingFunction } from '../lib/errors'
 import { ColorPicker, IconPicker } from './BucketAppearance'
 import {
   applyPreset,
@@ -46,7 +45,6 @@ import {
   PROVIDER_CHOICES,
   type PresetId,
   type ProviderChoice,
-  parseTestOutcome,
   presetById,
   providerChoiceOf,
   providerLabel,
@@ -57,10 +55,6 @@ import {
   supportsSecretReferences,
   switchProvider,
   testBlocker,
-  testBucketPayload,
-  testOutcomeHint,
-  testOutcomeText,
-  underlyingBucket,
   withDisplay,
   withField,
   withRegion,
@@ -68,6 +62,7 @@ import {
 import { CredentialField } from './CredentialField'
 import { CheckField, Field, SelectField, TextField } from './fields'
 import { TestBucketRow, type TestState } from './TestBucketRow'
+import { runBucketTest } from './test-bucket'
 
 type Selection = { kind: 'local' } | { kind: 'bucket'; name: string }
 
@@ -1036,25 +1031,7 @@ export function StorageConfigForm(props: StorageConfigFormProps) {
     const token = (testTokens.current[name] ?? 0) + 1
     testTokens.current[name] = token
     setTests((current) => ({ ...current, [name]: { status: 'testing' } }))
-    let result: TestState
-    try {
-      const raw = await host.iii.trigger<unknown>('storage::testBucket', testBucketPayload(name, bucket), {
-        timeoutMs: 40_000,
-      })
-      const outcome = parseTestOutcome(raw)
-      result = outcome
-        ? {
-            status: 'done',
-            ok: outcome.ok,
-            text: testOutcomeText(outcome),
-            hint: testOutcomeHint(outcome, underlyingBucket(name, bucket)),
-          }
-        : { status: 'done', ok: false, text: 'Unexpected answer from storage::testBucket' }
-    } catch (cause) {
-      result = isMissingFunction(cause)
-        ? { status: 'unsupported' }
-        : { status: 'done', ok: false, text: errorText(cause) }
-    }
+    const result = await runBucketTest(host, name, bucket)
     if (testTokens.current[name] !== token) return // superseded by an edit
     setTests((current) => ({ ...current, [name]: result }))
     refreshLive()

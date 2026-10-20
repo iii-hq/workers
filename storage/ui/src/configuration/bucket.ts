@@ -588,10 +588,13 @@ export function bucketProblems(bucket: JsonObject): { field: string; message: st
  * key named `credentials` whole. References (`secret://`, `env://`),
  * `${VAR}` templates and the `__redacted__` sentinel stay in place; `name`
  * goes along only when the draft holds the sentinel, which the worker fills
- * from the stored entry of that name.
+ * from the stored entry of that name. The provider-side bucket is spelled
+ * out (it defaults to the entry's name, which the worker only knows from
+ * `name`).
  */
 export function testBucketPayload(name: string, bucket: JsonObject, timeoutMs = 10_000): Record<string, unknown> {
   const entry: JsonObject = JSON.parse(JSON.stringify(bucket))
+  if (str(entry.bucket).trim() === '') entry.bucket = name
   const credentials: JsonObject = {}
   for (const field of CREDENTIAL_FIELDS) {
     const key = CREDENTIAL_KEY[field]
@@ -661,14 +664,46 @@ export function testOutcomeText(outcome: TestOutcome): string {
 }
 
 /** The extra line under a result, when the worker said something actionable. */
-export function testOutcomeHint(outcome: TestOutcome, underlying: string): string | null {
+export function testOutcomeHint(outcome: TestOutcome, underlying: string, draftTemplates = false): string | null {
   if (!outcome.ok && outcome.bucket_missing) {
     return `There is no bucket “${underlying}” at this endpoint yet — create it with the provider (its console or CLI), then test again.`
+  }
+  if (!outcome.ok && draftTemplates) {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the configuration's own template syntax, shown as text
+    return 'This draft’s ${VAR} templates are expanded only in the saved configuration: save it, then test again.'
   }
   if (outcome.ok && outcome.direct_downloads === false) {
     return 'Files can be read through the worker only: this bucket cannot sign download URLs.'
   }
   return null
+}
+
+/** Whether any value of the entry is a `${VAR}` template (expanded by the configuration, never by a test). */
+export function hasTemplates(value: JsonValue | undefined): boolean {
+  if (typeof value === 'string') return value.includes('${')
+  if (Array.isArray(value)) return value.some(hasTemplates)
+  if (isObject(value)) return Object.values(value).some(hasTemplates)
+  return false
+}
+
+function canonical(value: JsonValue | undefined): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (isObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value ?? null)
+}
+
+/**
+ * Whether the draft is the stored entry (`storage::getBucket`), key order
+ * aside. Then "Test bucket" tests the stored entry by name, as the worker
+ * runs it — templates expanded, legacy literals included.
+ */
+export function sameEntry(stored: JsonValue | undefined, draft: JsonValue | undefined): boolean {
+  return canonical(stored) === canonical(draft)
 }
 
 /** The provider's bucket this entry addresses: `bucket`, or the entry's name. */
