@@ -77,7 +77,6 @@ export interface TourController {
   ask: (step: Step) => void
   /** Open the step's `to_open` screen beside the chat. */
   openScreen: (step: Step) => void
-  reset: () => void
   /** The open step's `to_open` screen is not open yet, here or anywhere. */
   awaitingScreen: boolean
   /** The open step's `to_open` screen is open, but in a tab not showing. */
@@ -331,29 +330,6 @@ export function useTour(host: Host): TourController {
     void host.iii.trigger('console::workspace::close', { screen: closing }).catch(() => undefined)
   }, [host, closing])
 
-  const reset = useCallback(() => {
-    if (!tour) return
-    // Same order as `complete`: the stored progress is the truth, so the list
-    // empties after the write, not before it. The keys the agent's steps
-    // report into go first: left in place, the reconcile read would close
-    // those steps again the moment the tour restarts.
-    const reports = tour.steps.flatMap((step) =>
-      step.condition?.type === 'state' ? [step.condition.config as { scope?: string; key?: string }] : [],
-    )
-    void Promise.all(
-      reports.map(({ scope, key }) =>
-        scope && key ? host.iii.trigger('state::delete', { scope, key }).catch(() => undefined) : undefined,
-      ),
-    )
-      .then(() => host.iii.trigger('learn-iii::steps::reset', { tour_id: tour.id }))
-      .then(() => {
-        recordsRef.current = {}
-        setRecords({})
-        setOpen(tour.steps[0]?.id ?? null)
-      })
-      .catch((cause: unknown) => setError(errorMessage(cause)))
-  }, [host, tour])
-
   const markSubscribed = useCallback(() => setSubscribed(true), [])
 
   return {
@@ -370,7 +346,6 @@ export function useTour(host: Host): TourController {
     complete,
     ask,
     openScreen,
-    reset,
     awaitingScreen,
     screenElsewhere,
     framed,

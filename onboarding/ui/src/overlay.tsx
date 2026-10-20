@@ -1,5 +1,5 @@
 import { Button, type Host, type OverlayRenderProps, Skeleton, StatusPanel, uiClasses } from '@iii-dev/console-ui'
-import { Check, ChevronLeft, ChevronRight, Compass, Minus, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Compass, Minus, X } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { RemoveLearnIii } from './page'
 import { disposeSpotlight, hideSpotlight, onSpotlightMove, type SpotlightRect, showSpotlight } from './spotlight'
@@ -100,6 +100,13 @@ function TourCard({
   }, [framed, caption, folded, intro])
   useEffect(() => disposeSpotlight, [])
 
+  // Every step done: the last one asked the agent to remove this worker, so
+  // there is nothing left to say. The card goes, and the worker follows.
+  const finished = Boolean(loaded) && !intro && !openStep
+  useEffect(() => {
+    if (finished) closeTour()
+  }, [finished])
+
   if (folded) {
     return <Pill tour={tour} corner={corner} cardRef={card} onDismiss={onDismiss} />
   }
@@ -187,14 +194,12 @@ function TourCard({
             </h2>
             <StepContent host={host} tour={tour} step={openStep} />
           </div>
-        ) : (
-          <Finished tour={tour} titleId={titleId} />
-        )}
+        ) : null}
       </div>
 
       <footer className="learn-overlay-foot">
-        {/* Removing the worker is the last step's business, and the finished card's. */}
-        {loaded && !intro && (!openStep || index === loaded.steps.length - 1) ? (
+        {/* Removing the worker is the last step's business. */}
+        {loaded && openStep && !intro && index === loaded.steps.length - 1 ? (
           <RemoveLearnIii host={host} onClose={closeTour} label="Remove this worker" />
         ) : null}
         {loaded && openStep && !intro ? <StepNav tour={tour} index={index} /> : null}
@@ -290,29 +295,6 @@ function StepNav({ tour, index }: { tour: TourController; index: number }) {
         <ChevronRight className={uiClasses.icon} aria-hidden="true" />
       </Button>
     </span>
-  )
-}
-
-function Finished({ tour, titleId }: { tour: TourController; titleId: string }) {
-  return (
-    <div className="learn-overlay-step">
-      <h2 id={titleId} className="learn-overlay-title">
-        <span className="learn-overlay-title-text">You have seen the whole tour</span>
-        <span className="learn-chip" data-tone="ok">
-          <Check className="learn-chip-mark" strokeWidth={2.5} aria-hidden="true" />
-          All done
-        </span>
-      </h2>
-      <p className="learn-body">Every step is done. Pick one in the bar above to read it again, or start over.</p>
-      <div className="learn-actions">
-        <Button className="learn-action" onClick={closeTour}>
-          Close
-        </Button>
-        <Button variant="ghost" className="learn-ghost" onClick={tour.reset}>
-          Restart
-        </Button>
-      </div>
-    </div>
   )
 }
 

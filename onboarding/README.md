@@ -26,7 +26,7 @@ triggers its steps wait on, run for as long as the worker's script is
 loaded, so a step the agent finishes meanwhile is closed when the card comes
 back. A step that waits on a `state` key also reads the key once when it is
 bound, so one finished while no console was open closes on the next load
-(Restart deletes those keys first). When the step being read closes, the
+(`learn-iii::steps::reset` leaves those keys in place; delete them first to start over). When the step being read closes, the
 reader moves on; a step closing while they read another leaves them where
 they are. A workspace saved while the tour was a pane has that
 pane closed on load, and the card comes up in its place.

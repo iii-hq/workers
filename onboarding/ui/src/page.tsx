@@ -88,9 +88,6 @@ export function LearnIiiPage({ host, onRequestClose }: { host: Host } & PageRend
             <span className="learn-num">{done}</span> done
           </span>
         </p>
-        <Button variant="ghost" size="sm" className="learn-ghost" onClick={tour.reset} disabled={done === 0}>
-          Restart
-        </Button>
       </header>
 
       <ol className="learn-steps">
