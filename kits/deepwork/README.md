@@ -114,6 +114,7 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
 
 ## The board
 
+- **Comments.** Tests, implementation, verification and review return state results without ticket comments. The orchestrator posts one consolidated terminal handoff per ticket with outcome, verification, evidence reference and landed SHA. Earlier comments are reserved for new actionable blockers, human questions or material decisions. Tool calls, successful checks and internal retries stay in traces/state; unchanged facts are deduplicated. Round checkpoints and the final report remain on the run ticket for resume and audit.
 - **Run ticket.** It is titled `deepwork: <goal>` and labelled `dw:run`. Every ticket of the run is its subtask, so its page shows the run's progress. Each round adds a comment with the cost, written as a lower bound (`≥ $1.84`) and, with a harness that reports it, naming a model without pricing (`incomplete (<provider/model> unpriced)`).
 - **Queue.** The subtasks in To do are the queue, in board order. In progress means a lead is on the ticket. The session tree shows each lead as `<KEY> · <title>`, with its phases under it.
 - **Route a ticket.** Set its assignee to `deepwork-worker*` or `deepwork-impl*`. With any other assignee, a ticket that changes code or files runs as `deepwork-impl`, and any other ticket runs as `deepwork-worker`. To add your own tier, create `agents/deepwork-impl-<name>.md` with `extends: deepwork-impl` (or `deepwork-worker`) and a `model`.
@@ -143,8 +144,8 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
   |---|---|
   | the harness | `state::barrier` |
   | orchestrator | `harness::spawn`, `harness::metrics`, `harness::stop`, `state::compare-and-set`, `state::get`, `kanban::ticket::list`, `kanban::project::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, plus `directory::agents::get` with `judges=` |
-  | leads | `harness::spawn`, `harness::status`, `harness::stop`, `engine::register_trigger`, `engine::unregister_trigger`, `harness::triggers::list`, `state::list`, `state::compare-and-set`, `kanban::comment::create` |
-  | phase sub-agents | `state::compare-and-set`, `kanban::ticket::get`, `kanban::comment::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, `engine::register_trigger` (long runs), `coder::read-file`, plus whatever the work needs. `deepwork-impl` also needs `coder::create-file` and `coder::update-file`. Checkers, and the worker of the plain flow's synthesis ticket, also need `state::get` |
+  | leads | `harness::spawn`, `harness::status`, `harness::stop`, `engine::register_trigger`, `engine::unregister_trigger`, `harness::triggers::list`, `state::list`, `state::compare-and-set` |
+  | phase sub-agents | `state::compare-and-set`, `kanban::ticket::get`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, `engine::register_trigger` (long runs), `coder::read-file`, plus whatever the work needs. `deepwork-impl` also needs `coder::create-file` and `coder::update-file`. Checkers, and the worker of the plain flow's synthesis ticket, also need `state::get` |
 
   A phase call that waits for approval parks its ticket as `blocked`. If every lead in a wave waits for approval, the run ends as `blocked`.
 - **`harness::stop`.** With `approval-gate`, the repository rules (`iii-permissions.yaml`) may deny it with a `'!harness::stop'` line. To allow it, remove that line and add `- harness::stop`. An allow above the deny line is not enough, because the console makes every deny rule session-wide. If you keep the deny, leads that time out are parked as `stuck`.

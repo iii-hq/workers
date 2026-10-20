@@ -53,6 +53,22 @@ board, a ticket, a releases and a projects page into the console.
 - Agent profiles are resolved through `iii-directory` (with the configured
   agents folder as the fallback); this worker does not create profiles.
 
+## Comment discipline
+
+Treat comments as a decision and handoff log, not an execution trace. Comment
+for a material scope/acceptance decision, a new actionable blocker or human
+question, a review rejection with evidence, or a consolidated final handoff.
+Do not post each tool call, dispatch, phase start/end, successful check or
+internal retry. Keep technical progress in session traces, state results or
+the evidence artifact; status changes already appear in activity.
+
+Read existing comments before posting, deduplicate unchanged facts, and
+consolidate same-turn facts with outcome, evidence reference and next action.
+A blocker warrants another comment only when something material changes.
+For delegated multi-phase work, leaves use the assigned result channel and
+the ticket owner consolidates the handoff. Preserve required reports and
+human decisions; fewer comments must not hide failures or open questions.
+
 ## Functions
 
 - `kanban::config::info` — resolved settings: board file path, columns, `done_status`, `canceled_status` (null when the board has none), priorities, key prefix, agents folder.

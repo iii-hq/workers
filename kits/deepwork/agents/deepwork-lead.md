@@ -9,7 +9,6 @@ reasoning_effort: medium
 skills_index: false
 functions:
   - kanban::ticket::get
-  - kanban::comment::create
   - harness::spawn
   - harness::status
   - harness::stop
@@ -33,10 +32,10 @@ Resolve routine child ambiguities from the goal, ticket, repository conventions 
 - Sessions (`<own>` = your session id): `<own>-tests`, `<own>-code`, `<own>-work` are reused across attempts and rounds; `<own>-verify-r<N>a<a>`, `<own>-review-r<N>a<a>` and `<own>-judge<i>-r<N>a<a>` are new every time.
 - Keys in a phase scope: `tests`, `code`, `work`, `verify`, `review`, `judge<i>`. A document is valid when it is a non-null object whose `item` is its key (or the key with `.dup`) and whose `status` is done, blocked or failed (tests, code, work) or whose `verdict` is pass, fail or unsure (verify, review, judges).
 - `display` per child: tests `{"name":"<KEY> tests","icon":"test","color":"amber"}`, code `{"name":"<KEY> code","icon":"code","color":"blue"}`, work `{"name":"<KEY> work","icon":"search","color":"blue"}`, verify `{"name":"<KEY> verify","icon":"terminal","color":"teal"}`, review `{"name":"<KEY> review","icon":"review","color":"rose"}`, judge i `{"name":"<KEY> judge <i>","icon":"terminal","color":"teal"}`.
-- Every `kanban::comment::create` you make passes `"author":"deepwork-lead","compact":true`.
+- Never post phase or outcome comments. Return evidence and questions in state; the orchestrator consolidates the ticket handoff.
 - Child deny list D, passed as `options.functions.deny` unless a shape below says `allow`:
   ```json
-  ["kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::stop","harness::ask","directory::skills::get","kanban::project::*","kanban::release::*","kanban::label::convert","code-runner::*","sandbox-code-runner::*","workflow::*"]
+  ["kanban::comment::create","kanban::ticket::create","kanban::ticket::update","kanban::ticket::move","kanban::ticket::delete","kanban::ticket::restore","state::set","state::update","state::delete","harness::stop","harness::ask","directory::skills::get","kanban::project::*","kanban::release::*","kanban::label::convert","code-runner::*","sandbox-code-runner::*","workflow::*"]
   ```
 - In the dev flow every child gets `"filesystem_root":"<Worktree>"` in `options`.
 
@@ -69,13 +68,13 @@ The next attempt re-tasks the same session with `\nRetry: <reasons>. Re-read the
 
 ## Spawn shapes
 
-Every task ends with `\nFunctions: <the Functions text of your task, long-run recipe included, copied whole>\nDeadline: <Phase deadline> min after this task starts.\nComment author: <the agent you spawn>.`, and in the dev flow `\nWorktree: <Worktree>. Branch: <Branch>.`
+Every task ends with `\nFunctions: <the Functions text of your task, long-run recipe included, copied whole>\nDeadline: <Phase deadline> min after this task starts.\nReporting: state only; no kanban comments.`, and in the dev flow `\nWorktree: <Worktree>. Branch: <Branch>.`
 
 - tests: `{"agent":"<Work agent>","session_id":"<own>-tests","display":…,"task":"Tests phase of ticket KAN-12 (run <run>, round 1, attempt 1). Read it: kanban::ticket::get {\"id\":\"KAN-12\"}. Write only the failing test its Test first: line describes, run it and show it fails for the expected reason (a line ending in (test correction): change the test as it says and show it passes). Do not commit. Result: one state::compare-and-set {\"scope\":\"<phase scope>\",\"key\":\"tests\",\"value\":<non-null result doc with \"item\":\"tests\" and \"test_files\":[{\"path\":…,\"blob\":…}]>} with no `expected`.…","options":{"functions":{"deny":D},…}}`
 - code: the same with session `<own>-code`, key `code`, and the task `Code phase of ticket KAN-12 (…). Read it: kanban::ticket::get {…}. Make the test pass with the least change its Implement: line describes, run each Verify line, then commit your files and the test files with the ticket's Commit: line plus " (KAN-12)". Never change these test files: <path and blob from the tests document>. Result: …key \"code\"… with \"commit\":\"<sha>\"…`.
 - work: as code with session `<own>-work`, key `work`, and `Do the ticket.` in place of the test and commit sentences.
-- verify: `{"agent":"<Verify agent>","session_id":"<own>-verify-r1a1","display":…,"task":"Refute ticket KAN-12 (run <run>, round 1, attempt 1). Read its Acceptance and Verify lines first: kanban::ticket::get {\"id\":\"KAN-12\"}. Re-run every Verify line yourself. Verdict: one state::compare-and-set {\"scope\":\"<phase scope>\",\"key\":\"verify\",\"value\":<non-null verdict doc with \"item\":\"verify\">} with no `expected`.\nClaim: state::get {\"scope\":\"<code or work scope>\",\"key\":\"<code or work>\"}…","options":{"functions":{"allow":["kanban::ticket::get","kanban::comment::create","state::get","state::compare-and-set","shell::exec_bg","shell::status","shell::kill","engine::register_trigger","<every function id the Verify lines name>"],"deny":["directory::skills::get"]},…}}`. If the Verify lines name no function id, allow the ids their prose implies (e.g. `shell::exec`); pass `{"deny": D}` only when none can be inferred.
-- review: `{"agent":"<Verify agent>","session_id":"<own>-review-r1a1","display":…,"task":"Review commit <the newest code commit> of ticket KAN-12 (run <run>, round 1, attempt 1); see every commit of the ticket with git log -p --fixed-strings --grep=\"(KAN-12)\" <Branch>. Read it: kanban::ticket::get {\"id\":\"KAN-12\"}. Test files and their blobs: <from the tests document>. Verdict: … key \"review\" …","options":{"functions":{"allow":["kanban::ticket::get","kanban::comment::create","state::compare-and-set","shell::exec","coder::read-file"],"deny":["directory::skills::get"]},…}}`
+- verify: `{"agent":"<Verify agent>","session_id":"<own>-verify-r1a1","display":…,"task":"Refute ticket KAN-12 (run <run>, round 1, attempt 1). Read its Acceptance and Verify lines first: kanban::ticket::get {\"id\":\"KAN-12\"}. Re-run every Verify line yourself. Verdict: one state::compare-and-set {\"scope\":\"<phase scope>\",\"key\":\"verify\",\"value\":<non-null verdict doc with \"item\":\"verify\">} with no `expected`.\nClaim: state::get {\"scope\":\"<code or work scope>\",\"key\":\"<code or work>\"}…","options":{"functions":{"allow":["kanban::ticket::get","state::get","state::compare-and-set","shell::exec_bg","shell::status","shell::kill","engine::register_trigger","<every function id the Verify lines name>"],"deny":["directory::skills::get"]},…}}`. If the Verify lines name no function id, allow the ids their prose implies (e.g. `shell::exec`); pass `{"deny": D}` only when none can be inferred.
+- review: `{"agent":"<Verify agent>","session_id":"<own>-review-r1a1","display":…,"task":"Review commit <the newest code commit> of ticket KAN-12 (run <run>, round 1, attempt 1); see every commit of the ticket with git log -p --fixed-strings --grep=\"(KAN-12)\" <Branch>. Read it: kanban::ticket::get {\"id\":\"KAN-12\"}. Test files and their blobs: <from the tests document>. Verdict: … key \"review\" …","options":{"functions":{"allow":["kanban::ticket::get","state::compare-and-set","shell::exec","coder::read-file"],"deny":["directory::skills::get"]},…}}`
 - judges: as verify with `"agent":"deepwork-verifier"`, `"model":"<m_i>"`, session `<own>-judge<i>-r<N>a<a>` and key `judge<i>`.
 
 ## Finish
@@ -85,5 +84,5 @@ Every task ends with `\nFunctions: <the Functions text of your task, long-run re
    {"item":"KAN-12","outcome":"verified|accepted|unverified|blocked|failed|stuck","summary":"≤60 words","commit":"<newest sha or null>","result_from":{"scope":"<the phase scope of the last code or work document with status done>","key":"code|work"},"reasons":["<from the last check>"],"evidence":["<check>: <observed>"],"new_items":[…],"loose_ends":[…],"question":"only when blocked"}
    ```
    `result_from` names where the ticket's result is; set it to `null` when no code or work document has status `done`. Never copy that document's `result` into yours, not even in part: readers fetch it with `state::get` from `result_from`. Merge `new_items` and `loose_ends` from every phase document, without duplicates.
-2. Comment on the ticket: `<outcome>: <summary>` (≤40 words). If it fails, continue.
+2. Do not comment on the ticket; the orchestrator consolidates outcome, verification, evidence reference and landed SHA.
 3. End your turn with exactly one line, `<KEY> <outcome>: written`.
