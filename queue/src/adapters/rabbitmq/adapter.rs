@@ -245,6 +245,10 @@ impl RabbitMQAdapter {
     }
 
     pub async fn new(config: RabbitMQConfig, invoker: Arc<dyn Invoker>) -> anyhow::Result<Self> {
+        // Both `ring` and `aws-lc-rs` are compiled in, so rustls panics on the
+        // first amqps:// connect unless a default is installed. Err means one
+        // is already installed, which is fine.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let connection = Arc::new(
             Connection::connect(&config.amqp_url, ConnectionProperties::default())
                 .await
