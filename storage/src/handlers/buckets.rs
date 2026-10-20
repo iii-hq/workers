@@ -353,16 +353,19 @@ pub(crate) fn plan_save(raw: Value, req: &SaveBucketReq) -> Result<SavePlan, Str
         display.validate()?;
     }
     // Credentials stay where they belong: a kept value only goes where the
-    // stored entry sends it; a reference or credentials file another stored
-    // bucket uses only goes where that bucket sends it (this bucket may take
-    // its own along); the engine host's own credentials stay with the
-    // provider or an endpoint already using them.
+    // stored entry sends it; a reference or credentials file a stored bucket
+    // uses only goes, in the same field, where that bucket sends it — this
+    // bucket's own signing keys may follow it to a new destination, its
+    // session token, credentials JSON or file and API token may not; the
+    // engine host's own credentials stay with the provider or an endpoint
+    // already using them.
     if let (Some(previous), Some(stored)) = (&req.previous_name, &stored) {
         crate::binding::check_kept(&entry, stored, previous, &kept)?;
     }
     crate::binding::check_bound(
         &entry,
-        &crate::binding::uses(&buckets, req.previous_name.as_deref()),
+        &crate::binding::uses(&buckets),
+        req.previous_name.as_deref(),
     )?;
     if req.create_bucket == Some(true) && matches!(bucket, BucketConfig::Gcs(_)) {
         return Err(
@@ -911,11 +914,40 @@ pub(crate) mod tests {
             ),
         )
         .unwrap();
-        // A bucket may take its own reference to a new endpoint…
+        // (b) A bucket's own signing keys follow it to a new endpoint…
         let mine = json!({ "access_key_id": "AKIA", "secret_access_key": "secret://PROD_SK" });
         plan_save(
             raw.clone(),
             &save_req(json!({ "name": "prod", "previous_name": "prod", "bucket": s3("https://new.example", mine.clone()) })),
+        )
+        .unwrap();
+        // (a) …never into another field, not even in place…
+        let err = plan_save(
+            raw.clone(),
+            &save_req(json!({ "name": "prod", "previous_name": "prod", "bucket": s3("https://s3.prod.example",
+                json!({ "access_key_id": "secret://PROD_SK", "secret_access_key": "secret://X" })) })),
+        )
+        .unwrap_err();
+        assert!(err.contains("in the same field"), "{err}");
+        // (c) …and its session token, sent in clear, does not follow.
+        let raw_tok = json!({ "buckets": { "tok": { "provider": "s3", "region": "r",
+            "endpoint_url": "https://a.example", "access_key_id": "a",
+            "secret_access_key": "secret://TOK_SK", "session_token": "secret://TOK_TOKEN" } } });
+        let err = plan_save(
+            raw_tok.clone(),
+            &save_req(json!({ "name": "tok", "previous_name": "tok", "bucket": s3("http://127.0.0.1:49262",
+                json!({ "secret_access_key": "secret://TOK_SK", "session_token": "secret://TOK_TOKEN" })) })),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("`session_token`") && err.contains("Enter the value again"),
+            "{err}"
+        );
+        plan_save(
+            raw_tok,
+            &save_req(json!({ "name": "tok", "previous_name": "tok", "bucket": s3("https://a.example",
+                json!({ "secret_access_key": "secret://TOK_SK", "session_token": "secret://TOK_TOKEN",
+                        "display": { "icon": "cloud" } })) })),
         )
         .unwrap();
         // …but not its kept template: nor may a new template appear.

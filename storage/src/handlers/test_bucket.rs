@@ -229,7 +229,7 @@ async fn run(
             }
         }
         let all = expanded_buckets.as_ref().unwrap_or(&raw_buckets);
-        if let Err(e) = binding::check_bound(&entry, &binding::uses(all, None)) {
+        if let Err(e) = binding::check_bound(&entry, &binding::uses(all), None) {
             return TestBucketResp::failed(provider, Stage::Config, e);
         }
     }

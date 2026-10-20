@@ -152,9 +152,8 @@ pub struct Use {
 }
 
 /// Every bound credential and ambient credential of the stored entries,
-/// parsed or not. `except` leaves out that entry's references and files
-/// (a bucket being saved may take its own along), never its ambient use.
-pub fn uses(buckets: &Map<String, Value>, except: Option<&str>) -> HashMap<String, Vec<Use>> {
+/// parsed or not.
+pub fn uses(buckets: &Map<String, Value>) -> HashMap<String, Vec<Use>> {
     let mut out: HashMap<String, Vec<Use>> = HashMap::new();
     for (name, entry) in buckets {
         if let Some(key) = ambient_key(entry) {
@@ -163,9 +162,6 @@ pub fn uses(buckets: &Map<String, Value>, except: Option<&str>) -> HashMap<Strin
                 field: AMBIENT_FIELD.into(),
                 destination: destination(entry, AMBIENT_FIELD),
             });
-        }
-        if except == Some(name.as_str()) {
-            continue;
         }
         for field in CREDENTIAL_PATHS {
             let Some(key) = get_str(entry, field).and_then(|v| binding_key(field, v)) else {
@@ -181,6 +177,11 @@ pub fn uses(buckets: &Map<String, Value>, except: Option<&str>) -> HashMap<Strin
     out
 }
 
+/// Fields whose own bound value may follow a bucket that is saved toward a
+/// new destination, in the same field: only an identifier and a SigV4
+/// signature (which signs the Host) leave, never the value itself.
+const MAY_FOLLOW: [&str; 3] = ["access_key_id", "secret_access_key", "account_id"];
+
 fn names(uses: &[Use]) -> String {
     let mut names: Vec<&str> = uses.iter().map(|u| u.bucket.as_str()).collect();
     names.sort_unstable();
@@ -190,7 +191,18 @@ fn names(uses: &[Use]) -> String {
 
 /// Refuse a candidate that would send a bound credential, or the engine
 /// host's ambient credentials, anywhere their stored uses do not.
-pub fn check_bound(candidate: &Value, uses: &HashMap<String, Vec<Use>>) -> Result<(), String> {
+///
+/// `own` is the bucket being saved (`saveBucket`'s `previous_name`; `None`
+/// for a test): its own `access_key_id`, `secret_access_key` and
+/// `account_id` may follow it to a new destination in the same field; its
+/// `session_token`, `credentials_json`, `credentials_file` and API token,
+/// which travel in clear or as bearer credentials, may not. A value never
+/// changes field.
+pub fn check_bound(
+    candidate: &Value,
+    uses: &HashMap<String, Vec<Use>>,
+    own: Option<&str>,
+) -> Result<(), String> {
     for field in CREDENTIAL_PATHS {
         let Some(value) = get_str(candidate, field) else {
             continue;
@@ -223,6 +235,18 @@ pub fn check_bound(candidate: &Value, uses: &HashMap<String, Vec<Use>>) -> Resul
         } else {
             key.clone()
         };
+        let own_same_field =
+            own.is_some_and(|own| stored.iter().any(|u| u.bucket == own && u.field == field));
+        if own_same_field {
+            if MAY_FOLLOW.contains(&field) {
+                continue;
+            }
+            return Err(format!(
+                "`{field}`: {what} is sent in clear (or as a bearer credential) to where this \
+                 bucket points; it cannot follow the bucket to another provider, endpoint or \
+                 account. Enter the value again (as a new secret) for the new destination"
+            ));
+        }
         return Err(format!(
             "`{field}`: {what} belongs to bucket `{}` and is only sent where that bucket sends \
              it, in the same field; enter the value itself to use it elsewhere",
@@ -287,6 +311,56 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn check_bound_test(candidate: &Value, uses: &HashMap<String, Vec<Use>>) -> Result<(), String> {
+        check_bound(candidate, uses, None)
+    }
+
+    #[test]
+    fn a_saved_bucket_takes_only_its_signing_keys_to_a_new_destination() {
+        let stored = json!({
+            "mine": { "provider": "s3", "region": "r", "endpoint_url": "http://10.0.0.1:9000",
+                      "access_key_id": "secret://MINE_AK", "secret_access_key": "secret://MINE_SK",
+                      "session_token": "secret://MINE_TOK" },
+            "gcs": { "provider": "gcs", "endpoint_url": "http://fake:4443", "credentials_json": "secret://MINE_JSON" }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let uses = uses(&stored);
+        let moved = |extra: Value| {
+            let mut v = json!({ "provider": "s3", "region": "r", "endpoint_url": "http://10.0.0.2:9000",
+                                "access_key_id": "secret://MINE_AK", "secret_access_key": "secret://MINE_SK" });
+            for (k, x) in extra.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            v
+        };
+        // (b) the keys follow "my MinIO moved", in the same fields.
+        check_bound(&moved(json!({})), &uses, Some("mine")).unwrap();
+        // (c) a session token does not.
+        let err = check_bound(
+            &moved(json!({ "session_token": "secret://MINE_TOK" })),
+            &uses,
+            Some("mine"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("`session_token`") && err.contains("Enter the value again"),
+            "{err}"
+        );
+        // (a) never across fields, own bucket included, even in place.
+        let swapped = json!({ "provider": "s3", "region": "r", "endpoint_url": "http://10.0.0.1:9000",
+                              "access_key_id": "secret://MINE_SK", "secret_access_key": "secret://MINE_AK" });
+        let err = check_bound(&swapped, &uses, Some("mine")).unwrap_err();
+        assert!(err.contains("in the same field"), "{err}");
+        // (c) credentials_json does not follow a moved gcs endpoint…
+        let gcs = json!({ "provider": "gcs", "endpoint_url": "http://127.0.0.1:49262", "credentials_json": "secret://MINE_JSON" });
+        assert!(check_bound(&gcs, &uses, Some("gcs")).is_err());
+        // …and another bucket never takes them anywhere new.
+        assert!(check_bound(&moved(json!({})), &uses, Some("other")).is_err());
+        assert!(check_bound(&moved(json!({})), &uses, None).is_err());
+    }
+
     fn stored() -> Map<String, Value> {
         json!({
             "prod": { "provider": "s3", "region": "r", "endpoint_url": "https://S3.prod.example:443",
@@ -312,10 +386,10 @@ mod tests {
 
     #[test]
     fn a_bound_reference_cannot_move_through_any_field() {
-        let uses = uses(&stored(), None);
+        let uses = uses(&stored());
         let evil = "http://127.0.0.1:49262";
         for field in ["secret_access_key", "access_key_id", "session_token"] {
-            let err = check_bound(&s3(evil, field, "secret://PROD_SK"), &uses).unwrap_err();
+            let err = check_bound_test(&s3(evil, field, "secret://PROD_SK"), &uses).unwrap_err();
             assert!(err.contains("belongs to bucket `prod`"), "{field}: {err}");
         }
         // The same field toward the same endpoint (a Duplicate) is fine;
@@ -327,6 +401,7 @@ mod tests {
                 "secret://PROD_SK",
             ),
             &uses,
+            None,
         )
         .unwrap();
         // Same endpoint, another field: refused (the id is sent in clear).
@@ -336,19 +411,21 @@ mod tests {
                 "access_key_id",
                 "secret://PROD_SK"
             ),
-            &uses
+            &uses,
+            None
         )
         .is_err());
         // A reference nobody uses is free.
-        check_bound(&s3(evil, "session_token", "secret://NEW"), &uses).unwrap();
+        check_bound_test(&s3(evil, "session_token", "secret://NEW"), &uses).unwrap();
     }
 
     #[test]
     fn entries_that_do_not_parse_still_bind_and_files_bind_by_their_real_path() {
-        let uses = uses(&stored(), None);
+        let uses = uses(&stored());
         let err = check_bound(
             &s3("http://127.0.0.1:1", "session_token", "secret://BROKEN_SK"),
             &uses,
+            None,
         )
         .unwrap_err();
         assert!(err.contains("`broken`"), "{err}");
@@ -362,43 +439,45 @@ mod tests {
         let err = check_bound(
             &gcs("/etc/iii/sa.json", Some("http://127.0.0.1:49262")),
             &uses,
+            None,
         )
         .unwrap_err();
         assert!(
             err.contains("credentials file") && !err.contains("/etc"),
             "{err}"
         );
-        assert!(check_bound(&gcs("/etc/./iii/sa.json", Some("http://evil")), &uses).is_err());
-        check_bound(&gcs("/etc/iii/sa.json", None), &uses).unwrap();
+        assert!(check_bound_test(&gcs("/etc/./iii/sa.json", Some("http://evil")), &uses).is_err());
+        check_bound_test(&gcs("/etc/iii/sa.json", None), &uses).unwrap();
         // A host file no bucket uses only goes to Google.
         let err = check_bound(
             &gcs("/var/other-sa.json", Some("http://127.0.0.1:49262")),
             &uses,
+            None,
         )
         .unwrap_err();
         assert!(err.contains("only goes to Google"), "{err}");
-        check_bound(&gcs("/var/other-sa.json", None), &uses).unwrap();
+        check_bound_test(&gcs("/var/other-sa.json", None), &uses).unwrap();
     }
 
     #[test]
     fn r2_account_ids_and_api_tokens_are_bound() {
-        let uses = uses(&stored(), None);
+        let uses = uses(&stored());
         // The account id becomes a hostname: another account is another
         // destination for every r2 field.
         let r2 = json!({ "provider": "r2", "account_id": "secret://CF_SK", "access_key_id": "a",
                          "secret_access_key": "secret://FRESH" });
-        assert!(check_bound(&r2, &uses).is_err());
+        assert!(check_bound_test(&r2, &uses).is_err());
         let r2 = json!({ "provider": "r2", "account_id": "secret://CF_ACCOUNT", "access_key_id": "env://CF_AK",
                          "secret_access_key": "secret://CF_SK" });
-        check_bound(&r2, &uses).unwrap();
+        check_bound_test(&r2, &uses).unwrap();
         // The API token only ever goes to the Cloudflare API, in its field.
         let s3_with_token = s3("http://evil", "secret_access_key", "secret://CF_TOKEN");
-        assert!(check_bound(&s3_with_token, &uses).is_err());
+        assert!(check_bound_test(&s3_with_token, &uses).is_err());
     }
 
     #[test]
     fn ambient_credentials_stay_with_the_provider_or_a_known_endpoint() {
-        let uses = uses(&stored(), None);
+        let uses = uses(&stored());
         let bare = |endpoint: Option<&str>| {
             let mut v = json!({ "provider": "s3", "region": "r" });
             if let Some(e) = endpoint {
@@ -406,18 +485,17 @@ mod tests {
             }
             v
         };
-        check_bound(&bare(None), &uses).unwrap();
-        check_bound(&bare(Some("http://MINIO.lan:9000")), &uses).unwrap();
-        let err = check_bound(&bare(Some("http://127.0.0.1:49262")), &uses).unwrap_err();
+        check_bound_test(&bare(None), &uses).unwrap();
+        check_bound_test(&bare(Some("http://MINIO.lan:9000")), &uses).unwrap();
+        let err = check_bound_test(&bare(Some("http://127.0.0.1:49262")), &uses).unwrap_err();
         assert!(err.contains("engine host's own AWS credentials"), "{err}");
         let adc = json!({ "provider": "gcs", "endpoint_url": "http://127.0.0.1:49262" });
-        assert!(check_bound(&adc, &uses)
+        assert!(check_bound_test(&adc, &uses)
             .unwrap_err()
             .contains("Google credentials"));
-        check_bound(&json!({ "provider": "gcs" }), &uses).unwrap();
-        // A save leaves out its own references, never its ambient use.
-        let except = super::uses(&stored(), Some("ambient"));
-        check_bound(&bare(Some("http://minio.lan:9000")), &except).unwrap();
+        check_bound_test(&json!({ "provider": "gcs" }), &uses).unwrap();
+        // A save of the ambient bucket itself keeps its endpoint.
+        check_bound(&bare(Some("http://minio.lan:9000")), &uses, Some("ambient")).unwrap();
     }
 
     #[test]
