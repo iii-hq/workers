@@ -438,8 +438,20 @@ shape (`input.tabel` is `INVALID_FILTER_PATH`).
 **Only the database worker emits it.** Invoking `database::on-row-changed`
 directly is refused (`FORBIDDEN`): the engine refuses it from any other
 connection, and the function itself refuses every call, so no worker can
-forge a row change. Nobody observing costs nothing: no event is built and
-nothing goes on the wire.
+hand observers an event of its own making. What an event says is still what
+the database told the worker:
+
+- on `statements` it describes the statement as its writer wrote it
+  (`returning` is the writer's projection), and `caller` says which function
+  made it — filter on `caller` when it matters who wrote;
+- on `native` it is as trustworthy as access to the database: any session
+  that can run SQL there can raise a capture notification (Postgres
+  `pg_notify`, allowed even in a read-only transaction, so through
+  `database::query` too) or write the SQLite changelog, and the event
+  carries no caller.
+
+Nobody observing costs nothing: no event is built and nothing goes on the
+wire.
 
 **Which rows changed — `returning`.** The event never invents row data:
 
@@ -517,7 +529,12 @@ iii.registerTrigger({
 ```
 
 - On a **0.25 engine** the engine's legacy shim turns the binding into an
-  observer of `database::on-row-changed` with that config.
+  observer of `database::on-row-changed` with that config. The shim takes
+  bindings registered over a worker's connection (`registerTrigger`, which is
+  also how a harness session subscribes); one made by calling the engine
+  function `engine::register_trigger` directly (`iii trigger
+  engine::register_trigger …`, a code-runner script) has no owner and stays
+  pending on a 0.25 engine.
 - On an **engine without observe** (0.24) the worker registers the trigger
   type itself, over the same routing. It follows the engine across
   reconnects: an engine upgraded or rolled back under a running worker
