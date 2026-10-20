@@ -13,6 +13,9 @@ iii trigger compose::add worker=storage
 
 `iii trigger compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
+The worker depends on `configuration` (where its settings live) and `secrets`
+(which resolves `secret://` / `env://` credentials, see
+[Credentials](#credentials-and-the-secrets-worker)).
 
 ## Quickstart
 
@@ -98,9 +101,12 @@ await fetch(url, { method: 'POST', body: form })
 
 > `putObject` and `getObject` serialize bytes as base64 inside an engine
 > message. They buffer the complete value and base64 adds roughly 33% overhead.
-> Both enforce a 10 MiB decoded hard limit, but they are intended for truly
-> small values, not general file transfer. Use `presignPost`/a signed PUT for
-> uploads and a signed GET from `presignUrl` for downloads.
+> Both enforce a 10 MiB decoded hard limit per call, but they are intended for
+> truly small values, not general file transfer. Use `presignPost`/a signed PUT
+> for uploads and a signed GET from `presignUrl` for downloads. A client that
+> cannot reach the provider (a phone outside the LAN of a local bucket, a GCS
+> bucket without signing credentials) can read any object through `getObject`
+> in ranges: `{ offset, length }`, see [Ranged reads](#storagegetobject--ranged-reads).
 
 From a Rust worker:
 
@@ -146,12 +152,21 @@ payload). Every setting is live: bucket additions/removals, providers,
 credentials, underlying names, notification sources, local data directory,
 and the local HTTP listener/public URL all apply without restarting the worker.
 
-Application is transactional. The worker first prepares the candidate
-backends, notification clients, local service generation, and—when the bind
-address changes—the new TCP listener. Only after those fallible steps succeed
-does it publish the new runtime and gracefully retire the old listener and
-pollers. A failed backend build, authentication probe, or port bind leaves the
-previous configuration serving requests.
+Buckets are applied one by one. A bucket whose backend cannot be built — a
+`secret://` reference that does not resolve, a malformed field, a credentials
+JSON that does not parse — stays listed by `storage::listBuckets` with
+`error` / `error_stage`, and every call on it answers `BUCKET_UNAVAILABLE
+{bucket, stage, message}`; every other bucket keeps working. A failed bucket is
+retried every 15 s (a secrets worker that came up late), and right away when a
+secret it references changes. A reload rebuilds only the buckets whose entry or
+resolved credentials changed: the others keep their clients, and notification
+pollers whose source did not change keep running. A notification source that
+cannot be prepared (a Cloudflare token the queue refuses) leaves its buckets
+working without triggers and is reported as `notifications_error`.
+
+The native-local listener stays transactional: the worker binds a new
+`bind_address` before publishing anything, and a port that is taken rejects the
+whole update, leaving the previous configuration serving requests.
 
 A fresh install with no configured buckets runs with zero backends until a
 bucket is configured.
@@ -186,18 +201,65 @@ buckets:
   avatars:
     provider: r2
     bucket: avatars
-    account_id: ${R2_ACCOUNT_ID}
-    access_key_id: ${R2_ACCESS_KEY_ID}
-    secret_access_key: ${R2_SECRET_ACCESS_KEY}
+    account_id: env://R2_ACCOUNT_ID
+    access_key_id: secret://STORAGE_AVATARS_ACCESS_KEY_ID
+    secret_access_key: secret://STORAGE_AVATARS_SECRET_ACCESS_KEY
+    display: { icon: image, color: "#F38020" }
+
+  photos:
+    provider: s3                       # S3-compatible: MinIO, B2, Wasabi, Spaces…
+    region: us-east-1
+    endpoint_url: https://minio.example.com
+    force_path_style: true
+    access_key_id: secret://STORAGE_PHOTOS_ACCESS_KEY_ID
+    secret_access_key: secret://STORAGE_PHOTOS_SECRET_ACCESS_KEY
+
+  reports:
+    provider: gcs
+    credentials_json: secret://STORAGE_REPORTS_CREDENTIALS_JSON   # the service-account JSON itself
 
   scratch:
     provider: local
     bucket: scratch
+    display:
+      icon: hard-drive                 # a Lucide icon name
+      color: "#3B82F6"                 # #RRGGBB
 ```
 
 The map key (`uploads`) is the worker-facing bucket name handlers
-reference; the nested `bucket:` is the underlying cloud bucket. They can
-differ.
+reference: `[a-z0-9][a-z0-9_-]{0,62}`. The nested `bucket:` is the underlying
+cloud bucket (default: the map key). They can differ. `display` is read only by
+clients (the console, the app) to draw the bucket.
+
+### Credentials and the secrets worker
+
+Every credential field — `access_key_id`, `secret_access_key`,
+`session_token`, r2's `account_id`, gcs's `credentials_json` and r2's
+`notifications.api_token` — takes, besides a literal or a `${VAR}` template:
+
+- `secret://NAME` — a value in the `secrets` worker's encrypted vault;
+- `env://NAME` — an environment variable the `secrets` worker reads (the
+  project's `.env`, else its own environment).
+
+`NAME` matches `^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`. The worker resolves them with
+`secrets::resolve` as consumer **`storage`**: the secret must list `storage` in
+its `consumers` (`secrets::set {name, value, consumers: ["storage"]}`), else the
+bucket is unavailable with `error_stage: "secrets"` and a message saying so.
+Resolved values never appear in the configuration, a reply, logs or traces,
+and every error message is scrubbed of the credentials used.
+
+Resolved values are cached. The worker binds the secrets worker's
+`secrets::changed` trigger to its internal `storage::on-secret-change`: a
+rotated, deleted or re-shared secret is re-read at once and only the buckets
+that use it are rebuilt (deleted → those buckets report the error; re-created →
+they come back). Without the event a cached value is re-read every 5 minutes,
+and a failed one every 10–15 seconds.
+
+`secret_access_key`, `session_token`, `credentials_json` and
+`notifications.api_token` are **sensitive**: `storage::getBucket` shows their
+literals as `"__redacted__"`, and `storage::saveBucket` / `storage::testBucket`
+refuse a literal inside `bucket` (it goes as a reference or in `credentials`).
+Literals and `${VAR}` templates that are already stored keep working.
 
 ### Per-provider notes
 
@@ -205,11 +267,13 @@ differ.
   IRSA). Override with `access_key_id` / `secret_access_key` /
   `session_token` only if the default chain doesn't fit.
 - **GCS** — defaults to ADC (`GOOGLE_APPLICATION_CREDENTIALS`, GCE
-  metadata, `gcloud auth application-default login`). `presignUrl`
-  requires a service-account JSON with a private key — supply
-  `credentials_file` explicitly when running on metadata-server-only
-  sources (e.g., GKE Workload Identity), otherwise GCS presigns return
-  `PRESIGN_UNSUPPORTED`.
+  metadata, `gcloud auth application-default login`). `credentials_json`
+  (the service-account JSON itself, usually `secret://…`) takes precedence over
+  `credentials_file` (a path on the engine host). `presignUrl` requires a
+  service-account key (or the metadata server's identity on Google Cloud);
+  without one, or with an `endpoint_url` override, GCS presigns return
+  `PRESIGN_UNSUPPORTED` and `listBuckets` reports `direct_downloads: false`.
+  Pub/Sub notifications still authenticate through ADC.
 - **R2** — required: `account_id`, `access_key_id`, `secret_access_key`.
   Endpoint URL is derived automatically as
   `https://{account_id}.r2.cloudflarestorage.com`.
@@ -267,6 +331,13 @@ every RPC live in [`src/error.rs`](src/error.rs).
 | `storage::object-created` | An object is written (PUT, multipart complete, copy-in). | `{ bucket, key, size, content_type, etag, version_id?, event_time }` |
 | `storage::object-deleted` | An object (or version, on versioned buckets) is removed. | `{ bucket, key, version_id?, event_time }` |
 
+The worker itself binds two internal functions (metadata `internal: true`,
+denied to agents): `storage::on-config-change` to the configuration worker's
+`configuration:updated` for its entry, and `storage::on-secret-change` to the
+secrets worker's `secrets::changed` (the binding waits for the secrets worker
+when it is not running yet). Both ignore their payload's values and re-read the
+authoritative state.
+
 Delivery is at-least-once. Handlers must return `{ ack: true }`; `false`,
 panic, or timeout (`handler_timeout_ms`, default 60 s) leaves the
 message in the upstream queue for redelivery.
@@ -310,6 +381,90 @@ bucket mappings and presents only the fields relevant to Local, S3, GCS, or
 R2. Saved changes are applied live; no storage setting requires a worker
 restart.
 
+## Bucket management
+
+Bucket editors (the console, the iii app) create and change buckets through
+four functions instead of rewriting the whole configuration. All four are
+denied to agents by `iii-permissions.yaml` (they rewrite which providers and
+credentials the worker uses, or send credentials where a candidate points).
+
+### `storage::listBuckets`
+
+`{}` → `{ buckets: [...], count, config_id }`, sorted by name. Each bucket:
+`name`, `provider`, `bucket` (the provider-side bucket), `region?` (s3),
+`endpoint_url?` (userinfo stripped), `account_id?` (r2: the literal or the
+reference as stored), `display?`, `uses_secrets`, `direct_downloads` (whether a
+presigned GET works for it: false for gcs without signing credentials or with
+an `endpoint_url` override), and for a bucket that could not be built
+`error` + `error_stage` (`config` | `secrets` | `auth`). Stored entries that do
+not parse are listed too (`error_stage: "config"`).
+
+### `storage::getBucket`
+
+`{ name }` → `{ name, bucket }`: the entry as stored (`${VAR}` templates and
+references unexpanded), sensitive literals as `"__redacted__"`.
+
+### `storage::saveBucket`
+
+```json
+{
+  "name": "photos",
+  "previous_name": "photos",
+  "bucket": {
+    "provider": "s3", "region": "us-east-1", "bucket": "my-photos",
+    "endpoint_url": "https://minio.example.com", "force_path_style": true,
+    "access_key_id": "secret://STORAGE_PHOTOS_ACCESS_KEY_ID",
+    "secret_access_key": "secret://STORAGE_PHOTOS_SECRET_ACCESS_KEY",
+    "display": { "icon": "image", "color": "#3B82F6" }
+  },
+  "credentials": { "session_token": "…" },
+  "create_bucket": true
+}
+```
+
+→ `{ name, saved: true, created_bucket?, error?, error_stage? }`.
+
+- No `previous_name` creates (a taken name is refused); `previous_name == name`
+  updates; another `previous_name` renames (a taken name is refused). A rename
+  of an entry without `bucket` keeps pointing at the same provider-side bucket.
+- Keys that are not fields of the provider are refused by name, and so are
+  literal sensitive values inside `bucket`. `credentials` (`access_key_id`,
+  `secret_access_key`, `session_token`, `credentials_json`,
+  `notifications_api_token`) is merged over `bucket` — trace redaction hides a
+  key named `credentials` whole. `"__redacted__"` keeps the stored value.
+- The save is a read-modify-write of the whole raw value through
+  `configuration::set`: `providers`, the other buckets and their templates and
+  references are written back untouched. The answer comes after the runtime
+  reloaded; `error` / `error_stage` is the saved bucket's build error (the
+  entry is saved anyway). Refusals are `CONFIG_ERROR`.
+- `create_bucket: true` (s3, r2, S3-compatible) creates the provider-side
+  bucket when it does not exist (`created_bucket: true`; already there →
+  `false`), sending the region as `LocationConstraint` except for AWS's
+  `us-east-1` and r2. A failure is reported in `error` with the entry saved.
+  Local buckets always create their directory.
+
+### `storage::deleteBucket`
+
+`{ name }` → `{ deleted }`. Removes the entry only — never objects, local data
+or secrets. Removing the last bucket is allowed.
+
+### `storage::testBucket`
+
+`{ bucket?, name?, credentials?, timeout_ms? }` →
+`{ ok, provider, latency_ms, message?, stage?, bucket_missing?, direct_downloads? }`.
+
+Builds a throwaway client (one attempt, no retries) with every reference
+resolved fresh — never from the cache — and lists one object at the root.
+Failures are data, not errors: `stage` is `config` (the entry), `secrets` (a
+reference did not resolve), `endpoint` (DNS, connect, TLS, timeout), `auth`
+(rejected keys or signature, no credentials at all), `bucket` (NoSuchBucket,
+with `bucket_missing: true`; another region) or `list` (anything else).
+`timeout_ms` defaults to 10000 (max 30000). Without `bucket` it tests the
+stored bucket `name`; with both, `name` supplies the `"__redacted__"` values and
+unchanged `${VAR}` templates — and those values, like a reference a stored bucket
+already uses, are only sent to that bucket's endpoint. A local bucket checks
+that its directory can be written.
+
 ## RPC reference notes
 
 ### Inline object calls are intentionally limited
@@ -323,6 +478,16 @@ when a file happens to fit below that cap—prefer direct transfer endpoints:
 - upload: `storage::presignPost` for local multipart POST, or
   `storage::presignUrl` with `method: "PUT"`;
 - download: `storage::presignUrl` with `method: "GET"`.
+
+### `storage::getObject` — ranged reads
+
+`offset` (default 0) and `length` (default: to the end) read a byte range of
+any object; the response adds `offset` and `length` (the bytes returned) while
+`size` stays the object's total size. The 10 MiB cap applies to the bytes
+returned, so `{ offset, length: 2097152 }` chunks read a 2 GB video. An
+`offset` equal to the size returns an empty body; past it, `INVALID_RANGE
+{offset, size}`. S3 and R2 send a `Range` GET, GCS a ranged download pinned to
+the generation it read, local storage seeks.
 
 ### `storage::presignPost` — multipart upload
 
@@ -355,6 +520,18 @@ const { url } = await iii.trigger({
 })
 ```
 
+### Local signed downloads: Range and HEAD
+
+The native local download route answers `HEAD` and honours `Range`, so a video
+player can seek: `Accept-Ranges: bytes` on every answer; `bytes=a-b`, `bytes=a-`
+and `bytes=-n` → `206 Partial Content` with `Content-Range`; a range that starts
+at or past the end, `bytes=-0`, or any range of an empty object → `416` with
+`Content-Range: bytes */size`. A request for several ranges (`bytes=0-1,5-6`),
+another unit, or a malformed or inverted range is answered with the whole
+object (`200`), which RFC 9110 allows; `If-Range` naming another version does
+the same. The signing key is per worker process: URLs issued before a restart
+answer `401`.
+
 ## Local development & testing
 
 The committed `config.yaml` declares a single `scratch` bucket served directly
@@ -374,7 +551,8 @@ The worker registers its schema with the `configuration` worker (seeding
 the native store and optional direct-transfer HTTP listener, and registers
 `storage::putObject`, `storage::getObject`, `storage::deleteObject`,
 `storage::presignUrl`, `storage::presignPost`, `storage::headObject`,
-`storage::listBuckets`, and `storage::listObjects`. Files land under
+`storage::listBuckets`, `storage::listObjects`, `storage::getBucket`,
+`storage::saveBucket`, `storage::deleteBucket` and `storage::testBucket`. Files land under
 `data/storage/` under `III_COMPOSE_DIR` (configurable via
 `providers.local.data_dir`).
 
@@ -397,7 +575,10 @@ cargo test --test integration   # spec §9 pattern A: spawns engine + worker
 `tests/integration.rs` self-skips when the `iii` engine is not available on
 `PATH`. Native local tests require no external storage dependency. The richer
 per-provider e2e suite under `tests/e2e/`
-is env-var-gated — see `tests/e2e/run-tests.sh` for the orchestrator.
+is env-var-gated — see `tests/e2e/run-tests.sh` for the orchestrator. Its
+harness covers bucket management, ranged reads and HTTP Range against every
+selected provider (`--providers=local` needs nothing; `all` adds MinIO through
+docker compose).
 
 ### Verification before publishing
 
