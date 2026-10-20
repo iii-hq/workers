@@ -144,7 +144,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Composability",
-        body: "iii is composable like Node or Python, except when you add to iii you add a fully working service. We call these services 'workers'. When one is added every other worker immediately has access to its functions and triggers. This means, for example, that your agent will be able to use the kanban worker without skills, or a long discovery and research process. Now ask the agent to add a kanban board.",
+        body: "iii is composable like Node or Python, add libraries and other parts of your application can use them. Except when you add to iii you add a fully working service.\n\nWe call these services 'workers'. When one is added every other worker immediately has access to its functions and triggers.\n\nThis means, for example, that your agent will be able to use the kanban worker without skills, or a long discovery and research process. Now ask the agent to add a kanban board.",
       }),
       {
         id: "stay-in-touch",
@@ -157,7 +157,7 @@ export const TOURS = [
       {
         id: "observability",
         title: "Observability",
-        body: "Everything in a iii worker is defined as either a function or a trigger. This property makes it so that all of a iii application is inherently observable, out of the box, even the new worker you're building today. The observability worker lets you see traces in the UI, query traces directly, and export them to any OpenTelemetry-compatible service.",
+        body: "Everything in a iii worker is defined as either a function or a trigger. This property makes it so that all of a iii application is inherently observable, out of the box, truly end-to-end, even the new worker you're building today. No agent, database, or other usecase-specific framework necessary.\n\nThe observability worker lets you see traces in the UI, query traces directly, ask agents for specific details of what happened, and export them to any OpenTelemetry-compatible service.",
         anchors: [".learn-iii-traces", 'section[aria-label="traces"]'],
         // The step's button opens Traces beside the chat. Until then the page
         // points at where it opens by hand too — the + first, then the traces
@@ -185,7 +185,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Discoverability",
-        body: "An earlier step mentioned that agents don't have a long discoverability step. This project is made up of about 14 or so services. If you ask the agent to report them all you'll get a quick response. How long would it take your other agents to do this?",
+        body: "An earlier step mentioned that agents don't have a long discoverability step. This project is made up of about 14 or so services. If you ask the agent to report them all you'll get a quick response with the large majority of the time spent waiting on the LLM to generate its text.\n\nHow long would it take your other agents to do this? How accurate would their results be?",
       }),
       agentStep({
         id: "extensibility",
@@ -194,7 +194,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Let's extend this application with a new worker, and while doing so we'll take advantage of iii's composability by using the existing Kanban, and Cron workers for the bulk of the work. We'll build a simple TODO sidebar of controls that can handle specific properties that we don't want polluting the Kanban board itself since we'll likely want the Kanban board for other projects in the future. We'll add a due date, a due time, a priority, a repeat and an alarm (via Cron) on each item. We'll also add the same controls as a web page. The web page itself is also a worker just like anything else in iii.",
+        body: "Let's extend this application with a new worker, and while doing so we'll take advantage of iii's composability by using the existing Kanban, and Cron workers for the bulk of the work.\n\nWe'll build a simple TODO sidebar of controls that can handle specific properties. In the future it's likely we'll want to leverage the Kanban board for other projects, so we'll put our specific needs in their own worker.\n\nWe'll add a due date, a due time, a priority, a repeat and an alarm (via Cron) on each item. We'll also add the same controls as a web page.\n\nThe web page itself is also a worker just like anything else in iii. So it can make direct calls to other workers, without the need for a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },
@@ -206,7 +206,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 items to the TODO list, and to set triggers that fire when you move each one to Done yourself. Watch the agent react as you change the card's status. Like mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
+        body: "Now ask the agent to add 3 items to the TODO list, and to set triggers that fire when you move each one to Done yourself. Watch the agent react as you change the card's status.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
       }),
       {
         id: "clean-up",
