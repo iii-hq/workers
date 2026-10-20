@@ -50,14 +50,16 @@ fn root_field(metadata: Option<&Value>) -> Option<&str> {
 }
 
 /// The `agent_profile` id in a metadata object: the harness's snapshot
-/// `{ "id": … }`, or a bare id.
+/// `{ "id": … }`, or a bare id. The bundled general identities read as no
+/// profile: the console preselects `default` for every new chat, so it names
+/// no role whose rules belong apart from the user's.
 pub(crate) fn profile_field(metadata: &Value) -> Option<String> {
     let profile = metadata.get("agent_profile")?;
     profile
         .get("id")
         .unwrap_or(profile)
         .as_str()
-        .filter(|id| !id.is_empty())
+        .filter(|id| !id.is_empty() && !["default", "iii-minimal", "iii"].contains(id))
         .map(str::to_string)
 }
 
@@ -942,6 +944,7 @@ mod tests {
             ("solo", json!({ "agent_profile": reviewer })),
             ("bare", json!({ "agent_profile": "reviewer" })),
             ("plain", json!({})),
+            ("general", json!({ "agent_profile": { "id": "default" } })),
             (
                 "named",
                 json!({ "agent_profile": reviewer, "memory_bank": "blog" }),
@@ -978,6 +981,10 @@ mod tests {
             "the default's rules first, then the agent's"
         );
         assert!(layers(at(None, "plain", &[]).await).is_empty());
+        assert!(
+            layers(at(None, "general", &[]).await).is_empty(),
+            "the bundled default identity is no profile"
+        );
         assert!(
             layers(at(in_root("w"), "named", &[]).await).is_empty(),
             "a session naming its bank reads it alone"

@@ -332,7 +332,7 @@ pub(crate) fn rules_section(
 }
 
 /// Build what a turn on `bank_name` is given, with `layers` read under it
-/// (`scope::Resolved::layers`): their rules first, each labelled with its
+/// (`scope::Resolved::layers`): their rules first ([`turn_rules`]), each labelled with its
 /// bank's name so two `learned` rules never read as one, and the memories
 /// of theirs it reads (`scope::layer_keeps`) in the same recall and floor.
 /// `query` is the user message to recall for (`None`: no recall, as on a
@@ -368,6 +368,7 @@ pub(crate) async fn injection(
             .map(|(name, b)| (*name, rules_of(b)))
             .collect(),
         bank.as_deref().map(rules_of).unwrap_or_default(),
+        bank_name == cfg.default_bank,
     );
     let (section, rules_count, rules_truncated) =
         rules_section(cfg, bank_name, bank.is_some() || !layers.is_empty(), &rules);
@@ -474,21 +475,24 @@ pub(crate) async fn injection(
 
 /// A turn's rules, under one `max_rule_chars` budget: each layer's in
 /// order, labelled with its bank's name so two `learned` rules never read as
-/// one, then the bank's own.
+/// one, then the bank's own; the bank's own first when it is `default_bank`,
+/// whose rules come before every layer's.
 fn turn_rules(
     layers: Vec<(&str, Vec<crate::types::Rule>)>,
     own: Vec<crate::types::Rule>,
+    own_first: bool,
 ) -> Vec<crate::types::Rule> {
-    layers
-        .into_iter()
-        .flat_map(|(name, rules)| {
-            rules.into_iter().map(move |r| crate::types::Rule {
-                name: format!("{} ({name})", r.name),
-                ..r
-            })
+    let layered = layers.into_iter().flat_map(|(name, rules)| {
+        rules.into_iter().map(move |r| crate::types::Rule {
+            name: format!("{} ({name})", r.name),
+            ..r
         })
-        .chain(own)
-        .collect()
+    });
+    if own_first {
+        own.into_iter().chain(layered).collect()
+    } else {
+        layered.chain(own).collect()
+    }
 }
 
 /// Hits from a turn's bank, then from its layer, as one ranking: deduped
@@ -1280,6 +1284,7 @@ Formal."
                 ("agent-reviewer", vec![learned("Check the tests first.")]),
             ],
             vec![learned("Use pnpm."), rule("style", &"s".repeat(300))],
+            false,
         );
         let (section, truncated) = build_rules_section(&rules, 240);
         let theirs = section
@@ -1298,8 +1303,17 @@ Formal."
             "{reminder}"
         );
 
-        let alone = turn_rules(Vec::new(), vec![learned("Use pnpm.")]);
+        let alone = turn_rules(Vec::new(), vec![learned("Use pnpm.")], false);
         assert_eq!(alone[0].name, "learned");
+
+        // In a default_bank session its own rules spend the budget first.
+        let main = turn_rules(
+            vec![("agent-reviewer", vec![learned("Check the tests first.")])],
+            vec![learned("Never use emoji.")],
+            true,
+        );
+        let names: Vec<&str> = main.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["learned", "learned (agent-reviewer)"]);
     }
 
     #[test]
