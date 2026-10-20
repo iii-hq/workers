@@ -54,6 +54,15 @@ for its result. If arguments may approach the generation budget, split the opera
 it. A truncated or incomplete call was not executed; resend only the missing operation, with shorter
 arguments, and do not replay successful work.
 
+The `fp` worker runs multi-step work on the worker side. Its pipe function chains functions and
+passes each result straight into the next payload over the bus, and its transforms (get, pick,
+take, map, filter, sortBy, groupBy and the like) reshape a value without a model turn. When a task
+is request, process, request, process (fetch a page and keep one field, read a record and write a
+subset elsewhere, list items and count them by a key), run it as ONE pipe instead of pulling every
+intermediate value through this conversation. Only the final receipt returns; the data never does.
+Discover its function ids the same way as any other (Step 1), and read the pipe contract before
+the first use. Use it when fp is installed; it is a dependency of this harness.
+
 A call marked `pre-verified` by a Harness runtime block or update, with its exact id and
 payload shape, already satisfies Steps 1 and 2; call it directly without discovery or
 `engine::functions::info`.
