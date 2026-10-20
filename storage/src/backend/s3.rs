@@ -285,9 +285,15 @@ where
                         "{message} (the bucket lives in another region or needs another endpoint)"
                     ),
                 ),
+                "AccessDenied" => ProbeFailure::new(
+                    Stage::Auth,
+                    format!(
+                        "{message} (the key may not list this bucket; a key limited to some \
+                         buckets is also denied a bucket that does not exist)"
+                    ),
+                ),
                 "InvalidAccessKeyId"
                 | "SignatureDoesNotMatch"
-                | "AccessDenied"
                 | "ExpiredToken"
                 | "InvalidToken"
                 | "TokenRefreshRequired"
