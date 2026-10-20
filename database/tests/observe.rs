@@ -320,11 +320,12 @@ async fn new_consumer_observes_the_statements_path_with_caller_parent() {
     silent(&mut events, "payments write").await;
 
     observer.dispose().await.unwrap();
+    // The SDK drops the observer from the set before the removal hook runs:
+    // wait for the hook, not just `is_observed()`.
     eventually("observer removed on the owner", || {
-        !db.row_changed.is_observed()
+        !db.row_changed.is_observed() && db.capture.route_count() == 0
     })
     .await;
-    assert_eq!(db.capture.route_count(), 0);
     consumer.shutdown_async().await;
     db.iii.shutdown_async().await;
 }
