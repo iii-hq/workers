@@ -1,4 +1,4 @@
-import { Download, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
@@ -397,7 +397,7 @@ export function ChatPanel({
         {showList ? (
           <PageSidebar
             // onboarding-conversations: tour anchor (workers/onboarding). Do not remove.
-            className="onboarding-conversations"
+            className="onboarding-conversations bg-white dark:bg-neutral-950"
             label="Conversations"
             side={panelSide}
             storageKey="console:chat:conversations"
@@ -407,27 +407,9 @@ export function ChatPanel({
             collapsible
             resizable
             narrow={narrow}
-            header={
-              <>
-                <Button
-                  type="button"
-                  variant="primary"
-                  size="md"
-                  className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
-                  onClick={handleCreate}
-                >
-                  <Plus className="size-4 shrink-0" aria-hidden />
-                  New chat
-                </Button>
-                <IconButton
-                  label="Import conversations"
-                  className="max-sm:size-12"
-                  onClick={() => setImportOpen(true)}
-                >
-                  <Download aria-hidden />
-                </IconButton>
-              </>
-            }
+            /* The top row holds only the collapse toggle; New chat, search
+               and import are navigation rows inside the sidebar itself. */
+            header={<span className="sr-only">Conversations</span>}
             collapsedActions={
               <IconButton
                 label="New chat"
@@ -443,6 +425,8 @@ export function ChatPanel({
               conversations={conversations}
               activeId={activeId}
               narrow={narrow}
+              onCreate={handleCreate}
+              onImport={() => setImportOpen(true)}
               onSelect={handleSelect}
               onRename={rename}
               onRemove={requestRemoval}

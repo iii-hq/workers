@@ -1,7 +1,14 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
+import {
+  CircleQuestionMark,
+  Download,
+  Plus,
+  Search,
+  Settings,
+} from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
+import { hashForSettingsLanding } from '@/hooks/use-hash-route'
 import { hideSideChats } from '@/lib/chat-aside'
 import { filterConversations } from '@/lib/conversation-filter'
 import {
@@ -21,6 +28,8 @@ import {
   parseConversationListView,
   sortConversationRoots,
 } from '@/lib/conversation-view'
+import { requestPaletteOpen } from '@/lib/palette/open-request'
+import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ConversationFilterMenu } from './ConversationFilterMenu'
 import { ConversationGroupHeader } from './ConversationGroupHeader'
@@ -35,6 +44,10 @@ interface ConversationSidebarProps {
   activeId: string | null
   /** Touch-sized rows and always-visible actions when the list is the whole narrow page. */
   narrow?: boolean
+  /** Start a conversation — the New chat row at the top of the sidebar. */
+  onCreate?: () => void
+  /** Import conversations from a file — a quiet action beside the list title. */
+  onImport?: () => void
   onSelect: (id: string) => void
   onRename: (id: string, title: string) => void
   onRemove: (id: string) => void
@@ -45,6 +58,25 @@ const GROUPS_COLLAPSED_KEY = 'iii-chat-groups-collapsed'
 const LIST_VIEW_KEY = 'iii-chat-list-view'
 /** The grouping-only key this view record replaced; read as a fallback. */
 const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
+
+/**
+ * A navigation row at the top of the sidebar (New chat, Search): an icon
+ * and a label on a rounded-xl wash that only paints on hover or focus.
+ */
+const NAV_ROW =
+  'flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-neutral-600 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+
+/** The quiet icon buttons beside the list title and along the bottom row. */
+const QUIET_ACTION =
+  'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+
+/**
+ * The sidebar reads the console tokens through the Tailwind neutral ramp:
+ * every shared recipe inside it (tree rows, the filter menu trigger, the
+ * group headers) keeps its own classes and simply resolves to neutral.
+ */
+const NEUTRAL_TOKENS =
+  '[--color-ink:var(--color-neutral-900)] [--color-ink-faint:var(--color-neutral-500)] [--color-ink-ghost:var(--color-neutral-400)] [--color-surface:var(--color-neutral-100)] [--color-surface-hover:var(--color-neutral-200)] [--color-surface-selected:var(--color-neutral-200)] dark:[--color-ink:var(--color-neutral-50)] dark:[--color-ink-faint:var(--color-neutral-400)] dark:[--color-ink-ghost:var(--color-neutral-500)] dark:[--color-surface:var(--color-neutral-900)] dark:[--color-surface-hover:var(--color-neutral-800)] dark:[--color-surface-selected:var(--color-neutral-800)]'
 
 function loadStringSet(storageKey: string): Set<string> {
   if (typeof window === 'undefined') return new Set()
@@ -86,6 +118,8 @@ export function ConversationSidebar({
   conversations,
   activeId,
   narrow = false,
+  onCreate,
+  onImport,
   onSelect,
   onRename,
   onRemove,
@@ -200,34 +234,77 @@ export function ConversationSidebar({
     section.rows.some((row) => row.hasChildren),
   )
 
-  /* The 8px gutter plus the tree row's own 10px inset puts every glyph,
-     the heading and the empty copy on one 18px column. */
+  /* The 8px gutter plus the nav row's own 10px inset puts every glyph, the
+     heading and the empty copy on one 18px column. */
   return (
-    <>
-      <div className="flex flex-col gap-2 px-2 pt-2 pb-1">
-        <div className="flex items-center justify-between gap-2 pr-0.5 pl-[10px]">
-          <h2 className="min-w-0 truncate font-sans text-base font-medium text-ink-faint sm:text-[13px]">
-            Conversations
-          </h2>
+    <div
+      className={cn('flex min-h-0 flex-1 flex-col font-inter', NEUTRAL_TOKENS)}
+    >
+      <nav
+        aria-label="Conversation actions"
+        className="flex flex-col gap-0.5 px-2 pt-1"
+      >
+        {onCreate ? (
+          <button
+            type="button"
+            onClick={onCreate}
+            className={cn(
+              NAV_ROW,
+              narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
+            )}
+          >
+            <Plus className="size-4 shrink-0" aria-hidden />
+            New chat
+          </button>
+        ) : null}
+        {/* Search is a row like the others; the field is the row. */}
+        <div className="relative">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-neutral-500 dark:text-neutral-400"
+            aria-hidden
+          />
+          <input
+            name="conversation-search"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.currentTarget.value)}
+            placeholder="Search"
+            aria-label="search conversations"
+            data-conversation-search=""
+            className={cn(
+              NAV_ROW,
+              'pl-9 placeholder:text-neutral-600 focus:bg-neutral-100 dark:placeholder:text-neutral-400 dark:focus:bg-neutral-900',
+              narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
+            )}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQuery('')
+            }}
+          />
+        </div>
+      </nav>
+
+      <div className="flex items-center justify-between gap-2 px-2 pt-4 pb-1 pl-[18px]">
+        <h2 className="min-w-0 truncate font-inter text-base font-medium text-neutral-500 sm:text-[13px] dark:text-neutral-400">
+          Conversations
+        </h2>
+        <div className="flex items-center gap-0.5">
+          {onImport ? (
+            <button
+              type="button"
+              onClick={onImport}
+              aria-label="Import conversations"
+              title="Import conversations"
+              className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-7')}
+            >
+              <Download className="size-4" aria-hidden />
+            </button>
+          ) : null}
           <ConversationFilterMenu
             view={view}
             onViewChange={setView}
             narrow={narrow}
           />
         </div>
-        <Input
-          name="conversation-search"
-          type="search"
-          value={query}
-          onChange={setQuery}
-          placeholder="Search conversations"
-          aria-label="search conversations"
-          data-conversation-search=""
-          className="h-12 font-sans text-base normal-case sm:h-8 sm:text-[13px]"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setQuery('')
-          }}
-        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
@@ -254,7 +331,13 @@ export function ConversationSidebar({
             )}
           </div>
         ) : (
-          <div className={uiClasses.tree} data-narrow={narrow || undefined}>
+          <div
+            className={cn(
+              uiClasses.tree,
+              '[--iii-ui-tree-row:2.25rem] [&_.iii-ui-tree-item]:rounded-xl',
+            )}
+            data-narrow={narrow || undefined}
+          >
             {sections.map(({ group, count, rows }) => (
               <Fragment key={group.key}>
                 {headers ? (
@@ -290,6 +373,30 @@ export function ConversationSidebar({
           </div>
         )}
       </div>
-    </>
+
+      {/* The bottom row: help on the left of settings, nothing else. */}
+      <div className="flex shrink-0 items-center justify-end gap-1 px-2 py-2">
+        <button
+          type="button"
+          onClick={() => requestPaletteOpen()}
+          aria-label="Help: search and commands"
+          title="Help: search and commands"
+          className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
+        >
+          <CircleQuestionMark className="size-4" aria-hidden />
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            window.location.hash = hashForSettingsLanding(narrow)
+          }}
+          aria-label="ADE settings"
+          title="ADE settings"
+          className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
+        >
+          <Settings className="size-4" aria-hidden />
+        </button>
+      </div>
+    </div>
   )
 }

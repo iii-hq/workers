@@ -25,7 +25,7 @@ import {
  * every control in the chrome answers the pointer the same way.
  */
 const GHOST_CONTROL =
-  'inline-flex shrink-0 items-center justify-center rounded-md text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
+  'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
 
 export interface WorkspaceHeaderProps {
   workspace: UseWorkspaceTabsReturn
@@ -165,10 +165,11 @@ export function WorkspaceHeader({
 
       {/* onboarding-menu-bar: tour anchor (workers/onboarding) — a selector,
           not styling. Do not remove. */}
-      <header className="onboarding-menu-bar hidden h-12 shrink-0 items-center gap-4 bg-white pr-3 pl-3 font-inter text-neutral-900 sm:flex dark:bg-neutral-950 dark:text-neutral-50">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
+      <header className="onboarding-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 bg-white px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-950 dark:text-neutral-50">
+        <div className="flex min-w-0 items-center gap-3">
           <span className="flex size-8 shrink-0 items-center justify-center">
-            <Wordmark className="mx-0 h-6" />
+            {/* 20% under the 24px mark it replaced: 19.2px. */}
+            <Wordmark className="mx-0 h-[1.2rem]" />
           </span>
           <TabStrip
             tabs={workspace.tabs}
@@ -182,26 +183,27 @@ export function WorkspaceHeader({
           />
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
-          {/* The console is reached through the palette, so the search
-              control carries its own chord: the caps teach ⌘K on sight. */}
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            aria-label={paletteTitle}
-            title={paletteTitle}
-            /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-            className="onboarding-palette inline-flex h-8 shrink-0 items-center gap-2 rounded-md bg-neutral-100 pr-1.5 pl-2.5 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
-          >
-            <Search className="size-4 shrink-0" aria-hidden />
-            <span>Search</span>
-            <KeyCombo
-              binding={paletteBinding}
-              className="gap-0.5"
-              capClassName="min-w-5 rounded bg-white px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700"
-            />
-          </button>
+        {/* The console is reached through the palette, so search sits in
+            the middle of the bar and carries its own chord: the caps teach
+            ⌘K on sight. */}
+        <button
+          type="button"
+          onClick={onOpenPalette}
+          aria-label={paletteTitle}
+          title={paletteTitle}
+          /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
+          className="onboarding-palette inline-flex h-8 w-72 max-w-full items-center gap-2 justify-self-center rounded-xl bg-neutral-100 pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+        >
+          <Search className="size-4 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-left">Search</span>
+          <KeyCombo
+            binding={paletteBinding}
+            className="gap-0.5"
+            capClassName="min-w-5 rounded-md bg-white px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700"
+          />
+        </button>
 
+        <div className="flex items-center justify-end gap-1.5">
           <button
             type="button"
             onClick={onToggleSettings}
@@ -212,7 +214,7 @@ export function WorkspaceHeader({
               // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
               'onboarding-settings size-8',
               settingsOpen
-                ? 'inline-flex shrink-0 items-center justify-center rounded-md bg-neutral-900 text-neutral-50 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:focus-visible:ring-neutral-400'
+                ? 'inline-flex shrink-0 items-center justify-center rounded-xl bg-neutral-900 text-neutral-50 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:focus-visible:ring-neutral-400'
                 : GHOST_CONTROL,
             )}
           >

@@ -521,7 +521,7 @@ export function TabStrip({
               }}
               style={transform ? { transform } : undefined}
               className={cn(
-                'group/tab flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-md pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:h-8 sm:gap-1 sm:pl-3 dark:focus-visible:ring-neutral-400',
+                'group/tab flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:h-8 sm:gap-1 sm:pl-3 dark:focus-visible:ring-neutral-400',
                 tabs.length > 1 ? 'pr-2 sm:pr-1' : 'pr-4 sm:pr-3',
                 active
                   ? 'bg-neutral-200/80 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50'
@@ -563,7 +563,7 @@ export function TabStrip({
                     closeTab(tab.id)
                   }}
                   className={cn(
-                    'relative flex size-10 items-center justify-center rounded text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
+                    'relative flex size-10 items-center justify-center rounded-lg text-neutral-400 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 sm:size-6 dark:text-neutral-500 dark:hover:bg-neutral-700 dark:hover:text-neutral-50',
                     !active &&
                       'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/tab:opacity-100 pointer-fine:group-focus-within/tab:opacity-100',
                   )}
@@ -585,7 +585,7 @@ export function TabStrip({
         aria-label="New workspace"
         title={hoverTitle('New workspace', 'workspace.create')}
         onClick={onCreate}
-        className="relative flex size-12 shrink-0 items-center justify-center rounded-md text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+        className="relative flex size-12 shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
       >
         <span
           className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -756,7 +756,7 @@ function TabContextMenu({
   }, [onDismiss])
 
   const itemCls =
-    'flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left font-inter text-[13px] text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50'
+    'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left font-inter text-[13px] text-neutral-700 transition-colors hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-50'
 
   return createPortal(
     <div
@@ -768,7 +768,7 @@ function TabContextMenu({
         left: Math.min(x, window.innerWidth - 160),
         zIndex: 60,
       }}
-      className="min-w-[150px] rounded-lg bg-white p-1 font-inter shadow-floating ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-800"
+      className="min-w-[150px] rounded-xl bg-white p-1 font-inter shadow-floating ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-800"
     >
       <button
         type="button"
