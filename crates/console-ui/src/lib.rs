@@ -421,15 +421,16 @@ impl Served {
     }
 }
 
+// `register_trigger` is deprecated in iii-sdk 0.25 but still served by every
+// engine: the console:script / console:style types stay until the console
+// moves to observe.
+#[allow(deprecated)]
 fn register_asset_trigger(
     iii: &Arc<IIIClient>,
     function_id: &str,
     kind: AssetKind,
     path: &str,
 ) -> Result<iii_sdk::trigger::Trigger, Error> {
-    // Deprecated in the 0.25 SDK; the console keeps its asset trigger types
-    // until it moves to an observable function (`console::on-asset`).
-    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         kind.trigger_type().to_string(),
         function_id.to_string(),

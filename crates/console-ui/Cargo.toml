@@ -14,12 +14,14 @@ publish = false
 
 [dependencies]
 # Range, not an exact pin: workers carry their own exact SDK pins and Cargo
-# must be able to unify the stable 0.24.5 and 0.24.6 releases and the observe
-# alpha 0.24.5-alpha.3 (database). Explicitly mention the prerelease: Cargo
-# admits one only when a comparator names that same version.
+# must be able to unify the stable 0.24.5 and 0.24.6 releases and the 0.25
+# release candidates. The upper bound names the candidate on purpose: Cargo
+# only admits a prerelease when a comparator names one on the same
+# major.minor.patch, so `<0.26.0` would reject 0.25.0-rc.4. Widen it to
+# `<0.26.0` once 0.25.0 is released.
 # Path-linking this crate must never drag a worker onto a different SDK build
 # or block one that has not migrated yet.
-iii-sdk = ">=0.24.5-alpha.3, <=0.24.6"
+iii-sdk = ">=0.24.5, <=0.25.0-rc.4"
 tokio = { version = "1", features = ["rt", "sync", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
