@@ -202,6 +202,23 @@ impl S3Backend {
     }
 }
 
+/// Prefix an error's message with the operation that failed.
+fn with_operation(operation: &str, error: BackendError) -> BackendError {
+    match error {
+        BackendError::AuthFailed(message) => {
+            BackendError::AuthFailed(format!("{operation}: {message}"))
+        }
+        BackendError::Provider {
+            inner_code,
+            message,
+        } => BackendError::Provider {
+            inner_code,
+            message: format!("{operation}: {message}"),
+        },
+        other => other,
+    }
+}
+
 /// `bytes <start>-<end>/<total>` → `(start, total)`.
 fn parse_content_range(value: &str) -> Option<(u64, u64)> {
     let rest = value.trim().strip_prefix("bytes")?.trim_start();
@@ -557,9 +574,26 @@ impl Backend for S3Backend {
     async fn ensure_bucket(&self) -> Result<bool, BackendError> {
         match self.client.head_bucket().bucket(&self.bucket).send().await {
             Ok(_) => return Ok(false),
-            Err(error) => match map_s3_error(error) {
-                BackendError::NotFound => {}
-                other => return Err(other),
+            // A HEAD answer has no body, so no error code: say what a
+            // status means.
+            Err(error) => match status_of(&error) {
+                Some(404) => {}
+                Some(401 | 403) => {
+                    return Err(BackendError::AuthFailed(format!(
+                        "HeadBucket: HTTP {} (the key may not read this bucket, or another \
+                         account owns the name)",
+                        status_of(&error).unwrap_or(403)
+                    )))
+                }
+                Some(301) => {
+                    return Err(BackendError::Provider {
+                        inner_code: Some("PermanentRedirect".into()),
+                        message: "HeadBucket: HTTP 301 (the bucket lives in another region or \
+                                  needs another endpoint)"
+                            .into(),
+                    })
+                }
+                _ => return Err(with_operation("HeadBucket", map_s3_error(error))),
             },
         }
         let mut create = self.client.create_bucket().bucket(&self.bucket);
@@ -572,15 +606,28 @@ impl Backend for S3Backend {
         }
         match create.send().await {
             Ok(_) => Ok(true),
-            Err(error)
-                if error
+            Err(error) => {
+                let code = error
                     .as_service_error()
                     .and_then(ProvideErrorMetadata::code)
-                    .is_some_and(|code| code == "BucketAlreadyOwnedByYou") =>
-            {
-                Ok(false)
+                    .unwrap_or("")
+                    .to_string();
+                let message = describe_sdk_error(&error);
+                match code.as_str() {
+                    "BucketAlreadyOwnedByYou" => Ok(false),
+                    "BucketAlreadyExists" => Err(BackendError::Provider {
+                        inner_code: Some(code.clone()),
+                        message: format!(
+                            "CreateBucket: {message} (another account owns this name; pick \
+                             another provider-side bucket)"
+                        ),
+                    }),
+                    "AccessDenied" => Err(BackendError::AuthFailed(format!(
+                        "CreateBucket: {message} (the key may not create buckets)"
+                    ))),
+                    _ => Err(with_operation("CreateBucket", map_s3_error(error))),
+                }
             }
-            Err(error) => Err(map_s3_error(error)),
         }
     }
 }
