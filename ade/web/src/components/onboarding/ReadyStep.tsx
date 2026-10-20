@@ -1,7 +1,6 @@
 import {
   ArrowRight,
   Check,
-  Compass,
   LoaderCircle,
   MessageSquareText,
   TriangleAlert,
@@ -19,13 +18,6 @@ import { ProviderMark } from './ProviderMark'
 import { Disclosure, Rows, Section, StatusChip, StepLayout } from './parts'
 import type { OnboardingController } from './use-onboarding'
 
-/** The guided tour offered once a model is connected. */
-export type TourState =
-  | { kind: 'idle' }
-  /** Getting the tour ready: adding its worker, waiting for its page. */
-  | { kind: 'preparing' }
-  | { kind: 'failed'; error: string }
-
 /** The name the new-chat gallery shows for an agent profile, when known. */
 function agentLabel(
   id: string,
@@ -35,9 +27,10 @@ function agentLabel(
 }
 
 /**
- * The last step: what setup connected, the project's example prompts — one
- * click opens a new chat that sends the prompt, its agent profile and its
- * model chosen — and the guided tour.
+ * The last step: what setup connected, and the project's example prompts —
+ * one click opens a new chat that sends the prompt, its agent profile and
+ * its model chosen. Finish closes the wizard; the learn-iii tour offers
+ * itself later, on its own (see `useTourGate`).
  */
 export function ReadyStep({
   onboarding,
@@ -45,8 +38,6 @@ export function ReadyStep({
   prompts,
   agentNames,
   onPrompt,
-  tour,
-  onStartTour,
   onStart,
   kits = [],
   onRetryKit,
@@ -61,9 +52,6 @@ export function ReadyStep({
   agentNames: ReadonlyMap<string, string>
   /** Close the wizard and open a new chat that sends this prompt. */
   onPrompt: (prompt: ExamplePrompt) => void
-  tour: TourState
-  /** Accept the tour: the wizard gets it ready, then opens it. */
-  onStartTour: () => void
   /** Close the wizard and hand the composer the focus. */
   onStart: () => void
   /** The template's kits and how their background install is going. */
@@ -121,9 +109,6 @@ export function ReadyStep({
       : []),
   ]
 
-  // The tour's first stage is a message to the agent: it needs a model.
-  const offerTour = connected.length > 0
-  const preparing = tour.kind === 'preparing'
   // A prompt needs a model to answer it.
   const offerPrompts = connected.length > 0 && prompts?.length !== 0
 
@@ -131,36 +116,10 @@ export function ReadyStep({
     <StepLayout
       centered
       footer={
-        offerTour ? (
-          <span className="ml-auto flex items-center gap-2">
-            <Button
-              variant="ghost"
-              onClick={() => onStart()}
-              disabled={preparing}
-            >
-              Skip the tour
-            </Button>
-            <Button onClick={onStartTour} disabled={preparing}>
-              {preparing ? (
-                <LoaderCircle
-                  className="animate-spin motion-reduce:animate-none"
-                  aria-hidden
-                />
-              ) : null}
-              {preparing
-                ? 'Preparing the tour…'
-                : tour.kind === 'failed'
-                  ? 'Try again'
-                  : 'Start the tour'}
-              {preparing ? null : <ArrowRight aria-hidden />}
-            </Button>
-          </span>
-        ) : (
-          <Button className="ml-auto" onClick={() => onStart()}>
-            Start building
-            <ArrowRight aria-hidden />
-          </Button>
-        )
+        <Button className="ml-auto" onClick={() => onStart()}>
+          Finish
+          <ArrowRight aria-hidden />
+        </Button>
       }
     >
       <div className="flex flex-col items-center gap-3 text-center">
@@ -316,39 +275,6 @@ export function ReadyStep({
             ))}
           </ul>
         </Disclosure>
-      ) : null}
-
-      {offerTour ? (
-        <section
-          aria-label="Guided tour"
-          className="flex gap-3 rounded-lg border border-neutral-200 bg-neutral-50 px-3.5 py-3 dark:border-neutral-800 dark:bg-neutral-900"
-        >
-          <Compass
-            className="mt-0.5 size-4 shrink-0 text-ink"
-            strokeWidth={1.75}
-            aria-hidden
-          />
-          <span className="flex min-w-0 flex-col gap-0.5">
-            <h3 className="font-sans text-[13px] font-medium leading-5 text-ink">
-              Keep going with a guided tour
-            </h3>
-            <p className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
-              Send your first message and see your agent use tools, react to
-              events, and trace its work. We’ll show you around as you go.
-              {offerPrompts
-                ? ' Pick an example and the tour opens once the agent has answered.'
-                : null}
-            </p>
-            {tour.kind === 'failed' ? (
-              <p
-                role="alert"
-                className="mt-1 font-sans text-[13px] leading-5 text-alert-strong"
-              >
-                The tour could not start: {tour.error}
-              </p>
-            ) : null}
-          </span>
-        </section>
       ) : null}
     </StepLayout>
   )

@@ -28,8 +28,8 @@ import { useTour } from './use-tour'
  * away early. A console with the slot shows the card instead (overlay.tsx);
  * both run on `useTour`.
  */
-export function LearnIiiPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
-  const tour = useTour(host, conversationId)
+export function LearnIiiPage({ host, onRequestClose }: { host: Host } & PageRenderProps) {
+  const tour = useTour(host)
   const { tour: loaded, records, error, open, setOpen, active, framed } = tour
   const removeButton = <RemoveLearnIii host={host} onClose={onRequestClose} />
 

@@ -29,7 +29,6 @@ import { getIiiClient } from '@/lib/iii-client'
 import {
   fetchOnboardingState,
   type OnboardingStatus,
-  readableError,
   saveOnboardingState,
 } from '@/lib/onboarding/api'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
@@ -57,41 +56,18 @@ import {
   type SetupStepId,
   type SetupStepProperties,
 } from '@/lib/onboarding/telemetry'
-import { openTour, prepareTour } from '@/lib/onboarding/tour'
-import {
-  clearTourSchedule,
-  scheduleTour,
-  useScheduledTour,
-} from '@/lib/onboarding/tour-schedule'
+import { useTourGate } from '@/lib/onboarding/tour-gate'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
-import { fetchNewChatWorkingDir } from '@/lib/working-dir'
 import { BrowserStep } from './BrowserStep'
-import { openExamplePrompt } from './example-prompt'
+import { startExamplePrompt } from './example-prompt'
 import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
 import type { StepPosition } from './parts'
-import { ReadyStep, type TourState } from './ReadyStep'
+import { ReadyStep } from './ReadyStep'
 import { Stepper, type StepperStep } from './Stepper'
 import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
-
-/**
- * The longest an example waits for its profile or folder lookup once the
- * wizard has closed. Past it the chat opens with what is known, and the
- * prompt waits for a manual send (see `openExamplePrompt`) while the chat
- * looks up its folder itself.
- */
-const LOOKUP_WAIT_MS = 3000
-
-function withinLookupWait<T>(lookup: Promise<T>, fallback: T): Promise<T> {
-  return Promise.race([
-    lookup,
-    new Promise<T>((resolve) =>
-      window.setTimeout(() => resolve(fallback), LOOKUP_WAIT_MS),
-    ),
-  ])
-}
 
 const STEPS: readonly StepperStep[] = [
   { id: 'welcome', title: 'Welcome', description: 'What the ADE does' },
@@ -140,12 +116,10 @@ export function stepPosition(
  * Ready offers the example prompts the project's template declares
  * (`onboarding.yaml`, read through `console::onboarding::prompts`): a click
  * opens a new chat that sends the prompt, its agent profile and model chosen
- * (see `openExamplePrompt`). Once a model is connected it also offers the
- * guided tour. Accepting adds the `onboarding` worker that carries it —
- * quietly: it is how the tour is delivered, not a choice in setup — and
- * shows its overlay. Picking an example instead schedules the tour: it
- * opens once that chat has its answer, or after a few minutes (see
- * `useScheduledTour`).
+ * (see `openExamplePrompt`). Finish closes the wizard. The learn-iii tour is
+ * not started here: it opens by itself once the operator has had the ADE for
+ * five minutes (see `useTourGate`, mounted beside this host so it waits for
+ * the dialog to close).
  */
 export function OnboardingWizardHost() {
   const reduceMotion = useReducedMotion()
@@ -161,8 +135,7 @@ export function OnboardingWizardHost() {
   const [agents, setAgents] = useState<AgentEntry[] | null>(null)
   const ctxRef = useRef(ctx)
   ctxRef.current = ctx
-  const [tour, setTour] = useState<TourState>({ kind: 'idle' })
-  useScheduledTour()
+  useTourGate(open, live)
   // The template's kits install in the background from the moment the
   // wizard first opens; the run outlives the dialog (this host stays
   // mounted), so skipping or closing setup does not stop it.
@@ -180,7 +153,7 @@ export function OnboardingWizardHost() {
     // registers between two of them would otherwise wait for the next one.
     void refreshModels?.()
   })
-  const busy = onboarding.running !== null || tour.kind === 'preparing'
+  const busy = onboarding.running !== null
   // The Browser step joins the list when the project runs the browser worker
   // and the machine has no Chromium for it (or someone asks for it), and
   // stays listed once shown.
@@ -436,36 +409,16 @@ export function OnboardingWizardHost() {
     if (open) starting.current = false
   }, [open])
 
-  /**
-   * Close setup and open a new chat that sends the prompt. The tour waits
-   * for that chat: it opens once the agent has answered, or after a few
-   * minutes, so the first answer is not crowded by it.
-   */
+  /** Close setup and open a new chat that sends the prompt. */
   const startPrompt = useCallback(
     async (prompt: ExamplePrompt) => {
       if (starting.current) return
       starting.current = true
       reportRef.current('finish', { outcome: 'example_prompt' })
       setOpen(false)
-      const [profiles, workingDir] = await Promise.all([
-        // Profiles still loading (a quick click): ask for them once more.
-        agents ??
-          withinLookupWait(
-            getIiiClient()
-              .then(listAgents)
-              .catch(() => []),
-            [],
-          ),
-        // `undefined` = the lookup did not finish, timed out or failed (not:
-        // it found none).
-        withinLookupWait<string | null | undefined>(
-          fetchNewChatWorkingDir().catch(() => undefined),
-          undefined,
-        ),
-      ])
       const api = ctxRef.current
       if (!api) return
-      scheduleTour(openExamplePrompt(api, prompt, profiles, workingDir))
+      await startExamplePrompt(api, prompt, agents)
       window.requestAnimationFrame(requestComposerFocus)
     },
     [agents],
@@ -482,22 +435,6 @@ export function OnboardingWizardHost() {
         ...(install.planId ? { plan_id: install.planId } : {}),
       },
     })
-  }, [])
-
-  const startTour = useCallback(async () => {
-    setTour({ kind: 'preparing' })
-    try {
-      await prepareTour()
-    } catch (error) {
-      setTour({ kind: 'failed', error: readableError(error) })
-      return
-    }
-    setTour({ kind: 'idle' })
-    reportRef.current('finish', { outcome: 'tour' })
-    setOpen(false)
-    // Asked for now, so an example's pending tour is superseded.
-    clearTourSchedule()
-    openTour()
   }, [])
 
   const content = useRef<HTMLDivElement>(null)
@@ -620,8 +557,6 @@ export function OnboardingWizardHost() {
                     prompts={prompts}
                     agentNames={agentNames}
                     onPrompt={(prompt) => void startPrompt(prompt)}
-                    tour={tour}
-                    onStartTour={() => void startTour()}
                     onStart={start}
                     kits={kits}
                     onRetryKit={(kit) => void retryOnboardingKit(kit)}

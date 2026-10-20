@@ -757,6 +757,20 @@ export interface Host {
      * consoles; feature-detect.
      */
     requestThinkingLevelChange?(request: { sessionId: string; level: string }): boolean
+    /**
+     * Start a new chat that sends `text`, the way a setup example prompt
+     * does: `agent` (a profile id; the default profile when absent) is
+     * selected, the first of `models` this machine serves is chosen with its
+     * effort (the chat's usual model when none is), and the chat is shown.
+     * A profile that is not served leaves the text as a draft to send by
+     * hand. Resolves to the chat's session id. Absent on older consoles;
+     * feature-detect.
+     */
+    startChat?(request: {
+      text: string
+      agent?: string
+      models?: { provider: string; model: string; effort?: string }[]
+    }): Promise<string>
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }

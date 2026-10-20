@@ -10,19 +10,21 @@
  *     classes.
  *   - `ask` (optional): a prompt the step's button puts in the chat composer
  *     and sends, so the operator talks to the agent instead of copying text
- *     out of the tour.
+ *     out of the tour. With `agent` (a profile id) the button starts a NEW
+ *     chat under that profile and sends the prompt there, the way the setup
+ *     wizard's example prompts do; without it the prompt goes to the chat
+ *     the operator is in.
  *   - `on_closed` (optional): a console screen the step suggests closing, and
  *     the body and anchor to show once it is gone. The page binds the
  *     console's `console::workspace::changed` trigger, which rings after
  *     every layout write, so a closed pane is reported as it happens. Never
  *     required to finish the step.
- *   - `to_open` (optional): a console screen the step talks about and the
- *     operator opens THEMSELVES. While it is on screen the step frames its
- *     own anchors; while it is not, the page shows this body and frames
- *     these anchors instead — where the screen opens — and the step's
- *     button waits until it is there. Open only in a tab that is not
- *     showing, the page shows `elsewhere` and frames that tab. Watched the
- *     same way as `on_closed`.
+ *   - `to_open` (optional): a console screen the step talks about. While it
+ *     is on screen the step frames its own anchors; while it is not, the
+ *     page shows this body, frames these anchors — where the screen opens by
+ *     hand — and offers a button (`label`) that opens it beside the chat.
+ *     Open only in a tab that is not showing, the page shows `elsewhere`
+ *     and frames that tab. Watched the same way as `on_closed`.
  *   - `condition` (optional): a real engine trigger the step waits for. The
  *     page binds it, shows what it is waiting for, and when it fires shows
  *     the trigger and its payload. A step with no condition is closed by the
@@ -31,9 +33,9 @@
 
 /**
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
- * @typedef {{ text: string, label: string }} Ask
+ * @typedef {{ text: string, label: string, agent?: string }} Ask
  * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
- * @typedef {{ screen: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
+ * @typedef {{ screen: string, label: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
  * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, ask?: Ask, on_closed?: OnClosed, to_open?: ToOpen }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
@@ -43,6 +45,15 @@
  * steps below wait on.
  */
 const STATE_SCOPE = 'learn-iii'
+
+/**
+ * The agent profile the tour talks to: the one the harness template ships
+ * for its setup examples (`agents/ade-worker-builder.md`, shown as
+ * "Onboarding"). The first step starts a new chat under it; every later
+ * prompt goes to the chat the operator is in, which is that one unless they
+ * moved.
+ */
+export const TOUR_AGENT = 'ade-worker-builder'
 
 /**
  * A step the AGENT finishes, not the operator.
@@ -89,10 +100,11 @@ export const TOURS = [
         id: "message",
         ask: {
           text: "hello",
-          label: "Say hello",
+          label: "Send a message",
+          agent: TOUR_AGENT,
         },
         title: "Send a message",
-        body: "Say 'hello' to the agent. We've setup a trigger to run when you get the agent's response. The iii ade (agentic development environment) is an example of a iii Worker. Database and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
+        body: "Say 'hello' to the agent. The button opens a new chat with the Onboarding agent profile and sends it. We've set up a trigger to run when you get the agent's response. The iii ADE (agentic development environment) is an example of an iii Worker. Kanban and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
         anchors: [".learn-iii-composer", ".composer-shell"],
         condition: {
           type: "harness::turn-completed",
@@ -140,16 +152,17 @@ export const TOURS = [
       {
         id: "observability",
         title: "Observability",
-        body: "Traces follows the chat you are in and opens its latest turn. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
+        body: "Every function call and every trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. Open Traces: it lands beside the chat and selects the latest turn of the chat that is running, so the message you just sent is the first thing you see. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
         anchors: [".learn-iii-traces", 'section[aria-label="traces"]'],
-        // Opened by the operator, not for them: a fresh workspace already has
-        // Traces beside the chat, and when it is gone the page points at where
-        // it opens — the + first, then the traces row of the new tab's picker
-        // (best match first, so the box moves on once the picker is up). A
-        // phone has no tab row: its search button is how Traces opens there.
+        // The step's button opens Traces beside the chat. Until then the page
+        // points at where it opens by hand too — the + first, then the traces
+        // row of the new tab's picker (best match first, so the box moves on
+        // once the picker is up). A phone has no tab row: its search button
+        // is how Traces opens there.
         to_open: {
           screen: "traces",
-          body: "Traces is not open. Open a new tab and pick traces from its list, or search for traces.",
+          label: "Open traces",
+          body: "Traces is not open yet. Open it with the button, or pick traces from a new tab's list.",
           elsewhere: "Traces is open in another tab. Switch to that tab, lit up in the tab row, to see it.",
           anchors: [
             '[role="option"][data-screen="traces"]',
@@ -240,16 +253,4 @@ export function findStep(tourId, stepId) {
   const index = tour?.steps.findIndex((step) => step.id === stepId) ?? -1;
   if (!tour || index < 0) return undefined;
   return { tour, step: tour.steps[index], number: index + 1 };
-}
-
-/**
- * A step's condition matches an event when every key its config filters on
- * has the same value in the payload; an empty config matches any event of
- * the type, the way the engine applies the binding.
- */
-export function conditionMatches(condition, triggerType, payload) {
-  return (
-    condition?.type === triggerType &&
-    Object.entries(condition.config ?? {}).every(([key, value]) => payload?.[key] === value)
-  );
 }

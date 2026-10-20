@@ -19,13 +19,13 @@ import { closeTour, minimizeTour, showTour, useTourView } from './visibility'
  * across the steps already reached, and the spotlight names the element the
  * step is about. It folds to a pill, and closes until it is asked for again.
  */
-export function TourOverlay({ host, conversationId }: { host: Host } & OverlayRenderProps) {
+export function TourOverlay({ host }: { host: Host } & OverlayRenderProps) {
   const view = useTourView()
   // The tour itself — progress, and the triggers its steps wait on — runs for
   // as long as the worker's script is loaded, whatever the card is doing: a
   // step the agent finishes while the card is closed still closes. Closed
   // only means nothing is drawn.
-  const tour = useTour(host, conversationId ?? null)
+  const tour = useTour(host)
   // Coming up, the card reads progress again: a step can close where this
   // tab was not listening (another tab, the console reporting an example's
   // answer before opening the tour).

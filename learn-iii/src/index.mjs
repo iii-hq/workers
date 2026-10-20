@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
 import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
-import { conditionMatches, findStep, getTour, listTours, TOURS } from './tours.mjs'
+import { findStep, getTour, listTours, TOURS } from './tours.mjs'
 
 const WORKER = 'learn-iii'
 const STATE_SCOPE = 'learn-iii'
@@ -244,44 +244,6 @@ iii.registerFunction(
       ['tour_id', 'step_id'],
     ),
     response_format: object({ step: object() }, ['step']),
-  },
-)
-
-/**
- * A trigger that fired before the tour was listening. The console reports
- * it when it opens the tour on its own after an example prompt: the
- * example's turn has already completed, and the tour's first step waits on
- * exactly that event — without this, it would ask for a message the
- * operator has already sent. Every open step waiting on a matching
- * condition closes, with the event as its evidence, the same as if the
- * page's own binding had caught it.
- */
-iii.registerFunction(
-  'learn-iii::steps::observe',
-  async (input) => {
-    const subject = input.subject ?? 'local'
-    const progress = await readProgress(subject)
-    const closed = []
-    for (const tour of TOURS) {
-      for (const step of tour.steps) {
-        if (progress.tours?.[tour.id]?.steps?.[step.id]?.status === 'complete') continue
-        if (!conditionMatches(step.condition, input.trigger_type, input.payload)) continue
-        await completeStep({
-          subject,
-          tour_id: tour.id,
-          step_id: step.id,
-          fired: { trigger_type: input.trigger_type, payload: input.payload },
-        })
-        closed.push({ tour_id: tour.id, step_id: step.id })
-      }
-    }
-    return { closed }
-  },
-  {
-    description:
-      'Report a trigger that fired before the tour was listening: every open step whose condition matches it closes, with the event as its evidence.',
-    request_format: object({ subject: string, trigger_type: string, payload: {} }, ['trigger_type']),
-    response_format: object({ closed: { type: 'array' } }, ['closed']),
   },
 )
 

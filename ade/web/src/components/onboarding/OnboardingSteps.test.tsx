@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ToolScan } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep, type TourState } from './ReadyStep'
+import { ReadyStep } from './ReadyStep'
 import {
   type ActivityEntry,
   type MachineSnapshot,
@@ -274,7 +274,6 @@ const CONNECTED: MachineSnapshot['providers'] = [
 
 function ready(
   snapshot: Partial<MachineSnapshot>,
-  tour: TourState = { kind: 'idle' },
   activity: ActivityEntry[] = [],
   prompts: readonly ExamplePrompt[] | null = [],
 ) {
@@ -285,8 +284,6 @@ function ready(
       prompts={prompts}
       agentNames={new Map([['ade-worker-builder', 'Onboarding']])}
       onPrompt={noop}
-      tour={tour}
-      onStartTour={noop}
       onStart={noop}
     />,
   )
@@ -301,8 +298,6 @@ describe('ReadyStep', () => {
         prompts={[]}
         agentNames={new Map()}
         onPrompt={noop}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
         onStart={noop}
         kits={[
           { kit: 'iii/deepwork', state: 'installing' },
@@ -338,7 +333,7 @@ describe('ReadyStep', () => {
   })
 
   it('sums up what is connected and every worker setup added', () => {
-    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [
+    const html = ready({ providers: CONNECTED }, [
       {
         id: 1,
         group: 'models',
@@ -379,29 +374,16 @@ describe('ReadyStep', () => {
     expect(html).not.toContain('env://')
   })
 
-  it('offers the guided tour in place of starter prompts, without naming its worker', () => {
+  it('ends with Finish and never starts the tour itself', () => {
     const html = ready({ providers: CONNECTED })
-    expect(html).toContain('Keep going with a guided tour')
-    expect(html).toContain('Start the tour')
-    expect(html).toContain('Skip the tour')
-    expect(html).not.toContain('Try one of these first')
-    expect(html).not.toContain('onboarding worker')
-  })
-
-  it('shows the tour getting ready, and why it could not start', () => {
-    expect(ready({ providers: CONNECTED }, { kind: 'preparing' })).toContain(
-      'Preparing the tour…',
-    )
-    const failed = ready(
-      { providers: CONNECTED },
-      { kind: 'failed', error: 'compose is not running' },
-    )
-    expect(failed).toContain('The tour could not start: compose is not running')
-    expect(failed).toContain('Try again')
+    expect(html).toContain('Finish')
+    expect(html).not.toContain('guided tour')
+    expect(html).not.toContain('Start the tour')
+    expect(html).not.toContain('learn-iii')
   })
 
   it('offers the four example prompts as chats to start, each with its agent', () => {
-    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [], PROMPTS)
+    const html = ready({ providers: CONNECTED }, [], PROMPTS)
     expect(html).toContain('Try an example')
     expect(html).toContain('aria-label="Start a chat: Build a link shortener"')
     expect(html).toContain('Build an expense tracker')
@@ -415,22 +397,20 @@ describe('ReadyStep', () => {
   })
 
   it('shows placeholders while the prompts are read, and nothing for a project without any', () => {
-    expect(
-      ready({ providers: CONNECTED }, { kind: 'idle' }, [], null),
-    ).toContain('Loading example prompts')
-    expect(
-      ready({ providers: CONNECTED }, { kind: 'idle' }, [], []),
-    ).not.toContain('Try an example')
+    expect(ready({ providers: CONNECTED }, [], null)).toContain(
+      'Loading example prompts',
+    )
+    expect(ready({ providers: CONNECTED }, [], [])).not.toContain(
+      'Try an example',
+    )
     // No model, no prompt to answer it.
-    expect(
-      ready({ providers: [] }, { kind: 'idle' }, [], PROMPTS),
-    ).not.toContain('Try an example')
+    expect(ready({ providers: [] }, [], PROMPTS)).not.toContain(
+      'Try an example',
+    )
   })
 
-  it('offers no tour without a model to run it', () => {
-    const html = ready({ providers: [] })
-    expect(html).not.toContain('Keep going with a guided tour')
-    expect(html).toContain('Start building')
+  it('ends with Finish without a model too', () => {
+    expect(ready({ providers: [] })).toContain('Finish')
   })
 })
 

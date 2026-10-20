@@ -35,9 +35,18 @@ On a console without the slot the same tour renders as a page in a pane
 (`ui/src/page.tsx`). Both run on `ui/src/use-tour.ts`.
 
 `Open learn-iii` (the palette row, `learn-iii.open`) shows it either way.
-The setup wizard runs that command when the operator starts the tour on its
-Ready step, or — after they pick an example prompt instead — once that chat's
-agent has answered or five minutes have passed, whichever comes first.
+The console runs that command by itself once the operator has had the ADE
+for five minutes: the ADE records its first open (`console::onboarding::get`,
+`first_opened_at`) and the console's tour gate counts from there, across
+reloads and restarts, waits for the setup wizard to close, and opens the tour
+once (`tour_opened_at`). The wizard's Ready step does not start it.
+
+The first step's button starts a new chat under the Onboarding agent profile
+(`ade-worker-builder`, which the harness template ships) and sends "hello"
+there, the way the wizard's example prompts start a chat
+(`host.chat.startChat`); every later prompt goes to the chat the operator is
+in. A step about a console screen (Traces) opens it beside the chat with its
+own button, and moves on once the screen is there.
 
 ## Functions
 
@@ -45,7 +54,6 @@ agent has answered or five minutes have passed, whichever comes first.
 - `learn-iii::tours::get` — one tour with all of its steps.
 - `learn-iii::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
 - `learn-iii::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `learn-iii:steps:complete` topic (see Events).
-- `learn-iii::steps::observe` — report a trigger that fired before the tour was listening; every open step whose condition matches it closes, with the event as evidence. The console calls it with the example chat's completed turn when it opens the tour on its own, so step one does not ask for a message the operator already sent.
 - `learn-iii::steps::reset` — forget one tour and start it again.
 - `learn-iii::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
 
@@ -156,13 +164,14 @@ the same composition move as adding one, run backwards. It carries no
 condition: the worker that would report the step done is the worker being
 removed.
 
-The Observability step never opens Traces for the operator. A fresh workspace
-already has it beside the chat, and the step frames it; when it is gone, the
-step's `to_open` points at where it opens instead — the new-tab `+`, then the
-`traces` row of the new tab's picker (on a phone, its search button) — and its
-button waits until it is open. Open only in a tab that is not showing, the
-step says so and lights that tab. Traces then opens on the latest turn of the
-running chat (else the active one) by itself.
+The Observability step opens Traces beside the chat with its **Open traces**
+button (`console::workspace::open`, `relative_to: chat`). A fresh workspace
+already has it there, and the step frames it; while it is gone, the step's
+`to_open` also points at where it opens by hand — the new-tab `+`, then the
+`traces` row of the new tab's picker (on a phone, its search button) — and
+the step moves on by itself once it is there. Open only in a tab that is not
+showing, the step says so and lights that tab. Traces then opens on the
+latest turn of the running chat (else the active one) by itself.
 
 ## Build
 

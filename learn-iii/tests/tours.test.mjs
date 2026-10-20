@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { TOURS, conditionMatches, findStep, getTour, listTours } from '../src/tours.mjs'
+import { TOUR_AGENT, TOURS, findStep, getTour, listTours } from '../src/tours.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -209,24 +209,22 @@ test('findStep numbers steps from 1 in tour order', () => {
 })
 
 /**
- * `learn-iii::steps::observe` closes the steps an early event satisfies.
- * The console reports the example chat's completed turn with it, so the
- * first step — waiting on any completed turn — must match, and a step whose
- * condition filters on a key must not match an event without it.
+ * The first step starts the tour's chat under the Onboarding profile, the
+ * way a setup example prompt does; every later prompt goes to the chat the
+ * operator is in. A `to_open` step offers a button that opens its screen.
  */
-test('an observed event matches the conditions it would have fired', () => {
+test('the first step opens a chat under the tour agent, and screens come with a button', () => {
   const message = findStep('console-basics', 'message').step
-  const turn = { session_id: 'console-1', turn_id: 't-1', status: 'completed' }
-  assert.equal(conditionMatches(message.condition, 'harness::turn-completed', turn), true)
-  assert.equal(conditionMatches(message.condition, 'state', turn), false)
-  const composability = findStep('console-basics', 'composability').step
-  assert.equal(conditionMatches(composability.condition, 'state', { scope: 'learn-iii' }), false)
-  assert.equal(
-    conditionMatches(composability.condition, 'state', {
-      scope: 'learn-iii',
-      key: 'step_composability_completed',
-    }),
-    true,
-  )
-  assert.equal(conditionMatches(undefined, 'harness::turn-completed', turn), false)
+  assert.equal(message.ask.agent, TOUR_AGENT)
+  for (const tour of TOURS) {
+    for (const step of tour.steps) {
+      if (step.id !== 'message') assert.equal(step.ask?.agent, undefined, `${step.id}: starts a second chat`)
+      if (step.to_open) {
+        assert.ok(step.to_open.screen, `${step.id}: to_open has no screen`)
+        assert.ok(step.to_open.label?.trim(), `${step.id}: to_open has no button label`)
+        assert.ok(step.to_open.body, `${step.id}: to_open has no body`)
+        assert.ok(step.to_open.anchors?.length, `${step.id}: to_open has no anchors`)
+      }
+    }
+  }
 })

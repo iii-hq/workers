@@ -10,20 +10,6 @@ import { bindCondition, type Condition, type Fired, reconcileCondition } from '.
  * bound, and which console screens the open step is waiting on.
  */
 
-/**
- * The reasoning effort the tour asks for, with the first prompt it sends in a
- * conversation.
- *
- * Every step hands the agent a short, concrete build task and then waits on
- * it. Left at the operator's usual level the agent spends the tour
- * deliberating over instructions that are already explicit, which is time the
- * operator spends watching a spinner. The console owns the setting — the page
- * asks, and a console too old to be asked simply is not. Asked with the
- * first prompt rather than with step one's, since step one is closed for the
- * operator when the tour opens after an example has already been answered.
- */
-const TOUR_THINKING_LEVEL = 'lowest'
-
 /** How long the box stays on what a step's `on_closed` note points at. */
 const HINT_SPOTLIGHT_MS = 5_000
 
@@ -33,12 +19,16 @@ export interface Step {
   body: string
   anchors?: string[]
   condition?: Condition
-  /** A prompt the step hands to the chat composer and sends. */
-  ask?: { text: string; label: string }
+  /**
+   * A prompt the step sends: into a new chat under `agent` (a profile id),
+   * the way a setup example prompt starts one, or into the chat the
+   * operator is in.
+   */
+  ask?: { text: string; label: string; agent?: string }
   /** A screen the step suggests closing, with what to show once it is gone. */
   on_closed?: { screen: string; body: string; anchors?: string[] }
-  /** A screen the operator opens themselves, with where it opens. */
-  to_open?: { screen: string; body: string; anchors: string[]; elsewhere?: string }
+  /** A screen the step opens (`label` is its button), with where it opens by hand. */
+  to_open?: { screen: string; label: string; body: string; anchors: string[]; elsewhere?: string }
 }
 
 export interface Tour {
@@ -81,6 +71,8 @@ export interface TourController {
   stateOf: (step: Step) => StepState
   complete: (stepId: string, fired?: Fired) => void
   ask: (step: Step) => void
+  /** Open the step's `to_open` screen beside the chat. */
+  openScreen: (step: Step) => void
   reset: () => void
   /** The open step's `on_closed` screen has been closed. */
   closedNote: boolean
@@ -94,7 +86,7 @@ export interface TourController {
   refresh: () => void
 }
 
-export function useTour(host: Host, conversationId: string | null | undefined): TourController {
+export function useTour(host: Host): TourController {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
@@ -198,37 +190,46 @@ export function useTour(host: Host, conversationId: string | null | undefined): 
   }, [host, tour, settle])
 
   /**
-   * Hand the step's prompt to the chat composer and send it. The console does
-   * the sending, so the message is a normal turn — the same one the step's
-   * condition is waiting for.
+   * Send the step's prompt. With an `agent` the console starts a new chat
+   * under that profile and sends it there, the way the setup wizard's
+   * example prompts start one (`host.chat.startChat`); without one the
+   * prompt goes to the chat the operator is in. The console does the
+   * sending either way, so the message is a normal turn — the same one the
+   * step's condition is waiting for.
    *
    * A step with a condition closes when its trigger fires; one without closes
    * here, because sending WAS the step.
    */
-  const lowered = useRef(new Set<string>())
   const ask = useCallback(
     (step: Step) => {
       if (!step.ask) return
-      if (!host.chat?.compose) {
+      const { text, agent } = step.ask
+      if (agent && host.chat?.startChat) {
+        void host.chat.startChat({ text, agent }).catch((cause: unknown) => setError(errorMessage(cause)))
+      } else if (host.chat?.compose) {
+        host.chat.compose({ text, submit: true })
+      } else {
         setError('This console is too old to send a prompt for you. Type it in the chat instead.')
         return
       }
-      // Before the prompt, so the turn it starts is the first one to run at
-      // the lower effort. Feature-detected, and refused by the console when
-      // no mounted chat holds the conversation it names — neither is an
-      // error the operator needs to hear about, the step is the prompt.
-      // Once per conversation: a later change the operator makes stands.
-      if (conversationId && !lowered.current.has(conversationId)) {
-        lowered.current.add(conversationId)
-        host.chat.requestThinkingLevelChange?.({
-          sessionId: conversationId,
-          level: TOUR_THINKING_LEVEL,
-        })
-      }
-      host.chat.compose({ text: step.ask.text, submit: true })
       if (!step.condition) complete(step.id)
     },
-    [complete, conversationId, host],
+    [complete, host],
+  )
+
+  /**
+   * Open the step's screen beside the chat, in the tab showing. The layout
+   * change rings `console::workspace::changed`, which `useScreenPresent`
+   * follows, so the step moves on by itself.
+   */
+  const openScreen = useCallback(
+    (step: Step) => {
+      if (!step.to_open) return
+      void host.iii
+        .trigger('console::workspace::open', { screen: step.to_open.screen, relative_to: 'chat' })
+        .catch((cause: unknown) => setError(errorMessage(cause)))
+    },
+    [host],
   )
 
   // Every step that is still open for business gets its condition bound, so a
@@ -351,6 +352,7 @@ export function useTour(host: Host, conversationId: string | null | undefined): 
     stateOf,
     complete,
     ask,
+    openScreen,
     reset,
     closedNote,
     awaitingScreen,

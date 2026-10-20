@@ -56,10 +56,7 @@ describe('prepareTour', () => {
       ['learn-iii'],
       expect.any(Function),
     )
-    expect(harness.wait).toHaveBeenCalledWith(
-      'learn-iii',
-      TOUR_PAGE_TIMEOUT_MS,
-    )
+    expect(harness.wait).toHaveBeenCalledWith('learn-iii', TOUR_PAGE_TIMEOUT_MS)
     registerCommand()
     await expect(ready).resolves.toBeUndefined()
   })

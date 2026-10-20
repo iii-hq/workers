@@ -65,10 +65,19 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
       ) : null}
       {state !== 'complete' && !step.condition && !step.ask && step.id !== 'stay-in-touch' ? (
         <div className="learn-actions">
-          {waitingForScreen || screenElsewhere ? (
-            // The operator opens the screen (or brings its tab up); the step
-            // moves on when they have. Skipping is there so it is never a
-            // dead end.
+          {waitingForScreen ? (
+            // The button opens the screen beside the chat; the step moves on
+            // once it is there. Skipping is there so it is never a dead end.
+            <>
+              <Button className="learn-action" onClick={() => tour.openScreen(step)}>
+                {step.to_open?.label}
+              </Button>
+              <Button variant="ghost" className="learn-ghost" onClick={() => tour.complete(step.id)}>
+                Skip this step
+              </Button>
+            </>
+          ) : screenElsewhere ? (
+            // The operator brings the tab up; the step moves on when they have.
             <Button variant="ghost" className="learn-ghost" onClick={() => tour.complete(step.id)}>
               Skip this step
             </Button>

@@ -336,8 +336,6 @@ describe('ReadyStep after a Chromium download', () => {
         prompts={[]}
         agentNames={new Map()}
         onPrompt={noop}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
         onStart={noop}
       />,
     )
@@ -354,8 +352,6 @@ describe('ReadyStep after a Chromium download', () => {
         prompts={[]}
         agentNames={new Map()}
         onPrompt={noop}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
         onStart={noop}
       />,
     )

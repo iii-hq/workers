@@ -86,6 +86,7 @@ function createHarness({
     selectConversation: vi.fn(),
     openDraft: vi.fn(),
     composerModel: vi.fn(() => null),
+    startChat: vi.fn(async () => 'chat-1'),
   },
   importModule = vi.fn(async () => setupForm('default')),
   manifest = Promise.resolve({ disabled: false }),
@@ -656,6 +657,7 @@ describe('injectable UI conversation adapters', () => {
         openDraft,
         selectConversation,
         composerModel: () => null,
+        startChat: vi.fn(async () => 'chat-1'),
       },
       importModule: async () => ({
         default(host) {
@@ -701,6 +703,7 @@ describe('injectable UI conversation adapters', () => {
         selectConversation: selectA,
         openDraft: vi.fn(),
         composerModel: modelA,
+        startChat: vi.fn(async () => 'chat-a'),
       },
       importModule: async () => moduleFor('session-a'),
     })
@@ -709,6 +712,7 @@ describe('injectable UI conversation adapters', () => {
         selectConversation: selectB,
         openDraft: vi.fn(),
         composerModel: modelB,
+        startChat: vi.fn(async () => 'chat-b'),
       },
       importModule: async () => moduleFor('session-b'),
     })
