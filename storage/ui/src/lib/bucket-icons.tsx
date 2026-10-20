@@ -1,0 +1,150 @@
+/**
+ * The icons a bucket can wear (`display.icon`, a Lucide name): the iii app's
+ * environment glyphs, storage-flavoured ones first, so a bucket looks the
+ * same on the phone and in the console. A name outside the set — written by
+ * another client — still renders, as the hard-drive glyph, and is kept as
+ * stored.
+ */
+
+import {
+  Anchor,
+  Atom,
+  Bird,
+  Bot,
+  Box,
+  Boxes,
+  Brain,
+  Braces,
+  Bug,
+  Building,
+  Cat,
+  Cloud,
+  Code,
+  Coffee,
+  Container,
+  Cpu,
+  Crown,
+  Database,
+  Dog,
+  Fish,
+  Flag,
+  Flame,
+  FlaskConical,
+  Gamepad2,
+  Gem,
+  Ghost,
+  GitFork,
+  Globe,
+  HardDrive,
+  Heart,
+  Hexagon,
+  House,
+  Infinity as InfinityIcon,
+  KeyRound,
+  Laptop,
+  Layers,
+  Leaf,
+  Lock,
+  type LucideIcon,
+  Monitor,
+  Moon,
+  Mountain,
+  Orbit,
+  Palette,
+  Puzzle,
+  Radar,
+  Rocket,
+  Satellite,
+  Server,
+  Shield,
+  Sparkles,
+  Sprout,
+  Star,
+  Sun,
+  Target,
+  Tent,
+  Terminal,
+  Trees,
+  Triangle,
+  WavesHorizontal,
+  Zap,
+} from 'lucide-react'
+import type { CSSProperties } from 'react'
+
+const ICONS: Readonly<Record<string, LucideIcon>> = {
+  'hard-drive': HardDrive,
+  database: Database,
+  cloud: Cloud,
+  server: Server,
+  box: Box,
+  boxes: Boxes,
+  container: Container,
+  layers: Layers,
+  laptop: Laptop,
+  monitor: Monitor,
+  cpu: Cpu,
+  rocket: Rocket,
+  'flask-conical': FlaskConical,
+  bug: Bug,
+  code: Code,
+  braces: Braces,
+  terminal: Terminal,
+  globe: Globe,
+  house: House,
+  building: Building,
+  zap: Zap,
+  flame: Flame,
+  shield: Shield,
+  lock: Lock,
+  'key-round': KeyRound,
+  leaf: Leaf,
+  sprout: Sprout,
+  trees: Trees,
+  mountain: Mountain,
+  'waves-horizontal': WavesHorizontal,
+  anchor: Anchor,
+  atom: Atom,
+  orbit: Orbit,
+  satellite: Satellite,
+  radar: Radar,
+  bot: Bot,
+  brain: Brain,
+  sparkles: Sparkles,
+  star: Star,
+  heart: Heart,
+  gem: Gem,
+  crown: Crown,
+  coffee: Coffee,
+  cat: Cat,
+  dog: Dog,
+  bird: Bird,
+  fish: Fish,
+  ghost: Ghost,
+  'gamepad-2': Gamepad2,
+  puzzle: Puzzle,
+  palette: Palette,
+  target: Target,
+  flag: Flag,
+  tent: Tent,
+  hexagon: Hexagon,
+  triangle: Triangle,
+  infinity: InfinityIcon,
+  moon: Moon,
+  sun: Sun,
+  'git-fork': GitFork,
+}
+
+export const BUCKET_ICONS: readonly string[] = Object.keys(ICONS)
+
+export const DEFAULT_BUCKET_ICON = 'hard-drive'
+
+export function bucketIconComponent(name: string | undefined): LucideIcon {
+  return (name && ICONS[name]) || HardDrive
+}
+
+/** The bucket's glyph, tinted with its colour when it has one. */
+export function BucketIcon({ name, color, className }: { name?: string; color?: string; className?: string }) {
+  const Icon = bucketIconComponent(name)
+  const style: CSSProperties | undefined = color ? { color } : undefined
+  return <Icon size={16} aria-hidden className={className} style={style} />
+}
