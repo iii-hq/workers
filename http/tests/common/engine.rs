@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::json;
 use tokio::sync::OnceCell;
@@ -58,7 +59,19 @@ fn require_or_skip(connected: Option<Arc<IIIClient>>) -> Option<Arc<IIIClient>> 
 
 async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     let url = ws_url();
-    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    // One worker name per connection: a 0.25 engine refuses a second live
+    // worker with the same name in a namespace, and `connect_fresh` opens
+    // several connections from one process (the default name is host:pid).
+    let iii = Arc::new(register_worker(
+        &url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: format!("http-e2e-{}", uuid::Uuid::new_v4()),
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    ));
 
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
