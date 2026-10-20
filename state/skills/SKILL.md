@@ -11,7 +11,7 @@ description: >-
 
 The `state` worker is a server-side key/value store. Values are addressed by a `scope` (namespace) and a `key`, shared across every worker connected to the engine, and persisted through a pluggable adapter (`kv` or `redis`). Callers reach the core store through six `state::*` functions invoked with `iii.trigger({ function_id: 'state::...', payload })`. The worker also exposes `state::list_keys` and the internal `state::ui-content` function. Install it with `iii trigger compose::add worker=state`; it replaces the engine's legacy built-in state service, which must be removed from the engine config first.
 
-State does not push updates to SDK clients. Reactivity is delivered by a `state` trigger type that fires `state:created`, `state:updated`, or `state:deleted` after every successful mutation, so downstream functions can react to data changes without polling. The `kv` adapter (default) supports `file_based` persistence (the default) or a volatile `in_memory` mode; `redis` proxies to a Redis backend. The function surface is identical across adapters.
+State does not push updates to SDK clients. Reactivity is delivered by a `state` trigger type that fires `state:created`, `state:updated`, or `state:deleted` after every successful mutation, so downstream functions can react to data changes without polling. On iii 0.25 engines the same events can be observed through the `state::on-changed` function. The `kv` adapter (default) supports `file_based` persistence (the default) or a volatile `in_memory` mode; `redis` proxies to a Redis backend. The function surface is identical across adapters.
 
 ## When to Use
 
@@ -68,3 +68,19 @@ iii.registerTrigger({
 All `config` fields are optional; tighter filters reduce how often the handler runs. To watch several specific keys, register one trigger per `scope`/`key` pair. Mutations that fire the trigger: `state::set`, `state::update`, `state::delete`.
 
 The handler receives the event payload `{ type: "state", event_type, scope, key, old_value, new_value }`, where `event_type` is one of `state:created`, `state:updated`, or `state:deleted`.
+
+### Observing changes (iii 0.25)
+
+On an engine with observe, `state::on-changed` carries the same event as its input. Observe it with no args and select with filters (they replace both the trigger config and `condition_function_id`):
+
+```typescript
+iii.observe(
+  {
+    function_id: 'state::on-changed',
+    filters: { 'input.scope': { $eq: 'orders' } },  // also input.key, input.event_type, input.new_value.*
+  },
+  'orders::on-status-change',
+)
+```
+
+The target receives the `Observed` envelope (`input` is the event, `caller.parent` the worker that wrote), or the event alone with `deliver: 'input'`. Only the state worker emits it: invoking `state::on-changed` directly fails with `FORBIDDEN`. The `state` trigger type keeps working next to it; a function reached through both runs twice per change. On a 0.24 engine `observe()` fails with `UNSUPPORTED`: bind the trigger type there.

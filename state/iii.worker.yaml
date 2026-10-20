@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: state
 tags: [key-value, kv, state, distributed, cache]
-description: Distributed key-value state management with reactive change triggers — registers the `state` trigger type and the `state::*` functions.
+description: Distributed key-value state management with reactive change triggers — registers the `state` trigger type, the observable `state::on-changed` function (iii 0.25) and the `state::*` functions.
 config:
   adapter:
     name: kv
