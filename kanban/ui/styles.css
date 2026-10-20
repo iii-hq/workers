@@ -1368,3 +1368,17 @@
   min-height: 44px;
   padding: 0 12px;
 }
+
+[data-iii-ui="kanban"] .kanban-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui="kanban"] .kanban-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}

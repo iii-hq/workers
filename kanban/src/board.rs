@@ -11,7 +11,9 @@ use serde_json::{Value, json};
 use indexmap::IndexMap;
 
 use crate::config::{Column, KanbanConfig};
-use crate::store::{Activity, Board, Change, Comment, Project, Release, Ticket, default_actor};
+use crate::store::{
+    Activity, Board, Change, Comment, Pill, Project, Release, Ticket, default_actor,
+};
 
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -86,6 +88,7 @@ pub struct TicketSummary {
     pub priority: String,
     pub assignee: Option<String>,
     pub labels: Vec<String>,
+    pub pills: Vec<Pill>,
     pub order: u64,
     pub created_at: String,
     pub updated_at: String,
@@ -105,6 +108,7 @@ pub fn summarize(ticket: &Ticket) -> TicketSummary {
         priority: ticket.priority.clone(),
         assignee: ticket.assignee.clone(),
         labels: ticket.labels.clone(),
+        pills: ticket.pills.clone(),
         order: ticket.order,
         created_at: ticket.created_at.clone(),
         updated_at: ticket.updated_at.clone(),
@@ -305,6 +309,18 @@ pub(crate) fn trimmed(value: Option<&str>) -> Option<String> {
 
 pub(crate) fn actor_or_user(actor: Option<&str>) -> String {
     trimmed(actor).unwrap_or_else(default_actor)
+}
+
+/// Trimmed pills; one with no text is dropped.
+fn clean_pills(pills: &[Pill]) -> Vec<Pill> {
+    pills
+        .iter()
+        .map(|pill| Pill {
+            icon: pill.icon.trim().to_string(),
+            text: pill.text.trim().to_string(),
+        })
+        .filter(|pill| !pill.text.is_empty())
+        .collect()
 }
 
 /// Trimmed, non-empty labels; a repeat in any ASCII case is dropped, the first spelling stays.
@@ -891,6 +907,7 @@ pub struct CreateTicketInput {
     pub priority: Option<String>,
     pub assignee: Option<String>,
     pub labels: Option<Vec<String>>,
+    pub pills: Option<Vec<Pill>>,
     /// Parent ticket (uuid or key).
     pub parent: Option<String>,
     /// Project (id or name).
@@ -940,6 +957,7 @@ pub fn create_ticket(
             .as_deref()
             .map(clean_labels)
             .unwrap_or_default(),
+        pills: input.pills.as_deref().map(clean_pills).unwrap_or_default(),
         parent_id: parent.clone(),
         project_id: project.clone(),
         release_id: release.clone(),
@@ -993,6 +1011,8 @@ pub struct UpdatePatch {
     pub labels: Option<Vec<String>>,
     pub add_labels: Option<Vec<String>>,
     pub remove_labels: Option<Vec<String>>,
+    /// Replaces the whole pill set.
+    pub pills: Option<Vec<Pill>>,
     /// Parent ticket (uuid or key); `Some(None)` detaches.
     pub parent: Option<Option<String>>,
     /// Project (id or name); `Some(None)` clears.
@@ -1092,6 +1112,11 @@ pub fn update_ticket(
             }
             apply("labels", json!(ticket.labels), json!(labels));
             ticket.labels = labels;
+        }
+        if let Some(pills) = &patch.pills {
+            let pills = clean_pills(pills);
+            apply("pills", json!(ticket.pills), json!(pills));
+            ticket.pills = pills;
         }
     }
     if let Some(next) = parent {

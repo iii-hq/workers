@@ -152,11 +152,17 @@ build older than a component it would otherwise import.
 ## The steps
 
 The tour says that this is an engine with workers, not a chat app with
-plugins, and the steps together cover CODER: **Composable** (the harness is a
-worker calling functions other workers register), **Observable** (the traces
+plugins, and the steps together cover CODER: **Composable** (the agent adds a
+kanban board, namespaced `todo-local` with `KANBAN_NAMESPACE`, so it sits apart
+from any board the operator runs), **Observable** (the traces
 step, anchored on the console's traces screen), **Discoverable** (one engine,
-one palette), **Extensible** (this page is a worker's page; install more from
-the package repo), **Reactive** (the trigger step). The last step, "Stay in
+one palette), **Extensible** (the agent builds a TODO worker on that board: a
+sidebar-like page beside it, with a due date, a due time, a priority, a repeat
+and an alarm per item, shown as pills on the cards; Done moves the ticket on
+the board at once; alarms run through the `cron` worker), **Reactive** (three
+items, and a trigger that fires when the operator checks one off). The recipe
+for the two build steps is `skills/SKILL.md`, which lands in the project as
+`skills/learn-iii/SKILL.md`; the prompts point the agent at it. The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
 links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
 "Clean up" asks the agent to remove this worker, and the card goes with it —

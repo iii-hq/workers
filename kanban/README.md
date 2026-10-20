@@ -174,6 +174,30 @@ never treats it as open. New boards get the Canceled column; a stored board
 without one keeps its columns (add it in the settings form), and a stored board
 that already has a `canceled` column picks it up.
 
+### A second board: `KANBAN_NAMESPACE`
+
+Set `KANBAN_NAMESPACE=<name>` on the container to run a board apart from the
+default one. The worker then registers as `kanban-<name>`, and every id
+carries that name in place of `kanban`: the functions
+(`kanban-<name>::ticket::create`), the trigger types (`kanban-<name>:change`,
+`kanban-<name>:comment`), the console pages (`kanban-<name>-board`,
+`kanban-<name>-ticket`), the chat mention (`@kanban-<name>`), the
+configuration entry (`kanban-<name>`, same form as `kanban`; `III_CONFIG_NAME`
+still wins) and the default data folder (`data/kanban-<name>`).
+`kanban::config::info` reports the worker name as `worker`.
+
+```yaml
+  kanban-todo-local:
+    worker: package://kanban
+    environment:
+      KANBAN_NAMESPACE: todo-local
+```
+
+A ticket also carries `pills`: small icon-and-text badges another worker pins
+on it (`[{ "icon": "calendar", "text": "Fri 17:00" }]`, `icon` a lucide icon
+name), set whole on `ticket::create` and `ticket::update` and drawn on the card
+and the ticket page.
+
 `board.json` is now version 2. The first write that upgrades a version 1 file
 keeps the original as `board.v1.json` next to it; going back to an older
 kanban drops projects, releases and subtask links on its next write, so restore

@@ -215,7 +215,7 @@ impl TriggerHandler for BindingTable {
 pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
-            CHANGE_TRIGGER,
+            crate::namespace::scoped_static(CHANGE_TRIGGER),
             "Fires after every kanban mutation with the whole ticket (parent, subtasks and progress included). Config: { ticket_id?, parent_id?, release_id?, events?, metadata? } — ticket_id and parent_id match the uuid or the human key (parent_id also fires for each subtask); release_id is a release id or name (fires for tickets in it and for tickets moved out of it).",
             BindingTable(subscribers.change.clone()),
         )
@@ -224,7 +224,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
     );
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
-            COMMENT_TRIGGER,
+            crate::namespace::scoped_static(COMMENT_TRIGGER),
             "Fires when a comment is added, optionally filtered by author. Config: { ticket_id? | parent_id?, author?, exclude_author?, root_only? } — ticket_id is one ticket; parent_id is a ticket and all its subtasks (uuid or human key).",
             BindingTable(subscribers.comment.clone()),
         )

@@ -34,7 +34,7 @@ fn worker_metadata() -> WorkerMetadata {
     WorkerMetadata {
         runtime: "rust".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        name: "kanban".to_string(),
+        name: iii_kanban::namespace::worker_name().to_string(),
         os: std::env::consts::OS.to_string(),
         pid: Some(std::process::id()),
         telemetry: None,

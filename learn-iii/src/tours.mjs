@@ -135,11 +135,11 @@ export const TOURS = [
       agentStep({
         id: "composability",
         ask: {
-          text: "Add a database worker to this project, then tell me what it can do.",
+          text: "Add a kanban board to this project in the todo-local namespace, the way the learn-iii skill says (directory::skills::get { id: \"learn-iii\" }, section 'Add the board'). When it runs, open its board page beside this chat and tell me what the board can do.",
           label: "Ask the agent",
         },
         title: "Composability",
-        body: "iii is composable like Node or Python, except when you add to iii you're adding a working service and not a library. Let's ask the agent to add a database worker.",
+        body: "iii is composable like Node or Python, except when you add to iii you add a working service and not a library. Ask the agent to add a kanban board. It runs in its own namespace, todo-local, so it sits apart from any board you already have.",
       }),
       {
         id: "stay-in-touch",
@@ -184,11 +184,11 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes) and that emits Triggers when a change happens (ie. register trigger type). Do not navigate the user away from the current workspace. Do not use screenshots or other UI based checks. Verify via functions. This is an learn-iii demo. Open the TODO page for me when it is done.",
+          text: "Build a TODO worker on the todo-local kanban board, the way the learn-iii skill says (directory::skills::get { id: \"learn-iii\" }, section 'Build the TODO worker'): its own console page that sits beside the board like a sidebar; a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card; a Done checkbox that moves the ticket on the board at once; alarms through the cron worker; and a todo:changed trigger type. Verify through functions, not screenshots, and do not navigate me away from this workspace. Open the TODO page beside the board when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done. Since we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
+        body: "Now build on that board. Ask the agent for a TODO worker: its own page beside the board, with a due date, a due time, a priority, a repeat and an alarm on each item. The board keeps the progress; the TODO worker adds the rest, and each setting shows as a pill on the card. Since we are going to open our own page we can make room by closing the Traces panel (optional).",
         // The close is an invitation, not a requirement: the step closes
         // when the agent reports done. When the operator does take it, the
         // page swaps in this note so dropping the panel is never a dead end.
@@ -203,11 +203,11 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off by the user, not you the agent. Pre-existing triggers should work, and were tested in the last step.",
+          text: "Add 3 items to the TODO list, each with a due date and a priority, and set a Trigger that fires when each one is checked off by the user, not you the agent. Pre-existing triggers should work, and were tested in the last step.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you check each one off yourself. The agent adds the items and the Triggers; you tick the boxes. Watch the Triggers react as you do.",
+        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you check each one off yourself. The agent adds the items and the Triggers; you tick the boxes. Watch the Triggers react, and the cards move on the board, as you do.",
       }),
       {
         id: "clean-up",

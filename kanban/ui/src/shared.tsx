@@ -1,9 +1,14 @@
 import { Chip, type ExtensionIii } from '@iii-dev/console-ui'
-import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon } from 'lucide-react'
+import * as lucide from 'lucide-react'
+import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon, Tag } from 'lucide-react'
 import { useSyncExternalStore } from 'react'
 import { type StatusStep, statusStep } from './board-state'
+import { WORKER } from './worker'
 
 export type Column = { id: string; label: string }
+
+/** A badge another worker pins on a ticket: a lucide icon name and a short text. */
+export type Pill = { icon: string; text: string }
 
 export type TicketSummary = {
   id: string
@@ -13,6 +18,7 @@ export type TicketSummary = {
   priority: string
   assignee: string | null
   labels: string[]
+  pills: Pill[]
   order: number
   created_at: string
   updated_at: string
@@ -135,6 +141,7 @@ export type Ticket = {
   priority: string
   assignee: string | null
   labels: string[]
+  pills?: Pill[]
   order: number
   created_at: string
   updated_at: string
@@ -189,11 +196,11 @@ export type ChangeEvent = {
   at: string
 }
 
-export const COLUMNS_CONFIGURATION_ID = 'kanban'
-export const BOARD_PAGE_ID = 'kanban-board'
-export const TICKET_PAGE_ID = 'kanban-ticket'
-export const RELEASES_PAGE_ID = 'kanban-releases'
-export const PROJECTS_PAGE_ID = 'kanban-projects'
+export const COLUMNS_CONFIGURATION_ID = WORKER
+export const BOARD_PAGE_ID = `${WORKER}-board`
+export const TICKET_PAGE_ID = `${WORKER}-ticket`
+export const RELEASES_PAGE_ID = `${WORKER}-releases`
+export const PROJECTS_PAGE_ID = `${WORKER}-projects`
 
 /**
  * Project and release writes fire no `kanban:change` event. Pages that make one dispatch this window event
@@ -206,44 +213,44 @@ export function announcePlanChange(): void {
 }
 
 export const api = {
-  board: (iii: ExtensionIii) => iii.trigger<BoardData>('kanban::board::get', {}),
-  config: (iii: ExtensionIii) => iii.trigger<ConfigInfo>('kanban::config::info', {}),
+  board: (iii: ExtensionIii) => iii.trigger<BoardData>(`${WORKER}::board::get`, {}),
+  config: (iii: ExtensionIii) => iii.trigger<ConfigInfo>(`${WORKER}::config::info`, {}),
   agents: (iii: ExtensionIii) =>
-    iii.trigger<{ agents: AgentProfile[]; source: string; error?: string }>('kanban::agent::list', {}),
-  ticket: (iii: ExtensionIii, id: string) => iii.trigger<Ticket>('kanban::ticket::get', { id }),
+    iii.trigger<{ agents: AgentProfile[]; source: string; error?: string }>(`${WORKER}::agent::list`, {}),
+  ticket: (iii: ExtensionIii, id: string) => iii.trigger<Ticket>(`${WORKER}::ticket::get`, { id }),
   create: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::create', payload),
+    iii.trigger<Ticket>(`${WORKER}::ticket::create`, payload),
   update: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::update', payload),
-  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.trigger<Ticket>('kanban::ticket::move', payload),
+    iii.trigger<Ticket>(`${WORKER}::ticket::update`, payload),
+  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.trigger<Ticket>(`${WORKER}::ticket::move`, payload),
   remove: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::delete', payload),
+    iii.trigger<Ticket>(`${WORKER}::ticket::delete`, payload),
   restore: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::restore', payload),
+    iii.trigger<Ticket>(`${WORKER}::ticket::restore`, payload),
   comment: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<{ comment: Comment; ticket: Ticket }>('kanban::comment::create', payload),
-  links: (iii: ExtensionIii, id: string) => iii.trigger<TicketLinks>('kanban::ticket::links', { id }),
+    iii.trigger<{ comment: Comment; ticket: Ticket }>(`${WORKER}::comment::create`, payload),
+  links: (iii: ExtensionIii, id: string) => iii.trigger<TicketLinks>(`${WORKER}::ticket::links`, { id }),
   projects: (iii: ExtensionIii, includeArchived = true) =>
-    iii.trigger<{ projects: ProjectView[] }>('kanban::project::list', { include_archived: includeArchived }),
+    iii.trigger<{ projects: ProjectView[] }>(`${WORKER}::project::list`, { include_archived: includeArchived }),
   createProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ProjectView>('kanban::project::create', payload),
+    iii.trigger<ProjectView>(`${WORKER}::project::create`, payload),
   updateProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ProjectView>('kanban::project::update', payload),
-  archiveProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::archive', { id }),
-  restoreProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::restore', { id }),
-  releases: (iii: ExtensionIii) => iii.trigger<{ releases: ReleaseView[] }>('kanban::release::list', {}),
+    iii.trigger<ProjectView>(`${WORKER}::project::update`, payload),
+  archiveProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>(`${WORKER}::project::archive`, { id }),
+  restoreProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>(`${WORKER}::project::restore`, { id }),
+  releases: (iii: ExtensionIii) => iii.trigger<{ releases: ReleaseView[] }>(`${WORKER}::release::list`, {}),
   createRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ReleaseView>('kanban::release::create', payload),
+    iii.trigger<ReleaseView>(`${WORKER}::release::create`, payload),
   updateRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ReleaseView>('kanban::release::update', payload),
+    iii.trigger<ReleaseView>(`${WORKER}::release::update`, payload),
   /** `move_open_to`: a release id, `null` to take not-done tickets out of any release; required when some aren't done. */
   shipRelease: (iii: ExtensionIii, payload: { id: string; move_open_to?: string | null }) =>
-    iii.trigger<{ release: ReleaseView; moved: TicketSummary[] }>('kanban::release::ship', payload),
-  reopenRelease: (iii: ExtensionIii, id: string) => iii.trigger<ReleaseView>('kanban::release::reopen', { id }),
+    iii.trigger<{ release: ReleaseView; moved: TicketSummary[] }>(`${WORKER}::release::ship`, payload),
+  reopenRelease: (iii: ExtensionIii, id: string) => iii.trigger<ReleaseView>(`${WORKER}::release::reopen`, { id }),
   deleteRelease: (iii: ExtensionIii, id: string) =>
-    iii.trigger<{ deleted: boolean }>('kanban::release::delete', { id }),
+    iii.trigger<{ deleted: boolean }>(`${WORKER}::release::delete`, { id }),
   convertLabel: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ConvertResult>('kanban::label::convert', payload),
+    iii.trigger<ConvertResult>(`${WORKER}::label::convert`, payload),
 }
 
 type Listener = (event: ChangeEvent) => void
@@ -263,7 +270,7 @@ function hubInit(iii: ExtensionIii): void {
     }
   })
   const offTrigger = iii.registerTrigger({
-    type: 'kanban:change',
+    type: `${WORKER}:change`,
     function_id: `${handlerId}::${iii.browserId}`,
     config: {},
   })
@@ -328,6 +335,7 @@ export function summarizeTicket(ticket: Ticket): TicketSummary {
     priority: ticket.priority,
     assignee: ticket.assignee,
     labels: ticket.labels ?? [],
+    pills: ticket.pills ?? [],
     order: ticket.order,
     created_at: ticket.created_at,
     updated_at: ticket.updated_at,
@@ -412,5 +420,34 @@ export function PriorityChip({ priority, priorities }: { priority: string; prior
       <span aria-hidden="true" className="kanban-priority__dot" />
       {priorityLabel(priority)}
     </Chip>
+  )
+}
+
+/** The lucide icon a pill names (`alarm-clock` is `AlarmClock`); a tag when the name is unknown. */
+export function pillIcon(name: string): LucideIcon {
+  const pascal = name
+    .trim()
+    .split(/[^a-z0-9]+/i)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('')
+  const icon = (lucide as unknown as Record<string, LucideIcon | undefined>)[pascal]
+  return icon && (typeof icon === 'function' || typeof icon === 'object') ? icon : Tag
+}
+
+/** The pills of a ticket as chips, on the card and the ticket page. Nothing when there are none. */
+export function Pills({ pills }: { pills: Pill[] | undefined }) {
+  if (!pills?.length) return null
+  return (
+    <span className="kanban-pills">
+      {pills.map((pill, index) => {
+        const Icon = pillIcon(pill.icon)
+        return (
+          <Chip className="kanban-pill" key={`${pill.icon}:${pill.text}:${index}`}>
+            <Icon size={16} />
+            {pill.text}
+          </Chip>
+        )
+      })}
+    </span>
   )
 }

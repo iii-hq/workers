@@ -83,6 +83,7 @@ import {
   StatusGlyph,
   statusLabel,
   subscribeChanges,
+  Pills,
   summarizeTicket,
   TICKET_PAGE_ID,
   type Ticket,
@@ -91,6 +92,7 @@ import {
 } from './shared'
 import { cellKey, DragLine, type DropTarget, SwimlaneGrid, SwimlaneSections } from './swimlanes'
 import { TicketScreen } from './ticket'
+import { WORKER } from './worker'
 
 type DragState = { id: string; from: string; height: number }
 
@@ -135,7 +137,7 @@ const handledContexts = new Set<number>()
 const DRAG_TYPE = 'application/x-kanban-ticket'
 const carriesTicket = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes(DRAG_TYPE)
 
-const VIEWS_KEY = 'kanban:views'
+const VIEWS_KEY = `${WORKER}:views`
 /** Dispatched on window after the views are written, so the other panes of this document pick them up. */
 const VIEWS_EVENT = 'kanban:views-changed'
 
@@ -269,6 +271,7 @@ const TicketCard = memo(function TicketCard({
           ) : null}
         </div>
       ) : null}
+      <Pills pills={ticket.pills} />
       <div className="kanban-card__foot">
         <span className="kanban-card__key">{ticket.key}</span>
         {notable ? <PriorityChip priority={ticket.priority} priorities={priorities} /> : null}

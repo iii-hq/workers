@@ -58,6 +58,7 @@ import {
   BOARD_PAGE_ID,
   PLAN_CHANGED_EVENT,
   PROJECTS_PAGE_ID,
+  Pills,
   PriorityChip,
   RELEASES_PAGE_ID,
   StatusGlyph,
@@ -1296,6 +1297,12 @@ export function TicketScreen({
                       />
                     </div>
                   </div>
+                  {ticket.pills?.length ? (
+                    <div className="kanban-prop kanban-prop--static">
+                      <span className="kanban-prop__label">Pills</span>
+                      <Pills pills={ticket.pills} />
+                    </div>
+                  ) : null}
                   <div className="kanban-prop kanban-prop--static">
                     <span className="kanban-prop__label">Created</span>
                     <span className="kanban-prop__value">
