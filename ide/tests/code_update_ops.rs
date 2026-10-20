@@ -169,7 +169,7 @@ async fn missing_op_is_inferred_through_the_handler() {
     );
 }
 
-/// MOT-5476: the reported call grouped its ops under the op name.
+/// The reported call grouped its ops under the op name.
 #[tokio::test]
 async fn ops_grouped_under_their_name_apply_through_the_handler() {
     let tmp = tempdir().unwrap();

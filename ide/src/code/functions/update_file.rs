@@ -128,7 +128,7 @@ impl<'de> Deserialize<'de> for UpdateFileSpec {
 }
 
 /// Models also send ops under their op name instead of in `ops`
-/// (`"replace": [{ "pattern", "replacement" }]`, MOT-5476). The key names the
+/// (`"replace": [{ "pattern", "replacement" }]`). The key names the
 /// op, so nothing is inferred: each body (one, or an array of them) is read as
 /// that op, and a body whose own `op` differs fails. Line ops are position-
 /// ordered and replaces keep their array order, so grouping loses nothing.
@@ -1727,7 +1727,7 @@ mod tests {
         assert_eq!(spec.ops.len(), 1);
     }
 
-    /// MOT-5476: the reported entry grouped its ops under the op name.
+    /// The reported entry grouped its ops under the op name.
     #[test]
     fn ops_grouped_under_their_name_are_read_as_those_ops() {
         let input: UpdateFileInput = serde_json::from_value(serde_json::json!({
