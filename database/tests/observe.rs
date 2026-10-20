@@ -4,6 +4,9 @@
 //! Gated like the postgres/mysql tests: set `III_TEST_ENGINE_URL` (for example
 //! `ws://127.0.0.1:49360`) to run them; without it each test returns early.
 //! The zero-wire test also listens on `III_TEST_PROXY_PORT` (default 49365).
+//! The engine-switch test starts engines itself: set `III_TEST_ENGINE_BINS`
+//! to `<engine without observe>,<engine with observe>` (0.24 and 0.25 binaries)
+//! and `III_TEST_SWITCH_PORT` to a free port.
 //!
 //! Each test runs its database worker in-process (the library's handlers and
 //! `triggers::capture::register`, as `main.rs` wires them) and its consumers
@@ -19,13 +22,14 @@ use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{execute, AppState};
 use database::transaction::TxRegistry;
+use database::triggers::legacy::Fallback;
 use database::triggers::{self, NativeCapture, RowChangeBus};
 use iii_helpers::observability::Logger;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
-    register_worker, Capture, IIIClient, InitOptions, Observed, ObserverOptions, ObserverState,
-    RegisterFunction, Source,
+    register_worker, Capture, IIIClient, InitOptions, ObserveSupportListener, Observed,
+    ObserverOptions, ObserverState, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, RwLock};
@@ -78,8 +82,10 @@ struct DatabaseWorker {
     state: AppState,
     capture: Arc<NativeCapture>,
     row_changed: FunctionRef,
+    fallback: Arc<Fallback>,
     dir: tempfile::TempDir,
     _listeners: Arc<triggers::NativeListeners>,
+    _follower: ObserveSupportListener,
 }
 
 impl DatabaseWorker {
@@ -147,19 +153,33 @@ impl DatabaseWorker {
             );
         }
         let row_changed = triggers::capture::register(&iii, &capture);
+        // As `main.rs` does: the old trigger type while the engine lacks observe.
+        let fallback = Arc::new(Fallback::new((*iii).clone(), capture.clone()));
+        let follower = {
+            let fallback = fallback.clone();
+            iii.on_engine_supports_observe(move |observes| fallback.follow(observes))
+        };
         iii.wait_until_registered(WAIT).await.unwrap();
-        // The engine confirmed the function (functionregistered): local dispatch on.
-        eventually("on-row-changed confirmed", || {
-            row_changed.local_dispatch_active()
+        eventually("the engine's observe support known", || {
+            iii.engine_supports_observe().is_some()
         })
         .await;
+        if iii.engine_supports_observe() == Some(true) {
+            // The engine confirmed the function (functionregistered): local dispatch on.
+            eventually("on-row-changed confirmed", || {
+                row_changed.local_dispatch_active()
+            })
+            .await;
+        }
         Self {
             iii,
             state,
             capture,
             row_changed,
+            fallback,
             dir,
             _listeners: listeners,
+            _follower: follower,
         }
     }
 
@@ -1001,4 +1021,224 @@ async fn invoking_the_source_directly_is_refused() {
     silent(&mut events, "forged event").await;
     attacker.shutdown_async().await;
     consumer.shutdown_async().await;
+}
+
+/// An engine binary run by a test on a port of its own, in a scratch
+/// directory (its configuration store and its log).
+struct Engine {
+    child: std::process::Child,
+    dir: tempfile::TempDir,
+}
+
+impl Engine {
+    async fn start(bin: &str, port: u16) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("engine.yaml");
+        std::fs::write(
+            &config,
+            format!(
+                "workers:\n  - name: configuration\n    config:\n      adapter:\n        name: fs\n        \
+                 config:\n          directory: {}\n  - name: iii-worker-manager\n    config:\n      \
+                 port: {port}\n",
+                dir.path().join("configuration").display()
+            ),
+        )
+        .unwrap();
+        let log = std::fs::File::create(dir.path().join("engine.log")).unwrap();
+        let child = std::process::Command::new(bin)
+            .arg("--no-update-check")
+            .arg("-c")
+            .arg(&config)
+            .current_dir(dir.path())
+            .env("III_TELEMETRY_ENABLED", "false")
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap_or_else(|e| panic!("starting {bin}: {e}"));
+        let engine = Self { child, dir };
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{bin} did not listen on {port}: {}",
+                engine.log()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        engine
+    }
+
+    fn log(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("engine.log")).unwrap_or_default()
+    }
+
+    /// Stops the engine as an operator would (SIGINT), killing it if it
+    /// takes too long.
+    async fn stop(mut self) {
+        let _ = std::process::Command::new("kill")
+            .arg("-INT")
+            .arg(self.child.id().to_string())
+            .status();
+        for _ in 0..100 {
+            if self.child.try_wait().unwrap().is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The engine changes under a running worker: upgraded to one with observe,
+/// rolled back, upgraded again. The worker registers its old trigger type
+/// only while the engine lacks observe; an old consumer's binding hears each
+/// write exactly once on every engine (the fallback, then the engine's
+/// shim), and a new consumer's observer hears them whenever the engine has
+/// observe.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_fallback_follows_the_engine_across_upgrades_and_rollbacks() {
+    let (Some(bins), Some(port)) = (
+        std::env::var("III_TEST_ENGINE_BINS").ok(),
+        std::env::var("III_TEST_SWITCH_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok()),
+    ) else {
+        return eprintln!("skipping: III_TEST_ENGINE_BINS / III_TEST_SWITCH_PORT not set");
+    };
+    let (without_observe, with_observe) = bins
+        .split_once(',')
+        .expect("III_TEST_ENGINE_BINS=<engine without observe>,<engine with observe>");
+    // Reconnects back off: give each switch more time than one delivery.
+    const SWITCH: Duration = Duration::from_secs(30);
+    async fn settled(what: &str, mut check: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + SWITCH;
+        while !check() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    let url = format!("ws://127.0.0.1:{port}");
+    let ns = namespace("switch");
+    let mut engine = Engine::start(without_observe, port).await;
+    let db = DatabaseWorker::start(&url, &ns, &[]).await;
+    db.sql(
+        "primary",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)",
+    )
+    .await;
+    settled("the fallback on an engine without observe", || {
+        db.fallback.is_registered()
+    })
+    .await;
+
+    let old = client(&url, &ns, "old-consumer");
+    let mut legacy = sink(&old, "legacy::on-orders");
+    #[allow(deprecated)]
+    let _binding = old
+        .register_trigger(RegisterTriggerInput::new(
+            "database::row-changed",
+            "legacy::on-orders",
+            json!({ "db": "primary", "table": "orders" }),
+        ))
+        .unwrap();
+    let new = client(&url, &ns, "new-consumer");
+    let mut fresh = sink(&new, "fresh::on-orders");
+    let observer = new.observe(
+        Source::function("database::on-row-changed")
+            .args(json!({ "db": "primary", "table": "orders" }))
+            .deliver(iii_sdk::Deliver::Input),
+        "fresh::on-orders",
+    );
+    let err = observer
+        .ready()
+        .await
+        .expect_err("no observe on this engine");
+    assert!(err.to_string().contains("UNSUPPORTED"), "{err}");
+    settled("the binding on the fallback", || {
+        db.capture.route_count() == 1
+    })
+    .await;
+
+    let mut n = 0;
+    for step in [
+        "0.24",
+        "upgraded to 0.25",
+        "rolled back to 0.24",
+        "upgraded again",
+    ] {
+        if n > 0 {
+            engine.stop().await;
+            let observes = n % 2 == 1;
+            engine = Engine::start(
+                if observes {
+                    with_observe
+                } else {
+                    without_observe
+                },
+                port,
+            )
+            .await;
+            settled(&format!("{step}: the worker follows"), || {
+                db.iii.engine_supports_observe() == Some(observes)
+                    && db.fallback.is_registered() != observes
+            })
+            .await;
+            if observes {
+                // The binding moved to the shim, the observer was replayed,
+                // and the fallback's route is gone: two observers filed.
+                settled(&format!("{step}: the observer is replayed"), || {
+                    observer.state() == ObserverState::Active
+                })
+                .await;
+                settled(&format!("{step}: the shim serves the binding"), || {
+                    let observers = db.row_changed.observers();
+                    observers.iter().any(|o| o.legacy().is_some())
+                        && observers.iter().any(|o| o.legacy().is_none())
+                        && db.capture.route_count() == 2
+                })
+                .await;
+            } else {
+                settled(&format!("{step}: the fallback serves the binding"), || {
+                    db.capture.is_listened()
+                })
+                .await;
+            }
+            // The consumers' own replays land too.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        n += 1;
+        db.sql("primary", &format!("INSERT INTO orders (n) VALUES ({n})"))
+            .await;
+        let heard = next(&mut legacy, &format!("{step}: old consumer")).await;
+        assert_eq!(heard["table"], "orders", "{step}: {heard}");
+        assert!(
+            heard.get("schema").is_none(),
+            "{step}: legacy shape {heard}"
+        );
+        silent(&mut legacy, &format!("{step}: exactly once")).await;
+        if n % 2 == 0 {
+            let event = next(&mut fresh, &format!("{step}: new consumer")).await;
+            assert_eq!(event["affected_rows"], 1, "{step}: {event}");
+        }
+        silent(&mut fresh, &format!("{step}: new consumer, nothing more")).await;
+    }
+    old.shutdown_async().await;
+    new.shutdown_async().await;
+    db.iii.shutdown_async().await;
+    engine.stop().await;
 }
