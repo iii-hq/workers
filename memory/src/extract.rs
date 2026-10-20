@@ -87,6 +87,19 @@ the scope of what it now says: an exception that holds only here is \"project\".
 unsure, use \"project\".\n\
 - Return [] when nothing qualifies. Most turns have nothing worth keeping.";
 
+/// Appended to [`EXTRACT_SYSTEM`] when the input lists agents
+/// ([`extraction_input`]); absent, the prompt is unchanged.
+const EXTRACT_AGENTS: &str = "\n- The input names the agents in this conversation: the \
+assistant itself, and the sub-agents it started. One more scope applies to them: \"scope\": \
+\"agent\", always with \"agent\": the listed name ({\"text\": \"Check the tests before style.\", \
+\"kind\": \"rule\", \"scope\": \"agent\", \"agent\": \"reviewer\", …}). Use it for what the user \
+tells one of them, or asks to pass on to it, about how to do its role's work wherever it works: \
+what to check first, what to flag or let pass (\"tell the reviewer to check the tests before \
+style\" is a rule for \"reviewer\"), even when the user's reason is about their team or every \
+repository. Write it without the agent's name. Who the user is and how they want every reply \
+written (language, tone, length, formatting) stay \"user\"; this project's code, tools and \
+conventions stay \"project\". A one-off task for an agent is nothing to keep.";
+
 /// Name of the auto-managed rule that captured standing instructions
 /// append to. Hand-authored rules are never touched by extraction.
 const LEARNED_RULE: &str = "learned";
@@ -110,10 +123,13 @@ struct ExtractedItem {
     /// The number of the already-remembered memory this one corrects.
     #[serde(default)]
     replaces: Option<usize>,
-    /// "user": holds for the user wherever they work; anything else, a
-    /// missing scope included, is the project's.
+    /// "user": holds for the user wherever they work; "agent": for the
+    /// agent profile `agent` names; anything else, a missing scope
+    /// included, is the project's.
     #[serde(default)]
     scope: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 impl ExtractedItem {
@@ -123,6 +139,17 @@ impl ExtractedItem {
 
     fn is_user(&self) -> bool {
         self.scope.as_deref() == Some("user")
+    }
+
+    fn is_agent(&self) -> bool {
+        self.scope.as_deref() == Some("agent")
+    }
+
+    /// The listed agent an agent-scope item is for; `None` when it names
+    /// none of `agents`.
+    fn agent_in<'a>(&self, agents: &'a [String]) -> Option<&'a str> {
+        let named = self.agent.as_deref().filter(|_| self.is_agent())?;
+        agents.iter().map(String::as_str).find(|a| *a == named)
     }
 }
 
@@ -227,10 +254,22 @@ async fn listed(
     out
 }
 
-/// The extraction model's input: the numbered known memories, then the
-/// excerpt.
-fn extraction_input(known: &[Memory], transcript: &str) -> String {
+/// The extraction model's input: the agents an item may be for (`own`: the
+/// first is the assistant's own profile, the rest its sub-agents'), the
+/// numbered known memories, then the excerpt.
+fn extraction_input(agents: &[String], own: bool, known: &[Memory], transcript: &str) -> String {
     let mut input = String::new();
+    if !agents.is_empty() {
+        input.push_str("Agents in this conversation:\n");
+        for (i, agent) in agents.iter().enumerate() {
+            let role = match own && i == 0 {
+                true => "the assistant",
+                false => "a sub-agent the assistant started",
+            };
+            input.push_str(&format!("- {agent}: {role}\n"));
+        }
+        input.push('\n');
+    }
     if !known.is_empty() {
         input.push_str("Already remembered:\n");
         for (i, m) in known.iter().enumerate() {
@@ -260,6 +299,24 @@ fn correction_target(known: &[Memory], replaces: Option<usize>) -> Option<&Memor
 fn placement(user: bool, target_in_layer: Option<bool>) -> (bool, bool) {
     let up = user && target_in_layer != Some(false);
     (up, target_in_layer == Some(up))
+}
+
+/// Where an item lands: the bank of the listed agent it is for, retiring
+/// nothing (no memory of that bank is listed as known); else [`placement`]
+/// under the turn's layer, if it has one. A rule passes no target.
+fn lands<'a>(
+    item: &ExtractedItem,
+    agents: &'a [String],
+    layer: bool,
+    target_in_layer: Option<bool>,
+) -> (Option<&'a str>, bool, bool) {
+    match item.agent_in(agents) {
+        Some(agent) => (Some(agent), false, false),
+        None => {
+            let (up, retires) = placement(layer && item.is_user(), target_in_layer);
+            (None, up, retires)
+        }
+    }
 }
 
 /// Words that flip a statement: texts that differ in them never state the
@@ -504,6 +561,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         (Some(bank), false) => Some(crate::scope::Resolved {
             bank: bank.clone(),
             derived: job.derived,
+            agent: job.agent.clone(),
         }),
         (None, false) => crate::scope::resolve(deps, session_id, None).await?,
     };
@@ -574,16 +632,49 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
     )
     .await;
 
+    // The agents this pass may teach: the session's own profile, then its
+    // sub-agents' (their turns are never extracted; what the user tells
+    // them through this session is). None under a bank metadata named, nor
+    // one deleted since: extraction never brings a bank back.
+    let usable = {
+        let store = deps.store().await;
+        move |agent: &String| {
+            let bank = crate::scope::agent_bank(agent);
+            crate::store::validate_name(&bank).is_ok() && !store.is_deleted(&bank)
+        }
+    };
+    let mut agents: Vec<String> = resolved
+        .agent
+        .iter()
+        .filter(|a| usable(a))
+        .cloned()
+        .collect();
+    let own = !agents.is_empty();
+    if resolved.takes_agents(&cfg.default_bank) {
+        for agent in child_agents(&deps.iii, session_id).await {
+            if usable(&agent) && !agents.contains(&agent) {
+                agents.push(agent);
+            }
+        }
+    }
+
     let model = resolve_model(&deps.iii, &cfg.extraction_model).await?;
     let items = extract_items(
         &deps.iii,
         &model,
         cfg.max_memories_per_turn,
         cfg.extraction_timeout_ms,
-        extraction_input(&known, &transcript),
+        extraction_input(&agents, own, &known, &transcript),
+        !agents.is_empty(),
         session_id,
     )
     .await?;
+    // An agent item naming no listed agent has no bank to go to: never the
+    // user's or the repository's in its place.
+    let items: Vec<ExtractedItem> = items
+        .into_iter()
+        .filter(|i| !i.is_agent() || i.agent_in(&agents).is_some())
+        .collect();
     if items.is_empty() {
         // Nothing to write: the span is done, advance past it.
         if let Some(id) = newest_id {
@@ -617,6 +708,29 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         }
         None => None,
     };
+    // Each listed agent's bank an item goes to.
+    let mut agent_banks: Vec<(String, Arc<Bank>)> = Vec::new();
+    let teaches = items
+        .iter()
+        .filter(|i| cfg.rule_learning_enabled || !i.is_rule())
+        .filter_map(|i| i.agent_in(&agents));
+    for name in teaches
+        .map(crate::scope::agent_bank)
+        .collect::<BTreeSet<_>>()
+    {
+        let (b, created) = store
+            .ensure_bank(&name, None)
+            .await
+            .map_err(|e| e.to_string())?;
+        if created {
+            deps.emitter.bank("created", &name).await;
+        }
+        agent_banks.push((name, b));
+    }
+    let agent_at = |agent: &str| {
+        let name = crate::scope::agent_bank(agent);
+        agent_banks.iter().find(|(n, _)| *n == name)
+    };
     let mut touched = BTreeSet::new();
 
     // Standing instructions graduate straight into the always-injected
@@ -627,12 +741,17 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
     if cfg.rule_learning_enabled && !rules.is_empty() {
         // Redacted like memories, so a re-observed rule fingerprints the
         // same as its stored (redacted) line. A rule for the user wherever
-        // they work goes up into the layer's `learned`.
-        let additions: Vec<(bool, String)> = rules
-            .into_iter()
-            .map(|r| {
-                let up = layer.is_some() && r.is_user();
-                (up, crate::redact::redact(r.text.trim()).text)
+        // they work goes up into the layer's `learned`, one for a listed
+        // agent into its bank's.
+        let additions: Vec<(&str, String)> = rules
+            .iter()
+            .filter_map(|r| {
+                let at = match lands(r, &agents, layer.is_some(), None) {
+                    (Some(agent), ..) => agent_at(agent)?.0.as_str(),
+                    (None, true, _) => layer_name?,
+                    (None, false, _) => bank_name,
+                };
+                Some((at, crate::redact::redact(r.text.trim()).text))
             })
             .filter(|(_, t)| t.len() >= 3 && t.len() <= 500)
             .filter(|(_, t)| {
@@ -651,10 +770,10 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
                 .map(|r| r.content)
                 .unwrap_or_default()
         };
-        let lines = |up: bool| -> Vec<String> {
+        let lines = |at: &str| -> Vec<String> {
             additions
                 .iter()
-                .filter(|(u, _)| *u == up)
+                .filter(|(a, _)| *a == at)
                 .map(|(_, t)| t.clone())
                 .collect()
         };
@@ -671,11 +790,21 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             (None, None) => String::new(),
         };
         // A line either bank holds is never learned again: the turn reads both.
-        let own = merge_learned(&own_now, &up_now, &lines(false));
+        let own = merge_learned(&own_now, &up_now, &lines(bank_name));
         let up = layer
             .as_ref()
-            .map(|(name, b)| (*name, b, merge_learned(&up_now, &own.0, &lines(true))));
-        for (name, b, (merged, added)) in std::iter::once((bank_name, &bank, own)).chain(up) {
+            .map(|(name, b)| (*name, b, merge_learned(&up_now, &own.0, &lines(name))));
+        let taught = agent_banks.iter().map(|(name, b)| {
+            (
+                name.as_str(),
+                b,
+                merge_learned(&learned(b), "", &lines(name)),
+            )
+        });
+        let writes = std::iter::once((bank_name, &bank, own))
+            .chain(up)
+            .chain(taught);
+        for (name, b, (merged, added)) in writes {
             if added == 0 {
                 continue;
             }
@@ -703,24 +832,37 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         let now = now_ms();
         let target = correction_target(&known, item.replaces).cloned();
         let item_user = item.is_user();
-        let (up, retires) = placement(
-            layer.is_some() && item_user,
+        let (agent, up, retires) = lands(
+            &item,
+            &agents,
+            layer.is_some(),
             target.as_ref().map(|t| layered.contains(&t.id)),
         );
-        // A memory about the user wherever they work goes up into the layer
-        // ([`placement`]); a correction retires its target only where it
-        // lands.
-        let (at_name, at, existing) = re_observed(
-            text,
-            up,
-            retires,
-            target.as_ref(),
-            &known,
-            &layered,
-            (bank_name, &bank),
-            layer.as_ref().map(|(n, b)| (*n, &**b)),
-        )
-        .await;
+        let (at_name, at, existing) = match agent {
+            // A listed agent's memory is re-observed in its bank alone.
+            Some(agent) => {
+                let Some((name, b)) = agent_at(agent) else {
+                    continue;
+                };
+                let own = (name.as_str(), &**b);
+                re_observed(text, false, false, None, &[], &HashSet::new(), own, None).await
+            }
+            // A memory about the user wherever they work goes up into the
+            // layer; a correction retires its target only where it lands.
+            None => {
+                re_observed(
+                    text,
+                    up,
+                    retires,
+                    target.as_ref(),
+                    &known,
+                    &layered,
+                    (bank_name, &bank),
+                    layer.as_ref().map(|(n, b)| (*n, &**b)),
+                )
+                .await
+            }
+        };
         let (mut memory, event) = match existing {
             // Known memory re-observed: reinforce, never duplicate. A pinned
             // or tombstoned record is left exactly as it is.
@@ -741,7 +883,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         // Written into the layer, it must stay read under every directory
         // bank, whatever entities the model returned; so must a memory
         // about the user written into the default bank itself.
-        if at_name != bank_name || (item_user && bank_name == cfg.default_bank) {
+        if Some(at_name) == layer_name || (item_user && bank_name == cfg.default_bank) {
             crate::scope::into_layer(&mut memory.entities);
         }
         match at.commit(memory.clone()).await {
@@ -1265,22 +1407,63 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     }
 }
 
-/// One extraction call: the production prompt over `input`, its items.
+/// The agent profiles of `session_id`'s sub-agents, newest first, each once.
+// shortcut: the newest 100 children only; page on if a session spawns more.
+async fn child_agents(iii: &IIIClient, session_id: &str) -> Vec<String> {
+    let reply = iii
+        .trigger(TriggerRequest {
+            function_id: "session::list".into(),
+            payload: json!({
+                "limit": 100,
+                "order": "created_desc",
+                "metadata": { "parent_session_id": session_id },
+            }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    match reply {
+        Ok(reply) => listed_agents(&reply),
+        // Fail-soft: the pass still runs, teaching no sub-agent.
+        Err(e) => {
+            tracing::warn!(session_id, error = %e, "session::list failed; no sub-agent listed");
+            Vec::new()
+        }
+    }
+}
+
+/// The distinct `agent_profile` ids on a `session::list` page, in order.
+fn listed_agents(reply: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let sessions = reply.get("sessions").and_then(Value::as_array);
+    for meta in sessions.into_iter().flatten() {
+        let agent = meta.get("metadata").and_then(crate::scope::profile_field);
+        if let Some(agent) = agent.filter(|a| !out.contains(a)) {
+            out.push(agent);
+        }
+    }
+    out
+}
+
+/// One extraction call: the production prompt over `input` (with the agent
+/// scope when it lists `agents`), its items.
 async fn extract_items(
     iii: &IIIClient,
     model: &str,
     max_memories: usize,
     timeout_ms: u64,
     input: String,
+    agents: bool,
     session_id: &str,
 ) -> Result<Vec<ExtractedItem>, String> {
+    let scopes = if agents { EXTRACT_AGENTS } else { "" };
     let reply = iii
         .trigger(TriggerRequest {
             function_id: "router::complete".into(),
             payload: json!({
                 "model": model,
                 "system_prompt": format!(
-                    "{EXTRACT_SYSTEM}\n- Return at most {max_memories} memories and \
+                    "{EXTRACT_SYSTEM}{scopes}\n- Return at most {max_memories} memories and \
             {MAX_RULES_PER_TURN} rules, the most durable first."
                 ),
                 "messages": [{
@@ -1801,6 +1984,7 @@ mod tests {
             kind: None,
             replaces: None,
             scope: None,
+            agent: None,
         };
         new_memory(item, "s", None, 1)
     }
@@ -1812,14 +1996,59 @@ mod tests {
             known("ledger-sync uses pnpm."),
         ];
         assert_eq!(
-            extraction_input(&ms, "user [d]: hi"),
+            extraction_input(&[], false, &ms, "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n[2] ledger-sync uses pnpm.\n\n\
              Conversation excerpt:\nuser [d]: hi"
         );
         assert_eq!(
-            extraction_input(&[], "user [d]: hi"),
+            extraction_input(&[], false, &[], "user [d]: hi"),
             "Conversation excerpt:\nuser [d]: hi"
         );
+        let agents = ["tech-lead".to_string(), "reviewer".to_string()];
+        assert_eq!(
+            extraction_input(&agents, true, &[], "user [d]: hi"),
+            "Agents in this conversation:\n- tech-lead: the assistant\n\
+             - reviewer: a sub-agent the assistant started\n\nConversation excerpt:\nuser [d]: hi"
+        );
+        assert!(
+            extraction_input(&agents[1..], false, &[], "")
+                .starts_with("Agents in this conversation:\n- reviewer: a sub-agent"),
+            "a session with no profile of its own lists only its sub-agents"
+        );
+    }
+
+    #[test]
+    fn an_agent_item_goes_only_to_a_listed_agent() {
+        let item = |scope: &str, agent: Option<&str>| -> ExtractedItem {
+            serde_json::from_value(
+                json!({ "text": "Check the tests first.", "scope": scope, "agent": agent }),
+            )
+            .unwrap()
+        };
+        let agents = ["tech-lead".to_string(), "reviewer".to_string()];
+        assert_eq!(
+            item("agent", Some("reviewer")).agent_in(&agents),
+            Some("reviewer")
+        );
+        assert_eq!(item("agent", Some("tester")).agent_in(&agents), None);
+        assert_eq!(item("agent", None).agent_in(&agents), None);
+        assert_eq!(
+            item("project", Some("reviewer")).agent_in(&agents),
+            None,
+            "only the agent scope names an agent"
+        );
+    }
+
+    #[test]
+    fn a_sessions_sub_agents_are_listed_by_profile_once() {
+        let page = json!({ "sessions": [
+            { "session_id": "c3", "metadata": { "parent_session_id": "p", "agent_profile": { "id": "reviewer" } } },
+            { "session_id": "c2", "metadata": { "parent_session_id": "p" } },
+            { "session_id": "c1", "metadata": { "parent_session_id": "p", "agent_profile": { "id": "reviewer" } } },
+            { "session_id": "c0", "metadata": { "parent_session_id": "p", "agent_profile": "tester" } },
+        ]});
+        assert_eq!(listed_agents(&page), ["reviewer", "tester"]);
+        assert!(listed_agents(&json!({})).is_empty());
     }
 
     #[test]
@@ -1883,6 +2112,43 @@ mod tests {
                 "{user} {target_in_layer:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_agent_item_lands_in_its_agents_bank_and_retires_nothing() {
+        let item = |scope: &str, agent: Option<&str>| -> ExtractedItem {
+            serde_json::from_value(json!({ "text": "t", "scope": scope, "agent": agent })).unwrap()
+        };
+        let agents = ["tech-lead".to_string(), "reviewer".to_string()];
+        let reviewer = item("agent", Some("reviewer"));
+        assert_eq!(
+            lands(&reviewer, &agents, true, Some(false)),
+            (Some("reviewer"), false, false),
+            "a correction target in this bank stays standing"
+        );
+        assert_eq!(
+            lands(&reviewer, &agents, false, None),
+            (Some("reviewer"), false, false)
+        );
+        assert_eq!(
+            lands(&item("agent", Some("tester")), &agents, true, None),
+            (None, false, false),
+            "an unlisted agent is no user item: never up (try_run drops it)"
+        );
+        assert_eq!(
+            lands(&item("user", Some("reviewer")), &agents, true, None),
+            (None, true, false),
+            "the user's go up into the layer"
+        );
+        assert_eq!(
+            lands(&item("user", None), &agents, false, None),
+            (None, false, false),
+            "no layer: here"
+        );
+        assert_eq!(
+            lands(&item("project", None), &agents, true, Some(false)),
+            (None, false, true)
+        );
     }
 
     #[test]
@@ -2385,6 +2651,7 @@ mod tests {
             kind: None,
             replaces: None,
             scope: None,
+            agent: None,
         };
         let m = new_memory(item, "s_1", Some("e_9"), 42);
         assert_eq!(m.text, "user prefers tea");

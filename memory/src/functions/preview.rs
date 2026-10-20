@@ -18,7 +18,8 @@ use crate::types::Memory;
 pub struct PreviewRequest {
     /// Bank to preview; a directory's bank (`<name>-<6 hex>`) reads
     /// `default_bank` under it, as its turns do. Omitted: the calling
-    /// session's bank, else the configured default.
+    /// session's bank with its layers (its agent profile's bank too), else
+    /// the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// The hypothetical user message (what someone would type in chat).
@@ -31,7 +32,7 @@ pub struct PreviewMemory {
     /// Recall score; 0.0 for memories added by the ambient floor.
     pub score: f32,
     /// The bank holding it, when not `bank`: the default bank, read under
-    /// a bank the session's directory chose.
+    /// a bank the session's directory chose, or its agent profile's bank.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bank: Option<String>,
 }
@@ -76,8 +77,8 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
     } else {
         // A hypothetical message has no window: nothing was injected yet.
         let seen = std::collections::HashSet::new();
-        let layer = scope.layer(&cfg.default_bank);
-        hooks::injection(deps, &cfg, bank_name, layer, Some(&req.query), &seen).await
+        let layers = scope.layers(&cfg.default_bank);
+        hooks::injection(deps, &cfg, bank_name, &layers, Some(&req.query), &seen).await
     };
     Ok(PreviewResponse {
         bank: bank_name.to_string(),

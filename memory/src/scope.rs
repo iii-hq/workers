@@ -7,7 +7,9 @@
 //! works in its parent's bank) → the bank of the turn's `fs_scope.root`
 //! repository, else of that directory ([`root_bank`]) → `default_bank`.
 //! A bank the directory chose reads `default_bank` under its own
-//! ([`Resolved::layer`]). `""` is absent. An invalid name, a deleted bank
+//! ([`Resolved::layer`]); so does the session's own `agent_profile` bank,
+//! `agent-<id>`, under any bank no metadata named ([`Resolved::layers`]).
+//! `""` is absent. An invalid name, a deleted bank
 //! other than the default, or a parent that no longer exists means NO
 //! memory — never a fallback to another bank. A failed session lookup is
 //! an error: the hook injects nothing new, extraction retries, a call
@@ -45,6 +47,23 @@ fn root_field(metadata: Option<&Value>) -> Option<&str> {
         .pointer("/fs_scope/root")
         .and_then(Value::as_str)
         .filter(|r| !r.is_empty())
+}
+
+/// The `agent_profile` id in a metadata object: the harness's snapshot
+/// `{ "id": … }`, or a bare id.
+pub(crate) fn profile_field(metadata: &Value) -> Option<String> {
+    let profile = metadata.get("agent_profile")?;
+    profile
+        .get("id")
+        .unwrap_or(profile)
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+/// The bank an agent profile's own memory lives in, across repositories.
+pub(crate) fn agent_bank(profile: &str) -> String {
+    format!("agent-{profile}")
 }
 
 /// The bank a working directory selects: `<name>-<6 hex>`, the name from
@@ -146,11 +165,16 @@ fn common_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// A resolved bank, and whether the turn's `fs_scope.root` chose it.
+/// A resolved bank, whether the turn's `fs_scope.root` chose it, and the
+/// session's agent profile read under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub bank: String,
     pub derived: bool,
+    /// The session's own `agent_profile` id, never a parent's: its
+    /// [`agent_bank`] is read under this bank. `None` without a profile, or
+    /// under a bank metadata named ([`Resolved::takes_agents`]).
+    pub agent: Option<String>,
 }
 
 impl Resolved {
@@ -159,7 +183,27 @@ impl Resolved {
         Self {
             bank: bank.into(),
             derived: false,
+            agent: None,
         }
+    }
+
+    /// Whether agent banks are read under this one: not under a bank
+    /// metadata named, which is read alone, as for [`Resolved::layer`].
+    // shortcut: `default_bank` named by metadata reads like the fallback
+    // (agents layered); carry provenance in `Resolved` if that misleads.
+    pub(crate) fn takes_agents(&self, default_bank: &str) -> bool {
+        self.derived || self.bank == default_bank
+    }
+
+    /// Every bank read under this one, in rule order: [`Resolved::layer`],
+    /// then the session's [`agent_bank`].
+    pub(crate) fn layers(&self, default_bank: &str) -> Vec<String> {
+        let agent = self.agent.as_deref().map(agent_bank);
+        self.layer(default_bank)
+            .map(str::to_string)
+            .into_iter()
+            .chain(agent)
+            .collect()
     }
 
     /// The bank read under this one: `default_bank`, when the directory
@@ -178,6 +222,12 @@ pub(crate) const LAYER_ENTITY: &str = "user";
 /// Whether a layer memory is read under a directory bank ([`LAYER_ENTITY`]).
 pub(crate) fn in_layer(memory: &Memory) -> bool {
     memory.entities.iter().any(|e| e == LAYER_ENTITY)
+}
+
+/// Whether a memory of `layer` is read under a turn's bank: every memory of
+/// an agent bank; of `default_bank`, those about the user ([`in_layer`]).
+pub(crate) fn layer_keeps(layer: &str, default_bank: &str, memory: &Memory) -> bool {
+    layer != default_bank || in_layer(memory)
 }
 
 /// Tags `entities` with [`LAYER_ENTITY`] unless one already is.
@@ -204,7 +254,7 @@ where
     L: FnMut(String) -> Fut,
     Fut: Future<Output = Result<Option<Value>, String>>,
 {
-    let chosen = match bank_field(turn_metadata) {
+    let mut chosen = match bank_field(turn_metadata) {
         Some(bank) => Resolved::named(bank),
         None => {
             // Only a chain that names no bank reaches the directory's.
@@ -212,6 +262,7 @@ where
                 Some(bank) => Resolved {
                     bank,
                     derived: true,
+                    agent: None,
                 },
                 None => Resolved::named(default_bank),
             };
@@ -229,6 +280,13 @@ where
     if chosen.bank != default_bank && deleted(&chosen.bank) {
         return Ok(None);
     }
+    // An unusable agent bank only drops that layer, never the session's
+    // memory; a deleted one is never brought back.
+    let takes = chosen.takes_agents(default_bank);
+    chosen.agent = chosen.agent.take().filter(|id| {
+        let bank = agent_bank(id);
+        takes && validate_name(&bank).is_ok() && !deleted(&bank)
+    });
     Ok(Some(chosen))
 }
 
@@ -236,7 +294,9 @@ where
 /// turn was injected with, an override included, its layer kept) or the
 /// parent session's, walked up; `top` at the top. `None` — no memory — for
 /// a session that no longer exists, or a chain that cycles or runs past
-/// [`MAX_PARENT_DEPTH`]: never `top` in their place.
+/// [`MAX_PARENT_DEPTH`]: never `top` in their place. The bank carries
+/// `session_id`'s own `agent_profile`: a sub-agent reads its own profile's
+/// bank, never its parent's.
 async fn walk<L, Fut>(
     session_id: &str,
     top: impl FnOnce() -> Resolved,
@@ -248,12 +308,20 @@ where
     Fut: Future<Output = Result<Option<Value>, String>>,
 {
     let mut id = session_id.to_string();
-    for _ in 0..=MAX_PARENT_DEPTH {
+    let mut agent = None;
+    for depth in 0..=MAX_PARENT_DEPTH {
         let Some(meta) = lookup(id.clone()).await? else {
             return Ok(None);
         };
+        if depth == 0 {
+            agent = profile_field(&meta);
+        }
+        let own = |bank: Resolved| Resolved {
+            agent: agent.clone(),
+            ..bank
+        };
         if let Some(bank) = bank_field(Some(&meta)) {
-            return Ok(Some(Resolved::named(bank)));
+            return Ok(Some(own(Resolved::named(bank))));
         }
         let field = |key| {
             meta.get(key)
@@ -261,11 +329,11 @@ where
                 .filter(|v| !v.is_empty())
         };
         if let Some(bank) = field("parent_turn_id").and_then(&recorded) {
-            return Ok(bank);
+            return Ok(bank.map(own));
         }
         match field("parent_session_id") {
             Some(parent) => id = parent.to_string(),
-            None => return Ok(Some(top())),
+            None => return Ok(Some(own(top()))),
         }
     }
     Ok(None)
@@ -320,9 +388,9 @@ async fn session_metadata(iii: &IIIClient, session_id: String) -> Result<Option<
         .map(|meta| meta.get("metadata").cloned().unwrap_or(Value::Null)))
 }
 
-/// The bank the hook stamped on `turn_id` (its `memory_bank` and
-/// `memory_layer` annotations, which the harness merges into the origin of
-/// each assistant entry the turn writes): the newest stamp on a
+/// The bank the hook stamped on `turn_id` (its `memory_bank`, `memory_layer`
+/// and `memory_agent` annotations, which the harness merges into the origin
+/// of each assistant entry the turn writes): the newest stamp on a
 /// `session::messages-tail` page. Another hook can write `memory_bank`
 /// too, so a name that is not a valid bank is no stamp.
 pub(crate) fn stamped_bank(reply: &Value, turn_id: &str) -> Option<Resolved> {
@@ -339,7 +407,17 @@ pub(crate) fn stamped_bank(reply: &Value, turn_id: &str) -> Option<Resolved> {
         .get("memory_layer")
         .and_then(Value::as_str)
         .is_some_and(|layer| !layer.is_empty());
-    Some(Resolved { bank, derived })
+    let agent = origin
+        .get("memory_agent")
+        .and_then(Value::as_str)
+        .and_then(|bank| bank.strip_prefix("agent-"))
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    Some(Resolved {
+        bank,
+        derived,
+        agent,
+    })
 }
 
 /// Recent turns tracked in [`TURN_BANKS`]; the least recently used goes
@@ -812,7 +890,8 @@ mod tests {
             derived,
             Ok(Some(Resolved {
                 bank: "w-bank".into(),
-                derived: true
+                derived: true,
+                agent: None,
             }))
         );
         assert_eq!(layer(derived), Some("main".into()));
@@ -836,6 +915,7 @@ mod tests {
         let directory = Resolved {
             bank: "main".into(),
             derived: true,
+            agent: None,
         };
         assert_eq!(directory.layer("main"), None, "never the default twice");
 
@@ -843,6 +923,7 @@ mod tests {
         let parent = Resolved {
             bank: "w-bank".into(),
             derived: true,
+            agent: None,
         };
         let child = resolve_full(None, "child", &store, &[], &[("rt", Some(parent))]).await;
         assert_eq!(layer(child), Some("main".into()));
@@ -854,21 +935,109 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_profile_reads_its_own_agent_bank_under_any_bank_no_metadata_named() {
+        let reviewer = json!({ "id": "reviewer", "name": "Code Reviewer" });
+        let store = sessions(&[
+            ("solo", json!({ "agent_profile": reviewer })),
+            ("bare", json!({ "agent_profile": "reviewer" })),
+            ("plain", json!({})),
+            (
+                "named",
+                json!({ "agent_profile": reviewer, "memory_bank": "blog" }),
+            ),
+            ("bad", json!({ "agent_profile": { "id": "Code Reviewer" } })),
+            ("lead", json!({ "agent_profile": { "id": "tech-lead" } })),
+            (
+                "child",
+                json!({ "parent_session_id": "lead", "parent_turn_id": "lt", "agent_profile": reviewer }),
+            ),
+            (
+                "anon",
+                json!({ "parent_session_id": "lead", "parent_turn_id": "lt" }),
+            ),
+            ("blogger", json!({ "memory_bank": "blog" })),
+            (
+                "blog-child",
+                json!({ "parent_session_id": "blogger", "agent_profile": reviewer }),
+            ),
+        ]);
+        let layers = |r: Result<Option<Resolved>, String>| r.unwrap().unwrap().layers("main");
+        let at = |turn, session, deleted: &'static [&'static str]| {
+            resolve_full(turn, session, &store, deleted, &[])
+        };
+        assert_eq!(layers(at(None, "solo", &[]).await), ["agent-reviewer"]);
+        assert_eq!(
+            layers(at(None, "bare", &[]).await),
+            ["agent-reviewer"],
+            "a bare id"
+        );
+        assert_eq!(
+            layers(at(in_root("w"), "solo", &[]).await),
+            ["main", "agent-reviewer"],
+            "the default's rules first, then the agent's"
+        );
+        assert!(layers(at(None, "plain", &[]).await).is_empty());
+        assert!(
+            layers(at(in_root("w"), "named", &[]).await).is_empty(),
+            "a session naming its bank reads it alone"
+        );
+        let mut turn = in_root("w").unwrap();
+        turn["memory_bank"] = json!("coding");
+        assert!(
+            layers(at(Some(turn), "solo", &[]).await).is_empty(),
+            "so does a turn naming one"
+        );
+        let unusable = at(None, "bad", &[]).await.unwrap().unwrap();
+        assert_eq!(
+            (unusable.bank.as_str(), unusable.agent),
+            ("main", None),
+            "an id no bank can carry drops the layer, not the memory"
+        );
+        let gone = at(None, "solo", &["agent-reviewer"])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((gone.bank.as_str(), gone.agent), ("main", None));
+
+        // A sub-agent reads its own profile's bank, never its parent's.
+        let parent = Resolved {
+            bank: "w-bank".into(),
+            derived: true,
+            agent: Some("tech-lead".into()),
+        };
+        let recorded = [("lt", Some(parent))];
+        let child = resolve_full(None, "child", &store, &[], &recorded).await;
+        assert_eq!(layers(child), ["main", "agent-reviewer"]);
+        let anon = resolve_full(None, "anon", &store, &[], &recorded).await;
+        assert_eq!(layers(anon), ["main"]);
+        assert!(
+            layers(at(None, "blog-child", &[]).await).is_empty(),
+            "a parent's named bank is read alone by its sub-agents too"
+        );
+    }
+
     #[test]
     fn a_layer_reads_only_memories_about_the_user() {
-        let about = |entities: &[&str]| {
-            let m: Memory = serde_json::from_value(json!({
+        let memory = |entities: &[&str]| -> Memory {
+            serde_json::from_value(json!({
                 "id": "m", "text": "t", "entities": entities, "confidence": "stated",
                 "created_at": 1, "updated_at": 1,
             }))
-            .unwrap();
-            in_layer(&m)
+            .unwrap()
         };
+        let about = |entities: &[&str]| in_layer(&memory(entities));
         assert!(about(&["user"]));
         assert!(about(&["pnpm", "user"]));
         assert!(!about(&["ledger-sync"]), "another repository's fact");
         assert!(!about(&[]));
         assert!(!about(&["users"]));
+        let role = memory(&["review"]);
+        assert!(!layer_keeps("main", "main", &role));
+        assert!(
+            layer_keeps("agent-reviewer", "main", &role),
+            "an agent bank is read whole"
+        );
     }
 
     #[test]
@@ -883,16 +1052,24 @@ mod tests {
               "origin": { "turn_id": "t2", "memory_bank": "blog" } },
             { "entry_id": "a3", "message": { "role": "assistant" },
               "origin": { "turn_id": "t3", "memory_bank": "Not A Bank" } },
+            { "entry_id": "a4", "message": { "role": "assistant" },
+              "origin": { "turn_id": "t4", "memory_bank": "main", "memory_agent": "agent-reviewer" } },
         ]});
         assert_eq!(
             stamped_bank(&page, "t1"),
             Some(Resolved {
                 bank: "w-abc123".into(),
-                derived: true
+                derived: true,
+                agent: None,
             }),
             "a notice after the reply carries no stamp: the reply's counts"
         );
         assert_eq!(stamped_bank(&page, "t2"), Some(Resolved::named("blog")));
+        assert_eq!(
+            stamped_bank(&page, "t4").and_then(|r| r.agent),
+            Some("reviewer".into()),
+            "the agent layer survives a restart"
+        );
         assert_eq!(stamped_bank(&page, "t3"), None, "not a valid bank");
         assert_eq!(stamped_bank(&page, "t9"), None);
         assert_eq!(stamped_bank(&json!({}), "t1"), None);
