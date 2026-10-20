@@ -150,8 +150,24 @@ Page:
   list of items, no checkboxes: the board next to it is the list, and Done
   is set there.
 - Keep the page its own; it is not inside the board. Open it to the left of
-  the board when the build is done:
-  `console::workspace::open { "screen": "todo", "relative_to": "kanban-todo-local-board", "direction": "left" }`.
+  the board when the build is done, and narrow: a sidebar takes the
+  console's smallest column, 12% of the tab (`MIN_COLUMN_FRACTION`), and
+  the other columns share the rest. `console::workspace::list` gives the
+  tab that holds `kanban-todo-local-board` and its `screens`; with `n`
+  columns there now, pass `n + 1` widths, `0.12` for the TODO column:
+
+  ```json
+  console::workspace::open {
+    "screen": "todo",
+    "relative_to": "kanban-todo-local-board",
+    "direction": "left",
+    "sizes": [0.44, 0.12, 0.44]
+  }
+  ```
+
+  (that example is chat, TODO, board: the TODO column sits where
+  `direction: "left"` puts it, just before the board). Style the page for
+  that width: one column, fields full width, no table.
 
 Web page:
 
