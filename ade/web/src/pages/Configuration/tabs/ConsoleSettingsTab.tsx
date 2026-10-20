@@ -17,6 +17,7 @@ import {
 import { Switch } from '@/components/ui/Switch'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
+import { useTabLimit } from '@/hooks/use-tab-limit'
 import type { Theme } from '@/hooks/use-theme'
 import { getDefaultBackend } from '@/lib/backend'
 import {
@@ -39,6 +40,12 @@ const HARNESS_CONFIG_HASH = hashForWorkersConfiguration('llm-router')
 // Shell's permanent `fs.host_roots` list — do NOT build a second editor for
 // it here; deep-link to the worker-owned configuration interface instead.
 const SHELL_CONFIG_HASH = hashForWorkersConfiguration('ide')
+// The workspace tab limit lives in the ADE's own configuration entry
+// (`tabs.limit`), edited through its schema-driven form like the port.
+const TAB_LIMIT_CONFIG_HASH = hashForWorkersConfiguration('console', [
+  'tabs',
+  'limit',
+])
 
 interface ConsoleSettingsTabProps {
   theme: Theme
@@ -64,6 +71,7 @@ export function ConsoleSettingsTab({
   // provider (Storybook) the context is null; treat that as available.
   const ctx = useConversationsCtxOptional()
   const approvalGateAvailable = ctx ? ctx.approvalGateAvailable : true
+  const tabLimit = useTabLimit()
 
   // Deployment defaults from the approval-gate configuration entry (single source).
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
@@ -294,6 +302,24 @@ export function ConsoleSettingsTab({
             </div>
           </DialogContent>
         </Dialog>
+
+        <SettingsSection
+          title="Workspace"
+          description="How many workspace tabs this ADE lets you open at once."
+        >
+          <SettingsList>
+            <SettingsRow
+              label="Tab limit"
+              description="New-tab controls disable at the limit; tabs already open stay open."
+              meta={`${tabLimit} ${tabLimit === 1 ? 'tab' : 'tabs'}`}
+              action={
+                <Button asChild variant="pill" size="sm">
+                  <a href={TAB_LIMIT_CONFIG_HASH}>Edit limit</a>
+                </Button>
+              }
+            />
+          </SettingsList>
+        </SettingsSection>
 
         <SettingsSection
           title="Providers"

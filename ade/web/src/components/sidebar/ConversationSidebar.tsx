@@ -417,7 +417,12 @@ export function ConversationSidebar({
           }}
           aria-label="ADE settings"
           title="ADE settings"
-          className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
+          // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
+          className={cn(
+            'onboarding-settings',
+            QUIET_ACTION,
+            narrow ? 'size-12' : 'size-8',
+          )}
         >
           <Settings className="size-4" aria-hidden />
         </button>

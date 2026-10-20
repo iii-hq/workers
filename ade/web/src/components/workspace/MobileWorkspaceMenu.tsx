@@ -2,6 +2,7 @@ import { Check, PanelsTopLeft, Plus, Search, Settings, X } from 'lucide-react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { SheetPage } from '@/components/ui/SheetNavigation'
 import type { UseWorkspaceTabsReturn } from '@/hooks/use-workspace-tabs'
+import { tabLimitReachedTitle } from '@/lib/tab-limit'
 import { cn } from '@/lib/utils'
 import {
   screenLabel,
@@ -132,10 +133,19 @@ export function MobileWorkspaceMenu({
                 workspace.createTab({ columns: 1 })
                 onOpenChange(false)
               }}
-              className="mt-2 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+              aria-disabled={!workspace.canCreateTab || undefined}
+              disabled={!workspace.canCreateTab}
+              title={
+                workspace.canCreateTab
+                  ? undefined
+                  : tabLimitReachedTitle(workspace.tabLimit)
+              }
+              className="mt-2 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40"
             >
               <Plus className="size-5 text-ink-faint" aria-hidden />
-              New workspace
+              {workspace.canCreateTab
+                ? 'New workspace'
+                : `New workspace · limit of ${workspace.tabLimit} reached`}
             </button>
           </div>
 

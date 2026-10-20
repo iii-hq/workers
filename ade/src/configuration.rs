@@ -169,6 +169,20 @@ fn schema() -> Value {
                 },
                 "additionalProperties": true
             },
+            "tabs": {
+                "type": "object",
+                "description": "Workspace tab strip preferences.",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 64,
+                        "default": 12,
+                        "description": "How many workspace tabs may be open at once. The new-tab controls disable at the limit; tabs already open above a lowered limit stay open. Changes apply live."
+                    }
+                },
+                "additionalProperties": true
+            },
             "injectableUi": {
                 "type": "object",
                 "description": "Injectable worker UI controls (console:script / console:style / console:module assets).",
@@ -219,6 +233,9 @@ fn default_value(http_port: u16, data_dir: &str) -> Value {
                 "hiddenGroups": ["harness::send"],
                 "hiddenWorkers": ["context-manager", "session-manager"]
             }
+        },
+        "tabs": {
+            "limit": 12
         },
         "injectableUi": {
             "disabledWorkers": []
@@ -662,6 +679,18 @@ mod tests {
         let section = &s["properties"]["injectableUi"]["properties"]["disabledWorkers"];
         assert_eq!(section["type"], "array");
         assert_eq!(section["items"]["type"], "string");
+    }
+
+    #[test]
+    fn schema_exposes_the_tab_limit() {
+        let limit = &schema()["properties"]["tabs"]["properties"]["limit"];
+        assert_eq!(limit["type"], "integer");
+        assert_eq!(limit["minimum"], 1);
+        assert_eq!(limit["maximum"], 64);
+        assert_eq!(limit["default"], 12);
+        // The out-of-the-box entry states the same number, so the form shows
+        // it rather than an empty field.
+        assert_eq!(default_value(3113, "data/ade")["tabs"]["limit"], 12);
     }
 
     #[test]

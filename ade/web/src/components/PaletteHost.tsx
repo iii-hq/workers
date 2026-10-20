@@ -82,6 +82,8 @@ export interface PaletteWorkspace {
   tabs: readonly WorkspaceTab[]
   activeTabId: string
   activate: (id: string) => void
+  /** False at the configured tab limit: the create row is not offered. */
+  canCreate: boolean
   create: () => void
   close: (id: string) => void
   step: (delta: 1 | -1) => void
@@ -218,13 +220,8 @@ export function PaletteHost({
         workspace.tabs[0],
     )
     const offered = (id: WorkspaceActionId): boolean => {
-      if (
-        id === 'workspace.create' ||
-        id === 'panel.split' ||
-        id === 'panel.splitLeft'
-      ) {
-        return true
-      }
+      if (id === 'workspace.create') return workspace.canCreate
+      if (id === 'panel.split' || id === 'panel.splitLeft') return true
       if (id === 'panel.next' || id === 'panel.previous') return panes > 1
       return several
     }

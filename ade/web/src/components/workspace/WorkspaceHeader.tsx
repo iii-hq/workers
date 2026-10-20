@@ -1,4 +1,4 @@
-import { Menu, Plus, Search, SettingsIcon, SquarePen } from 'lucide-react'
+import { Menu, Plus, Search, SquarePen } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Wordmark } from '@/components/ui/Wordmark'
@@ -8,6 +8,7 @@ import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import type { UseWorkspaceTabsReturn } from '@/hooks/use-workspace-tabs'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { bindingsFor, hoverTitle } from '@/lib/keybindings/registry'
+import { tabLimitReachedTitle } from '@/lib/tab-limit'
 import { cn } from '@/lib/utils'
 import {
   CHAT_SCREEN,
@@ -71,6 +72,10 @@ export function WorkspaceHeader({
   const mobileIsChat = mobileScreen !== null && isChatScreen(mobileScreen)
   const paletteBinding = bindingsFor('palette.toggle')[0] ?? 'Mod+K'
   const paletteTitle = hoverTitle('Search and commands', 'palette.toggle')
+  const limitTitle = tabLimitReachedTitle(workspace.tabLimit)
+  // The phone's trailing button is "new chat" on a chat panel and "new
+  // workspace" elsewhere; only the latter is subject to the tab limit.
+  const mobileCreateBlocked = !mobileIsChat && !workspace.canCreateTab
 
   return (
     <>
@@ -144,7 +149,13 @@ export function WorkspaceHeader({
               }
             }}
             aria-label={mobileIsChat ? 'new chat' : 'new workspace'}
-            className={cn(GHOST_CONTROL, 'size-12')}
+            aria-disabled={mobileCreateBlocked || undefined}
+            disabled={mobileCreateBlocked}
+            title={mobileCreateBlocked ? limitTitle : undefined}
+            className={cn(
+              GHOST_CONTROL,
+              'size-12 disabled:pointer-events-none disabled:opacity-40',
+            )}
           >
             {mobileIsChat ? (
               <SquarePen className="size-5" aria-hidden />
@@ -186,6 +197,8 @@ export function WorkspaceHeader({
             onActivate={workspace.activateTab}
             onClose={onCloseTab}
             onCreate={() => workspace.createTab({ columns: 1 })}
+            createDisabled={!workspace.canCreateTab}
+            createDisabledTitle={limitTitle}
             onRename={workspace.renameTab}
             onReorder={workspace.reorderTab}
           />
@@ -211,24 +224,9 @@ export function WorkspaceHeader({
           />
         </button>
 
-        <div className="flex items-center justify-end gap-1.5">
-          <button
-            type="button"
-            onClick={onToggleSettings}
-            aria-pressed={settingsOpen}
-            aria-label="ADE settings"
-            title="ADE settings"
-            className={cn(
-              // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
-              'onboarding-settings size-8',
-              settingsOpen
-                ? 'inline-flex shrink-0 items-center justify-center rounded-xl bg-neutral-900 text-neutral-50 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:focus-visible:ring-neutral-400'
-                : GHOST_CONTROL,
-            )}
-          >
-            <SettingsIcon className="size-4 shrink-0" aria-hidden />
-          </button>
-        </div>
+        {/* The right column is empty on purpose: settings moved to the
+            sidebar's bottom row, and the grid keeps search centred. */}
+        <div aria-hidden className="min-w-0" />
       </header>
     </>
   )

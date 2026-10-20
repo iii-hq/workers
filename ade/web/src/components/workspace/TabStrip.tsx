@@ -52,6 +52,10 @@ interface TabStripProps {
   onClose: (id: string) => void
   /** Create an EMPTY single-column tab (panes grow via the edge zones). */
   onCreate: () => void
+  /** The configured tab limit is reached: the `+` disables and says why. */
+  createDisabled?: boolean
+  /** Hover title for the disabled `+` (defaults to the limit-reached copy). */
+  createDisabledTitle?: string
   onRename: (id: string, name: string) => void
   /** Move the tab at `from` to position `to` (indexes into `tabs`). */
   onReorder: (from: number, to: number) => void
@@ -169,6 +173,8 @@ export function TabStrip({
   onActivate,
   onClose,
   onCreate,
+  createDisabled = false,
+  createDisabledTitle,
   onRename,
   onReorder,
 }: TabStripProps) {
@@ -649,9 +655,15 @@ export function TabStrip({
       <button
         type="button"
         aria-label="New workspace"
-        title={hoverTitle('New workspace', 'workspace.create')}
+        aria-disabled={createDisabled || undefined}
+        disabled={createDisabled}
+        title={
+          createDisabled
+            ? (createDisabledTitle ?? 'Tab limit reached')
+            : hoverTitle('New workspace', 'workspace.create')
+        }
         onClick={onCreate}
-        className="relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+        className="relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
       >
         <span
           className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"

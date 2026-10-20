@@ -31,6 +31,7 @@ import {
 } from '@/hooks/lib/workspace-layout-writer'
 import { getIiiClient } from '@/lib/iii-client'
 import { moveItem } from '@/lib/reorder'
+import { canCreateTab, DEFAULT_TAB_LIMIT } from '@/lib/tab-limit'
 import type { WorkspaceLayoutValue } from '@/lib/workspace-layout'
 import {
   adjacentTabId,
@@ -212,7 +213,14 @@ export interface UseWorkspaceTabsReturn {
   activeTabId: string
   activeTab: WorkspaceTab
   activateTab: (id: string) => void
-  /** New tab with the chosen column count and (optionally) screens. */
+  /** The configured ceiling on open tabs (`tabs.limit` in the console
+      configuration entry; `DEFAULT_TAB_LIMIT` when it says nothing). */
+  tabLimit: number
+  /** Whether `createTab` would open one: false at the limit, where every
+      new-tab control disables. Tabs above a lowered limit stay as they are. */
+  canCreateTab: boolean
+  /** New tab with the chosen column count and (optionally) screens. A
+      no-op at the limit. */
   createTab: (opts: { columns: 1 | 2; screens?: TabScreen[] }) => void
   closeTab: (id: string) => void
   renameTab: (id: string, name: string) => void
@@ -242,7 +250,14 @@ export interface UseWorkspaceTabsReturn {
   ) => void
 }
 
-export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
+export interface UseWorkspaceTabsOptions {
+  /** Open-tab ceiling; the caller reads it from configuration (`useTabLimit`). */
+  tabLimit?: number
+}
+
+export function useWorkspaceTabs({
+  tabLimit = DEFAULT_TAB_LIMIT,
+}: UseWorkspaceTabsOptions = {}): UseWorkspaceTabsReturn {
   const qc = useQueryClient()
   const writer = workspaceLayoutWriter(qc)
 
@@ -428,8 +443,14 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     [activateTab, activeTabId, tabs],
   )
 
+  const canCreate = canCreateTab(tabs.length, tabLimit)
+
   const createTab = useCallback(
     (opts: { columns: 1 | 2; screens?: TabScreen[] }) => {
+      // Refused at the limit — and refused again inside the transform, so a
+      // write that lands on a strip another browser just filled stays a
+      // no-op instead of opening tab limit+1.
+      if (!canCreate) return
       const screens = (opts.screens ?? []).slice(0, opts.columns)
       const tab: WorkspaceTab = {
         id: newTabId(),
@@ -437,14 +458,15 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         screens,
       }
       choose(tab.id)
-      persist((state) => ({
-        tabs: state.tabs.some((existing) => existing.id === tab.id)
-          ? state.tabs
-          : [...state.tabs, tab],
-        activeTabId: tab.id,
-      }))
+      persist((state) => {
+        if (state.tabs.some((existing) => existing.id === tab.id)) {
+          return { ...state, activeTabId: tab.id }
+        }
+        if (!canCreateTab(state.tabs.length, tabLimit)) return state
+        return { tabs: [...state.tabs, tab], activeTabId: tab.id }
+      })
     },
-    [choose, persist],
+    [canCreate, choose, persist, tabLimit],
   )
 
   const closeTab = useCallback(
@@ -654,6 +676,8 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     activeTabId,
     activeTab,
     activateTab,
+    tabLimit,
+    canCreateTab: canCreate,
     createTab,
     closeTab,
     renameTab,

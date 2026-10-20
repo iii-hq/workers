@@ -51,6 +51,7 @@ import {
 } from '@/hooks/use-hash-route'
 import { useKeybindings } from '@/hooks/use-keybindings'
 import { REDUCED_MOTION_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import { useTabLimit } from '@/hooks/use-tab-limit'
 import { useTheme } from '@/hooks/use-theme'
 import {
   type UseWorkspaceTabsReturn,
@@ -215,7 +216,8 @@ export function App({
       }),
     [],
   )
-  const workspace = useWorkspaceTabs()
+  const tabLimit = useTabLimit()
+  const workspace = useWorkspaceTabs({ tabLimit })
   const { activeTabId } = workspace
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
@@ -406,6 +408,7 @@ export function App({
       tabs: workspace.tabs,
       activeTabId: workspace.activeTabId,
       activate: (id) => workspaceRef.current.activateTab(id),
+      canCreate: workspace.canCreateTab,
       create: () => workspaceRef.current.createTab({ columns: 1 }),
       close: requestCloseTab,
       step: (delta) => workspaceRef.current.activateAdjacent(delta),
@@ -415,6 +418,7 @@ export function App({
     [
       workspace.tabs,
       workspace.activeTabId,
+      workspace.canCreateTab,
       requestCloseTab,
       splitWorkspacePanel,
       stepPaneFocus,
