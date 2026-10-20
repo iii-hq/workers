@@ -159,6 +159,7 @@ mod tests {
         );
         assert!(!plan.unattended);
         let request = harness_request(&plan);
+        assert!(request["session"].get("kind").is_none());
         assert!(request["options"]["metadata"]
             .as_object()
             .expect("metadata object")

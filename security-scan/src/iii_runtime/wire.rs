@@ -984,18 +984,22 @@ fn harness_request(plan: &AnalysisPlan) -> Value {
         }),
         None => json!({ "security_scan": true }),
     };
+    let mut session = json!({
+        "title": "Security review",
+        "metadata": session_metadata,
+    });
+    // An unattended scan is never the person's own session: memory skips it.
+    // Issue/fix sessions wait on a human approval, so they stay visible user roots.
+    if plan.unattended {
+        session["kind"] = json!("automation");
+    }
     json!({
         "session_id": plan.session_id,
         "message": plan.message,
         "model": plan.model,
         "provider": plan.provider,
         "idempotency_key": plan.idempotency_key,
-        "session": {
-            "title": "Security review",
-            "metadata": session_metadata,
-            // A scan is never the person's own session: memory skips it.
-            "kind": "automation",
-        },
+        "session": session,
         "options": {
             "system_prompt": plan.system_prompt,
             "system_prompt_strategy": "override",
