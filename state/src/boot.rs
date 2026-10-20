@@ -50,6 +50,9 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
 
     // Registering the trigger type makes the engine deliver every `state`
     // trigger binding through `handler`, which populates the fan-out table.
+    // Kept until the trigger type is retired; old consumers bind it on 0.24
+    // and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(TRIGGER_TYPE, "State trigger", handler)
             .trigger_request_format::<StateTriggerSpec>(),

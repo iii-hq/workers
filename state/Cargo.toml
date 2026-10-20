@@ -18,11 +18,11 @@ name = "state"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.25.0-rc.4"
 iii-worker-paths = { path = "../crates/worker-paths" }
 # UpdateOp / StreamSetResult / StreamUpdateResult / UpdateOpError / MergePath —
 # the exact types the builtin used; pinned to the version iii-sdk resolves.
-iii-helpers = "=0.24.6"
+iii-helpers = "=0.25.0-rc.4"
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
