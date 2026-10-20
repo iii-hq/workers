@@ -483,9 +483,14 @@ mod tests {
             .await
             .unwrap();
 
-        let first = client.screenshot().await.unwrap();
+        client.screenshot().await.unwrap();
+        // A refit of the same frame would give the same bytes too: mark the
+        // cached fit so only a reuse can return it.
+        if let Some((_, fitted)) = &mut *client.last.lock().unwrap() {
+            fitted.jpeg = b"cached".to_vec();
+        }
         let again = client.screenshot().await.unwrap();
-        assert_eq!(first.bytes, again.bytes);
+        assert_eq!(again.bytes, b"cached");
         client.left_click(100, 50).await.unwrap();
 
         let resized = client.screenshot().await.unwrap();
