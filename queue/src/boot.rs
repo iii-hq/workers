@@ -84,6 +84,10 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
         )
         .trigger_request_format::<SubscriberSpec>(),
     );
+    // The same subscribers through observe (iii 0.25): one more kind of
+    // subscriber in `trigger_handler`. On an engine without observe its hooks
+    // never run and the trigger type above carries everything.
+    crate::on_message::register(&project_iii, trigger_handler.clone());
 
     Ok(BootHandle {
         adapter,

@@ -335,7 +335,7 @@ mod tests {
     use crate::adapter::{QueueAdapter, TopicInfo};
     use crate::config::AdapterEntry;
     use crate::store::TopicStats;
-    use crate::trigger::{RegisteredSubscriber, SubscriberSpec};
+    use crate::trigger::{RegisteredSubscriber, SubscriberSpec, SubscriberTarget};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -358,15 +358,13 @@ mod tests {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn subscribe(
+        async fn subscribe_target(
             &self,
             _topic: &str,
             _id: &str,
-            _function_id: &str,
-            _metadata: Option<serde_json::Value>,
+            _target: crate::trigger::SubscriberTarget,
             _condition_function_id: Option<String>,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
-            _namespace: Option<String>,
         ) {
             self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
         }
@@ -432,9 +430,7 @@ mod tests {
         trigger_handler
             .register_subscriber(RegisteredSubscriber {
                 trigger_id: "t1".to_string(),
-                function_id: "backend".to_string(),
-                metadata: None,
-                namespace: None,
+                target: SubscriberTarget::function("backend", None, None),
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
@@ -477,9 +473,7 @@ mod tests {
         trigger_handler
             .register_subscriber(RegisteredSubscriber {
                 trigger_id: "t1".to_string(),
-                function_id: "backend".to_string(),
-                metadata: None,
-                namespace: None,
+                target: SubscriberTarget::function("backend", None, None),
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,

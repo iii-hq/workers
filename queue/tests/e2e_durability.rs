@@ -306,7 +306,7 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     let registrations = boot.trigger_handler.registrations().await;
     assert_eq!(registrations.len(), 1);
     assert_eq!(
-        registrations[0].namespace.as_deref(),
+        registrations[0].target.namespace(),
         Some(namespace.as_str())
     );
 

@@ -2,9 +2,15 @@
 //!
 //! The handler itself no longer owns any consumer loop or store access --
 //! `register_trigger`/`unregister_trigger` translate a `TriggerConfig` into
-//! [`crate::adapter::QueueAdapter::subscribe`]/`unsubscribe` calls against the
-//! (possibly hot-swapped) [`SwappableAdapter`]. All delivery, retry, and DLQ
-//! behavior lives in the adapter (e.g. [`crate::adapters::builtin::BuiltinAdapter`]).
+//! [`crate::adapter::QueueAdapter::subscribe_target`]/`unsubscribe` calls
+//! against the (possibly hot-swapped) [`SwappableAdapter`]. All delivery,
+//! retry, and DLQ behavior lives in the adapter (e.g.
+//! [`crate::adapters::builtin::BuiltinAdapter`]).
+//!
+//! A `queue::on-message` observer ([`crate::on_message`]) is one more
+//! subscriber in the same registry: only its [`SubscriberTarget`] differs, so
+//! both kinds share validation, subscription identity, hot-swap resubscribe
+//! and the adapters' consumer loops.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -27,7 +33,7 @@ use crate::subscriber_config::SubscriberQueueConfig;
 /// response). The iii SDK defaults an omitted timeout to 30 seconds, which
 /// lets the adapter retry an in-flight delivery while the original invocation
 /// is still running. 30 minutes covers the longest intended job budget.
-const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+pub(crate) const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 
 /// How long one engine-epoch sample may take.
 const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
@@ -43,6 +49,9 @@ const WORKERS_AVAILABLE_TRIGGER: &str = "engine::workers-available";
 const DEFAULT_NAMESPACE: &str = "default";
 const SUBSCRIPTION_NAMESPACE_SEPARATOR: char = '@';
 const SUBSCRIPTION_NAMESPACE_ESCAPE: char = '\\';
+/// Prefix of an observer's registration id and subscription key, keeping
+/// them apart from trigger ids and trigger subscription keys.
+const OBSERVER_KEY_PREFIX: &str = "observer:";
 
 /// The engine's boot identity: the earliest `connected_at_ms` among its
 /// in-process (`runtime == "engine"`) workers, which attach once at engine
@@ -448,6 +457,136 @@ impl Invoker for IiiInvoker {
     }
 }
 
+/// The delivery side of a `queue::on-message` observer: an
+/// [`iii_sdk::Observer`] in production (see [`crate::on_message`]), a fake in
+/// tests.
+#[async_trait]
+pub trait ObserverSink: Send + Sync + 'static {
+    /// The observer id: stable across the observing worker's reconnects.
+    fn id(&self) -> &str;
+
+    /// The function each message reaches.
+    fn target(&self) -> &str;
+
+    /// Hand one message to the observer's target (`obs.call`) and return its
+    /// result. `Ok(None)` when the observer's filters skip the message.
+    async fn call(&self, payload: Value) -> Result<Option<Value>, String>;
+}
+
+/// Who a subscription hands each message to. Every adapter's consumer loop,
+/// retry and DLQ handling is shared; this is the one step that differs.
+#[derive(Clone)]
+pub enum SubscriberTarget {
+    /// A `durable:subscriber` trigger: its function, invoked through the
+    /// engine (`iii.trigger`).
+    Function {
+        function_id: String,
+        /// The trigger's stored metadata, delivered verbatim with every
+        /// message. For a harness-managed binding this carries
+        /// `{"__binding": <id>}` -- the pointer the delivery hop resolves;
+        /// dropping it makes every delivery an unresolvable fire.
+        metadata: Option<Value>,
+        /// Namespace where the subscriber function and its condition
+        /// function live.
+        namespace: Option<String>,
+    },
+    /// A `queue::on-message` observer: each message is one `obs.call`, and
+    /// the target's result acks or fails it exactly as a trigger target's
+    /// does. The engine adds the observer's metadata to each call and routes
+    /// it to the observer's target in the target's own namespace.
+    Observer(Arc<dyn ObserverSink>),
+}
+
+impl std::fmt::Debug for SubscriberTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Function {
+                function_id,
+                metadata,
+                namespace,
+            } => f
+                .debug_struct("Function")
+                .field("function_id", function_id)
+                .field("metadata", metadata)
+                .field("namespace", namespace)
+                .finish(),
+            Self::Observer(observer) => f
+                .debug_struct("Observer")
+                .field("id", &observer.id())
+                .field("target", &observer.target())
+                .finish(),
+        }
+    }
+}
+
+impl SubscriberTarget {
+    pub fn function(
+        function_id: impl Into<String>,
+        metadata: Option<Value>,
+        namespace: Option<String>,
+    ) -> Self {
+        Self::Function {
+            function_id: function_id.into(),
+            metadata,
+            namespace,
+        }
+    }
+
+    /// The function the messages reach: the trigger's function, or the
+    /// observer's target.
+    pub fn function_id(&self) -> &str {
+        match self {
+            Self::Function { function_id, .. } => function_id,
+            Self::Observer(observer) => observer.target(),
+        }
+    }
+
+    /// Namespace the target and its condition function resolve in. `None`
+    /// for an observer: the engine routes `obs.call` to the observer's own
+    /// target, and its condition function resolves in this worker's
+    /// namespace.
+    pub fn namespace(&self) -> Option<&str> {
+        match self {
+            Self::Function { namespace, .. } => namespace.as_deref(),
+            Self::Observer(_) => None,
+        }
+    }
+
+    /// What this subscriber is, for validation messages.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Function { .. } => "durable:subscriber trigger",
+            Self::Observer(_) => "queue::on-message observer",
+        }
+    }
+
+    /// Hand one message to the target. `Ok` acks it; `Err` fails it (retry
+    /// with backoff, then the DLQ), the same for both kinds.
+    pub async fn deliver(
+        &self,
+        invoker: &dyn Invoker,
+        payload: Value,
+    ) -> Result<Option<Value>, String> {
+        match self {
+            Self::Function {
+                function_id,
+                metadata,
+                namespace,
+            } => {
+                invoker
+                    .call_delivery(function_id, payload, metadata.clone(), namespace.as_deref())
+                    .await
+            }
+            Self::Observer(observer) => observer.call(payload).await,
+        }
+    }
+}
+
+/// The registration id, and the subscription key, of the observer `id`.
+pub fn observer_key(id: &str) -> String {
+    format!("{OBSERVER_KEY_PREFIX}{id}")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubscriberSpec {
     /// Queue/topic name to consume.
@@ -469,15 +608,11 @@ pub struct SubscriberSpec {
 
 #[derive(Debug, Clone)]
 pub struct RegisteredSubscriber {
+    /// The trigger id, or [`observer_key`] of a `queue::on-message`
+    /// observer's id: one map holds both, and the prefix keeps the two id
+    /// spaces apart.
     pub trigger_id: String,
-    pub function_id: String,
-    /// The trigger's stored metadata, delivered verbatim with every message.
-    /// For a harness-managed binding this carries `{"__binding": <id>}` — the
-    /// pointer the delivery hop resolves; dropping it makes every delivery an
-    /// unresolvable fire.
-    pub metadata: Option<Value>,
-    /// Namespace where the subscriber function and its condition function live.
-    pub namespace: Option<String>,
+    pub target: SubscriberTarget,
     pub spec: SubscriberSpec,
 }
 
@@ -494,15 +629,27 @@ impl RegisteredSubscriber {
     /// in different namespaces never share an adapter consumer or backlog.
     /// `default` keeps the legacy suffix-less identity for ordinary keys, so
     /// existing deployments stay attached to their durable queues.
+    ///
+    /// An observer is keyed by its id, which its SDK keeps across reconnects
+    /// (and which a consumer can pin with the `id` observe option), under a
+    /// prefix no trigger key starts with in practice: an observer never
+    /// shares a subscription with a trigger or with another observer.
     fn subscription_key(&self) -> String {
-        let base = self
-            .metadata
+        let (function_id, metadata, namespace) = match &self.target {
+            SubscriberTarget::Function {
+                function_id,
+                metadata,
+                namespace,
+            } => (function_id, metadata, namespace),
+            SubscriberTarget::Observer(observer) => return observer_key(observer.id()),
+        };
+        let base = metadata
             .as_ref()
             .and_then(|m| m.get("__binding"))
             .and_then(Value::as_str)
-            .unwrap_or(&self.function_id);
+            .unwrap_or(function_id);
         let escaped_base = escape_subscription_key_segment(base);
-        let namespace = self.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
+        let namespace = namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
         if namespace == DEFAULT_NAMESPACE {
             escaped_base
         } else {
@@ -544,6 +691,23 @@ fn merged_queue_config(spec: &SubscriberSpec) -> SubscriberQueueConfig {
         config.backoff_delay_ms = Some(backoff_ms);
     }
     config
+}
+
+/// Why [`QueueTriggerHandler::register_subscriber`] refused a subscriber.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegisterError {
+    /// The subscriber config fails validation (no queue).
+    InvalidConfig(String),
+    /// A subscriber with this registration id is already tracked.
+    AlreadyRegistered(String),
+}
+
+impl std::fmt::Display for RegisterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidConfig(message) | Self::AlreadyRegistered(message) => f.write_str(message),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -590,33 +754,38 @@ impl QueueTriggerHandler {
             }
             let queue_config = merged_queue_config(&registration.spec);
             self.adapter
-                .subscribe(
+                .subscribe_target(
                     &registration.spec.queue,
                     &key,
-                    &registration.function_id,
-                    registration.metadata.clone(),
+                    registration.target.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
-                    registration.namespace.clone(),
                 )
                 .await;
         }
     }
 
+    /// Track `registration` and attach it to the adapter. The same path, and
+    /// so the same validation, for a `durable:subscriber` trigger and a
+    /// `queue::on-message` observer.
     pub async fn register_subscriber(
         &self,
         registration: RegisteredSubscriber,
-    ) -> Result<(), String> {
+    ) -> Result<(), RegisterError> {
         if registration.spec.queue.trim().is_empty() {
-            return Err("queue is required for durable:subscriber trigger".to_string());
+            return Err(RegisterError::InvalidConfig(format!(
+                "queue is required for {}",
+                registration.target.kind()
+            )));
         }
 
         let mut registrations = self.registrations.lock().await;
         if registrations.contains_key(&registration.trigger_id) {
-            return Err(format!(
-                "durable:subscriber trigger '{}' is already registered",
+            return Err(RegisterError::AlreadyRegistered(format!(
+                "{} '{}' is already registered",
+                registration.target.kind(),
                 registration.trigger_id
-            ));
+            )));
         }
 
         // Registrations sharing a subscription key (e.g. a re-registered SDK
@@ -630,14 +799,12 @@ impl QueueTriggerHandler {
         if !already_live {
             let queue_config = merged_queue_config(&registration.spec);
             self.adapter
-                .subscribe(
+                .subscribe_target(
                     &registration.spec.queue,
                     &key,
-                    &registration.function_id,
-                    registration.metadata.clone(),
+                    registration.target.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
-                    registration.namespace.clone(),
                 )
                 .await;
         }
@@ -681,20 +848,22 @@ impl TriggerHandler for QueueTriggerHandler {
             .map_err(|e| Error::Handler(format!("invalid durable:subscriber config: {e}")))?;
         self.register_subscriber(RegisteredSubscriber {
             trigger_id: config.id,
-            function_id: config.function_id,
-            metadata: config.metadata,
-            // Older engines do not send this field. Their only namespace was
-            // `default`, so preserve that behavior explicitly instead of
-            // inheriting the queue worker's own namespace by accident.
-            namespace: Some(
-                config
-                    .namespace
-                    .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string()),
+            target: SubscriberTarget::function(
+                config.function_id,
+                config.metadata,
+                // Older engines do not send this field. Their only namespace
+                // was `default`, so preserve that behavior explicitly instead
+                // of inheriting the queue worker's own namespace by accident.
+                Some(
+                    config
+                        .namespace
+                        .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string()),
+                ),
             ),
             spec,
         })
         .await
-        .map_err(Error::Handler)
+        .map_err(|e| Error::Handler(e.to_string()))
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
@@ -781,8 +950,6 @@ mod tests {
     }
 
     #[derive(Debug, Clone, PartialEq)]
-    // This test record keeps the complete subscribe call visible to assertions.
-    #[expect(clippy::large_enum_variant)]
     enum Call {
         Subscribe {
             topic: String,
@@ -792,6 +959,13 @@ mod tests {
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
             namespace: Option<String>,
+        },
+        SubscribeObserver {
+            topic: String,
+            id: String,
+            observer_id: String,
+            condition_function_id: Option<String>,
+            queue_config: Option<SubscriberQueueConfig>,
         },
         Unsubscribe {
             topic: String,
@@ -821,25 +995,37 @@ mod tests {
         ) {
         }
 
-        async fn subscribe(
+        async fn subscribe_target(
             &self,
             topic: &str,
             id: &str,
-            function_id: &str,
-            metadata: Option<Value>,
+            target: SubscriberTarget,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
-            namespace: Option<String>,
         ) {
-            self.calls.lock().unwrap().push(Call::Subscribe {
-                topic: topic.to_string(),
-                id: id.to_string(),
-                function_id: function_id.to_string(),
-                metadata,
-                condition_function_id,
-                queue_config,
-                namespace,
-            });
+            let call = match target {
+                SubscriberTarget::Function {
+                    function_id,
+                    metadata,
+                    namespace,
+                } => Call::Subscribe {
+                    topic: topic.to_string(),
+                    id: id.to_string(),
+                    function_id,
+                    metadata,
+                    condition_function_id,
+                    queue_config,
+                    namespace,
+                },
+                SubscriberTarget::Observer(observer) => Call::SubscribeObserver {
+                    topic: topic.to_string(),
+                    id: id.to_string(),
+                    observer_id: observer.id().to_string(),
+                    condition_function_id,
+                    queue_config,
+                },
+            };
+            self.calls.lock().unwrap().push(call);
         }
 
         async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -1037,9 +1223,11 @@ mod tests {
     fn subscription_identity_escapes_user_controlled_separator_characters() {
         let registration = RegisteredSubscriber {
             trigger_id: "t1".to_string(),
-            function_id: r"backend@v1\path".to_string(),
-            metadata: None,
-            namespace: Some(r"tenant@east\prod".to_string()),
+            target: SubscriberTarget::function(
+                r"backend@v1\path",
+                None,
+                Some(r"tenant@east\prod".to_string()),
+            ),
             spec: SubscriberSpec {
                 queue: "demo".to_string(),
                 max_retries: None,
@@ -1085,7 +1273,9 @@ mod tests {
             .calls()
             .iter()
             .map(|call| match call {
-                Call::Subscribe { id, .. } => format!("subscribe:{id}"),
+                Call::Subscribe { id, .. } | Call::SubscribeObserver { id, .. } => {
+                    format!("subscribe:{id}")
+                }
                 Call::Unsubscribe { id, .. } => format!("unsubscribe:{id}"),
             })
             .collect();
@@ -1198,6 +1388,73 @@ mod tests {
             panic!("expected a Subscribe call");
         };
         assert_eq!(condition_function_id.as_deref(), Some("condition"));
+    }
+
+    struct NamedObserver(&'static str);
+
+    #[async_trait]
+    impl ObserverSink for NamedObserver {
+        fn id(&self) -> &str {
+            self.0
+        }
+
+        fn target(&self) -> &str {
+            "observer::target"
+        }
+
+        async fn call(&self, _payload: Value) -> Result<Option<Value>, String> {
+            Ok(None)
+        }
+    }
+
+    /// An observer goes through the trigger path's registry: the same
+    /// merged queue config, its own prefixed key (never a trigger's), and the
+    /// same hot-swap resubscribe and unregister.
+    #[tokio::test]
+    async fn observers_share_the_registry_under_their_own_keys() {
+        let (handler, mock) = handler_with_mock();
+        handler
+            .register_trigger(trigger_config("t1", "backend", json!({"queue": "demo"})))
+            .await
+            .unwrap();
+        handler
+            .register_subscriber(RegisteredSubscriber {
+                trigger_id: observer_key("backend"),
+                target: SubscriberTarget::Observer(Arc::new(NamedObserver("backend"))),
+                spec: serde_json::from_value(json!({"topic": "demo", "max_retries": 2})).unwrap(),
+            })
+            .await
+            .unwrap();
+        let observer_call = Call::SubscribeObserver {
+            topic: "demo".to_string(),
+            id: "observer:backend".to_string(),
+            observer_id: "backend".to_string(),
+            condition_function_id: None,
+            queue_config: Some(SubscriberQueueConfig {
+                max_retries: Some(2),
+                ..Default::default()
+            }),
+        };
+        assert_eq!(mock.calls().len(), 2, "two subscriptions, no sharing");
+        assert_eq!(mock.calls()[1], observer_call);
+
+        let new_mock = Arc::new(MockAdapter::default());
+        let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
+        handler.adapter.replace(new_adapter, "new-mock").await;
+        handler.resubscribe_all().await;
+        assert!(new_mock.calls().contains(&observer_call));
+
+        handler.unregister(&observer_key("backend")).await;
+        assert_eq!(
+            new_mock.calls().last().unwrap(),
+            &Call::Unsubscribe {
+                topic: "demo".to_string(),
+                id: "observer:backend".to_string(),
+            }
+        );
+        let left = handler.registrations().await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].trigger_id, "t1");
     }
 
     #[tokio::test]

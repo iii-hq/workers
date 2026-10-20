@@ -8,6 +8,7 @@ use crate::functions::{
     ENQUEUE_FUNCTION_FN_ID, LIST_TOPICS_FN_ID, PUBLISH_FN_ID, REDRIVE_FN_ID, REDRIVE_MESSAGE_FN_ID,
     TOPIC_STATS_FN_ID,
 };
+use crate::on_message::ON_MESSAGE_FN;
 use crate::TRIGGER_TYPE;
 
 #[derive(Debug, Serialize)]
@@ -41,6 +42,7 @@ pub fn build_manifest() -> ModuleManifest {
             TOPIC_STATS_FN_ID.to_string(),
             DLQ_TOPICS_FN_ID.to_string(),
             DLQ_MESSAGES_FN_ID.to_string(),
+            ON_MESSAGE_FN.to_string(),
         ],
         supported_targets: vec![option_env!("TARGET").unwrap_or("unknown").to_string()],
     }
@@ -56,8 +58,9 @@ mod tests {
         assert_eq!(value["name"], "queue");
         assert_eq!(value["trigger_types"][0], crate::TRIGGER_TYPE);
         let functions = value["functions"].as_array().unwrap();
-        assert_eq!(functions.len(), 10);
+        assert_eq!(functions.len(), 11);
         assert!(functions.iter().any(|id| id == DEFINE_QUEUE_FN_ID));
+        assert!(functions.iter().any(|id| id == ON_MESSAGE_FN));
         assert!(functions.iter().any(|id| id == ENQUEUE_FUNCTION_FN_ID));
         assert!(value["config_schema"].is_object());
     }
