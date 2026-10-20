@@ -75,6 +75,8 @@ type Selection = { kind: 'local' } | { kind: 'bucket'; name: string }
 interface LiveBucket {
   error?: string
   error_stage?: string
+  /** The bucket works but its notification poller does not run. */
+  notifications_error?: string
 }
 
 const CONFIG_NARROW_BELOW = 620
@@ -106,11 +108,9 @@ function useLiveBuckets(host: Host) {
   useEffect(() => {
     let alive = true
     host.iii
-      .trigger<{ buckets?: Array<{ name?: unknown; error?: unknown; error_stage?: unknown }> }>(
-        'storage::listBuckets',
-        {},
-        { timeoutMs: 10_000 },
-      )
+      .trigger<{
+        buckets?: Array<{ name?: unknown; error?: unknown; error_stage?: unknown; notifications_error?: unknown }>
+      }>('storage::listBuckets', {}, { timeoutMs: 10_000 })
       .then((response) => {
         if (!alive) return
         const next: Record<string, LiveBucket> = {}
@@ -119,6 +119,10 @@ function useLiveBuckets(host: Host) {
           next[row.name] = {
             error: typeof row.error === 'string' && row.error ? row.error : undefined,
             error_stage: typeof row.error_stage === 'string' ? row.error_stage : undefined,
+            notifications_error:
+              typeof row.notifications_error === 'string' && row.notifications_error
+                ? row.notifications_error
+                : undefined,
           }
         }
         setLive(next)
@@ -438,9 +442,12 @@ function credential(
 function NotificationFields({
   ctx,
   provider,
+  liveError,
 }: {
   ctx: CredentialContext
   provider: Exclude<ReturnType<typeof providerOf>, 'local'>
+  /** As saved, why the poller is not running. */
+  liveError?: string
 }) {
   const { name, bucket, errors, onChange } = ctx
   const notificationsEnabled = isObject(bucket.notifications)
@@ -472,6 +479,11 @@ function NotificationFields({
           onChange(next)
         }}
       />
+      {liveError ? (
+        <div className="storage-cfg-notice" role="note">
+          As saved, the notification poller is not running: {liveError}
+        </div>
+      ) : null}
       {notificationsEnabled && provider === 's3' ? (
         <TextField
           id={`storage-cfg-${name}-sqs`}
@@ -838,7 +850,9 @@ function BucketEditor({
           <TestBucketRow state={test} blocker={testBlocker(bucketProblems(bucket))} onTest={onTest} />
         </Section>
 
-        {provider !== 'local' ? <NotificationFields ctx={ctx} provider={provider} /> : null}
+        {provider !== 'local' ? (
+          <NotificationFields ctx={ctx} provider={provider} liveError={live?.notifications_error} />
+        ) : null}
       </div>
     </section>
   )

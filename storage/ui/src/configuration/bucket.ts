@@ -422,6 +422,23 @@ export function valueKind(value: JsonValue | undefined): ValueKind {
   return 'literal'
 }
 
+/**
+ * The worker's rule (`names_a_value`, storage/src/redaction.rs) for a value
+ * that names a credential without being one: a well-formed `secret://` or
+ * `env://` reference, or a whole `${VAR}` template without a default (or
+ * with an empty one). Anything else in a sensitive field is a literal the
+ * worker refuses inside a request's `bucket` — `${VAR:fallback}` included,
+ * since the fallback is used when the variable is unset.
+ */
+export function namesAValue(value: string): boolean {
+  const trimmed = value.trim()
+  if (/^(?:secret|env):\/\//i.test(trimmed)) return secretRefName(trimmed) !== null || envRefName(trimmed) !== null
+  const inner = /^\$\{(.*)\}$/.exec(trimmed)?.[1]
+  if (inner === undefined || inner === '' || inner.includes('${') || inner.includes('}')) return false
+  const colon = inner.indexOf(':')
+  return colon === -1 || inner.slice(colon + 1) === ''
+}
+
 /** Whether any credential of the entry is a reference the secrets worker resolves. */
 export function usesSecrets(bucket: JsonObject): boolean {
   return CREDENTIAL_FIELDS.some((field) => {
@@ -580,7 +597,11 @@ export function testBucketPayload(name: string, bucket: JsonObject, timeoutMs = 
     const key = CREDENTIAL_KEY[field]
     if (!key) continue
     const value = fieldValue(entry, field)
-    if (valueKind(value) !== 'literal') continue
+    if (typeof value !== 'string' || value.trim() === '' || value.trim() === REDACTED) continue
+    // Sensitive fields follow the worker's refusal rule; an access key ID only
+    // moves when it is plainly typed (the worker accepts it either way).
+    const literal = SENSITIVE_FIELDS.includes(field) ? !namesAValue(value) : valueKind(value) === 'literal'
+    if (!literal) continue
     credentials[key] = value as JsonValue
     const [head, sub] = field.split('.')
     if (sub === undefined) delete entry[head]

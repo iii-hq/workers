@@ -9,6 +9,7 @@ import {
   detectPreset,
   type JsonObject,
   MAX_SECRET_NAME,
+  namesAValue,
   newBucketEntry,
   nextBucketName,
   parseTestOutcome,
@@ -119,6 +120,22 @@ describe('secret names', () => {
     )
     // An env:// or literal value always gets the derived name.
     expect(storeTarget(own, 'photos', 'access_key_id', 'env://AWS_ACCESS_KEY_ID')).toBe('STORAGE_PHOTOS_ACCESS_KEY_ID')
+  })
+})
+
+describe('values that name a credential', () => {
+  it('follows the worker’s names_a_value rule', () => {
+    expect(namesAValue('secret://STORAGE_X_SECRET_ACCESS_KEY')).toBe(true)
+    expect(namesAValue(' ENV://AWS_SECRET ')).toBe(true)
+    expect(namesAValue('secret:// hunter2')).toBe(false)
+    expect(namesAValue('secret://9bad')).toBe(false)
+    expect(namesAValue('${AWS_SECRET_ACCESS_KEY}')).toBe(true)
+    expect(namesAValue('${AWS_SECRET_ACCESS_KEY:}')).toBe(true)
+    expect(namesAValue('${AWS_SECRET_ACCESS_KEY:hunter2}')).toBe(false)
+    expect(namesAValue('${}')).toBe(false)
+    expect(namesAValue('pre-${X}')).toBe(false)
+    expect(namesAValue('${A}${B}')).toBe(false)
+    expect(namesAValue('hunter2')).toBe(false)
   })
 })
 
@@ -432,6 +449,26 @@ describe('testBucket', () => {
         notifications: { queue_id: 'q' },
       },
       credentials: { notifications_api_token: 'tok' },
+      timeout_ms: 10_000,
+    })
+  })
+
+  it('moves what the worker would refuse as a literal, templates with a fallback included', () => {
+    const payload = testBucketPayload('legacy', {
+      provider: 's3',
+      region: 'x',
+      access_key_id: '${KEY_ID}',
+      secret_access_key: '${SECRET:fallback-secret}',
+      session_token: 'token-${SUFFIX}',
+    })
+    expect(payload).toEqual({
+      bucket: { provider: 's3', region: 'x', access_key_id: '${KEY_ID}' },
+      credentials: { secret_access_key: '${SECRET:fallback-secret}', session_token: 'token-${SUFFIX}' },
+      timeout_ms: 10_000,
+    })
+    const kept = testBucketPayload('legacy', { provider: 's3', region: 'x', secret_access_key: '${SECRET:}' })
+    expect(kept).toEqual({
+      bucket: { provider: 's3', region: 'x', secret_access_key: '${SECRET:}' },
       timeout_ms: 10_000,
     })
   })
