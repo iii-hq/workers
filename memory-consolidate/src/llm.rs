@@ -40,7 +40,8 @@ const LLM_TIMEOUT_MS: u64 = 60_000;
 /// memory worker's extraction writes).
 pub(crate) const LEARNED_RULE: &str = "learned";
 const LEARNED_HEADER: &str = "# Learned\nStanding instructions captured automatically from \
-conversations. Edit or delete lines freely — extraction only ever appends new ones.\n";
+conversations. Edit or delete lines freely — extraction appends new ones and rewrites a line \
+the user corrects.\n";
 
 #[derive(Debug, Default, Deserialize)]
 pub struct JudgeReply {

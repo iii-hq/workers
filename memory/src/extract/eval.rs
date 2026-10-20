@@ -16,7 +16,10 @@
 //! Live, so ignored: `III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns>
 //! EXTRACTION_MODEL=<id> cargo test -p memory --lib extract::eval --
 //! --ignored --nocapture`. Needs an engine with `router::complete` (a
-//! router and a provider); no memory worker, no embeddings.
+//! router and a provider); no memory worker, no embeddings. The prompt
+//! carries [`REPOSITORY_RULE`], as directory-bank sessions get it;
+//! `EXTRACTION_REPOSITORY=0` measures it without, as `default_bank` and
+//! named-bank sessions get it ("discovered" then mostly misses).
 
 use std::collections::BTreeMap;
 
@@ -1070,6 +1073,8 @@ async fn extraction_eval() {
             .expect("no model (engine up? router running? III_NAMESPACE set?)"),
     };
     let cfg = WorkerConfig::default();
+    // `0`: the prompt `default_bank` and named-bank sessions get.
+    let repository = std::env::var("EXTRACTION_REPOSITORY").map_or(true, |v| v != "0");
 
     let mut by_category: BTreeMap<&str, Tally> = BTreeMap::new();
     let mut report = Vec::new();
@@ -1127,7 +1132,7 @@ async fn extraction_eval() {
                 120_000,
                 extraction_input(&known, &learned, &transcript),
                 case.id,
-                true,
+                repository,
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));
@@ -1270,7 +1275,7 @@ async fn extraction_eval() {
     let ratio = |a: usize, b: usize| if b == 0 { 0.0 } else { a as f64 / b as f64 };
     let user_landing = ratio(user_main, user_matched);
     println!(
-        "extraction eval: model {model}, {} cases x {REPEATS} repeats",
+        "extraction eval: model {model}, repository rule {repository}, {} cases x {REPEATS} repeats",
         CASES.len()
     );
     println!(

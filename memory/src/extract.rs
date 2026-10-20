@@ -492,7 +492,12 @@ fn same_word(a: &str, b: &str) -> bool {
 // and a document pasted into the typed prompt backs its own rules; a review
 // step for learned rules would catch all three.
 fn stated_by_user(rule: &str, user_words: &BTreeSet<String>) -> bool {
-    let words: Vec<String> = content_words(rule)
+    backed(content_words(rule), user_words)
+}
+
+/// [`stated_by_user`] over a text's content words.
+fn backed(words: BTreeSet<String>, user_words: &BTreeSet<String>) -> bool {
+    let words: Vec<String> = words
         .into_iter()
         .filter(|w| !NEGATIONS.contains(&w.as_str()))
         .collect();
@@ -504,16 +509,20 @@ fn stated_by_user(rule: &str, user_words: &BTreeSet<String>) -> bool {
 }
 
 /// Merge standing instructions into the learned rule: each `(text,
-/// replaces)` rewrites in place the line whose text `replaces` names, else
-/// appends, skipping any whose content fingerprint already appears
-/// (re-observation is a no-op). Matched by text, not position: a line edited
-/// by hand since extraction listed it stays, and the correction appends.
-/// `held`: the learned rule of the other bank the turn reads; a line it
-/// holds is not learned again. Returns the merged content and how many
-/// lines changed.
+/// replaces)` replaces the line whose text `replaces` names, as the newest
+/// line (the budget cut drops the oldest first), else appends, skipping any
+/// whose content fingerprint already appears (re-observation is a no-op).
+/// Matched by text, not position: a line edited by hand since extraction
+/// listed it stays, and the correction appends. `held`: the learned rule of
+/// the other bank the turn reads; a line it holds is not learned again.
+/// `held_wherever_read`: every turn that reads `existing` reads `held` too
+/// (the layer under a repository bank, not the other way round); only then
+/// does a correction `held` already states just remove the line it
+/// corrects. Returns the merged content and how many lines changed.
 fn merge_learned(
     existing: &str,
     held: &str,
+    held_wherever_read: bool,
     additions: &[(String, Option<String>)],
 ) -> (String, usize) {
     let mut seen: HashSet<String> = existing
@@ -538,10 +547,17 @@ fn merge_learned(
                     .iter()
                     .position(|l| l.strip_prefix("- ").is_some_and(|l| fingerprint(l) == old))
             });
+        let held_here = held_wherever_read
+            || lines
+                .iter()
+                .any(|l| l.strip_prefix("- ").is_some_and(|l| fingerprint(l) == id));
         match (at, seen.insert(id)) {
-            (Some(i), true) => lines[i] = format!("- {text}"),
             // The correction is held already: the line it corrects just goes.
-            (Some(i), false) => drop(lines.remove(i)),
+            (Some(i), false) if held_here => drop(lines.remove(i)),
+            (Some(i), _) => {
+                lines.remove(i);
+                lines.push(format!("- {text}"));
+            }
             (None, true) => lines.push(format!("- {text}")),
             (None, false) => continue,
         }
@@ -759,10 +775,14 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             None => String::new(),
         };
         // A line either bank holds is never learned again: the turn reads both.
-        let own = merge_learned(&own_now, &up_now, &lines(false));
-        let up = layer
-            .as_ref()
-            .map(|(name, b)| (*name, b, merge_learned(&up_now, &own.0, &lines(true))));
+        let own = merge_learned(&own_now, &up_now, true, &lines(false));
+        let up = layer.as_ref().map(|(name, b)| {
+            (
+                *name,
+                b,
+                merge_learned(&up_now, &own.0, false, &lines(true)),
+            )
+        });
         for (name, b, (merged, changed)) in std::iter::once((bank_name, &bank, own)).chain(up) {
             if changed == 0 {
                 continue;
@@ -893,7 +913,11 @@ fn reinforced(
     if !m.is_live() || m.pinned {
         return None;
     }
-    if !stated_by_user(text, user_words) {
+    // Every "The user …" memory says "user"; the user, who writes "I",
+    // almost never does.
+    let mut words = content_words(text);
+    words.remove(crate::scope::LAYER_ENTITY);
+    if !backed(words, user_words) {
         return retires.then_some((m, false));
     }
     m.corroboration = m.corroboration.saturating_add(1);
@@ -1600,7 +1624,7 @@ mod tests {
     #[test]
     fn merge_learned_never_touches_existing_lines() {
         let existing = "# Learned\nintro\n- Keep me exactly.\n";
-        let (merged, added) = merge_learned(existing, "", &fresh(&["New line."]));
+        let (merged, added) = merge_learned(existing, "", true, &fresh(&["New line."]));
         assert_eq!(added, 1);
         assert!(merged.contains("- Keep me exactly.\n"));
         assert!(merged.contains("intro"));
@@ -1626,6 +1650,7 @@ mod tests {
         let (first, added) = merge_learned(
             "",
             "",
+            true,
             &fresh(&["Never use em-dashes.", "Always write tests."]),
         );
         assert_eq!(added, 2);
@@ -1634,13 +1659,13 @@ mod tests {
         assert!(first.contains("- Always write tests.\n"));
 
         // Re-observation (case/whitespace-insensitive) is a no-op.
-        let (second, added) = merge_learned(&first, "", &fresh(&["never  use em-dashes."]));
+        let (second, added) = merge_learned(&first, "", true, &fresh(&["never  use em-dashes."]));
         assert_eq!(added, 0);
         assert_eq!(second, first);
 
         // A genuinely new line appends without disturbing hand edits.
         let edited = first.replace("Always write tests.", "Always write tests first.");
-        let (third, added) = merge_learned(&edited, "", &fresh(&["Prefer short names."]));
+        let (third, added) = merge_learned(&edited, "", true, &fresh(&["Prefer short names."]));
         assert_eq!(added, 1);
         assert!(third.contains("Always write tests first."));
         assert!(third.ends_with("- Prefer short names.\n"));
@@ -1649,6 +1674,7 @@ mod tests {
         let (batch, added) = merge_learned(
             "",
             "",
+            true,
             &fresh(&["Prefer short names.", "prefer  short names."]),
         );
         assert_eq!(added, 1);
@@ -1656,23 +1682,52 @@ mod tests {
     }
 
     #[test]
-    fn a_corrected_learned_line_is_rewritten_in_place() {
+    fn a_corrected_learned_line_is_replaced_as_the_newest() {
         let existing = "# Learned\nintro\n- Reply in English.\n- Use pnpm.\n";
         let fix = |text: &str, old: &str| (text.to_string(), Some(old.to_string()));
         let (merged, changed) = merge_learned(
             existing,
             "",
+            true,
             &[fix("Reply in Portuguese.", "reply in  english.")],
         );
         assert_eq!(changed, 1);
         assert_eq!(
             merged,
-            "# Learned\nintro\n- Reply in Portuguese.\n- Use pnpm.\n"
+            "# Learned\nintro\n- Use pnpm.\n- Reply in Portuguese.\n"
+        );
+
+        // The newest line, it outlives an over-budget cut.
+        let twenty: String = (1..=20)
+            .map(|n| format!("- Learned line number {n:02}, kept short.\n"))
+            .collect();
+        let (merged, _) = merge_learned(
+            &format!("{LEARNED_HEADER}{twenty}"),
+            "",
+            true,
+            &[fix(
+                "Learned line number 01, now in Portuguese.",
+                "Learned line number 01, kept short.",
+            )],
+        );
+        let learned = crate::types::Rule {
+            name: LEARNED_RULE.into(),
+            content: merged,
+            updated_at: 0,
+        };
+        let (section, truncated) = crate::hooks::build_rules_section(&[learned], 400);
+        assert!(
+            truncated && section.contains("now in Portuguese"),
+            "{section}"
         );
 
         // Edited by hand since it was listed: the correction appends.
-        let (merged, changed) =
-            merge_learned(existing, "", &[fix("Use bun.", "Use pnpm for everything.")]);
+        let (merged, changed) = merge_learned(
+            existing,
+            "",
+            true,
+            &[fix("Use bun.", "Use pnpm for everything.")],
+        );
         assert_eq!(changed, 1);
         assert!(merged.ends_with("- Use pnpm.\n- Use bun.\n"), "{merged}");
 
@@ -1680,13 +1735,43 @@ mod tests {
         let (merged, changed) = merge_learned(
             existing,
             "- Reply in Portuguese.\n",
+            true,
             &[fix("reply in portuguese.", "Reply in English.")],
         );
         assert_eq!(changed, 1);
         assert_eq!(merged, "# Learned\nintro\n- Use pnpm.\n");
 
+        // Held only by a repository, which the layer is read without: the
+        // layer's line is replaced, not dropped.
+        let main = "# Learned\n- Always reply to me in English.\n- Never use emoji.\n";
+        let (merged, changed) = merge_learned(
+            main,
+            "# Learned\n- Reply in Portuguese.\n",
+            false,
+            &[fix(
+                "Reply in Portuguese.",
+                "Always reply to me in English.",
+            )],
+        );
+        assert_eq!(changed, 1);
+        assert_eq!(
+            merged,
+            "# Learned\n- Never use emoji.\n- Reply in Portuguese.\n"
+        );
+        // Unless the layer holds the correction itself.
+        let (merged, _) = merge_learned(
+            &format!("{existing}- Reply in Portuguese.\n"),
+            "",
+            false,
+            &[fix("Reply in Portuguese.", "Reply in English.")],
+        );
+        assert_eq!(
+            merged,
+            "# Learned\nintro\n- Use pnpm.\n- Reply in Portuguese.\n"
+        );
+
         // "Corrected" into itself: nothing changes, nothing is lost.
-        let (merged, changed) = merge_learned(existing, "", &[fix("Use pnpm.", "use pnpm.")]);
+        let (merged, changed) = merge_learned(existing, "", true, &[fix("Use pnpm.", "use pnpm.")]);
         assert_eq!((merged.as_str(), changed), (existing, 0));
     }
 
@@ -2105,7 +2190,8 @@ mod tests {
     #[test]
     fn a_line_either_bank_holds_is_never_learned_again() {
         let held = "# Learned\n- Never use emoji.\n";
-        let (merged, added) = merge_learned("", held, &fresh(&["never  use emoji.", "Use pnpm."]));
+        let (merged, added) =
+            merge_learned("", held, true, &fresh(&["never  use emoji.", "Use pnpm."]));
         assert_eq!(added, 1);
         assert!(merged.starts_with(LEARNED_HEADER));
         assert!(merged.ends_with("- Use pnpm.\n"));
@@ -2114,6 +2200,7 @@ mod tests {
         let (again, added) = merge_learned(
             &merged,
             held,
+            true,
             &fresh(&["use  pnpm.", "Be terse.", "be terse."]),
         );
         assert_eq!(added, 1);
@@ -2154,6 +2241,10 @@ mod tests {
             (m.corroboration, m.revision, m.updated_at, m.stated_at),
             (1, 1, 9, Some(9))
         );
+        // "The user" is not a word the user has to say again.
+        let acme = known("The user works at Acme as a backend engineer.");
+        let at_acme = user_words(&[said("u", "user", "I still work at Acme, by the way.")]);
+        assert!(reinforced(acme.clone(), &acme.text, &at_acme, false, 9).is_some_and(|(_, r)| r));
 
         let pinned = Memory {
             pinned: true,
