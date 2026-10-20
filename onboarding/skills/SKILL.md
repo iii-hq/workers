@@ -4,7 +4,8 @@ description: >-
   The console tour. Its agent steps add a kanban board in the todo-local
   namespace, then build a TODO worker on top of it: a narrow sidebar page left
   of the board that adds items and sets a due date, a due time, a priority, a
-  repeat and an alarm on each, shown as pills on the board cards. The board
+  repeat and an alarm on each, shown as pills on the board cards, plus the
+  same controls as a web page the agent opens for the operator. The board
   is the list; the sidebar is the controls. Read this before you do either
   step.
 ---
@@ -152,6 +153,25 @@ Page:
   the board when the build is done:
   `console::workspace::open { "screen": "todo", "relative_to": "kanban-todo-local-board", "direction": "left" }`.
 
+Web page:
+
+- The same controls as a web page, outside the console, so the operator can
+  use the list from any browser. The `http` worker serves it: when
+  `worker-compose.yaml` has no `http` container, `compose::add
+  { "workers": [{ "worker": "http" }] }` first. Bind two of the worker's
+  functions to the `http` trigger type (`iii.registerTrigger({ type: "http", function_id, config: { api_path, http_method } })`):
+  `GET /todo` returns `{ status_code: 200, headers: { "content-type": "text/html" }, body }`
+  with one HTML page (plain HTML, a little inline script, no framework), and
+  `POST /todo/api/:fn` takes the page's form posts and calls the same code
+  the console page calls. `http::status` gives the port (`3111` unless
+  changed), so the page is `http://localhost:<port>/todo`. When the `http`
+  container fails with "Address already in use", another process holds
+  3111: `configuration::set { "id": "http", "value": { "port": 3121 } }`
+  and start it again.
+- Open it for the operator when it works: `browser::sessions::start
+  { "url": "http://localhost:<port>/todo" }` opens it in the console's
+  browser, beside the chat. Tell the operator the address too.
+
 Checks: call the functions and read the board (`kanban-todo-local::board::get`)
-to prove each part; take no screenshots. Do not move the operator to another
-workspace.
+to prove each part; `browser::fetch` the web page and check it answers 200;
+take no screenshots. Do not move the operator to another workspace.

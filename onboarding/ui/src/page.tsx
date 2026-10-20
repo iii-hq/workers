@@ -31,7 +31,7 @@ import { useTour } from './use-tour'
 export function LearnIiiPage({ host, onRequestClose }: { host: Host } & PageRenderProps) {
   const tour = useTour(host)
   const { tour: loaded, records, error, open, setOpen, active, framed } = tour
-  const removeButton = <RemoveLearnIii host={host} onClose={onRequestClose} />
+  const removeButton = <RemoveLearnIii host={host} onClose={onRequestClose} label="Remove this worker" />
 
   const caption =
     tour.openStep && loaded ? `${loaded.steps.indexOf(tour.openStep) + 1} · ${tour.openStep.title}` : undefined
@@ -50,7 +50,7 @@ export function LearnIiiPage({ host, onRequestClose }: { host: Host } & PageRend
   }
   if (!loaded) {
     return (
-      <Frame onClose={onRequestClose} footer={removeButton}>
+      <Frame onClose={onRequestClose}>
         <div className="learn-loading" role="status" aria-busy="true" aria-label="Loading the tour">
           <Skeleton className="learn-skeleton learn-skeleton--bar" />
           <Skeleton className="learn-skeleton" />
@@ -64,9 +64,16 @@ export function LearnIiiPage({ host, onRequestClose }: { host: Host } & PageRend
   const total = loaded.steps.length
   const done = loaded.steps.filter((step) => records[step.id]?.status === 'complete').length
   const activeIndex = active ? loaded.steps.indexOf(active) : -1
+  // Removing the worker is the last step's business, and the finished tour's.
+  const atEnd = done === total || open === loaded.steps[total - 1]?.id
 
   return (
-    <Frame title={loaded.title} description={loaded.description} onClose={onRequestClose} footer={removeButton}>
+    <Frame
+      title={loaded.title}
+      description={loaded.description}
+      onClose={onRequestClose}
+      footer={atEnd ? removeButton : undefined}
+    >
       <header className="learn-head">
         <p className="learn-head-count" role="status">
           {done === total ? (
@@ -160,7 +167,7 @@ export function LearnIiiPage({ host, onRequestClose }: { host: Host } & PageRend
 export function RemoveLearnIii({
   host,
   onClose,
-  label = 'Close and remove the tour',
+  label = 'Remove this worker',
 }: {
   host: Host
   onClose?: () => void

@@ -50,7 +50,7 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
             tour.markSubscribed()
             if (state !== 'complete') tour.complete(step.id)
           }}
-          onSkip={() => (state === 'complete' ? tour.setOpen(tour.active?.id ?? null) : tour.complete(step.id))}
+          onContinue={() => (state === 'complete' ? tour.setOpen(tour.active?.id ?? null) : tour.complete(step.id))}
         />
       ) : null}
       {step.ask && state !== 'complete' ? (
@@ -224,12 +224,13 @@ function StayInTouch({
   host,
   subscribed,
   onSubscribed,
-  onSkip,
+  onContinue,
 }: {
   host: Host
   subscribed: boolean
   onSubscribed: () => void
-  onSkip: () => void
+  /** Skip the signup, or go on from it: closes the step when it is still open. */
+  onContinue: () => void
 }) {
   const fieldId = useId()
   const [email, setEmail] = useState('')
@@ -264,10 +265,17 @@ function StayInTouch({
           panel, so the card does not jump. */}
       <div className="learn-signup">
         {subscribed || status === 'done' ? (
-          <p className="learn-signup-done" role="status">
-            <Check className={uiClasses.icon} strokeWidth={2.5} aria-hidden="true" />
-            You are on the list.
-          </p>
+          // Already on the list (an earlier visit, a restarted tour): the
+          // step still needs a way on.
+          <div className="learn-form-actions">
+            <p className="learn-signup-done" role="status">
+              <Check className={uiClasses.icon} strokeWidth={2.5} aria-hidden="true" />
+              You are on the list.
+            </p>
+            <Button type="button" className="learn-action" onClick={onContinue}>
+              Continue
+            </Button>
+          </div>
         ) : (
           <form className="learn-form" onSubmit={submit}>
             <label className="learn-signup-label" htmlFor={fieldId}>
@@ -287,7 +295,7 @@ function StayInTouch({
                 type="button"
                 variant="ghost"
                 className="learn-ghost"
-                onClick={onSkip}
+                onClick={onContinue}
                 disabled={status === 'sending'}
               >
                 Skip this step

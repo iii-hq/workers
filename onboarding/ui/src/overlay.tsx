@@ -193,7 +193,10 @@ function TourCard({
       </div>
 
       <footer className="learn-overlay-foot">
-        <RemoveLearnIii host={host} onClose={closeTour} label="Remove tour" />
+        {/* Removing the worker is the last step's business, and the finished card's. */}
+        {loaded && !intro && (!openStep || index === loaded.steps.length - 1) ? (
+          <RemoveLearnIii host={host} onClose={closeTour} label="Remove this worker" />
+        ) : null}
         {loaded && openStep && !intro ? <StepNav tour={tour} index={index} /> : null}
       </footer>
     </section>
