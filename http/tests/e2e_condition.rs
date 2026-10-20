@@ -49,6 +49,7 @@ async fn register_counting_backend_with_condition(
         }),
     );
 
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     iii.register_trigger(RegisterTriggerInput::new(
         iii_http::TRIGGER_TYPE.to_string(),
         function_id,

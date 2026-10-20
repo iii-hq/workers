@@ -100,6 +100,9 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
 
     // Registering the trigger type makes the engine deliver every trigger
     // binding of this type through `handler`, which populates `routes`.
+    // Kept until the trigger type is retired; old consumers bind it on 0.24
+    // and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(TRIGGER_TYPE, "HTTP API trigger", handler)
             .call_request_format::<HttpRequest>()
