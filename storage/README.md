@@ -405,10 +405,17 @@ read (the vault never returns values, stored literals come back
 - A `secret://` / `env://` reference or a `credentials_file` that a stored bucket
   uses, in any credential field, only goes in the same field to a destination a
   stored bucket sends it to (entries that do not parse count too). `testBucket`
-  counts every stored bucket; `saveBucket` lets the bucket being saved take its
-  own along, so a Duplicate to the same endpoint and an edit of a bucket's own
-  endpoint keep working. A `credentials_file` no stored bucket uses is a file of
-  the engine host and only goes to Google.
+  counts every stored bucket, and so does `saveBucket`, except that a bucket
+  moved to a new provider, endpoint or account takes its own `access_key_id`,
+  `secret_access_key` and `account_id` along in the same fields (only an
+  identifier and a signature leave); its `session_token`, `credentials_json`,
+  `credentials_file` and API token, sent in clear or as bearer credentials, must
+  be entered again. A value never changes field. A Duplicate to the same
+  endpoint keeps working.
+- A `credentials_file` is a file of the engine host: a regular JSON key file of
+  at most 64 KiB (never a FIFO or device), of type `service_account` or
+  `authorized_user`, whose `token_uri` is Google's; one no stored bucket uses
+  only goes to Google. Every failure gives the same message.
 - The engine host's ambient credentials — the AWS default chain for an s3 bucket
   without keys, Google ADC for a gcs bucket without credentials — only go to the
   provider itself or to an endpoint a stored bucket already uses them with.
@@ -435,7 +442,9 @@ not parse are listed too (`error_stage: "config"`).
 ### `storage::getBucket`
 
 `{ name }` → `{ name, bucket }`: the entry as stored (`${VAR}` templates and
-references unexpanded), sensitive literals as `"__redacted__"`.
+references unexpanded), sensitive literals and keys that are not fields as
+`"__redacted__"` (a save keeps the stored value of either when the placeholder
+comes back).
 
 ### `storage::saveBucket`
 
@@ -475,6 +484,10 @@ references unexpanded), sensitive literals as `"__redacted__"`.
   Refusals are `CONFIG_ERROR`.
 - Changing a local bucket's `bucket` points it at another directory under
   `data_dir/buckets/`; objects are not moved.
+- Known limit: a writer that rewrites the whole value without re-applying (the
+  console's configuration editor, a hand `configuration::set`) and read before
+  a save overwrites it. Only a compare-and-set in `configuration::set` can fix
+  that.
 - `create_bucket: true` (s3, r2, S3-compatible) creates the provider-side
   bucket when it does not exist (`created_bucket: true`; already there →
   `false`), sending the region as `LocationConstraint` except for AWS's
