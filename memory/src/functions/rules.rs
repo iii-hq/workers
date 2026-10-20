@@ -51,10 +51,27 @@ pub struct RuleSetResponse {
 }
 
 pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, MemoryError> {
-    crate::redact::reject_injection("content", &req.content)?;
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
-    let exists = !req.content.trim().is_empty();
+    // Only the lines the stored rule does not hold yet are screened: one
+    // written before the screen, or by hand, must not block every later
+    // write of the document (memory-consolidate rewrites `learned` whole).
+    let held = store
+        .bank(&bank_name)
+        .await
+        .ok()
+        .and_then(|bank| bank.list_rules().ok())
+        .and_then(|rules| rules.into_iter().find(|r| r.name == req.name))
+        .map(|r| r.content)
+        .unwrap_or_default();
+    let added: Vec<&str> = req
+        .content
+        .lines()
+        .filter(|line| !held.lines().any(|h| h == *line))
+        .collect();
+    crate::redact::reject_injection("content", &added.join("\n"))?;
+    // What `set_rule` keeps: invisible-only content removes the rule.
+    let exists = !crate::redact::redact(&req.content).text.trim().is_empty();
     // Deleting from a bank that does not exist must not create it: an
     // empty-content set against a missing bank is a no-op, not a
     // bank-plus-events side effect.

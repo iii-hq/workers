@@ -138,17 +138,18 @@ pub struct SaveResponse {
 }
 
 pub async fn save(deps: &Deps, req: SaveRequest) -> Result<SaveResponse, MemoryError> {
-    let text = req.text.trim().to_string();
+    let text = req.text.trim();
+    crate::redact::reject_injection("text", text)?;
+    // Redact before the fingerprint: dedup and the stored text agree, and
+    // the caller sees what was kept in the returned record. Bounded after:
+    // stripping invisible characters can shorten the text or empty it.
+    let redaction = crate::redact::redact(text);
+    let text = redaction.text.trim().to_string();
     if text.len() < 3 || text.len() > 2_000 {
         return Err(MemoryError::InvalidInput(
             "text must be 3..2000 characters".into(),
         ));
     }
-    crate::redact::reject_injection("text", &text)?;
-    // Redact before the fingerprint: dedup and the stored text agree, and
-    // the caller sees what was kept in the returned record.
-    let redaction = crate::redact::redact(&text);
-    let text = redaction.text;
     // Short fields too, before normalization lowercases them (a lowercased
     // key still leaks its material, and the key shapes are case-sensitive).
     let (mut entities, mut tags) = (req.entities, req.tags);
@@ -287,16 +288,16 @@ pub async fn update(deps: &Deps, req: UpdateRequest) -> Result<MemoryResponse, M
     let mut text_changed = false;
     let mut labels: Vec<&'static str> = Vec::new();
     if let Some(text) = req.text {
-        let text = text.trim().to_string();
+        crate::redact::reject_injection("text", &text)?;
+        // Bounded after redaction, as in `save`.
+        let redaction = crate::redact::redact(text.trim());
+        let text = redaction.text.trim().to_string();
         if text.len() < 3 || text.len() > 2_000 {
             return Err(MemoryError::InvalidInput(
                 "text must be 3..2000 characters".into(),
             ));
         }
-        crate::redact::reject_injection("text", &text)?;
-        let redaction = crate::redact::redact(&text);
         labels.extend(redaction.labels);
-        let text = redaction.text;
         // A text edit restates the fact; pin/tag/entity edits do not.
         text_changed = memory.text != text;
         if text_changed {
