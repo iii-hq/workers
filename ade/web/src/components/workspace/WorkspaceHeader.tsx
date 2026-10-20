@@ -232,7 +232,7 @@ export function WorkspaceHeader({
             <KeyCombo
               binding={paletteBinding}
               className="gap-2"
-              capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
+              capClassName="min-w-0 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
             />
           </button>
           <button
