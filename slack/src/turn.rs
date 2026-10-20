@@ -154,32 +154,38 @@ async fn fetch_thread(deps: &Deps, channel: &str, thread_ts: &str, max: u32) -> 
     let Some(messages) = resp.get("messages").and_then(Value::as_array) else {
         return Vec::new();
     };
-    messages
-        .iter()
-        .filter_map(|m| {
-            let text = m.get("text").and_then(Value::as_str)?.trim();
-            if text.is_empty() {
-                return None;
-            }
-            Some(PendingMsg {
-                user: m.get("user").and_then(Value::as_str).map(str::to_string),
-                text: text.to_string(),
-            })
-        })
-        .collect()
+    messages.iter().filter_map(backfill_msg).collect()
 }
 
+/// One thread reply as context; bots are skipped, as on the live path.
+fn backfill_msg(m: &Value) -> Option<PendingMsg> {
+    if m.get("bot_id").and_then(Value::as_str).is_some() {
+        return None;
+    }
+    let text = m.get("text").and_then(Value::as_str)?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(PendingMsg {
+        user: m.get("user").and_then(Value::as_str).map(str::to_string),
+        text: text.to_string(),
+    })
+}
+
+/// The typed text first, then the thread in the ADE's `<attached-file …>`
+/// envelope, which memory leaves out of the user's own words.
 fn compose_message(context: &[PendingMsg], user_text: &str) -> String {
     if context.is_empty() {
         return user_text.to_string();
     }
-    let mut out = String::from("Conversation so far in this Slack thread:\n");
+    let mut out = format!(
+        "{user_text}\n<attached-file path=\"slack-thread\">\nConversation so far in this Slack thread:\n"
+    );
     for m in context {
         let who = m.user.as_deref().unwrap_or("user");
         out.push_str(&format!("- {who}: {}\n", m.text));
     }
-    out.push_str("\nNow the user addresses you:\n");
-    out.push_str(user_text);
+    out.push_str("</attached-file>");
     out
 }
 
@@ -266,8 +272,24 @@ mod tests {
             text: "earlier note".into(),
         }];
         let msg = compose_message(&ctx, "do the thing");
-        assert!(msg.contains("earlier note"));
-        assert!(msg.contains("do the thing"));
+        // Memory reads the user's words up to the first attached block.
+        let (typed, thread) = msg.split_once("\n<attached-file ").unwrap();
+        assert_eq!(typed, "do the thing");
+        assert!(thread.contains("- U9: earlier note\n"));
+        assert!(thread.ends_with("</attached-file>"));
+    }
+
+    #[test]
+    fn backfill_skips_bots_and_empty_replies() {
+        let msg = |v: Value| backfill_msg(&v).map(|m| (m.user, m.text));
+        assert_eq!(
+            msg(json!({ "user": "U1", "text": " hi " })),
+            Some((Some("U1".into()), "hi".into()))
+        );
+        // An app's reply carries a user id too; an integration's carries none.
+        assert!(msg(json!({ "user": "U2", "bot_id": "B1", "text": "deployed" })).is_none());
+        assert!(msg(json!({ "bot_id": "B2", "text": "alert" })).is_none());
+        assert!(msg(json!({ "user": "U1", "text": "  " })).is_none());
     }
 
     #[test]

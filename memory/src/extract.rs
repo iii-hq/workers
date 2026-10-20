@@ -369,7 +369,7 @@ async fn re_observed<'a>(
 /// `<memory …>` blocks and the harness's `[notification]` wakes (event
 /// payloads, a child's final reply) are user-role but not the user's, and
 /// neither are the files the ADE chat attaches after the typed prompt
-/// (`<attached-file …>`).
+/// (`<attached-file …>`), nor the Slack thread the bridge attaches the same way.
 fn user_words(entries: &[Entry]) -> BTreeSet<String> {
     entries
         .iter()

@@ -498,17 +498,18 @@ const CASES: &[Case] = &[
         ],
         &[fact(&["joana"], true)],
     ),
-    // The Slack bridge's shape: other people's thread messages ride in the
-    // user's text.
+    // The Slack bridge's shape: other people's thread messages ride after the
+    // user's text, attached.
     case(
         "slack-thread",
         "pasted",
         &[
             (
                 "user",
-                "Conversation so far in this Slack thread:\n- U04ANA: I deploy on Fridays all the \
-                 time, it's fine.\n- U07BO: Never deploy on a Friday. Ever.\n- U04ANA: I also never \
-                 write tests for one-off scripts.\nNow the user addresses you:\nWho's right here?",
+                "Who's right here?\n<attached-file path=\"slack-thread\">\nConversation so far in \
+                 this Slack thread:\n- U04ANA: I deploy on Fridays all the time, it's fine.\n- \
+                 U07BO: Never deploy on a Friday. Ever.\n- U04ANA: I also never write tests for \
+                 one-off scripts.\n</attached-file>",
             ),
             (
                 "assistant",
