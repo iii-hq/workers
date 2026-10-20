@@ -42,7 +42,7 @@
  * The state scope the tour keeps everything in — progress, and the keys the
  * steps below wait on.
  */
-const STATE_SCOPE = 'learn-iii'
+const STATE_SCOPE = "learn-iii";
 
 /**
  * The agent profile the tour talks to: the one the harness template ships
@@ -51,7 +51,7 @@ const STATE_SCOPE = 'learn-iii'
  * prompt goes to the chat the operator is in, which is that one unless they
  * moved.
  */
-export const TOUR_AGENT = 'ade-worker-builder'
+export const TOUR_AGENT = "ade-worker-builder";
 
 /**
  * A step the AGENT finishes, not the operator.
@@ -71,7 +71,7 @@ export const TOUR_AGENT = 'ade-worker-builder'
  * binding both carry the key, and the test fails when one of them moves.
  */
 const agentStep = (step) => {
-  const key = `step_${step.id}_completed`
+  const key = `step_${step.id}_completed`;
   return {
     ...step,
     ask: {
@@ -79,13 +79,13 @@ const agentStep = (step) => {
       text: `${step.ask.text} When you are ending your turn, write ${key}: true to state, scope "${STATE_SCOPE}".`,
     },
     condition: {
-      type: 'state',
+      type: "state",
       config: { scope: STATE_SCOPE, key },
-      label: 'Waiting for the agent to report this step done',
+      label: "Waiting for the agent to report this step done",
       hint: `The agent writes ${key} into the "${STATE_SCOPE}" state scope when it has finished.`,
     },
-  }
-}
+  };
+};
 
 /** @type {Tour[]} */
 export const TOURS = [
@@ -98,24 +98,24 @@ export const TOURS = [
     intro: {
       id: "intro",
       title: "Learn iii?",
-      body: "Want to learn more about iii, the engine that powers this harness and everything you build? A short tour shows you around the console.",
+      body: "Want to learn more about iii, the engine that powers this harness and everything you build? Take a 5 minute tour to learn how iii does things differently.",
     },
     steps: [
       {
         id: "message",
         ask: {
-          text: "hello",
+          text: "hey",
           label: "Send a message",
           agent: TOUR_AGENT,
         },
         title: "Send a message",
-        body: "Say 'hello' to the agent. The button opens a new chat with the Onboarding agent profile and sends it. We've set up a trigger to run when you get the agent's response. The iii ADE (agentic development environment) is an example of an iii Worker. Kanban and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
+        body: "Say 'hey' to the agent. The button opens a new chat and sets a 'trigger' here which is how iii handles events and reactivity universally. When the agent fires the trigger this worker will react immediately and continue to the next step. This is not a frontend, backend, data, or other type of trigger, it is universal and works everywhere across a iii application.",
         anchors: [".learn-iii-composer", ".composer-shell"],
         condition: {
           type: "harness::turn-completed",
           config: {},
           label: "Waiting for a harness turn to finish",
-          hint: "Send any message in a chat pane.",
+          hint: "Say hey in the chat pane.",
         },
       },
       {
@@ -133,7 +133,7 @@ export const TOURS = [
       {
         id: "coder",
         title: "CODER",
-        body: "The goal of iii is to be Composable, Observable, Discoverable, Extensible, and Reactive. We demonstrated a few of the properties in the last step. Now let's take a look at them one by one.",
+        body: "The goal of iii is to be composable, observable, discoverable, extensible, and reactive. Let's take a look at each property one by one.",
         // No anchor: this step names the five properties, it does not point at
         // a console surface. The spotlight stays hidden.
       },
@@ -144,12 +144,12 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Composability",
-        body: "iii is composable like Node or Python, except when you add to iii you add a working service and not a library. Ask the agent to add a kanban board. It runs in its own namespace, todo-local, so it sits apart from any board you already have.",
+        body: "iii is composable like Node or Python, except when you add to iii you add a fully working service. We call these services 'workers'. When one is added every other worker immediately has access to its functions and triggers. This means, for example, that your agent will be able to use the kanban worker without skills, or a long discovery and research process. Now ask the agent to add a kanban board.",
       }),
       {
         id: "stay-in-touch",
         title: "Stay in touch",
-        body: "iii moves quickly. Put your email in for the roadmap and the product updates — what is being built, and what shipped. The links below go to the same places, if you would rather read along there.",
+        body: "iii moves quickly. Add your email for occasional product updates and tips on making the most out of iii.",
         // No anchor: this step is about the page itself, and there is nothing
         // in the console to point at. The page renders the signup box and the
         // links for this step id.
@@ -157,7 +157,7 @@ export const TOURS = [
       {
         id: "observability",
         title: "Observability",
-        body: "Every function call and every trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. Open Traces: it lands beside the chat and selects the latest turn of the chat that is running, so the message you just sent is the first thing you see. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
+        body: "Everything in a iii worker is defined as either a function or a trigger. This property makes it so that all of a iii application is inherently observable, out of the box, even the new worker you're building today. The observability worker lets you see traces in the UI, query traces directly, and export them to any OpenTelemetry-compatible service.",
         anchors: [".learn-iii-traces", 'section[aria-label="traces"]'],
         // The step's button opens Traces beside the chat. Until then the page
         // points at where it opens by hand too — the + first, then the traces
@@ -168,7 +168,8 @@ export const TOURS = [
           screen: "traces",
           label: "Open traces",
           body: "Traces is not open yet. Open it with the button, or pick traces from a new tab's list.",
-          elsewhere: "Traces is open in another tab. Switch to that tab, lit up in the tab row, to see it.",
+          elsewhere:
+            "Traces is open in another tab. Switch to that tab, lit up in the tab row, to see it.",
           anchors: [
             '[role="option"][data-screen="traces"]',
             ".learn-iii-new-tab",
@@ -184,16 +185,16 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Discoverability",
-        body: "See what the system can do. Let's ask the agent what the current capabilities are.",
+        body: "An earlier step mentioned that agents don't have a long discoverability step. This project is made up of about 14 or so services. If you ask the agent to report them all you'll get a quick response. How long would it take your other agents to do this?",
       }),
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Build a TODO worker on the todo-local kanban board, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Build the TODO worker'): first set the board to two columns, TODO and Done; then a worker whose console page is a narrow sidebar of controls, not a list: an add form and an edit form with a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card. The board is the list and Done is set on the board; a done item with a repeat goes back to TODO with the next date, the same ticket, never a second card; alarms go through the cron worker; a todo:changed trigger type; and the same controls as a web page served through the http worker. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open the TODO page to the left of the board as a narrow column (pass sizes so it takes the console's smallest column width, 12%), and open the web page for me in the console's browser in a new tab (browser::sessions::start with preview: false, then console::workspace::open { screen: 'browser', placement: 'new-tab' }), not the preview window.",
+          text: "Build a TODO worker on the todo-local kanban board, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Build the TODO worker'): first set the board to two columns, TODO and Done; then a worker whose console page is a narrow sidebar of controls, not a list: an add form and an edit form with a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card. The board is the list and Done is set on the board; a done item with a repeat goes back to TODO with the next date, the same ticket, never a second card; alarms go through the cron worker; a todo:changed trigger type; and the same controls as a web page leveraging the iii browser sdk. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open the TODO page to the left of the board as a narrow column (pass sizes so it takes the console's smallest column width, 12%), and open the web page for me in the console's browser in a new tab (browser::sessions::start with preview: false, then console::workspace::open { screen: 'browser', placement: 'new-tab' }), not the preview window.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Now build on that board. Ask the agent for a TODO worker: a sidebar of controls to the left of the board, with a due date, a due time, a priority, a repeat and an alarm on each item, and the same controls as a web page the agent opens for you. The board is the list and keeps the progress; the TODO worker adds the rest, and each setting shows as a pill on the card. The tour closes the Traces panel to make room for the TODO page; open it again from the palette any time.",
+        body: "Let's extend this application with a new worker, and while doing so we'll take advantage of iii's composability by using the existing Kanban, and Cron workers for the bulk of the work. We'll build a simple TODO sidebar of controls that can handle specific properties that we don't want polluting the Kanban board itself since we'll likely want the Kanban board for other projects in the future. We'll add a due date, a due time, a priority, a repeat and an alarm (via Cron) on each item. We'll also add the same controls as a web page. The web page itself is also a worker just like anything else in iii.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },
@@ -205,7 +206,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you move each one to Done yourself. The agent adds the items and the Triggers; you set the status on the card, or drag it to Done. Watch the Triggers react as you do.",
+        body: "Now ask the agent to add 3 items to the TODO list, and to set triggers that fire when you move each one to Done yourself. Watch the agent react as you change the card's status. Like mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
       }),
       {
         id: "clean-up",
@@ -214,7 +215,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Clean up",
-        body: "Removing a worker is the same move as adding one. Ask the agent to take the tour back out, and this card goes with it.",
+        body: "Removing a worker is the same move as adding one. Ask the agent to remove this worker and this card will close with it.",
         // No condition, and this is the one step where that is not a choice:
         // the worker this page waits on is the worker being removed, so
         // nothing survives to report the step done. Sending the prompt IS the
