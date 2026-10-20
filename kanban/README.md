@@ -352,10 +352,11 @@ While the worker is connected it injects four pages into the console:
   a warning dot when it is Done with open subtasks. A **List**
   layout shows the same tickets grouped by status, sortable, with bulk
   status, priority, label, assignee and delete edits. Clicking a card opens
-  the ticket beside the board; the card's **Open in this tab** action keeps
-  it in the current pane instead (the console reuses any tab that already
-  shows a ticket pane), and the inline view offers **Open in its own pane**
-  to go the other way.
+  the ticket in place of the board; the card's corner **Open in a pane**
+  action opens it beside the board instead (the console reuses any tab that
+  already shows a ticket pane), and the inline view offers **Open in its own
+  pane** too. The card's status is a picker: pick a column and the card
+  moves there.
 - **Ticket** (page `kanban-ticket`) — one ticket: status, priority,
   assignee (from `kanban::agent::list`), Project, Release, Parent and editable
   labels, a Markdown description with an editor, linked tickets (from

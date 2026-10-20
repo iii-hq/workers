@@ -30,10 +30,14 @@ fn console_ui() -> ConsoleUi {
 /// The stylesheet is built under `[data-iii-ui="kanban"]`; a namespaced
 /// worker renders under its own name, so the scope moves with it.
 fn scoped_styles() -> String {
-    STYLES_CSS.replace(
-        r#"[data-iii-ui="kanban"]"#,
-        &format!(r#"[data-iii-ui="{}"]"#, namespace::worker_name()),
-    )
+    // The minified sheet drops the quotes; a watch build keeps them.
+    let name = namespace::worker_name();
+    STYLES_CSS
+        .replace("[data-iii-ui=kanban]", &format!("[data-iii-ui={name}]"))
+        .replace(
+            r#"[data-iii-ui="kanban"]"#,
+            &format!(r#"[data-iii-ui="{name}"]"#),
+        )
 }
 
 /// Register the console UI. Call after the worker's functions are registered.

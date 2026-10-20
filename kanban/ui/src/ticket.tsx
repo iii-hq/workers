@@ -59,9 +59,10 @@ import {
   PLAN_CHANGED_EVENT,
   PROJECTS_PAGE_ID,
   Pills,
-  PriorityChip,
+  PriorityPicker,
   RELEASES_PAGE_ID,
   StatusGlyph,
+  StatusPicker,
   TICKET_PAGE_ID,
   api,
   noteOwnWrite,
@@ -1031,20 +1032,26 @@ export function TicketScreen({
             <div className="kanban-record__head" data-area="head">
               <div className="kanban-record__eyebrow">
                 <span className="kanban-mono">{ticket.key}</span>
-                <Badge className="kanban-status-badge" variant={deleted ? 'alert' : 'default'}>
-                  {deleted ? (
+                {deleted ? (
+                  <Badge className="kanban-status-badge" variant="alert">
                     <StatusDot tone="alert" />
-                  ) : (
-                    <StatusGlyph
-                      canceledStatus={canceledStatus}
-                      columns={columns}
-                      doneStatus={doneStatus}
-                      status={ticket.status}
-                    />
-                  )}
-                  {deleted ? 'Deleted' : statusLabel(columns, ticket.status)}
-                </Badge>
-                <PriorityChip priorities={priorities} priority={ticket.priority} />
+                    Deleted
+                  </Badge>
+                ) : (
+                  <StatusPicker
+                    canceledStatus={canceledStatus}
+                    columns={columns}
+                    doneStatus={doneStatus}
+                    onChange={(next) => void patch({ status: next })}
+                    status={ticket.status}
+                  />
+                )}
+                <PriorityPicker
+                  disabled={deleted}
+                  onChange={(next) => void patch({ priority: next })}
+                  priorities={priorities}
+                  priority={ticket.priority}
+                />
               </div>
               {editingTitle ? (
                 <div className="kanban-record__title-edit">

@@ -20,8 +20,8 @@ use crate::board::{
     self, ActivityFilter, BoardContext, CommentFilter, CreateCommentInput, CreateTicketInput,
     TicketBrief, TicketFilter, TicketRow, TicketView, UpdatePatch, row, ticket_view, view_of,
 };
-use crate::config::KanbanConfig;
 use crate::config::Column;
+use crate::config::KanbanConfig;
 use crate::events::{
     ChangeEvent, CommentEvent, SubscriberCounts, Subscribers, emit_change, emit_comment,
 };

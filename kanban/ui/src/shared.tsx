@@ -1,7 +1,7 @@
-import { Chip, type ExtensionIii } from '@iii-dev/console-ui'
+import { Chip, type ExtensionIii, Select } from '@iii-dev/console-ui'
 import * as lucide from 'lucide-react'
 import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon, Tag } from 'lucide-react'
-import { useSyncExternalStore } from 'react'
+import { type SyntheticEvent, useSyncExternalStore } from 'react'
 import { type StatusStep, statusStep } from './board-state'
 import { WORKER } from './worker'
 
@@ -420,6 +420,73 @@ export function PriorityChip({ priority, priorities }: { priority: string; prior
       <span aria-hidden="true" className="kanban-priority__dot" />
       {priorityLabel(priority)}
     </Chip>
+  )
+}
+
+const swallow = (event: SyntheticEvent) => event.stopPropagation()
+
+/**
+ * The status as a picker: the glyph, then an inline Select over the columns. Clicks and keys stay inside it, so a
+ * card around it does not open (the menu is a portal, but React still bubbles through it).
+ */
+export function StatusPicker({
+  columns,
+  status,
+  doneStatus,
+  canceledStatus,
+  disabled,
+  onChange,
+}: {
+  columns: Column[]
+  status: string
+  doneStatus: string
+  canceledStatus: string | null
+  disabled?: boolean
+  onChange: (status: string) => void
+}) {
+  return (
+    <span className="kanban-pick kanban-pick--status" onClick={swallow} onKeyDown={swallow} title="Status">
+      <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={status} />
+      <Select
+        appearance="inline"
+        aria-label="Status"
+        disabled={disabled}
+        onChange={onChange}
+        options={columns.map((column) => ({ value: column.id, label: column.label }))}
+        value={status}
+      />
+    </span>
+  )
+}
+
+/** The priority as a picker: the tone dot, then an inline Select over the configured priorities. */
+export function PriorityPicker({
+  priority,
+  priorities,
+  disabled,
+  onChange,
+}: {
+  priority: string
+  priorities: string[]
+  disabled?: boolean
+  onChange: (priority: string) => void
+}) {
+  const index = priorities.indexOf(priority)
+  const fromTop = index < 0 ? -1 : priorities.length - 1 - index
+  const tone = fromTop === 0 ? 'alert' : fromTop === 1 ? 'warn' : 'neutral'
+  const values = index < 0 && priority ? [...priorities, priority] : priorities
+  return (
+    <span className="kanban-pick kanban-priority" data-tone={tone} onClick={swallow} onKeyDown={swallow} title="Priority">
+      <span aria-hidden="true" className="kanban-priority__dot" />
+      <Select
+        appearance="inline"
+        aria-label="Priority"
+        disabled={disabled}
+        onChange={onChange}
+        options={values.map((value) => ({ value, label: priorityLabel(value) }))}
+        value={priority}
+      />
+    </span>
   )
 }
 
