@@ -218,6 +218,7 @@ mod tests {
                 "security_scan_run_id": "sec_123",
             })
         );
+        assert_eq!(request["session"]["kind"], "automation");
         assert_eq!(
             request["options"]["metadata"]["fs_scope"]["root"],
             "/isolated/repo"

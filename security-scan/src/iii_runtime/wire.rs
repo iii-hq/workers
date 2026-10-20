@@ -993,6 +993,8 @@ fn harness_request(plan: &AnalysisPlan) -> Value {
         "session": {
             "title": "Security review",
             "metadata": session_metadata,
+            // A scan is never the person's own session: memory skips it.
+            "kind": "automation",
         },
         "options": {
             "system_prompt": plan.system_prompt,
