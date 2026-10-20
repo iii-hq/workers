@@ -105,6 +105,10 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, parts: BootParts) -> Result
         .metadata(json!({ "internal": true })),
     );
 
+    // Deprecated in iii-sdk 0.25. The `configuration` trigger type is still
+    // served by 0.25 engines (next to `configuration::on-updated`), so one
+    // binding keeps working on 0.24 and 0.25.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),

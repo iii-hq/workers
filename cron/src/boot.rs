@@ -90,6 +90,9 @@ pub async fn start(iii: Arc<IIIClient>, config: CronConfig) -> anyhow::Result<Bo
     let scheduler_cell: SchedulerCell = Arc::new(tokio::sync::RwLock::new(scheduler.clone()));
     let handler = CronTriggerHandler::new(scheduler_cell.clone());
 
+    // Kept until the trigger type is retired; old consumers bind it on 0.24
+    // and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(TRIGGER_TYPE, "Cron-based scheduled triggers", handler)
             .trigger_request_format::<CronTriggerSpec>(),
