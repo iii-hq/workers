@@ -650,8 +650,8 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         .cloned()
         .collect();
     let own = !agents.is_empty();
-    if resolved.takes_agents(&cfg.default_bank) {
-        for agent in child_agents(&deps.iii, session_id).await {
+    if resolved.takes_agents() {
+        for agent in child_agents(&deps.iii, session_id).await? {
             if usable(&agent) && !agents.contains(&agent) {
                 agents.push(agent);
             }
@@ -1407,34 +1407,55 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
     }
 }
 
-/// The agent profiles of `session_id`'s sub-agents, newest first, each once.
-// shortcut: the newest 100 children only; page on if a session spawns more.
-async fn child_agents(iii: &IIIClient, session_id: &str) -> Vec<String> {
-    let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "session::list".into(),
-            payload: json!({
-                "limit": 100,
-                "order": "created_desc",
-                "metadata": { "parent_session_id": session_id },
-            }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
-    match reply {
-        Ok(reply) => listed_agents(&reply),
-        // Fail-soft: the pass still runs, teaching no sub-agent.
-        Err(e) => {
-            tracing::warn!(session_id, error = %e, "session::list failed; no sub-agent listed");
-            Vec::new()
+/// The agent profiles of `session_id`'s sub-agents, newest first, each once,
+/// over every page. A transient failure is an error, so the queue retries
+/// the span: a pass without the children would drop or misroute a
+/// correction meant for one. A stack without `session::list` lists none.
+async fn child_agents(iii: &IIIClient, session_id: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen = HashSet::new();
+    loop {
+        let mut payload = json!({
+            "limit": 500,
+            "order": "created_desc",
+            "metadata": { "parent_session_id": session_id },
+        });
+        if let Some(c) = &cursor {
+            payload["cursor"] = json!(c);
+        }
+        let reply = match iii
+            .trigger(TriggerRequest {
+                function_id: "session::list".into(),
+                payload,
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+        {
+            Ok(reply) => reply,
+            Err(e) if transient(&e) => return Err(format!("session::list: {e}")),
+            Err(e) => {
+                tracing::warn!(session_id, error = %e, "session::list failed; no sub-agent listed");
+                return Ok(out);
+            }
+        };
+        listed_agents(&reply, &mut out);
+        match reply
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+        {
+            Some(next) if seen.insert(next.to_string()) => cursor = Some(next.to_string()),
+            Some(_) => return Err(format!("session::list repeated cursor for {session_id}")),
+            None => return Ok(out),
         }
     }
 }
 
-/// The distinct `agent_profile` ids on a `session::list` page, in order.
-fn listed_agents(reply: &Value) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// Appends the `agent_profile` ids on a `session::list` page that `out`
+/// does not hold yet, in order.
+fn listed_agents(reply: &Value, out: &mut Vec<String>) {
     let sessions = reply.get("sessions").and_then(Value::as_array);
     for meta in sessions.into_iter().flatten() {
         let agent = meta.get("metadata").and_then(crate::scope::profile_field);
@@ -1442,7 +1463,6 @@ fn listed_agents(reply: &Value) -> Vec<String> {
             out.push(agent);
         }
     }
-    out
 }
 
 /// One extraction call: the production prompt over `input` (with the agent
@@ -2047,8 +2067,21 @@ mod tests {
             { "session_id": "c1", "metadata": { "parent_session_id": "p", "agent_profile": { "id": "reviewer" } } },
             { "session_id": "c0", "metadata": { "parent_session_id": "p", "agent_profile": "tester" } },
         ]});
-        assert_eq!(listed_agents(&page), ["reviewer", "tester"]);
-        assert!(listed_agents(&json!({})).is_empty());
+        let mut out = Vec::new();
+        listed_agents(&page, &mut out);
+        assert_eq!(out, ["reviewer", "tester"]);
+        let next = json!({ "sessions": [
+            { "session_id": "b1", "metadata": { "agent_profile": "tester" } },
+            { "session_id": "b0", "metadata": { "agent_profile": "planner" } },
+        ]});
+        listed_agents(&next, &mut out);
+        assert_eq!(
+            out,
+            ["reviewer", "tester", "planner"],
+            "a later page adds only new profiles"
+        );
+        listed_agents(&json!({}), &mut out);
+        assert_eq!(out.len(), 3);
     }
 
     #[test]

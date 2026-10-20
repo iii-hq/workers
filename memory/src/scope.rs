@@ -167,7 +167,8 @@ fn common_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// A resolved bank, whether the turn's `fs_scope.root` chose it, and the
+/// A resolved bank, whether the resolver chose it rather than a name (the
+/// turn's `fs_scope.root` bank, or the `default_bank` fallback), and the
 /// session's agent profile read under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
@@ -180,7 +181,7 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    /// A bank named by metadata, a caller, or the default.
+    /// A bank named by metadata or a caller.
     pub(crate) fn named(bank: impl Into<String>) -> Self {
         Self {
             bank: bank.into(),
@@ -190,11 +191,10 @@ impl Resolved {
     }
 
     /// Whether agent banks are read under this one: not under a bank
-    /// metadata named, which is read alone, as for [`Resolved::layer`].
-    // shortcut: `default_bank` named by metadata reads like the fallback
-    // (agents layered); carry provenance in `Resolved` if that misleads.
-    pub(crate) fn takes_agents(&self, default_bank: &str) -> bool {
-        self.derived || self.bank == default_bank
+    /// metadata or a caller named, `default_bank` included, which is read
+    /// alone, as for [`Resolved::layer`].
+    pub(crate) fn takes_agents(&self) -> bool {
+        self.derived
     }
 
     /// Every bank read under this one, in rule order: [`Resolved::layer`],
@@ -266,7 +266,11 @@ where
                     derived: true,
                     agent: None,
                 },
-                None => Resolved::named(default_bank),
+                None => Resolved {
+                    bank: default_bank.to_string(),
+                    derived: true,
+                    agent: None,
+                },
             };
             match walk(session_id, top, recorded, lookup).await? {
                 Some(bank) => bank,
@@ -284,7 +288,7 @@ where
     }
     // An unusable agent bank only drops that layer, never the session's
     // memory; a deleted one is never brought back.
-    let takes = chosen.takes_agents(default_bank);
+    let takes = chosen.takes_agents();
     chosen.agent = chosen.agent.take().filter(|id| {
         let bank = agent_bank(id);
         takes && validate_name(&bank).is_ok() && !deleted(&bank)
@@ -405,16 +409,18 @@ pub(crate) fn stamped_bank(reply: &Value, turn_id: &str) -> Option<Resolved> {
         .filter(|origin| origin.get("turn_id").and_then(Value::as_str) == Some(turn_id))
         .find_map(|origin| bank_field(Some(origin)).map(|bank| (bank, origin)))?;
     validate_name(&bank).ok()?;
-    let derived = origin
-        .get("memory_layer")
-        .and_then(Value::as_str)
-        .is_some_and(|layer| !layer.is_empty());
     let agent = origin
         .get("memory_agent")
         .and_then(Value::as_str)
         .and_then(|bank| bank.strip_prefix("agent-"))
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+    // Either layer is only ever read under a bank no name chose.
+    let derived = agent.is_some()
+        || origin
+            .get("memory_layer")
+            .and_then(Value::as_str)
+            .is_some_and(|layer| !layer.is_empty());
     Some(Resolved {
         bank,
         derived,
@@ -949,6 +955,14 @@ mod tests {
                 "named",
                 json!({ "agent_profile": reviewer, "memory_bank": "blog" }),
             ),
+            (
+                "named-main",
+                json!({ "agent_profile": reviewer, "memory_bank": "main" }),
+            ),
+            (
+                "main-child",
+                json!({ "parent_session_id": "named-main", "agent_profile": reviewer }),
+            ),
             ("bad", json!({ "agent_profile": { "id": "Code Reviewer" } })),
             ("lead", json!({ "agent_profile": { "id": "tech-lead" } })),
             (
@@ -988,6 +1002,14 @@ mod tests {
         assert!(
             layers(at(in_root("w"), "named", &[]).await).is_empty(),
             "a session naming its bank reads it alone"
+        );
+        assert!(
+            layers(at(None, "named-main", &[]).await).is_empty(),
+            "the default bank named reads alone, unlike the fallback to it"
+        );
+        assert!(
+            layers(at(None, "main-child", &[]).await).is_empty(),
+            "and so does a sub-agent inheriting it"
         );
         let mut turn = in_root("w").unwrap();
         turn["memory_bank"] = json!("coding");
@@ -1072,10 +1094,15 @@ mod tests {
             "a notice after the reply carries no stamp: the reply's counts"
         );
         assert_eq!(stamped_bank(&page, "t2"), Some(Resolved::named("blog")));
+        let restored = stamped_bank(&page, "t4").unwrap();
         assert_eq!(
-            stamped_bank(&page, "t4").and_then(|r| r.agent),
-            Some("reviewer".into()),
+            restored.agent.as_deref(),
+            Some("reviewer"),
             "the agent layer survives a restart"
+        );
+        assert!(
+            restored.takes_agents(),
+            "and still takes agents: no name chose that default bank"
         );
         assert_eq!(stamped_bank(&page, "t3"), None, "not a valid bank");
         assert_eq!(stamped_bank(&page, "t9"), None);
