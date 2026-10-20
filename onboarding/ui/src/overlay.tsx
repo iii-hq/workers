@@ -34,9 +34,36 @@ export function TourOverlay({ host }: { host: Host } & OverlayRenderProps) {
   useEffect(() => {
     if (shown) refresh()
   }, [shown, refresh])
-  if (!shown) return null
-  return <TourCard host={host} tour={tour} folded={view === 'minimized'} />
+  // The pill's own close: the card goes away, and a note says how to get it back.
+  const [hint, setHint] = useState(false)
+  useEffect(() => {
+    if (!hint) return
+    const timer = window.setTimeout(() => setHint(false), HINT_MS)
+    return () => window.clearTimeout(timer)
+  }, [hint])
+  const dismiss = () => {
+    closeTour()
+    setHint(true)
+  }
+  return (
+    <>
+      {shown ? <TourCard host={host} tour={tour} folded={view === 'minimized'} onDismiss={dismiss} /> : null}
+      {hint ? (
+        <div className="learn-hint" role="status">
+          Press {paletteKey()} and type “learn iii” to start the tour.
+        </div>
+      ) : null}
+    </>
+  )
 }
+
+const HINT_MS = 8000
+
+/** The console's palette shortcut, named for this platform. */
+function paletteKey(): string {
+  return /mac|iphone|ipad/i.test(navigator.platform) ? '⌘K' : 'Ctrl+K'
+}
+
 
 /** The card keeps 16px from the viewport's edges, and clears the masthead at the top. */
 const EDGE = 16
@@ -45,24 +72,36 @@ const TOP_EDGE = 72
 type Corner = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
 const CORNERS: readonly Corner[] = ['bottom-right', 'bottom-left', 'top-right', 'top-left']
 
-function TourCard({ host, tour, folded }: { host: Host; tour: TourController; folded: boolean }) {
+function TourCard({
+  host,
+  tour,
+  folded,
+  onDismiss,
+}: {
+  host: Host
+  tour: TourController
+  folded: boolean
+  onDismiss: () => void
+}) {
   const { tour: loaded, openStep, framed } = tour
   const card = useRef<HTMLElement>(null)
-  const corner = useCorner(card, folded)
+  const { corner, place, settled } = usePlacement(card, folded)
   const titleId = useId()
+  // Step 0: nothing is lit and nothing is counted until the operator says yes.
+  const intro = Boolean(loaded) && tour.records.intro?.status !== 'complete'
 
   const index = loaded && openStep ? loaded.steps.indexOf(openStep) : -1
   const caption = openStep ? `${index + 1} · ${openStep.title}` : undefined
   useEffect(() => {
     // Folded is out of the way: the box goes with the card.
-    if (folded) return
+    if (folded || intro) return
     showSpotlight(framed, caption)
     return hideSpotlight
-  }, [framed, caption, folded])
+  }, [framed, caption, folded, intro])
   useEffect(() => disposeSpotlight, [])
 
   if (folded) {
-    return <Pill tour={tour} corner={corner} cardRef={card} />
+    return <Pill tour={tour} corner={corner} cardRef={card} onDismiss={onDismiss} />
   }
 
   return (
@@ -70,6 +109,8 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
       ref={card}
       className="learn-overlay"
       data-corner={corner}
+      data-settled={settled || undefined}
+      style={place ? { translate: `${place.left}px ${place.top}px` } : undefined}
       role="dialog"
       aria-modal="false"
       aria-labelledby={titleId}
@@ -85,7 +126,7 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
       <header className="learn-overlay-head">
         <Compass className={`learn-overlay-mark ${uiClasses.icon}`} aria-hidden="true" />
         <span className="learn-overlay-name">{loaded?.title ?? 'Tour'}</span>
-        {loaded && openStep ? (
+        {loaded && openStep && !intro ? (
           <span className="learn-overlay-count learn-num">
             {index + 1} / {loaded.steps.length}
           </span>
@@ -111,7 +152,7 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
           <X className={uiClasses.icon} aria-hidden="true" />
         </Button>
       </header>
-      {loaded ? <Progress tour={tour} /> : null}
+      {loaded && !intro ? <Progress tour={tour} /> : null}
 
       <div className="learn-overlay-scroll">
         {tour.error ? (
@@ -120,6 +161,21 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
           <div className="learn-loading" role="status" aria-busy="true" aria-label="Loading the tour">
             <Skeleton className="learn-skeleton learn-skeleton--bar" />
             <Skeleton className="learn-skeleton" />
+          </div>
+        ) : intro && loaded ? (
+          <div className="learn-overlay-step">
+            <h2 id={titleId} className="learn-overlay-title">
+              <span className="learn-overlay-title-text">{loaded.intro.title}</span>
+            </h2>
+            <p className="learn-body">{loaded.intro.body}</p>
+            <div className="learn-actions">
+              <Button className="learn-action" onClick={() => tour.complete('intro')}>
+                Show me
+              </Button>
+              <Button variant="ghost" className="learn-ghost" onClick={minimizeTour}>
+                Not now
+              </Button>
+            </div>
           </div>
         ) : openStep ? (
           // Keyed on the step, so each one arrives instead of the text
@@ -138,7 +194,7 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
 
       <footer className="learn-overlay-foot">
         <RemoveLearnIii host={host} onClose={closeTour} label="Remove tour" />
-        {loaded && openStep ? <StepNav tour={tour} index={index} /> : null}
+        {loaded && openStep && !intro ? <StepNav tour={tour} index={index} /> : null}
       </footer>
     </section>
   )
@@ -257,74 +313,117 @@ function Finished({ tour, titleId }: { tour: TourController; titleId: string }) 
   )
 }
 
-/** The folded card: where the tour is, and one click back to it. */
+/**
+ * The folded card: where the tour is, and one click back to it. The count is
+ * the open card's: the step up next (the last one once all are done), of all.
+ * Its own close puts the card away and says how to bring it back.
+ */
 function Pill({
   tour,
   corner,
   cardRef,
+  onDismiss,
 }: {
   tour: TourController
   corner: Corner
   cardRef: React.RefObject<HTMLElement | null>
+  onDismiss: () => void
 }) {
   const steps = tour.tour?.steps ?? []
-  const done = steps.filter((step) => tour.records[step.id]?.status === 'complete').length
+  const at = tour.active ? steps.indexOf(tour.active) + 1 : steps.length
   const waiting = Boolean(tour.active?.condition)
   return (
-    <button
-      ref={cardRef as React.RefObject<HTMLButtonElement>}
-      type="button"
-      className="learn-pill"
-      data-corner={corner}
-      onClick={showTour}
-      aria-label={`Open the tour, ${done} of ${steps.length} steps done`}
-    >
-      <Compass className={uiClasses.icon} aria-hidden="true" />
-      Tour
-      {steps.length > 0 ? (
-        <span className="learn-pill-count learn-num">
-          {done}/{steps.length}
-        </span>
-      ) : null}
-      {waiting ? <span className={`learn-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
-    </button>
+    <span ref={cardRef as React.RefObject<HTMLSpanElement>} className="learn-pill" data-corner={corner}>
+      <button
+        type="button"
+        className="learn-pill-open"
+        onClick={showTour}
+        aria-label={`Open the tour, step ${at} of ${steps.length}`}
+      >
+        <Compass className={uiClasses.icon} aria-hidden="true" />
+        Tour
+        {steps.length > 0 ? (
+          <span className="learn-pill-count learn-num">
+            {at}/{steps.length}
+          </span>
+        ) : null}
+        {waiting ? <span className={`learn-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
+      </button>
+      <button type="button" className="learn-pill-close" onClick={onDismiss} aria-label="Close the tour" title="Close">
+        <X className={uiClasses.icon} aria-hidden="true" />
+      </button>
+    </span>
   )
 }
 
+type Place = { left: number; top: number }
+
 /**
- * The corner the card sits in. It starts bottom right and stays put — a card
- * that chases every step is one more thing moving — until the spotlight
- * would land under it; then it takes the first corner that keeps the lit
- * element in view.
+ * Where the card sits. It starts bottom right and stays put — a card that
+ * chases every step is one more thing moving — until the spotlight would
+ * land under it. Then it docks just left of the lit element, level with its
+ * top, when there is room; otherwise it takes the first corner that keeps
+ * the element in view. The card is placed in pixels (`translate`), so the
+ * move is a slide the operator can follow; the pill keeps its corner.
  */
-function useCorner(card: React.RefObject<HTMLElement | null>, folded: boolean): Corner {
+function usePlacement(
+  card: React.RefObject<HTMLElement | null>,
+  folded: boolean,
+): { corner: Corner; place: Place | null; settled: boolean } {
   const [corner, setCorner] = useState<Corner>('bottom-right')
+  const [place, setPlace] = useState<Place | null>(null)
+  const [settled, setSettled] = useState(false)
   const cornerRef = useRef(corner)
   cornerRef.current = corner
   const lit = useRef<SpotlightRect | null>(null)
 
   useLayoutEffect(() => {
-    const place = () => {
-      const target = lit.current
-      const element = card.current
-      if (!target || !element || folded) return
-      const size = { width: element.offsetWidth, height: element.offsetHeight }
-      if (!overlaps(rectAt(cornerRef.current, size), target)) return
-      const free = CORNERS.find((option) => !overlaps(rectAt(option, size), target))
-      if (free && free !== cornerRef.current) setCorner(free)
+    if (folded) {
+      setPlace(null)
+      setSettled(false)
+      return
     }
+    const put = () => {
+      const element = card.current
+      if (!element) return
+      const size = { width: element.offsetWidth, height: element.offsetHeight }
+      const target = lit.current
+      let at = rectAt(cornerRef.current, size)
+      if (target && overlaps(at, target)) {
+        const left = target.left - EDGE - size.width
+        if (left >= EDGE) {
+          at = { ...at, left, top: clamp(target.top, TOP_EDGE, window.innerHeight - EDGE - size.height) }
+        } else {
+          const free = CORNERS.find((option) => !overlaps(rectAt(option, size), target)) ?? cornerRef.current
+          if (free !== cornerRef.current) setCorner(free)
+          at = rectAt(free, size)
+        }
+      }
+      setPlace((current) => (current && current.left === at.left && current.top === at.top ? current : at))
+    }
+    put()
+    // The first place is where the card appears; the slide starts after that.
+    const frame = window.requestAnimationFrame(() => setSettled(true))
     const off = onSpotlightMove((rect) => {
       lit.current = rect
-      place()
+      put()
     })
-    window.addEventListener('resize', place)
+    const grew = new ResizeObserver(put)
+    if (card.current) grew.observe(card.current)
+    window.addEventListener('resize', put)
     return () => {
+      window.cancelAnimationFrame(frame)
       off()
-      window.removeEventListener('resize', place)
+      grew.disconnect()
+      window.removeEventListener('resize', put)
     }
   }, [card, folded])
 
-  return corner
+  return { corner, place, settled }
+}
+
+function clamp(value: number, low: number, high: number): number {
+  return Math.min(Math.max(value, low), Math.max(low, high))
 }
 
 function rectAt(corner: Corner, size: { width: number; height: number }): SpotlightRect {

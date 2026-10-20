@@ -56,7 +56,7 @@ beforeEach(() => {
   harness.open.mockClear()
   harness.mark.mockClear()
   harness.automated = false
-  harness.state = { status: 'completed', first_opened_at: 1_000_000 }
+  harness.state = { status: 'completed', setup_ended_at: 1_000_000 }
 })
 
 afterEach(() => {
@@ -68,7 +68,7 @@ afterEach(() => {
 describe('tourDueAt', () => {
   it('is five minutes after the first open', () => {
     expect(
-      tourDueAt({ status: 'new', updated_at: 0, first_opened_at: 10 }, false),
+      tourDueAt({ status: 'new', updated_at: 0, setup_ended_at: 10 }, false),
     ).toBe(10 + TOUR_AFTER_MS)
   })
 
@@ -76,7 +76,7 @@ describe('tourDueAt', () => {
     const base = {
       status: 'completed' as const,
       updated_at: 0,
-      first_opened_at: 10,
+      setup_ended_at: 10,
     }
     expect(tourDueAt({ ...base, tour_opened_at: 20 }, false)).toBeNull()
     expect(tourDueAt({ status: 'completed', updated_at: 0 }, false)).toBeNull()
@@ -107,7 +107,7 @@ describe('useTourGate', () => {
   it('opens at once on a load past the mark (a restart, a reload)', async () => {
     harness.state = {
       status: 'completed',
-      first_opened_at: 1_000_000 - TOUR_AFTER_MS - 5,
+      setup_ended_at: 1_000_000 - TOUR_AFTER_MS - 5,
     }
     render()
     await flush()
@@ -119,7 +119,7 @@ describe('useTourGate', () => {
   })
 
   it('waits for the wizard to close', async () => {
-    harness.state = { status: 'new', first_opened_at: 0 }
+    harness.state = { status: 'new', setup_ended_at: 0 }
     render(true)
     await flush()
     await act(async () => {
@@ -139,7 +139,7 @@ describe('useTourGate', () => {
   it('stays quiet once the tour has opened, and under automation', async () => {
     harness.state = {
       status: 'completed',
-      first_opened_at: 0,
+      setup_ended_at: 0,
       tour_opened_at: 5,
     }
     render()
@@ -150,7 +150,7 @@ describe('useTourGate', () => {
     await flush()
     expect(harness.open).not.toHaveBeenCalled()
     act(() => root?.unmount())
-    harness.state = { status: 'completed', first_opened_at: 0 }
+    harness.state = { status: 'completed', setup_ended_at: 0 }
     harness.automated = true
     render()
     await flush()

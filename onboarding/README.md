@@ -37,7 +37,7 @@ On a console without the slot the same tour renders as a page in a pane
 `Open learn-iii` (the palette row, `learn-iii.open`) shows it either way.
 The console runs that command by itself once the operator has had the ADE
 for five minutes: the ADE records its first open (`console::onboarding::get`,
-`first_opened_at`) and the console's tour gate counts from there, across
+`setup_ended_at`) and the console's tour gate counts from there, across
 reloads and restarts, waits for the setup wizard to close, and opens the tour
 once (`tour_opened_at`). The wizard's Ready step does not start it.
 
@@ -53,7 +53,7 @@ own button, and moves on once the screen is there.
 - `learn-iii::tours::list` — every tour in curriculum order.
 - `learn-iii::tours::get` — one tour with all of its steps.
 - `learn-iii::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
-- `learn-iii::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `learn-iii:steps:complete` topic (see Events).
+- `learn-iii::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
 - `learn-iii::steps::reset` — forget one tour and start it again.
 - `learn-iii::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
 
@@ -66,13 +66,13 @@ and the read drops nulls on the way out.
 
 ## Events
 
-Each closed step is published to the `learn-iii:steps:complete` topic through the
+Each closed step is published to the `onboarding:steps:complete` topic through the
 `queue` worker, so anything that follows a tour subscribes instead of reading
 this worker's state. The payload:
 
 ```json
 {
-  "tour_id": "console-basics",
+  "tour_id": "learn-iii",
   "tour_title": "Find your way around",
   "step_number": 3,
   "step_id": "coder",

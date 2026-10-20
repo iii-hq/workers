@@ -1,9 +1,9 @@
 /**
  * The learn-iii tour opens by itself once the operator has had the ADE for
- * `TOUR_AFTER_MS`: five minutes from the first time this ADE was opened
- * (`first_opened_at`, which the backend records on the first
- * `console::onboarding::get` and keeps across restarts), and once only
- * (`tour_opened_at`). A reload or a restart past the mark opens it at once;
+ * `TOUR_AFTER_MS`: five minutes from the moment setup ended
+ * (`setup_ended_at`, which the backend records when the wizard finishes or
+ * is dismissed and keeps across restarts; `completed_at` stands in for a
+ * state written before that field), and once only (`tour_opened_at`). A reload or a restart past the mark opens it at once;
  * one before it arms the rest of the wait. The command palette's
  * `Open learn-iii` is how it is shown again.
  *
@@ -26,18 +26,17 @@ export const TOUR_AFTER_MS = 5 * 60_000
 
 /**
  * When the tour is due, from the state as read: `null` when it already
- * opened, when the ADE never recorded a first open (a backend older than the
- * gate), or when nothing may open by itself here.
+ * opened, when setup has not ended yet, or when nothing may open by itself
+ * here.
  */
 export function tourDueAt(
   state: OnboardingState | null,
   automated = browserIsAutomated(),
 ): number | null {
   if (!state || automated || state.auto_open === false) return null
-  if (state.tour_opened_at || typeof state.first_opened_at !== 'number') {
-    return null
-  }
-  return state.first_opened_at + TOUR_AFTER_MS
+  const endedAt = state.setup_ended_at ?? state.completed_at
+  if (state.tour_opened_at || typeof endedAt !== 'number') return null
+  return endedAt + TOUR_AFTER_MS
 }
 
 /**

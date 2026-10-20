@@ -37,7 +37,8 @@
  * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
  * @typedef {{ screen: string, label: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
  * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, ask?: Ask, on_closed?: OnClosed, to_open?: ToOpen }} Step
- * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
+ * @typedef {{ id: "intro", title: string, body: string }} Intro
+ * @typedef {{ id: string, title: string, description: string, intro: Intro, steps: Step[] }} Tour
  */
 
 /**
@@ -92,9 +93,16 @@ const agentStep = (step) => {
 /** @type {Tour[]} */
 export const TOURS = [
   {
-    id: "console-basics",
+    id: "learn-iii",
     title: "Find your way around",
     description: "The surfaces of the console, and the engine underneath them.",
+    // Step 0: the card asks before it teaches. "Show me" closes it (and is
+    // what the funnel counts); "Not now" folds the card to its pill.
+    intro: {
+      id: "intro",
+      title: "Learn iii?",
+      body: "Want to learn more about iii, the engine that powers this harness and everything you build? A short tour shows you around the console.",
+    },
     steps: [
       {
         id: "message",
@@ -184,11 +192,11 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Build a TODO worker on the todo-local kanban board, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Build the TODO worker'): its own console page that sits beside the board like a sidebar; a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card; a Done checkbox that moves the ticket on the board at once; alarms through the cron worker; and a todo:changed trigger type. Verify through functions, not screenshots, and do not navigate me away from this workspace. Open the TODO page beside the board when it is done.",
+          text: "Build a TODO worker on the todo-local kanban board, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Build the TODO worker'): first set the board to two columns, TODO and Done; then a worker whose console page is a narrow sidebar of controls, not a list: an add form and an edit form with a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card. The board is the list and Done is set on the board; a done item with a repeat creates the next one; alarms go through the cron worker; and a todo:changed trigger type. Verify through functions, not screenshots, and do not navigate me away from this workspace. Open the TODO page to the left of the board when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Now build on that board. Ask the agent for a TODO worker: its own page beside the board, with a due date, a due time, a priority, a repeat and an alarm on each item. The board keeps the progress; the TODO worker adds the rest, and each setting shows as a pill on the card. Since we are going to open our own page we can make room by closing the Traces panel (optional).",
+        body: "Now build on that board. Ask the agent for a TODO worker: a sidebar of controls to the left of the board, with a due date, a due time, a priority, a repeat and an alarm on each item. The board is the list and keeps the progress; the TODO worker adds the rest, and each setting shows as a pill on the card. Since we are going to open our own page we can make room by closing the Traces panel (optional).",
         // The close is an invitation, not a requirement: the step closes
         // when the agent reports done. When the operator does take it, the
         // page swaps in this note so dropping the panel is never a dead end.
@@ -243,14 +251,16 @@ export function getTour(id) {
 
 /**
  * The step, its tour, and its 1-based number in that tour — the number is
- * what the `learn-iii:steps:complete` event reports, so it is read from
- * the ordered step list rather than stored beside it.
+ * what the `onboarding:steps:complete` event reports, so it is read from
+ * the ordered step list rather than stored beside it. The intro is step 0.
  *
- * @returns {{ tour: Tour, step: Step, number: number } | undefined}
+ * @returns {{ tour: Tour, step: Step | Intro, number: number } | undefined}
  */
 export function findStep(tourId, stepId) {
   const tour = getTour(tourId);
-  const index = tour?.steps.findIndex((step) => step.id === stepId) ?? -1;
-  if (!tour || index < 0) return undefined;
+  if (!tour) return undefined;
+  if (stepId === tour.intro.id) return { tour, step: tour.intro, number: 0 };
+  const index = tour.steps.findIndex((step) => step.id === stepId);
+  if (index < 0) return undefined;
   return { tour, step: tour.steps[index], number: index + 1 };
 }

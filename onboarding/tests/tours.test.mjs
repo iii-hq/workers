@@ -183,7 +183,7 @@ test('every agent-finished step names the state key its trigger waits on', () =>
 test('every step that asks the agent to build waits for it to report done', () => {
   const agentSteps = ['composability', 'discoverability', 'extensibility', 'reactivity']
   for (const id of agentSteps) {
-    const step = getTour('console-basics').steps.find((entry) => entry.id === id)
+    const step = getTour('learn-iii').steps.find((entry) => entry.id === id)
     assert.ok(step, `${id} is no longer a step`)
     assert.equal(step.condition?.type, 'state', `${id}: does not wait on a state write`)
   }
@@ -191,7 +191,7 @@ test('every step that asks the agent to build waits for it to report done', () =
 
 /** The tour names the five CODER properties; `Discover` is not one of them. */
 test('the discoverability step is titled Discoverability', () => {
-  const step = getTour('console-basics').steps.find((entry) => entry.id === 'discoverability')
+  const step = getTour('learn-iii').steps.find((entry) => entry.id === 'discoverability')
   assert.equal(step.title, 'Discoverability')
 })
 
@@ -208,13 +208,23 @@ test('findStep numbers steps from 1 in tour order', () => {
   assert.equal(findStep(TOURS[0].id, 'no-such-step'), undefined)
 })
 
+/** The intro card is step 0 of every tour: reported, never counted among the steps. */
+test('the intro is step 0', () => {
+  for (const tour of TOURS) {
+    const found = findStep(tour.id, 'intro')
+    assert.equal(found?.step, tour.intro)
+    assert.equal(found?.number, 0)
+    assert.ok(!tour.steps.some((step) => step.id === 'intro'), `${tour.id}: intro listed as a step`)
+  }
+})
+
 /**
  * The first step starts the tour's chat under the Onboarding profile, the
  * way a setup example prompt does; every later prompt goes to the chat the
  * operator is in. A `to_open` step offers a button that opens its screen.
  */
 test('the first step opens a chat under the tour agent, and screens come with a button', () => {
-  const message = findStep('console-basics', 'message').step
+  const message = findStep('learn-iii', 'message').step
   assert.equal(message.ask.agent, TOUR_AGENT)
   for (const tour of TOURS) {
     for (const step of tour.steps) {

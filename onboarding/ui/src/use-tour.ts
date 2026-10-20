@@ -35,6 +35,8 @@ export interface Tour {
   id: string
   title: string
   description: string
+  /** Step 0: the card asks before it teaches. Closed like a step, under `records.intro`. */
+  intro: { id: 'intro'; title: string; body: string }
   steps: Step[]
 }
 

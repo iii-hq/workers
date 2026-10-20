@@ -34,8 +34,8 @@ export interface OnboardingState {
    * Absent from a backend older than the switch.
    */
   auto_open?: boolean
-  /** When this ADE was first opened (ms since the epoch); the tour gate's clock. */
-  first_opened_at?: number
+  /** When setup ended (finished or dismissed); absent while it is open. */
+  setup_ended_at?: number
   /** When the learn-iii tour opened by itself; absent until it has. */
   tour_opened_at?: number
 }

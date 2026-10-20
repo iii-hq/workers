@@ -41,5 +41,5 @@ dependencies:
   ade: "latest"
   state: "latest"
   # `learn-iii::steps::complete` announces each closed step on the
-  # `learn-iii:steps:complete` topic, which the `queue` worker serves.
+  # `onboarding:steps:complete` topic, which the `queue` worker serves.
   queue: "latest"

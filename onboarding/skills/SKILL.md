@@ -2,9 +2,10 @@
 name: onboarding
 description: >-
   The console tour. Its agent steps add a kanban board in the todo-local
-  namespace, then build a TODO worker on top of it: a sidebar-like page beside
-  the board with a due date, a due time, a priority, a repeat and an alarm on
-  each item, shown as pills on the board cards. Read this before you do either
+  namespace, then build a TODO worker on top of it: a narrow sidebar page left
+  of the board that adds items and sets a due date, a due time, a priority, a
+  repeat and an alarm on each, shown as pills on the board cards. The board
+  is the list; the sidebar is the controls. Read this before you do either
   step.
 ---
 
@@ -64,33 +65,56 @@ The board's own doctrine is the `kanban` skill (`directory::skills::get
 
 ## Build the TODO worker
 
-The board keeps the progress. The TODO worker adds what a to-do list needs on
-top, and shows it on the board. Build it as a Node worker named `todo`
-(the `kanban/iii-node/index` skill has the package shape, the injectable page
-and the compose wiring) and add it to the project as a `path://` container.
+The board is the list: every item is a ticket, and the board shows them. The
+TODO worker shows no list of its own. It is a narrow sidebar of controls, open
+to the left of the board, that creates items and sets what a to-do needs on
+top: a due date, a due time, a priority, a repeat and an alarm. Build it as a
+Node worker named `todo` (the `kanban/iii-node/index` skill has the package
+shape, the injectable page and the compose wiring) and add it to the project
+as a `path://` container.
+
+Board shape:
+
+- A to-do board has two columns. Before anything else, set them:
+
+  ```json
+  configuration::set {
+    "id": "kanban-todo-local",
+    "value": {
+      "data_path": "data/kanban-todo-local",
+      "columns": [{ "id": "todo", "label": "TODO" }, { "id": "done", "label": "Done" }],
+      "default_status": "todo",
+      "done_status": "done",
+      "canceled_status": null
+    }
+  }
+  ```
+
+  The board reloads on the write; no restart. Read `configuration::get
+  { "id": "kanban-todo-local" }` first and keep `id_prefix` and `priorities`
+  as they are.
 
 Data:
 
 - Every item is a ticket on the todo-local board:
-  `kanban-todo-local::ticket::create { "title", "actor": "todo" }`.
-- The item's own fields live in the `state` worker, scope `todo`, key = the
-  ticket uuid: `{ "due_date": "2026-10-24", "due_time": "17:00", "priority": "high", "repeat": "none|daily|weekly|monthly", "alarm": true|false }`.
+  `kanban-todo-local::ticket::create { "title", "priority", "actor": "todo" }`.
+  The board's own `priority` is the item's priority; do not keep a second one.
+- The item's other fields live in the `state` worker, scope `todo`, key = the
+  ticket uuid: `{ "due_date": "2026-10-24", "due_time": "17:00", "repeat": "none|daily|weekly|monthly", "alarm": true|false }`.
 - After every write, put the fields on the card:
   `kanban-todo-local::ticket::update { "id", "pills": [...] }` with one pill
   per set field, icon then text: `calendar` + due date, `clock` + due time,
-  `flag` + priority, `repeat` + repeat, `alarm-clock` + "alarm". `pills: []`
-  clears them. An icon is a lucide icon name.
+  `repeat` + repeat, `alarm-clock` + "alarm". `pills: []` clears them. An
+  icon is a lucide icon name.
 
 Done:
 
-- `kanban-todo-local::config::info` gives `done_status` and `default_status`.
-- Checking Done calls `kanban-todo-local::ticket::move { "id", "status": <done_status> }`;
-  unchecking moves it back to `default_status`. The board subscribes to its
-  own change trigger, so the card moves at once.
-- Bind `kanban-todo-local:change` too, so a move on the board updates the
-  checkbox on the TODO page.
-- A done item with a repeat creates the next occurrence: a new ticket with the
-  same fields and the due date moved one day, week or month on.
+- Done is the board's: the card's status picker, a drag to the Done column,
+  or `kanban-todo-local::ticket::move { "id", "status": "done" }`.
+- Bind `kanban-todo-local:change` (`iii.registerTrigger`), so a move to Done
+  on the board reaches the worker: a done item with a repeat creates the next
+  occurrence, a new ticket with the same fields and the due date moved one
+  day, week or month on; a done item with an alarm drops its cron trigger.
 
 Alarm:
 
@@ -105,9 +129,9 @@ Alarm:
 Triggers:
 
 - Register one trigger type, `todo:changed`, with the SDK
-  (`iii.registerTriggerType`). Fire it on create, edit, done, undone and alarm
-  with `{ "event", "ticket_id", "title", "fields" }`. The Reactivity step binds
-  it from the chat.
+  (`iii.registerTriggerType`). Fire it on create, edit, done and alarm with
+  `{ "event", "ticket_id", "title", "fields" }`. The Reactivity step binds it
+  from the chat.
 
 Page:
 
@@ -115,13 +139,18 @@ Page:
   `kanban/iii-node/index` skill shows (`todo::ui-content`,
   `console:script` with `path: "todo/page.js"`, a stylesheet scoped
   `[data-iii-ui="todo"]`).
-- It reads like a sidebar: one narrow column; a list of open items, each with
-  a checkbox, the title and its pills; the done items under a divider; an
-  add form at the top with a title, `<input type="date">`,
-  `<input type="time">`, a priority select, a repeat select and an alarm
-  checkbox. Keep the page its own; it is not inside the board.
-- Open it beside the board when the build is done:
-  `console::workspace::open { "screen": "todo", "relative_to": "kanban-todo-local-board" }`.
+- It reads like a sidebar: one narrow column, built from the console-ui
+  components, nothing else. At the top, an add form: a title, `<input type="date">`,
+  `<input type="time">`, a priority select (the board's `priorities`, from
+  `kanban-todo-local::config::info`), a repeat select and an alarm checkbox;
+  Add creates the ticket and its pills. Under it, an edit form for one item:
+  a select of the open tickets by title (`kanban-todo-local::board::get`,
+  `statuses: ["todo"]`, `compact: true`), the same fields, and Save. No
+  list of items, no checkboxes: the board next to it is the list, and Done
+  is set there.
+- Keep the page its own; it is not inside the board. Open it to the left of
+  the board when the build is done:
+  `console::workspace::open { "screen": "todo", "relative_to": "kanban-todo-local-board", "direction": "left" }`.
 
 Checks: call the functions and read the board (`kanban-todo-local::board::get`)
 to prove each part; take no screenshots. Do not move the operator to another

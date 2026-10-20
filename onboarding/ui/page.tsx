@@ -29,7 +29,7 @@ export default function setup(host: Host) {
       id: 'open',
       title: 'Open learn-iii',
       detail: 'Guided walkthrough of the console',
-      keywords: ['learn-iii', 'tour', 'walkthrough', 'help', 'tutorial'],
+      keywords: ['learn-iii', 'learn iii', 'tour', 'walkthrough', 'help', 'tutorial'],
       run: () => (overlay ? showTour() : host.panels?.open({ pageId: 'learn-iii' })),
     },
   ])
