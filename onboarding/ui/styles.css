@@ -105,7 +105,9 @@
 [data-iii-ui='learn-iii'] .learn-overlay {
   display: flex;
   width: min(23rem, calc(100vw - 2rem));
-  max-height: min(36rem, calc(100vh - 5.5rem));
+  /* As tall as the step needs, up to the viewport: the body is read whole,
+     never scrolled for. */
+  max-height: calc(100vh - 5.5rem);
   flex-direction: column;
   overflow: hidden;
   border-radius: var(--radius-xl);
@@ -829,8 +831,13 @@
   font-weight: 500;
 }
 
+/* The message keeps to its first five lines; the rest scrolls inside the
+   card, so the body above it is never pushed out of view. */
 [data-iii-ui='learn-iii'] .learn-prompt-text {
   margin: 0;
+  max-height: calc(5 * 1.25rem + 1.25rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.625rem 0.75rem;
   color: var(--color-ink-faint);
   font-size: 0.8125rem;
