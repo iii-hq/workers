@@ -113,6 +113,20 @@ UPDATE_GOLDENS=1 cargo test --test recall_quality              # re-baseline aft
 III_NAMESPACE=<ns> cargo test --test recall_quality -- --ignored embed_golden_set   # re-embed after editing golden.json
 ```
 
+## Extraction eval
+
+`extract::eval` runs the production extraction prompt and parser over short English excerpts, three times each, through a live `router::complete`. It scores what comes back:
+
+- **capture**: each expected item is captured, wrong (its kind, where it lands, the memory it corrects, or the learned-rule gate drops it), or missed;
+- **trap hits**: anything returned from an excerpt built to hold nothing more: an instruction only the assistant gave, a pasted document, a harness notice, a transient error, task progress. It also counts how many of them the learned-rule gate would still let into the bank;
+- **placement**: what holds for the user wherever they work reaches the default bank, and nothing project-only does.
+
+Run it before and after a prompt change; it needs an engine with a router and a provider, and no memory worker.
+
+```bash
+III_URL=ws://127.0.0.1:<port> EXTRACTION_MODEL=<id> cargo test --lib extract::eval -- --ignored --nocapture
+```
+
 ## Permissions
 
 Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
