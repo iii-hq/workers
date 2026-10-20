@@ -1,16 +1,20 @@
 //! Boot sequence: register the `http` trigger type (so the engine routes
 //! trigger registrations through our [`HttpTriggerHandler`] into the shared
-//! [`RouteTable`]) and start the HTTP server.
+//! [`RouteTable`]), register the `http::on-request` observable function (whose
+//! observers land in the same table, see [`crate::on_request`]) and start the
+//! HTTP server.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{IIIClient, RegisterTriggerType};
 use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
 use crate::configuration::{self, ApplyLock, ConfigCell};
+use crate::on_request;
 use crate::server::{self, HotRouter, RouterCell, ServerControlCell, ServerHandle};
 use crate::trigger::{HttpTriggerHandler, RouteTable};
 use crate::types::{HttpRequest, HttpTriggerConfig};
@@ -40,6 +44,8 @@ const BUILTIN_III_HTTP_WORKER_ID: &str = "iii-http";
 pub struct BootHandle {
     pub local_addr: SocketAddr,
     pub routes: Arc<RwLock<RouteTable>>,
+    /// `http::on-request`; its observers' routes are in `routes`.
+    pub on_request: FunctionRef,
     pub config: ConfigCell,
     pub router: RouterCell,
     pub hot_router: HotRouter,
@@ -61,7 +67,10 @@ impl BootHandle {
         webhook.control.lock().await.as_ref().map(|c| c.local_addr)
     }
 
-    /// Serialize shutdown against reload, drain both listeners, and join them.
+    /// Serialize shutdown against reload, drain both listeners, and join them,
+    /// then unregister `http::on-request` (the engine holds its observers
+    /// until it is registered again, by a restarted worker or a later
+    /// [`start`] on the same client).
     pub async fn shutdown(self) {
         let _guard = self.apply_lock.lock().await;
         let normal = self.control.lock().await.take();
@@ -75,11 +84,13 @@ impl BootHandle {
             }
         };
         tokio::join!(stop(normal), stop(webhook));
+        self.on_request.unregister();
     }
 }
 
-/// Register this worker's trigger type ([`crate::TRIGGER_TYPE`]) and start
-/// the server. Returns once the listener is bound (its address available in
+/// Register this worker's trigger type ([`crate::TRIGGER_TYPE`]) and its
+/// observable function ([`on_request::ON_REQUEST_FN`]), and start the
+/// server. Returns once the listener is bound (its address available in
 /// [`BootHandle::local_addr`]).
 ///
 /// Always refuses to start if the built-in `iii-http` worker already owns
@@ -108,6 +119,9 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
             .call_request_format::<HttpRequest>()
             .trigger_request_format::<HttpTriggerConfig>(),
     );
+    // Observers of `http::on-request` add their routes to the same table. On
+    // an engine without observe its hooks never run.
+    let on_request = on_request::register(&iii, routes.clone());
 
     let ServerHandle {
         local_addr,
@@ -119,6 +133,7 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
     Ok(BootHandle {
         local_addr,
         routes,
+        on_request,
         config: cell,
         router,
         hot_router,

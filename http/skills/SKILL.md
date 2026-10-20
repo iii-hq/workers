@@ -3,16 +3,19 @@ name: http
 tags: http, routing, triggers, webhooks, endpoints
 description: >-
   Expose registered functions as HTTP endpoints with the standalone http
-  worker. Its whole surface is the `http` trigger type.
+  worker. Its surface is the `http` trigger type and, on iii 0.25 engines, the
+  observable function `http::on-request`.
 ---
 
 # http
 
 The `http` worker exposes registered functions as HTTP endpoints, turning a
 function into a route that browsers, webhooks, and external clients can call
-without using the iii SDK. It exposes no callable `http::*` functions; its
-entire surface is the `http` trigger type, bound through a worker SDK trigger
-registration such as `iii.registerTrigger({ type: 'http', function_id, config })`.
+without using the iii SDK. It exposes no callable `http::*` functions; a route
+is declared by binding the `http` trigger type with a worker SDK trigger
+registration such as `iii.registerTrigger({ type: 'http', function_id, config })`,
+or, on iii 0.25 engines, by observing `http::on-request` with
+`iii.observe({ function_id: 'http::on-request', args: { method, path } }, target)`.
 
 Install it with `iii trigger compose::add worker=http`. The legacy in-engine HTTP service must not
 run on the same engine because it also owns the `http` trigger type. Remove the
@@ -40,7 +43,9 @@ chunked streaming response.
 ## Boundaries
 
 - No callable functions are exposed. Never invoke `http::*`; bind the `http`
-  trigger type to one of your own functions.
+  trigger type to one of your own functions, or observe `http::on-request`
+  with it as the target (invoking `http::on-request` is refused with
+  `FORBIDDEN`).
 - This is inbound HTTP. For outbound network requests from an agent or worker,
   use `web::fetch` instead.
 - This is not a scheduler or event queue. For clock-based execution, use
@@ -49,7 +54,9 @@ chunked streaming response.
 - The legacy in-engine HTTP service cannot run beside this standalone worker on
   the same engine because both own the `http` trigger type.
 - Route shapes with the same method and equivalent path structure conflict:
-  `/orders/:id` and `/orders/:order_id` are the same shape.
+  `/orders/:id` and `/orders/:order_id` are the same shape. Triggers and
+  `http::on-request` observers share one route table: the later one is
+  refused (an observer with `HTTP_ROUTE_CONFLICT`).
 
 ## Reactive triggers
 
@@ -96,6 +103,31 @@ Trigger config:
 | `http_method` | no | `GET` | HTTP method to match. |
 | `condition_function_id` | no | - | Function invoked before middleware and handler; a falsy result rejects the request with `422`. |
 | `middleware_function_ids` | no | `[]` | Per-route middleware functions, run before the handler in list order. |
+
+### How to observe (iii 0.25)
+
+Instead of a trigger, observe `http::on-request` with the route as its args and
+your handler as the target. The handler receives the same request and returns
+the same response as with a trigger.
+
+```typescript
+const route = iii.observe(
+  {
+    function_id: 'http::on-request',
+    args: { method: 'GET', path: '/orders/:id' },
+    // optional: filters on the request, e.g. { 'input.headers.x-api-key': { $exists: true } }
+  },
+  'orders::get',
+)
+await route.ready()
+```
+
+Args: `method` and `path` are required; `public_webhook`,
+`middleware_function_ids` and the deprecated `condition_function_id` are
+optional and mean what they mean in the trigger config. Unknown args are
+refused with `INVALID_ARGS`. A request the observer's `filters` reject gets
+`422 CONDITION_NOT_MET` without calling the handler. `route.dispose()` removes
+the route. On a 0.24 engine `observe` fails with `UNSUPPORTED`: use the trigger.
 
 Handler return values become buffered responses with `status_code`, `headers`,
 and `body`; `status_code` defaults to `200` and `body` defaults to an empty
