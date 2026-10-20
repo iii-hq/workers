@@ -291,7 +291,7 @@ export const PILLARS: readonly Pillar[] = [
  * through the ADE stage by stage, with the models just connected. The tour
  * gate adds the worker when the tour comes due, then opens it.
  */
-export const TOUR_WORKER = 'learn-iii'
+export const TOUR_WORKER = 'onboarding'
 export const TOUR_PAGE = 'learn-iii'
 
 /** The console configuration key that overrides worker sources (development). */

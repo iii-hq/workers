@@ -135,7 +135,7 @@ export const TOURS = [
       agentStep({
         id: "composability",
         ask: {
-          text: "Add a kanban board to this project in the todo-local namespace, the way the learn-iii skill says (directory::skills::get { id: \"learn-iii\" }, section 'Add the board'). When it runs, open its board page beside this chat and tell me what the board can do.",
+          text: "Add a kanban board to this project in the todo-local namespace, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Add the board'). When it runs, open its board page beside this chat and tell me what the board can do.",
           label: "Ask the agent",
         },
         title: "Composability",
@@ -184,7 +184,7 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Build a TODO worker on the todo-local kanban board, the way the learn-iii skill says (directory::skills::get { id: \"learn-iii\" }, section 'Build the TODO worker'): its own console page that sits beside the board like a sidebar; a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card; a Done checkbox that moves the ticket on the board at once; alarms through the cron worker; and a todo:changed trigger type. Verify through functions, not screenshots, and do not navigate me away from this workspace. Open the TODO page beside the board when it is done.",
+          text: "Build a TODO worker on the todo-local kanban board, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Build the TODO worker'): its own console page that sits beside the board like a sidebar; a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card; a Done checkbox that moves the ticket on the board at once; alarms through the cron worker; and a todo:changed trigger type. Verify through functions, not screenshots, and do not navigate me away from this workspace. Open the TODO page beside the board when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
@@ -212,7 +212,7 @@ export const TOURS = [
       {
         id: "clean-up",
         ask: {
-          text: "Remove the learn-iii worker from this project.",
+          text: "Remove the onboarding worker from this project.",
           label: "Ask the agent",
         },
         title: "Clean up",

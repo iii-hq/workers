@@ -93,7 +93,7 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `kanban` | yes | Shared page chrome, `List`/`ListItem`, `Card`, `Tabs`, `Selector`/`Select`, `ConfirmDialog`, `CodeEditor`, `Markdown`, `SettingsDeck` form; imports `usePaneState`/`useContainerNarrow`/`errorMessage`/`formatRelative`/`unwrapEnvelope` from the package, `lucide-react` | Board columns, ticket detail, function and trigger renderers |
 | `llm-router` | yes | Shared finite selects and configuration controls; tokens only | Provider/model configuration semantics |
 | `memory` | yes | Migrated: `useWorkerLive`, `usePaneState`, `useContainerNarrow`, `List`/`ListItem`, `IconButton`, `lucide-react`, `Skeleton`, `EmptyState`, `StatusPanel`, `Chip`/`Badge`/`Checkbox`, `Panel`, `CollapsibleCard`, `Card`, eyebrows, format subpath; graph canvas `<svg>` allowlisted | Memory graph and recall rules |
-| `learn-iii` | yes | Migrated: Tailwind strings → scoped `learn-*` rules + `uiClasses`, `StatusDot`, `Chip`, `Input`, `Button asChild`, `StatusPanel`, `Skeleton`, `useCopyFlash`/`errorMessage`; brand-mark `<svg>` allowlisted; `host.overlays` tour card (page fallback) | Guided tour spotlight over the console |
+| `onboarding` (page `learn-iii`) | yes | Migrated: Tailwind strings → scoped `learn-*` rules + `uiClasses`, `StatusDot`, `Chip`, `Input`, `Button asChild`, `StatusPanel`, `Skeleton`, `useCopyFlash`/`errorMessage`; brand-mark `<svg>` allowlisted; `host.overlays` tour card (page fallback) | Guided tour spotlight over the console |
 | `pdf` | yes | Shared tooltip and motion tokens; `unwrapEnvelope`, eyebrow recipe, 6px radii | Page rendering and document navigation |
 | `pi` | yes | Thin wrapper over the shared `@iii-workers/agent-terminal-ui` page (same page as `claude-code`); no local CSS | Agent terminal bound to a `shell::pty` session |
 | `provider-openai-codex` | yes | Shared provider-form controls; `copyText`, container query, `--color-rule-focus` | OAuth/device authentication flow |
@@ -160,7 +160,7 @@ owns; the registry refuses those at registration. See
 | eval | new evaluation, refresh history; setup: open, new evaluation… | `N`, `R` | evaluations (`api.list`) |
 | github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |
 | pdf | choose file; setup: open | `O` | |
-| learn-iii, vscode | setup: open | | |
+| onboarding, vscode | setup: open | | |
 
 Every page names its `data-autofocus` target. Shared `TableRow interactive` and `List` carry the arrows, Enter and Space for the rows and lists built from them.
 

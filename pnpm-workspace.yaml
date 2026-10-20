@@ -47,7 +47,7 @@ packages:
   - voice/ui
   - vscode/ui
   - kanban/ui
-  - learn-iii/ui
+  - onboarding/ui
   - stories/ui
   - ios-simulator/ui
   - whatsapp/ui

@@ -19,7 +19,7 @@ does not restate any of it.
 | Trigger-activity renderer authoring and its test matrix | `ade/web/docs/custom-trigger-components.md` |
 | Per-worker conformance inventory and the deliberate local exceptions | `docs/sops/console-ui-conformance.md` |
 | The crate: defaults, overrides, what `register` does | `crates/console-ui/README.md`, `crates/console-ui/src/lib.rs` |
-| Node workers | No helper exists; implement the wire contract directly (`ade/injectable-ui` › Registration). `pi`, `vscode`, `learn-iii` and `claude-code` are the examples. |
+| Node workers | No helper exists; implement the wire contract directly (`ade/injectable-ui` › Registration). `pi`, `vscode`, `onboarding` and `claude-code` are the examples. |
 
 ## Reference workers
 

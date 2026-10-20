@@ -53,7 +53,7 @@ describe('prepareTour', () => {
     const ready = prepareTour()
     await vi.waitFor(() => expect(harness.add).toHaveBeenCalled())
     expect(harness.add).toHaveBeenCalledWith(
-      ['learn-iii'],
+      ['onboarding'],
       expect.any(Function),
     )
     expect(harness.wait).toHaveBeenCalledWith('learn-iii', TOUR_PAGE_TIMEOUT_MS)

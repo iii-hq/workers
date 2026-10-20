@@ -19,7 +19,7 @@ import { registerWorker } from 'iii-sdk'
 import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
 import { findStep, getTour, listTours, TOURS } from './tours.mjs'
 
-const WORKER = 'learn-iii'
+const WORKER = 'onboarding'
 const STATE_SCOPE = 'learn-iii'
 const STATE_TIMEOUT_MS = 10_000
 

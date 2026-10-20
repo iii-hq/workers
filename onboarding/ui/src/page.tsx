@@ -179,14 +179,14 @@ export function RemoveLearnIii({
       // With several projects loaded, the one running this worker.
       const withFile = (list?.projects ?? []).filter((project) => project.file)
       const file = (
-        withFile.find((project) => project.containers?.some((entry) => entry.container === 'learn-iii')) ?? withFile[0]
+        withFile.find((project) => project.containers?.some((entry) => entry.container === 'onboarding')) ?? withFile[0]
       )?.file
       await host.iii.trigger('compose::remove', {
         ...(file ? { file } : {}),
-        workers: ['learn-iii'],
+        workers: ['onboarding'],
       })
     } catch (err) {
-      setError(`Could not remove the learn-iii worker: ${errorMessage(err)}`)
+      setError(`Could not remove the onboarding worker: ${errorMessage(err)}`)
       setRemoving(false)
       return
     }

@@ -1,4 +1,4 @@
-# learn-iii
+# onboarding
 
 The guided console tour. The page and its tab are called **learn-iii**; a
 "tour" is one unit of content inside it, so a second tour can be added
@@ -162,7 +162,7 @@ and an alarm per item, shown as pills on the cards; Done moves the ticket on
 the board at once; alarms run through the `cron` worker), **Reactive** (three
 items, and a trigger that fires when the operator checks one off). The recipe
 for the two build steps is `skills/SKILL.md`, which lands in the project as
-`skills/learn-iii/SKILL.md`; the prompts point the agent at it. The last step, "Stay in
+`skills/onboarding/SKILL.md`; the prompts point the agent at it. The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
 links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
 "Clean up" asks the agent to remove this worker, and the card goes with it —

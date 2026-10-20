@@ -1,5 +1,5 @@
 ---
-name: learn-iii
+name: onboarding
 description: >-
   The console tour. Its agent steps add a kanban board in the todo-local
   namespace, then build a TODO worker on top of it: a sidebar-like page beside
