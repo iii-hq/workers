@@ -407,7 +407,8 @@ read (the vault never returns values, stored literals come back
   stored bucket sends it to (entries that do not parse count too). `testBucket`
   counts every stored bucket; `saveBucket` lets the bucket being saved take its
   own along, so a Duplicate to the same endpoint and an edit of a bucket's own
-  endpoint keep working.
+  endpoint keep working. A `credentials_file` no stored bucket uses is a file of
+  the engine host and only goes to Google.
 - The engine host's ambient credentials — the AWS default chain for an s3 bucket
   without keys, Google ADC for a gcs bucket without credentials — only go to the
   provider itself or to an endpoint a stored bucket already uses them with.
