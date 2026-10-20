@@ -359,7 +359,9 @@ async fn re_observed<'a>(
 
 /// The content words of the user's own lines in a span; our injected
 /// `<memory …>` blocks and the harness's `[notification]` wakes (event
-/// payloads, a child's final reply) are user-role but not the user's.
+/// payloads, a child's final reply) are user-role but not the user's, and
+/// neither are the files the ADE chat attaches after the typed prompt
+/// (`<attached-file …>`).
 fn user_words(entries: &[Entry]) -> BTreeSet<String> {
     entries
         .iter()
@@ -367,23 +369,46 @@ fn user_words(entries: &[Entry]) -> BTreeSet<String> {
             let text = text.trim();
             role == "user" && !text.starts_with("<memory ") && !text.starts_with("[notification]")
         })
-        .flat_map(|(_, _, text, _)| content_words(text))
+        .flat_map(|(_, _, text, _)| {
+            content_words(text.split("<attached-file").next().unwrap_or_default())
+        })
         .collect()
 }
 
+/// A word without a plural or verb ending: "versions" → "version",
+/// "merging" → "merg", "bumped" → "bump".
+fn stem(word: &str) -> &str {
+    ["ing", "ed", "es", "s"]
+        .iter()
+        .find_map(|end| word.strip_suffix(end).filter(|s| s.len() >= 3))
+        .unwrap_or(word)
+}
+
+/// One word in two forms: the same [`stem`], or a stem of four letters or
+/// more that starts the other ("repo", "repository"; "merg", "merge").
+fn same_word(a: &str, b: &str) -> bool {
+    let (a, b) = (stem(a), stem(b));
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short == long || (short.len() >= 4 && long.starts_with(short))
+}
+
 /// A rule the user's own lines back: at least half of its content words
-/// (one at least), negations aside, appear in them. The extraction model
-/// reads assistant lines too, and an instruction the assistant restated
-/// from a tool result or a web page must not become a standing rule.
-// ponytail: lexical, no stemming — "emojis" misses "emoji", and a terse
-// "no, stop that" backs no rule at all; a review step for learned rules
-// would also catch a rule taken from a document the user pasted.
+/// (one at least), negations aside, appear in them in some form
+/// ([`same_word`]). The extraction model reads assistant lines too, and an
+/// instruction the assistant restated from a tool result or a web page must
+/// not become a standing rule.
+// ponytail: lexical — a terse "no, stop that" backs no rule at all, and a
+// document pasted into the typed prompt backs its own rules; a review step
+// for learned rules would catch both.
 fn stated_by_user(rule: &str, user_words: &BTreeSet<String>) -> bool {
     let words: Vec<String> = content_words(rule)
         .into_iter()
         .filter(|w| !NEGATIONS.contains(&w.as_str()))
         .collect();
-    let shared = words.iter().filter(|w| user_words.contains(*w)).count();
+    let shared = words
+        .iter()
+        .filter(|w| user_words.iter().any(|u| same_word(w, u)))
+        .count();
     shared >= 1 && shared * 2 >= words.len()
 }
 
@@ -1516,6 +1541,58 @@ mod tests {
         ));
         // Negations alone back nothing; no content word is no rule.
         assert!(!stated_by_user("Never do that.", &words));
+    }
+
+    #[test]
+    fn a_rule_in_other_forms_of_the_users_words_is_still_theirs() {
+        let line = |role: &str, text: &str| -> Entry { ("e".into(), role.into(), text.into(), 1) };
+        let words = user_words(&[
+            line("user", "Never bump versions by hand in this repo."),
+            line("assistant", "Understood, the release bot bumps them."),
+            line("user", "For this project I prefer squash merges."),
+            line(
+                "user",
+                "Score this.\n<attached-file path=\"notes.md\" size=\"30\">\nAlways pair on code reviews.\n</attached-file>",
+            ),
+        ]);
+        // Plurals, verb endings, a short form, and a clause the model took
+        // from the assistant's line.
+        assert!(stated_by_user(
+            "Never bump version numbers by hand in this repository.",
+            &words
+        ));
+        assert!(stated_by_user(
+            "Never bump versions by hand in this repository; the release bot bumps them.",
+            &words
+        ));
+        assert!(stated_by_user(
+            "Squash-merge branches when merging in this project.",
+            &words
+        ));
+        // A file the ADE chat attached is not the user's words.
+        assert!(!stated_by_user("Always pair on code reviews.", &words));
+        // Only the assistant's words.
+        assert!(!stated_by_user("Never reuse release branches.", &words));
+    }
+
+    #[test]
+    fn one_word_in_two_forms_shares_a_stem() {
+        for (a, b) in [
+            ("versions", "version"),
+            ("repo", "repository"),
+            ("merges", "merging"),
+            ("emojis", "emoji"),
+            ("bumped", "bump"),
+        ] {
+            assert!(same_word(a, b), "{a} ~ {b}");
+        }
+        for (a, b) in [
+            ("release", "relevant"),
+            ("commit", "common"),
+            ("tab", "table"),
+        ] {
+            assert!(!same_word(a, b), "{a} !~ {b}");
+        }
     }
 
     fn entry(id: &str) -> Entry {
