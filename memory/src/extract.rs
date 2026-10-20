@@ -87,6 +87,14 @@ the scope of what it now says: an exception that holds only here is \"project\".
 unsure, use \"project\".\n\
 - Return [] when nothing qualifies. Most turns have nothing worth keeping.";
 
+/// Added for a repository bank: the project's own knowledge is worth keeping
+/// there even when the assistant, not the user, found it out.
+const REPOSITORY_RULE: &str = "\n- This conversation works in a repository: also keep \
+what the assistant finds out about the project that a later session would need (how to build, \
+test or run it, a pitfall that will bite again, where something lives), as kind \"memory\", \
+scope \"project\". Only facts about the project: never what the assistant plans, advises, \
+guesses about the user or says about its own instructions, nor a failure that passes.";
+
 /// Name of the auto-managed rule that captured standing instructions
 /// append to. Hand-authored rules are never touched by extraction.
 const LEARNED_RULE: &str = "learned";
@@ -582,6 +590,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         cfg.extraction_timeout_ms,
         extraction_input(&known, &transcript),
         session_id,
+        layer_name.is_some(),
     )
     .await?;
     if items.is_empty() {
@@ -1266,6 +1275,7 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
 }
 
 /// One extraction call: the production prompt over `input`, its items.
+/// `repository`: the pass writes into a repository bank ([`REPOSITORY_RULE`]).
 async fn extract_items(
     iii: &IIIClient,
     model: &str,
@@ -1273,14 +1283,16 @@ async fn extract_items(
     timeout_ms: u64,
     input: String,
     session_id: &str,
+    repository: bool,
 ) -> Result<Vec<ExtractedItem>, String> {
+    let repository = if repository { REPOSITORY_RULE } else { "" };
     let reply = iii
         .trigger(TriggerRequest {
             function_id: "router::complete".into(),
             payload: json!({
                 "model": model,
                 "system_prompt": format!(
-                    "{EXTRACT_SYSTEM}\n- Return at most {max_memories} memories and \
+                    "{EXTRACT_SYSTEM}{repository}\n- Return at most {max_memories} memories and \
             {MAX_RULES_PER_TURN} rules, the most durable first."
                 ),
                 "messages": [{

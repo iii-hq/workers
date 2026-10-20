@@ -221,6 +221,43 @@ const CASES: &[Case] = &[
         ],
         &[fact(&["postgres"], false)],
     ),
+    // What the assistant found out about the repository.
+    case(
+        "docker",
+        "discovered",
+        &[
+            ("user", "Run the integration tests."),
+            (
+                "assistant",
+                "The first run failed: `make test` needs Docker running for its database containers. With Docker started, all 88 tests pass.",
+            ),
+        ],
+        &[fact(&["docker"], false)],
+    ),
+    case(
+        "app-toml",
+        "discovered",
+        &[
+            ("user", "Raise the request timeout to 30 seconds."),
+            (
+                "assistant",
+                "Done. The app config lives in config/app.toml; `http.timeout` there is now 30s.",
+            ),
+        ],
+        &[fact(&["app.toml"], false)],
+    ),
+    case(
+        "tz-utc",
+        "discovered",
+        &[
+            ("user", "Why do the snapshot tests fail on my machine?"),
+            (
+                "assistant",
+                "They assume TZ=UTC: on a machine set to another timezone the timestamps shift. Run them with TZ=UTC and they pass.",
+            ),
+        ],
+        &[fact(&["utc"], false)],
+    ),
     // About the user, but only here.
     Case {
         id: "npm-here",
@@ -1018,6 +1055,7 @@ async fn extraction_eval() {
                 120_000,
                 extraction_input(&known, &transcript),
                 case.id,
+                true,
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));
