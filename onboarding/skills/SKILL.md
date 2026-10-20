@@ -113,9 +113,12 @@ Done:
 - Done is the board's: the card's status picker, a drag to the Done column,
   or `kanban-todo-local::ticket::move { "id", "status": "done" }`.
 - Bind `kanban-todo-local:change` (`iii.registerTrigger`), so a move to Done
-  on the board reaches the worker: a done item with a repeat creates the next
-  occurrence, a new ticket with the same fields and the due date moved one
-  day, week or month on; a done item with an alarm drops its cron trigger.
+  on the board reaches the worker: a done item with an alarm drops its cron
+  trigger. A done item with a repeat is not finished: move the SAME ticket
+  back to the TODO column with the due date moved one day, week or month on
+  (`ticket::move` to `default_status`, then the pills), and comment on it
+  (`Done 2026-10-24; next 2026-10-25`). Never create a second ticket for
+  it: one item is one card.
 
 Alarm:
 

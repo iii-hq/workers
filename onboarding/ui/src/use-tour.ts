@@ -3,6 +3,10 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { bindCondition, type Condition, type Fired, reconcileCondition } from './conditions'
 
+/** The state scope the tour's agent steps report into; its chat is kept there too. */
+const STATE_SCOPE = 'learn-iii'
+const CHAT_SESSION_KEY = 'chat_session'
+
 /**
  * Everything the tour knows and does, shared by its two faces: the floating
  * card (the overlay slot) and the page an older console opens in a pane.
@@ -198,21 +202,48 @@ export function useTour(host: Host): TourController {
    * A step with a condition closes when its trigger fires; one without closes
    * here, because sending WAS the step.
    */
+  // The chat the first step started, kept in the engine's state so a later
+  // step (or a reload) sends to that chat: shown again when the operator
+  // closed its pane, selected again when they moved to another one.
+  const chatSession = useRef<string | null>(null)
+  const tourChat = useCallback(async (): Promise<string | null> => {
+    if (chatSession.current) return chatSession.current
+    try {
+      const stored = await host.iii.trigger<unknown>('state::get', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY })
+      chatSession.current = typeof stored === 'string' && stored ? stored : null
+    } catch {
+      chatSession.current = null
+    }
+    return chatSession.current
+  }, [host])
+
   const ask = useCallback(
     (step: Step) => {
       if (!step.ask) return
       const { text, agent } = step.ask
       if (agent && host.chat?.startChat) {
-        void host.chat.startChat({ text, agent }).catch((cause: unknown) => setError(errorMessage(cause)))
+        void host.chat
+          .startChat({ text, agent })
+          .then((id) => {
+            chatSession.current = id
+            return host.iii.trigger('state::set', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY, value: id })
+          })
+          .catch((cause: unknown) => setError(errorMessage(cause)))
       } else if (host.chat?.compose) {
-        host.chat.compose({ text, submit: true })
+        const { compose, selectConversation } = host.chat
+        void tourChat().then((id) => {
+          // Back to the tour's chat first: the pane opens again when it was
+          // closed, and the prompt lands in that chat and no other.
+          if (id && selectConversation) selectConversation(id)
+          compose({ text, submit: true })
+        })
       } else {
         setError('This console is too old to send a prompt for you. Type it in the chat instead.')
         return
       }
       if (!step.condition) complete(step.id)
     },
-    [complete, host],
+    [complete, host, tourChat],
   )
 
   /**
