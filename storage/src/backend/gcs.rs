@@ -33,6 +33,10 @@ pub struct GcsBackend {
     /// The client can sign URLs: a service-account key, or the metadata
     /// server's identity on Google Cloud.
     can_sign: bool,
+    /// Authenticates with a `credentials_file` of the engine host: its token
+    /// failures all read as [`UNUSABLE_KEY_FILE`], never as the auth
+    /// library's own words about the file.
+    host_key_file: bool,
 }
 
 pub struct GcsBackendOpts {
@@ -49,6 +53,7 @@ pub struct GcsBackendOpts {
 
 impl GcsBackend {
     pub async fn build(opts: GcsBackendOpts, bucket: String) -> Result<Self, BackendError> {
+        let uses_host_key_file = opts.credentials_json.is_none() && opts.credentials_file.is_some();
         let mut config = if let Some(json) = opts.credentials_json.as_deref() {
             // The parse error never quotes the input (it may be a key).
             let creds = gcloud_auth::credentials::CredentialsFile::new_from_str(json)
@@ -77,10 +82,12 @@ impl GcsBackend {
             let creds = tokio::task::spawn_blocking(move || host_key_file(&path))
                 .await
                 .map_err(|_| unusable_key_file())??;
+            // Building fetches a first token (from Google: the token_uri was
+            // checked); a key that does not sign reads like any other.
             ClientConfig::default()
                 .with_credentials(creds)
                 .await
-                .map_err(|e| BackendError::AuthFailed(format!("gcs auth (explicit): {e}")))?
+                .map_err(|_| unusable_key_file())?
         } else {
             ClientConfig::default()
                 .with_auth()
@@ -110,6 +117,7 @@ impl GcsBackend {
             bucket,
             endpoint_overridden,
             can_sign,
+            host_key_file: uses_host_key_file,
         })
     }
 }
@@ -154,7 +162,7 @@ impl Backend for GcsBackend {
                 &upload,
             )
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         Ok(PutResp {
             etag: object.etag,
             size,
@@ -177,7 +185,7 @@ impl Backend for GcsBackend {
             .client
             .get_object(&get_req)
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         let size = if object.size < 0 {
             0
         } else {
@@ -204,7 +212,7 @@ impl Backend for GcsBackend {
             self.client
                 .download_object(&download_req, &range)
                 .await
-                .map_err(map_gcs_error)?
+                .map_err(|e| self.map_error(e))?
         };
         let last_modified = object
             .updated
@@ -236,7 +244,7 @@ impl Backend for GcsBackend {
             .client
             .get_object(&get_req)
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         let size = if object.size < 0 {
             0
         } else {
@@ -268,7 +276,7 @@ impl Backend for GcsBackend {
         }
         match self.client.delete_object(&del_req).await {
             Ok(()) => Ok(DeleteResp { deleted: true }),
-            Err(e) => match map_gcs_error(e) {
+            Err(e) => match self.map_error(e) {
                 BackendError::NotFound => Ok(DeleteResp { deleted: false }),
                 other => Err(other),
             },
@@ -287,7 +295,7 @@ impl Backend for GcsBackend {
                 ..Default::default()
             })
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         let objects = resp
             .items
             .unwrap_or_default()
@@ -375,6 +383,9 @@ impl Backend for GcsBackend {
                 401 | 403 => ProbeFailure::new(Stage::Auth, message),
                 _ => ProbeFailure::new(Stage::List, format!("HTTP {code}: {message}")),
             }),
+            Err(GcsHttpError::TokenSource(_)) if self.host_key_file => {
+                Err(ProbeFailure::new(Stage::Auth, UNUSABLE_KEY_FILE))
+            }
             Err(GcsHttpError::TokenSource(e)) => Err(ProbeFailure::new(
                 Stage::Auth,
                 format!("token source failed: {e}"),
@@ -392,12 +403,25 @@ impl Backend for GcsBackend {
 /// The largest `credentials_file` read (a service-account key is ~2.4 KiB).
 pub const KEY_FILE_CAP: u64 = 64 * 1024;
 
+/// The one answer for any host `credentials_file` that cannot be used.
+pub const UNUSABLE_KEY_FILE: &str = "`credentials_file` cannot be used as a service-account key \
+     file (a readable regular JSON key file of at most 64 KiB whose token_uri is Google's)";
+
 fn unusable_key_file() -> BackendError {
     BackendError::Provider {
         inner_code: Some("CONFIG".into()),
-        message: "`credentials_file` cannot be used as a service-account key file (a readable \
-                  regular JSON key file of at most 64 KiB whose token_uri is Google's)"
-            .into(),
+        message: UNUSABLE_KEY_FILE.into(),
+    }
+}
+
+impl GcsBackend {
+    /// [`map_gcs_error`], with a host key file's token failures as
+    /// [`UNUSABLE_KEY_FILE`].
+    fn map_error(&self, err: GcsHttpError) -> BackendError {
+        if self.host_key_file && matches!(err, GcsHttpError::TokenSource(_)) {
+            return BackendError::AuthFailed(UNUSABLE_KEY_FILE.into());
+        }
+        map_gcs_error(err)
     }
 }
 
@@ -584,6 +608,17 @@ mod tests {
         ];
         for path in cases {
             assert_eq!(message(build_with_file(&path).await), expected, "{path}");
+        }
+        // Shaped like a key, but the auth library refuses it: same answer.
+        for (name, key) in [
+            ("bad-key.json", ",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nnot-a-key\\n-----END PRIVATE KEY-----\\n\""),
+            ("no-key.json", ""),
+        ] {
+            let body = format!(
+                "{{\"type\":\"service_account\",\"client_email\":\"a@b.iam.gserviceaccount.com\",\"token_uri\":\"https://oauth2.googleapis.com/token\"{key}}}"
+            );
+            let path = write(name, body.as_bytes());
+            assert_eq!(message(build_with_file(&path).await), expected, "{name}");
         }
         // A FIFO is refused at once, without waiting for a writer.
         let fifo = dir.path().join("fifo");
