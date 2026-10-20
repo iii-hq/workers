@@ -23,7 +23,7 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
   const screenElsewhere = reading && Boolean(step.to_open) && tour.screenElsewhere && state !== 'complete'
   return (
     <>
-      <p className="learn-body">{step.body}</p>
+      <Body text={step.body} />
       {waitingForScreen ? (
         <p className="learn-note learn-note--todo" role="status">
           {step.to_open?.body}
@@ -360,4 +360,21 @@ function format(payload: unknown): string {
   } catch {
     return String(payload)
   }
+}
+
+/** A step's text as paragraphs: a blank line in the string starts a new one. */
+export function Body({ text, className = 'learn-body' }: { text: string; className?: string }) {
+  return (
+    <>
+      {text
+        .split(/\n\s*\n/)
+        .map((paragraph) => paragraph.trim())
+        .filter(Boolean)
+        .map((paragraph, index) => (
+          <p key={index} className={className}>
+            {paragraph}
+          </p>
+        ))}
+    </>
+  )
 }

@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Compass, Minus, X } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { RemoveLearnIii } from './page'
 import { disposeSpotlight, hideSpotlight, onSpotlightMove, type SpotlightRect, showSpotlight } from './spotlight'
-import { StateChip, StepContent } from './step-content'
+import { Body, StateChip, StepContent } from './step-content'
 import { type TourController, useTour } from './use-tour'
 import { closeTour, minimizeTour, showTour, useTourView } from './visibility'
 
@@ -174,7 +174,7 @@ function TourCard({
             <h2 id={titleId} className="learn-overlay-title">
               <span className="learn-overlay-title-text">{loaded.intro.title}</span>
             </h2>
-            <p className="learn-body">{loaded.intro.body}</p>
+            <Body text={loaded.intro.body} />
             <div className="learn-actions">
               <Button className="learn-action" onClick={() => tour.complete('intro')}>
                 Show me
