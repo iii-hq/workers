@@ -136,6 +136,19 @@ export function decodeBase64(b64: string): Uint8Array<ArrayBuffer> {
   return bytes
 }
 
+/** Base64 for `storage::putObject`, built in slices so a large buffer never overflows the call stack. */
+export function encodeBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const SLICE = 0x8000
+  for (let i = 0; i < bytes.length; i += SLICE) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + SLICE))
+  }
+  return btoa(binary)
+}
+
+export const RELAY_UPLOAD_TOO_LARGE =
+  'This bucket cannot sign upload links, and the worker takes at most 10 MiB in one call.'
+
 interface GetObjectResponse {
   body_base64?: string
   content_type?: string

@@ -33,7 +33,10 @@ import {
   attachmentDisposition,
   type BucketSummary,
   bucketProviderLabel,
+  encodeBase64,
+  INLINE_CAP,
   parseBucketList,
+  RELAY_UPLOAD_TOO_LARGE,
   readThroughWorker,
 } from './lib/objects'
 import { ObjectPreview } from './ObjectPreview'
@@ -325,6 +328,19 @@ function StorageExplorer({
         body.append('file', file)
         const response = await fetch(signed.url, { method: 'POST', body })
         if (!response.ok) throw new Error(`upload failed with HTTP ${response.status}`)
+      } else if (selectedBucket.direct_downloads === false) {
+        // No signed links for this bucket: small files go through the worker.
+        if (file.size > INLINE_CAP) throw new Error(RELAY_UPLOAD_TOO_LARGE)
+        await host.iii.trigger(
+          'storage::putObject',
+          {
+            bucket: bucketName,
+            key,
+            content_type: contentType,
+            body_base64: encodeBase64(new Uint8Array(await file.arrayBuffer())),
+          },
+          { timeoutMs: 120_000 },
+        )
       } else {
         const signed = await host.iii.trigger<{ url: string }>('storage::presignUrl', {
           bucket: bucketName,

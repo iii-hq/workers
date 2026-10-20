@@ -5,6 +5,7 @@ import {
   bucketProviderLabel,
   chunkPlan,
   decodeBase64,
+  encodeBase64,
   INLINE_CAP,
   mixedContent,
   parseBucketList,
@@ -146,6 +147,14 @@ describe('reads through the worker', () => {
   it('decodes base64 bytes', () => {
     expect([...decodeBase64(b64(new Uint8Array([0, 1, 254, 255])))]).toEqual([0, 1, 254, 255])
     expect(decodeBase64('').length).toBe(0)
+  })
+
+  it('encodes base64 in slices, round-tripping any bytes', () => {
+    const bytes = new Uint8Array(0x8000 * 2 + 3).map((_, i) => (i * 31) % 256)
+    const encoded = encodeBase64(bytes)
+    expect(encoded).toBe(b64(bytes))
+    expect([...decodeBase64(encoded)]).toEqual([...bytes])
+    expect(encodeBase64(new Uint8Array(0))).toBe('')
   })
 
   function worker(object: Uint8Array, ranged: boolean) {

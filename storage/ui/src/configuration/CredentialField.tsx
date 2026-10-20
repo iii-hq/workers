@@ -192,6 +192,8 @@ function CredentialControl({
     const json = mode === 'json' && draftReady ? checkServiceAccountJson(draft) : null
     const textFirst = mode === 'identifier' && preferText
     const inlineOnly = legacyWorker || secretsUp === false
+    // Replacing a referenced secret rotates it in place, for the running worker too.
+    const rotating = editing && secretName !== null && target === secretName
     const submit = () => {
       if (!draftReady || locked) return
       if (inlineOnly || textFirst) keepInline(draft)
@@ -260,6 +262,9 @@ function CredentialControl({
                 ? 'Kept in configuration'
                 : `Stored as secret://${target}`}
           </span>
+          {rotating && !inlineOnly && !textFirst ? (
+            <span className="storage-cfg-secret-status">Buckets reading it use the new value once it is saved.</span>
+          ) : null}
           {mode === 'json' ? (
             <>
               <input
