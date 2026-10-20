@@ -69,10 +69,23 @@ impl GcsBackend {
             // Load the SA file directly instead of mutating GOOGLE_APPLICATION_CREDENTIALS,
             // which would race across multiple GCS buckets and leak into unrelated
             // SDK clients or child processes.
-            let creds = gcloud_auth::credentials::CredentialsFile::new_from_file(path.clone())
+            // Read it here so a missing or unreadable file says so plainly. The
+            // path is not repeated: listBuckets shows this message.
+            let bytes = tokio::fs::read(&path)
                 .await
-                .map_err(|e| {
-                    BackendError::AuthFailed(format!("gcs read credentials_file `{path}`: {e}"))
+                .map_err(|e| BackendError::Provider {
+                    inner_code: Some("CONFIG".into()),
+                    message: format!("`credentials_file` cannot be read: {}", io_reason(&e)),
+                })?;
+            let creds = std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| {
+                    serde_json::from_str::<gcloud_auth::credentials::CredentialsFile>(text).ok()
+                })
+                .ok_or_else(|| BackendError::Provider {
+                    inner_code: Some("CONFIG".into()),
+                    message: "`credentials_file` is not a service-account or ADC credentials JSON"
+                        .into(),
                 })?;
             ClientConfig::default()
                 .with_credentials(creds)
@@ -97,7 +110,7 @@ impl GcsBackend {
             config.storage_endpoint = url.to_string();
             tracing::info!(
                 target = "storage::gcs",
-                endpoint = %url,
+                endpoint = %crate::config::redact_url(url),
                 "GCS backend using custom storage_endpoint override",
             );
         }
@@ -386,6 +399,16 @@ impl Backend for GcsBackend {
     }
 }
 
+/// Why a file could not be read, without its path.
+fn io_reason(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => "no such file",
+        std::io::ErrorKind::PermissionDenied => "permission denied",
+        std::io::ErrorKind::IsADirectory => "it is a directory",
+        _ => "an I/O error",
+    }
+}
+
 /// Map a `gcloud_storage::http::Error` into our `BackendError`. 404 / NotFound
 /// service responses fold into `BackendError::NotFound`; 401/403 into
 /// `AuthFailed`; everything else into `Provider`.
@@ -449,6 +472,46 @@ mod tests {
         // touch config.storage_endpoint. The test guards against the field
         // assignment itself panicking, e.g., from a typo in the field name.
         let _ = r;
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_malformed_credentials_file_says_so_without_its_path() {
+        let missing = GcsBackend::build(
+            GcsBackendOpts {
+                credentials_json: None,
+                credentials_file: Some("/nonexistent/secret-dir/sa.json".into()),
+                endpoint_url: None,
+            },
+            "b".into(),
+        )
+        .await;
+        match missing {
+            Err(BackendError::Provider { message, .. }) => {
+                assert_eq!(message, "`credentials_file` cannot be read: no such file")
+            }
+            _ => panic!("expected a config error"),
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sa.json");
+        std::fs::write(&path, b"{\"private_key\": \"LEAKME\"").unwrap();
+        let malformed = GcsBackend::build(
+            GcsBackendOpts {
+                credentials_json: None,
+                credentials_file: Some(path.to_string_lossy().to_string()),
+                endpoint_url: None,
+            },
+            "b".into(),
+        )
+        .await;
+        match malformed {
+            Err(BackendError::Provider { message, .. }) => {
+                assert!(
+                    !message.contains("LEAKME") && !message.contains("sa.json"),
+                    "{message}"
+                )
+            }
+            _ => panic!("expected a config error"),
+        }
     }
 
     #[tokio::test]

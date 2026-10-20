@@ -126,7 +126,10 @@ impl std::fmt::Debug for S3BucketConfig {
                 "session_token",
                 &self.session_token.as_deref().map(redact_secret),
             )
-            .field("endpoint_url", &self.endpoint_url)
+            .field(
+                "endpoint_url",
+                &self.endpoint_url.as_deref().map(redact_url),
+            )
             .field("force_path_style", &self.force_path_style)
             .field("notifications", &self.notifications)
             .field("display", &self.display)
@@ -168,7 +171,10 @@ impl std::fmt::Debug for GcsBucketConfig {
                 "credentials_json",
                 &self.credentials_json.as_deref().map(redact_secret),
             )
-            .field("endpoint_url", &self.endpoint_url)
+            .field(
+                "endpoint_url",
+                &self.endpoint_url.as_deref().map(redact_url),
+            )
             .field("notifications", &self.notifications)
             .field("display", &self.display)
             .finish()
@@ -207,7 +213,10 @@ impl std::fmt::Debug for R2BucketConfig {
             .field("account_id", &self.account_id)
             .field("access_key_id", &self.access_key_id)
             .field("secret_access_key", &redact_secret(&self.secret_access_key))
-            .field("endpoint_url", &self.endpoint_url)
+            .field(
+                "endpoint_url",
+                &self.endpoint_url.as_deref().map(redact_url),
+            )
             .field("notifications", &self.notifications)
             .field("display", &self.display)
             .finish()
@@ -273,6 +282,11 @@ impl BucketDisplay {
         let color = self.color.clone().filter(|v| valid_color(v));
         (icon.is_some() || color.is_some()).then_some(Self { icon, color })
     }
+}
+
+/// A Cloudflare account id: 32 hex characters.
+pub fn valid_cf_account_id(value: &str) -> bool {
+    value.len() == 32 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn valid_icon(icon: &str) -> bool {
