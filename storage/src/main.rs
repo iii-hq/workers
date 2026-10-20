@@ -8,8 +8,8 @@ use std::sync::Arc;
 use storage::config::{redact_url, WorkerConfig};
 use storage::configuration;
 use storage::handlers::{
-    buckets, delete_object, get_object, head_object, list_buckets, list_objects, presign_post,
-    presign_url, put_object, test_bucket, AppState,
+    buckets, delete_object, get_object, head_object, list_buckets, list_objects, parse_request,
+    presign_post, presign_url, put_object, schema_of, test_bucket, AppState,
 };
 use storage::triggers::dispatcher::EngineDispatcher;
 use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};
@@ -147,10 +147,15 @@ async fn main() -> Result<()> {
         let st = state.clone();
         iii.register_function(
             "storage::getObject",
-            RegisterFunction::new_async(move |req: get_object::GetReq| {
+            // Parsed here so a wrong-typed field (offset: -1) is a CONFIG_ERROR.
+            RegisterFunction::new_async(move |req: serde_json::Value| {
                 let st = st.clone();
-                async move { get_object::handle(&st, req).await.map_err(Error::from) }
+                async move {
+                    let req: get_object::GetReq = parse_request(req)?;
+                    get_object::handle(&st, req).await.map_err(Error::from)
+                }
             })
+            .request_format(schema_of::<get_object::GetReq>())
             .description("Download a small object, or a byte range of any object (offset, length), inline as base64. At most 10 MiB per call; use a presignUrl GET for files when the client can reach the provider, ranged reads when it cannot."),
         );
     }
@@ -193,10 +198,15 @@ async fn main() -> Result<()> {
         let (st, rt) = (state.clone(), runtime.clone());
         iii.register_function(
             "storage::getBucket",
-            RegisterFunction::new_async(move |req: buckets::GetBucketReq| {
+            // Unknown keys and wrong-typed fields are CONFIG_ERROR.
+            RegisterFunction::new_async(move |req: serde_json::Value| {
                 let (st, rt) = (st.clone(), rt.clone());
-                async move { buckets::get(&st, &rt, req).await.map_err(Error::Handler) }
+                async move {
+                    let req: buckets::GetBucketReq = parse_request(req)?;
+                    buckets::get(&st, &rt, req).await.map_err(Error::Handler)
+                }
             })
+            .request_format(schema_of::<buckets::GetBucketReq>())
             .description(
                 "Read one stored bucket entry for editing: references and templates intact, literal secret keys, session tokens, credentials JSON and API tokens as \"__redacted__\".",
             ),
@@ -206,10 +216,15 @@ async fn main() -> Result<()> {
         let (st, rt) = (state.clone(), runtime.clone());
         iii.register_function(
             "storage::saveBucket",
-            RegisterFunction::new_async(move |req: buckets::SaveBucketReq| {
+            // Unknown keys and wrong-typed fields are CONFIG_ERROR.
+            RegisterFunction::new_async(move |req: serde_json::Value| {
                 let (st, rt) = (st.clone(), rt.clone());
-                async move { buckets::save(&st, &rt, req).await.map_err(Error::Handler) }
+                async move {
+                    let req: buckets::SaveBucketReq = parse_request(req)?;
+                    buckets::save(&st, &rt, req).await.map_err(Error::Handler)
+                }
             })
+            .request_format(schema_of::<buckets::SaveBucketReq>())
             .description(
                 "Create, update (previous_name = name) or rename (previous_name = old) a bucket in the storage configuration; \"__redacted__\" keeps a stored value, credentials go as secret:// references or in `credentials`, create_bucket creates an s3/r2 bucket that does not exist. Returns after the runtime reloaded, with the bucket's error if any.",
             ),
@@ -219,10 +234,15 @@ async fn main() -> Result<()> {
         let (st, rt) = (state.clone(), runtime.clone());
         iii.register_function(
             "storage::deleteBucket",
-            RegisterFunction::new_async(move |req: buckets::DeleteBucketReq| {
+            // Unknown keys and wrong-typed fields are CONFIG_ERROR.
+            RegisterFunction::new_async(move |req: serde_json::Value| {
                 let (st, rt) = (st.clone(), rt.clone());
-                async move { buckets::delete(&st, &rt, req).await.map_err(Error::Handler) }
+                async move {
+                    let req: buckets::DeleteBucketReq = parse_request(req)?;
+                    buckets::delete(&st, &rt, req).await.map_err(Error::Handler)
+                }
             })
+            .request_format(schema_of::<buckets::DeleteBucketReq>())
             .description(
                 "Remove a bucket from the storage configuration. Objects, local data and secrets are never deleted; the worker may run with zero buckets.",
             ),
@@ -232,10 +252,15 @@ async fn main() -> Result<()> {
         let (st, rt) = (state.clone(), runtime.clone());
         iii.register_function(
             "storage::testBucket",
-            RegisterFunction::new_async(move |req: test_bucket::TestBucketReq| {
+            // Unknown keys and wrong-typed fields are CONFIG_ERROR.
+            RegisterFunction::new_async(move |req: serde_json::Value| {
                 let (st, rt) = (st.clone(), rt.clone());
-                async move { test_bucket::handle(&st, &rt, req).await.map_err(Error::Handler) }
+                async move {
+                    let req: test_bucket::TestBucketReq = parse_request(req)?;
+                    test_bucket::handle(&st, &rt, req).await.map_err(Error::Handler)
+                }
             })
+            .request_format(schema_of::<test_bucket::TestBucketReq>())
             .description(
                 "Test a candidate bucket entry (or a stored one by name) with a throwaway client and freshly resolved secrets: lists one object at the root. Live buckets are untouched; reports ok/provider/latency, the failing stage (config, secrets, endpoint, auth, bucket, list) and bucket_missing; failures are data, not errors.",
             ),

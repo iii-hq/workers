@@ -102,7 +102,78 @@ impl AppState {
     }
 }
 
+/// The request schema the SDK derives for a typed handler, for handlers
+/// that take their payload as JSON and parse it with [`parse_request`].
+pub fn schema_of<T: schemars::JsonSchema>() -> serde_json::Value {
+    serde_json::to_value(
+        schemars::gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<T>(),
+    )
+    .unwrap_or(serde_json::Value::Null)
+}
+
+/// Parse a request payload. A wrong-typed field, a missing one, or (for
+/// requests that deny them) an unknown key is a `CONFIG_ERROR` naming the
+/// field — never echoing a string value, which may be a credential.
+pub fn parse_request<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, String> {
+    // The engine adds its own metadata to payloads (`_caller_worker_id`):
+    // keys starting with `_` are its, never a request field.
+    let mut value = value;
+    if let Some(fields) = value.as_object_mut() {
+        fields.retain(|key, _| !key.starts_with('_'));
+    }
+    serde_path_to_error::deserialize(value).map_err(|error| {
+        let path = error.path().to_string();
+        let reason = crate::config::sanitize_serde_error(&error.inner().to_string());
+        let message = if path.is_empty() || path == "." {
+            format!("invalid request: {reason}")
+        } else {
+            format!("invalid request: `{path}`: {reason}")
+        };
+        err_to_str(StorageError::ConfigError { message })
+    })
+}
+
 /// JSON-string error body, mirroring database's err_to_str.
 pub fn err_to_str(e: StorageError) -> String {
     e.to_wire_string()
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct Req {
+        name: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    }
+
+    #[test]
+    fn bad_requests_are_config_errors_that_name_the_field_not_the_value() {
+        let err =
+            parse_request::<Req>(json!({ "name": "a", "timeout_ms": "hunter2" })).unwrap_err();
+        assert!(
+            err.contains("CONFIG_ERROR") && err.contains("`timeout_ms`"),
+            "{err}"
+        );
+        assert!(!err.contains("hunter2"), "{err}");
+        let err =
+            parse_request::<Req>(json!({ "name": "a", "create_bucket_yes": true })).unwrap_err();
+        assert!(err.contains("unknown field `create_bucket_yes`"), "{err}");
+        let err = parse_request::<Req>(json!({ "timeout_ms": -1 })).unwrap_err();
+        assert!(err.contains("CONFIG_ERROR"), "{err}");
+        assert!(parse_request::<Req>(json!({ "name": "a" })).is_ok());
+        assert!(
+            parse_request::<Req>(json!({ "name": "a", "_caller_worker_id": "w" })).is_ok(),
+            "engine metadata is not a request field"
+        );
+    }
 }
