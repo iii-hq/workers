@@ -23,17 +23,26 @@ impl IiiTriggerFwd {
     }
 }
 
+/// iii-sandbox is engine-owned: its `sandbox::*` functions exist only in
+/// `default`, whatever namespace this worker runs in (a Compose project's,
+/// say). Everything else (`compose::*` included) keeps the SDK's routing.
+fn forward_namespace(function_id: &str) -> Option<&'static str> {
+    function_id.starts_with("sandbox::").then_some("default")
+}
+
 #[async_trait]
 impl TriggerFwd for IiiTriggerFwd {
     async fn trigger(&self, function_id: &str, payload: Value) -> Result<Value, Error> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: None,
-            })
-            .await
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: None,
+        };
+        match forward_namespace(function_id) {
+            Some(namespace) => self.iii.trigger(request.namespace(namespace)).await,
+            None => self.iii.trigger(request).await,
+        }
     }
 }
 
@@ -42,6 +51,24 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn sandbox_calls_resolve_in_default_and_compose_stays_in_the_project() {
+        for function_id in ["sandbox::exec", "sandbox::fs::read", "sandbox::fs::write"] {
+            assert_eq!(
+                forward_namespace(function_id),
+                Some("default"),
+                "{function_id}"
+            );
+        }
+        for function_id in [
+            "compose::add",
+            "compose::status",
+            "sandbox-code-runner::run",
+        ] {
+            assert_eq!(forward_namespace(function_id), None, "{function_id}");
+        }
+    }
 
     struct CountingFwd {
         count: Mutex<usize>,
