@@ -5,6 +5,7 @@ effortless cases, and writes out_dir/report.md. A section whose input is not pro
 gate with a missing input is INCOMPLETE, which never counts as PASS.
 """
 
+import argparse
 import itertools
 import json
 import statistics
@@ -30,8 +31,9 @@ JUDGES = ("typesafe", "haiku")  # the other arms are baselines: graded, but neve
 # the catalog model whose input price (common.INPUT_USD) prices a judge's tokens; R16: Jev (typesafe) has no published
 # price, so it is assumed to cost Haiku 5.5's
 JUDGE_MODELS = {"haiku": "claude-haiku-5-5", "typesafe": "claude-haiku-5-5"}
-SLICES = ("top", "child", "effortless", "effortless-holdout")
+SLICES = ("top", "child", "effortless", "effortless-holdout", "cc")
 G1_SLICES = ("top", "effortless-holdout")
+POLICIES = ("keep", "floor", "argmax")
 HARD_TASKS = ("c", "d")
 
 
@@ -42,6 +44,30 @@ def grade(level: str, ok: list[str]) -> str:
     if i > common.LEVELS.index(ok[-1]):
         return "high"
     return "right"
+
+
+def apply_policy(verdicts: dict, rows: list[dict], policy: str) -> dict:
+    """The judge arms' levels under a fallback policy; baselines are untouched.
+
+    keep (phase 0): an unsure, failed or follow-up verdict keeps the current level, medium when unknown.
+    floor: the same, but never below medium.
+    argmax: the judge's own pick whenever it made one; otherwise the floor fallback.
+    """
+    if policy == "keep":
+        return verdicts
+    levels = common.LEVELS
+    current = {r["id"]: r.get("level") for r in rows}
+    out = {}
+    for key, v in verdicts.items():
+        if key[1] not in JUDGES:
+            out[key] = v
+            continue
+        fallback = levels[max(levels.index(current.get(key[0]) or "medium"), levels.index("medium"))]
+        if policy == "argmax" and v.get("choice") in levels:
+            out[key] = dict(v, level=v["choice"], kept=False)
+        else:
+            out[key] = dict(v, level=fallback) if v["kept"] else v
+    return out
 
 
 def p95(xs: list[float]) -> float:
@@ -216,18 +242,23 @@ def g3(
 
 
 def gates(
-    rows: list[dict], verdicts: dict, cache: list[dict] | None, ratios: dict | None, ab: list[dict] | None
+    rows: list[dict],
+    verdicts: dict,
+    cache: list[dict] | None,
+    ratios: dict | None,
+    ab: list[dict] | None,
+    g1: tuple[str, ...] = G1_SLICES,
 ) -> dict[str, tuple[bool, str]]:
     """G1, G2 and G3 as (passed, "PASS|FAIL|INCOMPLETE: <numbers>").
 
     rows are the prompt rows (labels merged in as `ok`) and the effortless rows, each with a slice in SLICES;
-    verdicts are keyed by (id, arm); cache, ratios and ab are None until produced.
+    verdicts are keyed by (id, arm); cache, ratios and ab are None until produced. g1 names the slices G1 grades.
     """
     ok = {r["id"]: r["ok"] for r in rows if r.get("ok")}
-    in_g1 = {r["id"] for r in rows if r["slice"] in G1_SLICES}
-    # R18: the preregistered population is top plus the holdout, and labels on part of it decide nothing: no arm is
+    in_g1 = {r["id"] for r in rows if r["slice"] in g1}
+    # R18: the preregistered population is the g1 slices, and labels on part of it decide nothing: no arm is
     # graded until labels cover G1_LABELLED of each
-    cover = {s: [r["id"] in ok for r in rows if r["slice"] == s] for s in G1_SLICES}
+    cover = {s: [r["id"] in ok for r in rows if r["slice"] == s] for s in g1}
     short = [
         f"{sum(has)}/{len(has)} {s} rows" for s, has in cover.items() if not has or sum(has) / len(has) < G1_LABELLED
     ]
@@ -269,21 +300,27 @@ def pct(x: float | None) -> str:
 
 
 def report(
-    rows: list[dict], verdicts: dict, cache: list[dict] | None, ratios: dict | None, ab: list[dict] | None
+    rows: list[dict],
+    verdicts: dict,
+    cache: list[dict] | None,
+    ratios: dict | None,
+    ab: list[dict] | None,
+    g1: tuple[str, ...] = G1_SLICES,
+    policy: str = "keep",
 ) -> str:
     ok = {r["id"]: r["ok"] for r in rows if r.get("ok")}
     slice_of = {r["id"]: r["slice"] for r in rows}
     corpus = [r for r in rows if r["slice"] in ("top", "child")]
     arms = list(dict.fromkeys(arm for _, arm in verdicts))
-    out = ["# Auto-effort phase 0 report", "", "## Gates", ""]
+    out = ["# Auto-effort phase 0 report", "", "## Gates", "", f"Judge fallback policy: {policy}.", ""]
     out.append(
-        f"Bars: G1 right ≥ {G1_RIGHT:.0%}, low ≤ {G1_LOW:.0%} and p95 ≤ {G1_P95_MS} ms on top plus effortless-holdout;"
+        f"Bars: G1 right ≥ {G1_RIGHT:.0%}, low ≤ {G1_LOW:.0%} and p95 ≤ {G1_P95_MS} ms on {' plus '.join(g1)};"
         f" G2 retention ≥ {G2_RETENTION} in every valid pair, at least 3 of them; G3 modeled cost ≤ {G3_SAVING:+.0%}"
         f" with A/B passes at the picked levels no lower than at medium, or {G3_HARD_GAIN} more hard-task passes"
         f" for ≤ {G3_COST_CAP:+.0%}."
     )
     out.append("")
-    out += [f"- {name} {text}" for name, (_, text) in gates(rows, verdicts, cache, ratios, ab).items()]
+    out += [f"- {name} {text}" for name, (_, text) in gates(rows, verdicts, cache, ratios, ab, g1).items()]
 
     out += ["", "## Judge arms", ""]
     if not corpus:
@@ -369,9 +406,15 @@ def report(
 
 
 def main(argv: list[str]) -> None:
-    if len(argv) != 1:
-        sys.exit("usage: python3 -I analyze.py <out_dir>")
-    out = Path(argv[0])
+    parser = argparse.ArgumentParser(prog="analyze.py")
+    parser.add_argument("out_dir", type=Path)
+    parser.add_argument("--policy", choices=POLICIES, default="keep", help="the judges' fallback when unsure")
+    parser.add_argument("--g1", default=",".join(G1_SLICES), help="comma-separated slices G1 grades")
+    args = parser.parse_args(argv)
+    out = args.out_dir
+    g1 = tuple(s for s in args.g1.split(",") if s)
+    if unknown := [s for s in g1 if s not in SLICES]:
+        parser.error(f"--g1 names unknown slices: {', '.join(unknown)}")
 
     def read(name: str) -> list[dict] | None:
         return common.read_jsonl(out / name) if (out / name).exists() else None
@@ -380,9 +423,10 @@ def main(argv: list[str]) -> None:
     rows = [dict(r, ok=labels[r["id"]]) if r["id"] in labels else r for r in read("prompts.jsonl") or []]
     rows += [dict(r, slice="effortless-holdout" if r["holdout"] else "effortless") for r in label.effortless_rows()]
     verdicts = {(v["id"], v["arm"]): v for v in read("verdicts.jsonl") or []}  # R5: the last row of an (id, arm) wins
+    verdicts = apply_policy(verdicts, rows, args.policy)
     path = out / "ratios.json"
     ratios = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-    text = report(rows, verdicts, read("cache.jsonl"), ratios, read("ab.jsonl"))
+    text = report(rows, verdicts, read("cache.jsonl"), ratios, read("ab.jsonl"), g1, args.policy)
     (out / "report.md").write_text(text, encoding="utf-8")
     print(f"wrote {out / 'report.md'}")
     print("\n".join(line.removeprefix("- ") for line in text.splitlines() if line.startswith("- G")))

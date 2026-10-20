@@ -15,6 +15,7 @@ from unittest import mock
 import ab
 import analyze
 import cache_probe
+import cc_extract
 import common
 import extract
 import label
@@ -223,6 +224,50 @@ class ExtractTest(unittest.TestCase):
         self.assertEqual(got, [*want, ("s4", "low", "metadata")])
 
 
+def cc_user(uuid: str, content, **extra) -> dict:
+    return {"type": "user", "uuid": uuid, "sessionId": "S", "message": {"role": "user", "content": content}, **extra}
+
+
+def cc_reply(text: str, effort: str, model: str = "claude-opus-5-5") -> dict:
+    message = {"role": "assistant", "model": model, "content": [{"type": "text", "text": text}]}
+    return {"type": "assistant", "sessionId": "S", "effort": effort, "message": message}
+
+
+class CcExtractTest(unittest.TestCase):
+    def test_rows_keep_typed_prompts_with_their_reply_level(self):
+        lines = [
+            cc_user("u1", "Refactor the router", origin={"kind": "human"}),
+            {"type": "assistant", "sessionId": "S", "effort": "max", "message": {"model": "m1", "content": []}},
+            cc_reply("Done. Should I add tests?", "max", "m1"),
+            cc_user("u2", [{"type": "tool_result", "content": "x"}]),  # a tool result, not a prompt
+            cc_user("u3", "<task-notification>done</task-notification>", origin={"kind": "task-notification"}),
+            cc_user("u4", "<command-name>/effort</command-name>"),
+            cc_user("u5", "use api_key=abcdefgh12345678"),  # looks like a secret
+            cc_user("u6", "side", isSidechain=True),
+            cc_user("u7", [{"type": "text", "text": "yes, add them"}]),
+            cc_reply("Added.", "medium", "m2"),
+        ]
+        rows = cc_extract.session_rows(lines)
+        got = [(r["message"], r["level"], r["model"], r["slice"], r["seq"]) for r in rows]
+        self.assertEqual(
+            got, [("Refactor the router", "xhigh", "m1", "cc", 0), ("yes, add them", "medium", "m2", "cc", 1)]
+        )
+        self.assertEqual(rows[0]["context"], "")
+        self.assertEqual(rows[1]["context"], "user: Refactor the router\nassistant: Done. Should I add tests?")
+        self.assertEqual(len({r["id"] for r in rows}), 2)
+
+    def test_sample_caps_sessions_dedupes_and_is_fixed_by_seed(self):
+        rows = [{"session_id": f"s{i % 3}", "message": f"m{i}", "id": str(i)} for i in range(30)]
+        rows.append({"session_id": "s0", "message": "m0", "id": "dup"})  # the same text twice counts once
+        a = cc_extract.sample([dict(r) for r in rows], n=8, per_session=4, seed=7)
+        b = cc_extract.sample([dict(r) for r in rows], n=8, per_session=4, seed=7)
+        self.assertEqual([r["id"] for r in a], [r["id"] for r in b])
+        self.assertEqual(len(a), 8)
+        self.assertTrue(all(sum(r["session_id"] == s for r in a) <= 4 for s in ("s0", "s1", "s2")))
+        self.assertNotIn("dup", [r["id"] for r in a])
+        self.assertNotEqual([r["id"] for r in a], [r["id"] for r in cc_extract.sample(rows, 8, 4, seed=8)])
+
+
 class CommonTest(unittest.TestCase):
     def test_write_jsonl_keeps_the_old_file_when_stopped_mid_write(self):
         tmp = tempfile.TemporaryDirectory()
@@ -398,6 +443,11 @@ class JudgeTest(unittest.TestCase):
             v = judge.judged("haiku", self.row, self.question, "system")
         self.assertEqual((v["level"], v["kept"], v["error"], v["tokens"]), ("medium", True, "transport", 0))
 
+    def test_verdict_records_choice(self):
+        self.assertEqual(judge.verdict({"choice": "high", "confidence": 0.4}, None, "low")["choice"], "high")
+        self.assertIsNone(judge.verdict({"choice": "max"}, None, "low")["choice"])  # invalid_choice
+        self.assertIsNone(judge.verdict(None, "timeout", None)["choice"])
+
     def test_haiku_asks_low_thinking(self):
         reply = {"message": {"content": [{"type": "text", "text": '{"effort":"high","sure":0.8}'}]}, "usage": {}}
         with mock.patch.object(common, "trigger", return_value=reply) as call:
@@ -426,7 +476,7 @@ class JudgeTest(unittest.TestCase):
         replies = [judge_reply("r1", "low", 0.8), {"status": "error", "code": "deadline"}, down]
         with mock.patch.object(common, "trigger", side_effect=replies) as call:
             got = [judge.judged("typesafe", r, self.question, "") for r in (self.row, followup, self.row, self.row)]
-        self.assertEqual(list(got[0]), ["id", "arm", "level", "confidence", "kept", "error", "ms", "tokens"])
+        self.assertEqual(list(got[0]), ["id", "arm", "level", "confidence", "kept", "error", "choice", "ms", "tokens"])
         expect = [
             ("r1", "typesafe", "low", 0.8, False, None, 93),
             ("r1", "typesafe", "medium", None, True, None, 0),  # the follow-up makes no call
@@ -594,6 +644,31 @@ class AnalyzeTest(unittest.TestCase):
             return analyze.costs(arm, [row], keyed(picks), ratios, set())["claude-opus-5-5"]["modeled"]
 
         self.assertEqual((modeled("haiku"), modeled("typesafe")), (1000.0 + 100.0, 1000.0 + 1.0))
+
+    def test_policies_floor_and_argmax(self):
+        rows = [{"id": "a", "level": "low"}, {"id": "b", "level": None}, {"id": "c", "level": "xhigh"}]
+        unsure = dict(verdict_row("a", "typesafe", "low"), kept=True, choice="high", confidence=0.4)
+        unknown = dict(verdict_row("b", "typesafe", "medium"), kept=True, choice=None, error="timeout")
+        followup = dict(verdict_row("c", "typesafe", "xhigh"), kept=True, choice=None)
+        base = dict(verdict_row("a", "keep", "low"), kept=True)
+        verdicts = keyed([unsure, unknown, followup, base])
+
+        def levels(policy: str) -> list[str]:
+            got = analyze.apply_policy(verdicts, rows, policy)
+            return [got[k]["level"] for k in [("a", "typesafe"), ("b", "typesafe"), ("c", "typesafe"), ("a", "keep")]]
+
+        self.assertEqual(levels("keep"), ["low", "medium", "xhigh", "low"])
+        self.assertEqual(levels("floor"), ["medium", "medium", "xhigh", "low"])  # baselines untouched
+        self.assertEqual(levels("argmax"), ["high", "medium", "xhigh", "low"])
+
+    def test_g1_grades_only_the_named_slices(self):
+        rows = [{"id": f"c{i}", "slice": "cc", "ok": ["medium"]} for i in range(10)]
+        rows += [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["high"]} for i in range(10)]
+        picks = [verdict_row(f"{p}{i}", "typesafe", "medium", ms=200) for p in "ch" for i in range(10)]
+        passed, text = analyze.gates(rows, keyed(picks), None, None, None, g1=("cc",))["G1"]
+        self.assertTrue(passed, text)
+        self.assertIn("on 10 labelled of 10 rows", text)
+        self.assertFalse(analyze.gates(rows, keyed(picks), None, None, None)["G1"][0])  # default slices: no top rows
 
     def test_g1_wants_a_judge_arm_on_labelled_rows(self):
         rows = [{"id": f"h{i}", "slice": "effortless-holdout", "ok": ["medium"]} for i in range(20)]

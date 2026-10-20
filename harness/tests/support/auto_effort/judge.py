@@ -54,13 +54,14 @@ def evaluation(row: dict, question: dict) -> dict:
 
 def verdict(answer: dict | None, error: str | None, current: str | None) -> dict:
     """An error, no answer, a choice outside LEVELS or confidence below 0.5 keeps the current level, medium when
-    unknown."""
+    unknown. `choice` keeps the judge's own pick (None without a valid one) so analyze.py can apply other policies."""
     confidence = (answer or {}).get("confidence")
     if answer and not error and answer.get("choice") not in common.LEVELS:
         error = "invalid_choice"
+    choice = answer["choice"] if answer and not error else None
     if error or not answer or (confidence is not None and confidence < 0.5):
-        return {"level": current or "medium", "confidence": confidence, "kept": True, "error": error}
-    return {"level": answer["choice"], "confidence": confidence, "kept": False, "error": None}
+        return {"level": current or "medium", "confidence": confidence, "kept": True, "error": error, "choice": choice}
+    return {"level": choice, "confidence": confidence, "kept": False, "error": None, "choice": choice}
 
 
 def ask_typesafe(row: dict, question: dict) -> tuple[dict | None, str | None, int]:
