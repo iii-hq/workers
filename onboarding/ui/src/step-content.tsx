@@ -24,11 +24,6 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
   return (
     <>
       <p className="learn-body">{step.body}</p>
-      {reading && step.on_closed && tour.closedNote ? (
-        <p className="learn-note" role="status">
-          {step.on_closed.body}
-        </p>
-      ) : null}
       {waitingForScreen ? (
         <p className="learn-note learn-note--todo" role="status">
           {step.to_open?.body}

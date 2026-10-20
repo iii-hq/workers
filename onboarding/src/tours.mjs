@@ -14,17 +14,14 @@
  *     chat under that profile and sends the prompt there, the way the setup
  *     wizard's example prompts do; without it the prompt goes to the chat
  *     the operator is in.
- *   - `on_closed` (optional): a console screen the step suggests closing, and
- *     the body and anchor to show once it is gone. The page binds the
- *     console's `console::workspace::changed` trigger, which rings after
- *     every layout write, so a closed pane is reported as it happens. Never
- *     required to finish the step.
+ *   - `to_close` (optional): a console screen the tour closes for the
+ *     operator when the step opens and is not done yet, to make room.
  *   - `to_open` (optional): a console screen the step talks about. While it
  *     is on screen the step frames its own anchors; while it is not, the
  *     page shows this body, frames these anchors — where the screen opens by
  *     hand — and offers a button (`label`) that opens it beside the chat.
  *     Open only in a tab that is not showing, the page shows `elsewhere`
- *     and frames that tab. Watched the same way as `on_closed`.
+ *     and frames that tab.
  *   - `condition` (optional): a real engine trigger the step waits for. The
  *     page binds it, shows what it is waiting for, and when it fires shows
  *     the trigger and its payload. A step with no condition is closed by the
@@ -34,9 +31,9 @@
 /**
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
  * @typedef {{ text: string, label: string, agent?: string }} Ask
- * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
+ * @typedef {{ screen: string }} ToClose
  * @typedef {{ screen: string, label: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
- * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, ask?: Ask, on_closed?: OnClosed, to_open?: ToOpen }} Step
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, ask?: Ask, to_close?: ToClose, to_open?: ToOpen }} Step
  * @typedef {{ id: "intro", title: string, body: string }} Intro
  * @typedef {{ id: string, title: string, description: string, intro: Intro, steps: Step[] }} Tour
  */
@@ -196,17 +193,10 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Now build on that board. Ask the agent for a TODO worker: a sidebar of controls to the left of the board, with a due date, a due time, a priority, a repeat and an alarm on each item, and the same controls as a web page the agent opens for you. The board is the list and keeps the progress; the TODO worker adds the rest, and each setting shows as a pill on the card. Since we are going to open our own page we can make room by closing the Traces panel (optional).",
-        // The close is an invitation, not a requirement: the step closes
-        // when the agent reports done. When the operator does take it, the
-        // page swaps in this note so dropping the panel is never a dead end.
-        on_closed: {
-          screen: "traces",
-          body: "You can always open traces in a new tab.",
-          // The console publishes no `learn-iii-*` class on its new-tab
-          // button, so this rides the button's own stable aria-label.
-          anchors: ['[aria-label="New workspace"]'],
-        },
+        body: "Now build on that board. Ask the agent for a TODO worker: a sidebar of controls to the left of the board, with a due date, a due time, a priority, a repeat and an alarm on each item, and the same controls as a web page the agent opens for you. The board is the list and keeps the progress; the TODO worker adds the rest, and each setting shows as a pill on the card. The tour closes the Traces panel to make room for the TODO page; open it again from the palette any time.",
+        // The step closes when the agent reports done; the panel goes as the
+        // step opens, so the new page has room.
+        to_close: { screen: "traces" },
       }),
       agentStep({
         id: "reactivity",

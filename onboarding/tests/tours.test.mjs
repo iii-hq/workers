@@ -88,31 +88,12 @@ test('every ask carries a prompt and a button label', () => {
   }
 })
 
-/**
- * An `on_closed` anchor cannot use the `learn-iii-*` rule above: it points at
- * a console control the console publishes no tour class for, so it rides that
- * control's own aria-label. That label is the fragile part — this is the check
- * that fails when someone renames it.
- */
-test('every on_closed step carries a body and a label the console still uses', () => {
-  const consoleSrc = consoleWebSrc()
+/** A `to_close` step names the screen the tour closes for the operator. */
+test('every to_close step names a screen', () => {
   for (const tour of TOURS) {
     for (const step of tour.steps) {
-      if (!step.on_closed) continue
-      const { screen, body, anchors } = step.on_closed
-      assert.ok(screen, `${step.id}: on_closed has no screen to watch`)
-      assert.ok(body, `${step.id}: on_closed has no body to show`)
-      assert.ok(anchors?.length, `${step.id}: on_closed has no anchor`)
-      if (!consoleSrc) continue // packaged worker: no sibling checkout
-      for (const anchor of anchors) {
-        const label = /\[aria-label="([^"]+)"\]/.exec(anchor)?.[1]
-        if (!label) continue
-        const hits = execFileSync('grep', ['-rl', label, consoleSrc], {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-        })
-        assert.ok(hits.trim().length > 0, `aria-label "${label}" is in no console file`)
-      }
+      if (!step.to_close) continue
+      assert.ok(step.to_close.screen, `${step.id}: to_close has no screen`)
     }
   }
 })

@@ -10,9 +10,6 @@ import { bindCondition, type Condition, type Fired, reconcileCondition } from '.
  * bound, and which console screens the open step is waiting on.
  */
 
-/** How long the box stays on what a step's `on_closed` note points at. */
-const HINT_SPOTLIGHT_MS = 5_000
-
 export interface Step {
   id: string
   title: string
@@ -26,7 +23,8 @@ export interface Step {
    */
   ask?: { text: string; label: string; agent?: string }
   /** A screen the step suggests closing, with what to show once it is gone. */
-  on_closed?: { screen: string; body: string; anchors?: string[] }
+  /** A console screen the tour closes for the operator as the step opens. */
+  to_close?: { screen: string }
   /** A screen the step opens (`label` is its button), with where it opens by hand. */
   to_open?: { screen: string; label: string; body: string; anchors: string[]; elsewhere?: string }
 }
@@ -76,8 +74,6 @@ export interface TourController {
   /** Open the step's `to_open` screen beside the chat. */
   openScreen: (step: Step) => void
   reset: () => void
-  /** The open step's `on_closed` screen has been closed. */
-  closedNote: boolean
   /** The open step's `to_open` screen is not open yet, here or anywhere. */
   awaitingScreen: boolean
   /** The open step's `to_open` screen is open, but in a tab not showing. */
@@ -274,9 +270,8 @@ export function useTour(host: Host): TourController {
     [records, active],
   )
 
-  const watching = openStep?.on_closed?.screen ?? openStep?.to_open?.screen ?? null
+  const watching = openStep?.to_open?.screen ?? null
   const presence = useScreenPresent(host, watching)
-  const closedNote = Boolean(openStep?.on_closed) && presence?.present === false
   const awaitingScreen = Boolean(openStep?.to_open) && presence?.present === false
   // Open, but only in tabs that are not the one showing: the step's anchor
   // has nothing on screen to land on, so the step points at the tab instead.
@@ -288,33 +283,22 @@ export function useTour(host: Host): TourController {
   )
 
   /**
-   * A step whose `on_closed` screen is gone points at what brings it back
-   * instead of at the empty space where it used to be — for a few seconds,
-   * and then the box goes back to the step. That hint answers one question
-   * ("where did the panel go?"), and a box still lit long after it is
-   * answered is just something on the screen the operator cannot turn off.
-   *
    * A `to_open` step points at where its screen opens for as long as it is
    * not open: that IS the step, so the box stays until the operator acts.
    */
-  const [hintDone, setHintDone] = useState(false)
+  const framed = awaitingScreen
+    ? (openStep?.to_open?.anchors ?? null)
+    : screenElsewhere
+      ? elsewhereAnchors
+      : (openStep?.anchors ?? null)
+
+  // A `to_close` step still to do closes its screen as it opens, to make
+  // room. Once, per open: a step read again later leaves the layout alone.
+  const closing = openStep?.to_close && records[openStep.id]?.status !== 'complete' ? openStep.to_close.screen : null
   useEffect(() => {
-    if (!closedNote) {
-      setHintDone(false)
-      return
-    }
-    setHintDone(false)
-    const timer = setTimeout(() => setHintDone(true), HINT_SPOTLIGHT_MS)
-    return () => clearTimeout(timer)
-  }, [closedNote])
-  const framed =
-    closedNote && !hintDone
-      ? (openStep?.on_closed?.anchors ?? null)
-      : awaitingScreen
-        ? (openStep?.to_open?.anchors ?? null)
-        : screenElsewhere
-          ? elsewhereAnchors
-          : (openStep?.anchors ?? null)
+    if (!closing) return
+    void host.iii.trigger('console::workspace::close', { screen: closing }).catch(() => undefined)
+  }, [host, closing])
 
   const reset = useCallback(() => {
     if (!tour) return
@@ -356,7 +340,6 @@ export function useTour(host: Host): TourController {
     ask,
     openScreen,
     reset,
-    closedNote,
     awaitingScreen,
     screenElsewhere,
     framed,
