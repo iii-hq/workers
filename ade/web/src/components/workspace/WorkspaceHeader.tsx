@@ -1,4 +1,12 @@
-import { Menu, Plus, Search, SquarePen } from 'lucide-react'
+import {
+  Columns2,
+  Menu,
+  Moon,
+  Plus,
+  Search,
+  SquarePen,
+  Sun,
+} from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Wordmark } from '@/components/ui/Wordmark'
@@ -37,6 +45,10 @@ export interface WorkspaceHeaderProps {
   settingsOpen: boolean
   onToggleSettings: () => void
   onOpenPalette: () => void
+  /** Add an empty panel on the right of the active workspace. */
+  onSplit: () => void
+  theme: 'light' | 'dark'
+  onThemeChange: (theme: 'light' | 'dark') => void
 }
 
 /**
@@ -59,6 +71,9 @@ export function WorkspaceHeader({
   settingsOpen,
   onToggleSettings,
   onOpenPalette,
+  onSplit,
+  theme,
+  onThemeChange,
 }: WorkspaceHeaderProps) {
   const { extPageTitles, screenOptions } = useScreenOptions()
   const screenIcons = useMemo(
@@ -204,26 +219,59 @@ export function WorkspaceHeader({
           />
         </div>
 
-        {/* The console is reached through the palette, so search keeps a
-            fixed pill on the bar's right edge and carries its own chord: the
-            caps teach ⌘K on sight. It sits right, not centre, so the tab
+        {/* The bar's right-hand cluster: search, then the two actions that
+            change the whole workspace rather than one pane — a split and the
+            theme. Search keeps a fixed pill and carries its own chord (the
+            caps teach ⌘K on sight); it sits right, not centre, so the tab
             strip gets every other pixel of the bar. */}
-        <button
-          type="button"
-          onClick={onOpenPalette}
-          aria-label={paletteTitle}
-          title={paletteTitle}
-          /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-          className="onboarding-palette inline-flex h-8 w-72 max-w-full items-center gap-2 justify-self-end rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
-        >
-          <Search className="size-4 shrink-0" aria-hidden />
-          <span className="min-w-0 flex-1 truncate text-left">Search</span>
-          <KeyCombo
-            binding={paletteBinding}
-            className="gap-2"
-            capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
-          />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            aria-label={paletteTitle}
+            title={paletteTitle}
+            /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
+            className="onboarding-palette inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
+          >
+            <Search className="size-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate text-left">Search</span>
+            <KeyCombo
+              binding={paletteBinding}
+              className="gap-2"
+              capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
+            />
+          </button>
+          <button
+            type="button"
+            onClick={onSplit}
+            aria-label={hoverTitle('Split right', 'panel.split')}
+            title={hoverTitle('Split right', 'panel.split')}
+            className={cn(GHOST_CONTROL, 'size-8')}
+          >
+            <Columns2 className="size-4 shrink-0" aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')}
+            aria-label={
+              theme === 'dark'
+                ? 'Switch to light theme'
+                : 'Switch to dark theme'
+            }
+            title={
+              theme === 'dark'
+                ? 'Switch to light theme'
+                : 'Switch to dark theme'
+            }
+            className={cn(GHOST_CONTROL, 'size-8')}
+          >
+            {theme === 'dark' ? (
+              <Sun className="size-4 shrink-0" aria-hidden />
+            ) : (
+              <Moon className="size-4 shrink-0" aria-hidden />
+            )}
+          </button>
+        </div>
       </header>
     </>
   )

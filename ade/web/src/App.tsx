@@ -484,6 +484,9 @@ export function App({
             setPaletteQuery('')
             setPaletteOpen(true)
           }}
+          onSplit={() => splitWorkspacePanel('right')}
+          theme={theme}
+          onThemeChange={setTheme}
         />
         <ConnectionNotice />
         <WorkspacePanes
