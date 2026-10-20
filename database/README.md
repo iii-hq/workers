@@ -517,8 +517,10 @@ Worth knowing:
 
 ### `database::row-changed` (consumers that have not moved)
 
-The pre-0.25 trigger type keeps working, unchanged, for consumers that still
-call `registerTrigger`:
+The pre-0.25 trigger type keeps working, unchanged: the worker still
+registers it on every engine, 0.24 and 0.25 alike, and serves its bindings
+itself, however they were made — `registerTrigger` from a worker,
+`engine::register_trigger` (the CLI, a script), a harness subscription:
 
 ```ts
 iii.registerTrigger({
@@ -528,25 +530,13 @@ iii.registerTrigger({
 })
 ```
 
-- On a **0.25 engine** the engine's legacy shim turns the binding into an
-  observer of `database::on-row-changed` with that config. The shim takes
-  bindings registered over a worker's connection (`registerTrigger`, which is
-  also how a harness session subscribes); one made by calling the engine
-  function `engine::register_trigger` directly (`iii trigger
-  engine::register_trigger …`, a code-runner script) has no owner and stays
-  pending on a 0.25 engine.
-- On an **engine without observe** (0.24) the worker registers the trigger
-  type itself, over the same routing. It follows the engine across
-  reconnects: an engine upgraded or rolled back under a running worker
-  switches between the two without a restart.
-
-Either way the binding receives the event in its pre-0.25 shape: no `schema`,
-and the table schema-qualified when a schema is known (`public.orders` from
-Postgres native capture). `table` in the config matches case- and
-schema-insensitively, as before; on `statements` the event's table is now
-lowercase (`INSERT INTO ORDERS` reports `orders`). The trigger's metadata
-rides along with each call. New code should observe
-`database::on-row-changed` instead.
+A binding is checked like an observer's args and routed by the same index.
+It receives the event in its pre-0.25 shape: no `schema`, and the table
+schema-qualified when a schema is known (`public.orders` from Postgres native
+capture). `table` in the config matches case- and schema-insensitively, as
+before; on `statements` the event's table is now lowercase (`INSERT INTO
+ORDERS` reports `orders`). The trigger's metadata rides along with each call.
+New code should observe `database::on-row-changed` instead.
 
 ## Isolation between callers
 
