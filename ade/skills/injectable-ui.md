@@ -244,6 +244,20 @@ Two subpaths **bundle** (React-free code the console itself uses):
 - `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
   `formatBytes`, `errorMessage`, `errorCode`, `copyText`.
 
+Literal shapes (`@iii-dev/console-ui/index.d.ts`, `hooks.d.mts`):
+
+```ts
+SelectOption<T extends string = string>: { value: T; label: string; title?: string; description?: string; disabled?: boolean }
+SelectGroup<T extends string = string>: { label: string; options: SelectOption<T>[] }
+SelectProps<T extends string = string>: { value: T | undefined; options?: SelectOption<T>[]; groups?: SelectGroup<T>[]; onChange: (next: T) => void; disabled?: boolean; className?: string; id?: string; name?: string; 'data-field'?: string; appearance?: 'default' | 'inline'; showChevron?: boolean; 'aria-label'?: string; 'aria-busy'?: boolean; 'aria-invalid'?: React.AriaAttributes['aria-invalid']; 'aria-describedby'?: string; placeholder?: string; sheetTitle?: React.ReactNode; sheetDescription?: React.ReactNode; allowEmpty?: boolean; emptyLabel?: string; onClear?: () => void; renderGroupHeader?: (group: SelectGroup<T>) => React.ReactNode }
+Select: <T extends string = string>(props: SelectProps<T>) => React.ReactNode
+CheckboxProps: Omit<React.InputHTMLAttributes<HTMLInputElement>, 'children' | 'className' | 'type'> & { className?: string; label?: React.ReactNode; indeterminate?: boolean }
+Checkbox: React.ComponentType<CheckboxProps & React.RefAttributes<HTMLInputElement>>
+WorkerLiveOptions<T>: { iii: ExtensionIii; triggers: readonly (string | { type: string; config?: Record<string, unknown> })[]; fetch: () => Promise<T>; pollMs?: number /* deprecated, ignored */; handlerId: string }
+WorkerLive<T>: { data: T | null; loading: boolean; error: string | null; live: boolean; refresh: () => void }
+useWorkerLive: <T>(options: WorkerLiveOptions<T>) => WorkerLive<T>
+```
+
 Import these instead of keeping a local copy; the migration plan lists the
 copies still to be replaced.
 

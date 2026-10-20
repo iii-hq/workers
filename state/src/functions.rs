@@ -502,7 +502,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             .description("Read the value stored at a key in a state scope")
             .response_format(json_value_or_null_schema(
                 "StateGetResponse",
-                "The raw value stored at scope/key, or null if absent.",
+                "The bare value stored at scope/key (not wrapped in `{ value }`), or null if absent.",
             )),
         );
     }

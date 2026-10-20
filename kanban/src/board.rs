@@ -262,9 +262,12 @@ pub fn event_releases(board: &Board, ticket: &Ticket, at: &str) -> Vec<ReleaseRe
 
 /// The compact projection: what an agent needs to recognise a ticket in a
 /// list (`compact: true` on `kanban::board::get` / `kanban::ticket::list`).
-/// About a third of a summary's size — no uuid, timestamps, labels or order.
+/// About a third of a summary's size — no timestamps, labels or order. It
+/// carries the uuid as well as the key, so a row can be passed straight to
+/// a write without a lookup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TicketBrief {
+    pub id: String,
     pub key: String,
     pub title: String,
     pub status: String,
@@ -283,6 +286,7 @@ pub enum TicketRow {
 
 pub fn brief(ticket: &Ticket) -> TicketBrief {
     TicketBrief {
+        id: ticket.id.clone(),
         key: ticket.key.clone(),
         title: ticket.title.clone(),
         status: ticket.status.clone(),

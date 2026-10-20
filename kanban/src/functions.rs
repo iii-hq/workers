@@ -91,7 +91,7 @@ pub struct BoardGetInput {
     /// At most this many tickets per column, from the top of the column.
     #[serde(default)]
     pub limit: Option<u64>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full summary.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
     /// Only the subtasks of this ticket (uuid or key); empty string = tickets that are not subtasks.
@@ -136,7 +136,7 @@ pub struct TicketCreateInput {
     /// Who is making the change. Defaults to `user`.
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -168,7 +168,7 @@ pub struct TicketListInput {
     pub updated_since: Option<String>,
     #[serde(default)]
     pub limit: Option<u64>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full summary.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
     /// Only the subtasks of this ticket (uuid or key); empty string = tickets that are not subtasks.
@@ -224,7 +224,7 @@ pub struct TicketUpdateInput {
     pub release: Option<Option<String>>,
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -240,7 +240,7 @@ pub struct TicketMoveInput {
     pub index: Option<u64>,
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -265,7 +265,7 @@ pub struct CommentCreateInput {
     /// Agent profile id, or `user`. Defaults to `user`.
     #[serde(default)]
     pub author: Option<String>,
-    /// Return the ticket as its compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the ticket as its compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -1346,7 +1346,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::create",
-        "Create a ticket on the board and return it; pass compact to get back only its compact row (key, title, status, priority, assignee, comment_count). Optionally make it a subtask (parent), or file it under a project or release (id or name).",
+        "Create a ticket on the board and return it; pass compact to get back only its compact row (id, key, title, status, priority, assignee, comment_count). Optionally make it a subtask (parent), or file it under a project or release (id or name).",
         ticket_create,
     );
     register(
@@ -1358,7 +1358,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::list",
-        "List tickets, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); compact rows carry only key, title, status, priority, assignee and comment_count.",
+        "List tickets, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); compact rows carry only id, key, title, status, priority, assignee and comment_count.",
         ticket_list,
     );
     register(
