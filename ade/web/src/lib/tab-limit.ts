@@ -13,8 +13,9 @@
 
 import type { ConsoleConfigValue } from '@/lib/console-config'
 
-/** Past the nine keyboard-addressable tabs, before the strip is all menu. */
-export const DEFAULT_TAB_LIMIT = 12
+/** The nine keyboard-addressable tabs plus one: the strip shares its width
+ *  among them and never has to scroll at the default. */
+export const DEFAULT_TAB_LIMIT = 10
 
 /** The schema's floor and ceiling; a stored value outside them is clamped. */
 export const MIN_TAB_LIMIT = 1

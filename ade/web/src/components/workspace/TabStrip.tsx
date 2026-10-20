@@ -125,6 +125,17 @@ function tabIcon(
 const INACTIVE_WASH =
   'after:pointer-events-none after:absolute after:inset-x-0.5 after:inset-y-1 after:-z-10 after:rounded-lg after:transition-colors after:duration-[var(--motion-duration-control)]'
 
+/**
+ * A label that fades out at the tab's edge when the tab is too narrow for
+ * it, the way a browser's does — never an ellipsis. The fade covers only
+ * the label's own trailing padding: a label with room to spare ends before
+ * it and shows whole, while a squeezed label overflows into the padding
+ * (overflow clips at the padding edge) and fades there. The negative
+ * margin folds that padding into the gap before the close.
+ */
+const TAB_LABEL =
+  '-mr-2 min-w-0 flex-1 overflow-hidden whitespace-nowrap pr-3 [mask-image:linear-gradient(to_right,black,black_calc(100%-0.75rem),transparent)]'
+
 const TAB_FLARES =
   'before:pointer-events-none before:absolute before:bottom-0 before:-left-3 before:size-[12px] before:bg-bg before:[mask-image:radial-gradient(circle_at_0_0,transparent_12px,black_12.5px)] after:pointer-events-none after:absolute after:bottom-0 after:-right-3 after:size-[12px] after:bg-bg after:[mask-image:radial-gradient(circle_at_100%_0,transparent_12px,black_12.5px)]'
 
@@ -162,7 +173,11 @@ function prefersReducedMotion(): boolean {
  * and a `+` button that creates an empty single-column tab (screens attach
  * from the empty pane; splits grow via the workspace edge zones).
  *
- * Overflow scrolls with edge fades and an "All workspaces" menu; arrow keys,
+ * Tabs share the strip the way a browser's do — each shrinks from its
+ * natural width toward a floor that keeps the glyph and the close, and a
+ * label that no longer fits fades out at the edge rather than being cut —
+ * so the strip never scrolls at the configured limit. Past that floor it
+ * clips, with edge fades and an "All workspaces" menu; arrow keys,
  * Home, End and Delete work inside the strip; middle click closes.
  * Double-click (or the right-click menu) renames — Enter or clicking away
  * commits, Escape cancels.
@@ -430,7 +445,7 @@ export function TabStrip({
           maskImage ? { maskImage, WebkitMaskImage: maskImage } : undefined
         }
         /* onboarding-tabs: tour anchor (workers/onboarding). Do not remove. */
-        className="onboarding-tabs workspace-tab-strip flex min-w-0 items-end overflow-x-auto px-3"
+        className="onboarding-tabs workspace-tab-strip flex min-w-0 flex-1 items-end overflow-hidden px-3"
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId
@@ -595,11 +610,13 @@ export function TabStrip({
                 }}
                 style={transform ? { transform } : undefined}
                 className={cn(
-                  'group/tab relative isolate flex h-12 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-t-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 focus-visible:ring-inset sm:h-9 sm:gap-2 sm:pl-3 dark:focus-visible:ring-neutral-400',
+                  'group/tab relative isolate flex h-12 min-w-14 max-w-56 shrink basis-auto cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-t-xl pl-4 font-inter text-sm font-medium transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 focus-visible:ring-inset sm:h-9 sm:gap-2 sm:pl-3 dark:focus-visible:ring-neutral-400',
                   tabs.length > 1 ? 'pr-2 sm:pr-1.5' : 'pr-4 sm:pr-3',
+                  // The active tab keeps its natural width and the others
+                  // absorb the squeeze, so its label is always whole.
                   active
                     ? cn(
-                        'z-10 bg-bg text-neutral-900 dark:text-neutral-50',
+                        'z-10 shrink-0 bg-bg text-neutral-900 dark:text-neutral-50',
                         TAB_FLARES,
                       )
                     : cn(
@@ -630,7 +647,7 @@ export function TabStrip({
                     onCancel={() => setRenamingId(null)}
                   />
                 ) : (
-                  <span className="max-w-[180px] truncate">{label}</span>
+                  <span className={TAB_LABEL}>{label}</span>
                 )}
                 {tabs.length > 1 && renamingId !== tab.id ? (
                   <button

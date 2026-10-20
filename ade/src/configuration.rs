@@ -177,7 +177,7 @@ fn schema() -> Value {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 64,
-                        "default": 12,
+                        "default": 10,
                         "description": "How many workspace tabs may be open at once. The new-tab controls disable at the limit; tabs already open above a lowered limit stay open. Changes apply live."
                     }
                 },
@@ -235,7 +235,7 @@ fn default_value(http_port: u16, data_dir: &str) -> Value {
             }
         },
         "tabs": {
-            "limit": 12
+            "limit": 10
         },
         "injectableUi": {
             "disabledWorkers": []
@@ -687,10 +687,10 @@ mod tests {
         assert_eq!(limit["type"], "integer");
         assert_eq!(limit["minimum"], 1);
         assert_eq!(limit["maximum"], 64);
-        assert_eq!(limit["default"], 12);
+        assert_eq!(limit["default"], 10);
         // The out-of-the-box entry states the same number, so the form shows
         // it rather than an empty field.
-        assert_eq!(default_value(3113, "data/ade")["tabs"]["limit"], 12);
+        assert_eq!(default_value(3113, "data/ade")["tabs"]["limit"], 10);
     }
 
     #[test]
