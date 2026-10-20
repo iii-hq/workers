@@ -1043,7 +1043,7 @@ importers:
         specifier: 'catalog:'
         version: 6.0.3
 
-  onboarding/ui:
+  learn-iii/ui:
     dependencies:
       '@iii-dev/console-ui':
         specifier: workspace:*

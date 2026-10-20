@@ -3,7 +3,7 @@
  *
  * A step carries:
  *   - `anchors`: selectors for the console element the step talks about, best
- *     first. The first one is always the `onboarding-*` class the console
+ *     first. The first one is always the `learn-iii-*` class the console
  *     carries FOR THIS TOUR (added in console/web/src, and checked by
  *     tests/); the ones after it are the console's own stable hooks, so the
  *     spotlight still lands on a console build that predates the anchor
@@ -42,13 +42,13 @@
  * The state scope the tour keeps everything in — progress, and the keys the
  * steps below wait on.
  */
-const STATE_SCOPE = 'onboarding'
+const STATE_SCOPE = 'learn-iii'
 
 /**
  * A step the AGENT finishes, not the operator.
  *
  * Its prompt ends by telling the agent to write `step_<id>_completed` into
- * the onboarding state scope as it ENDS ITS TURN — not merely when it thinks
+ * the learn-iii state scope as it ENDS ITS TURN — not merely when it thinks
  * it is done, which it reports too early — and the step waits on a `state`
  * trigger bound to that one key. The page binds every reachable condition when the step is
  * DISPLAYED, before any button is clicked, so the step the operator is
@@ -93,7 +93,7 @@ export const TOURS = [
         },
         title: "Send a message",
         body: "Say 'hello' to the agent. We've setup a trigger to run when you get the agent's response. The iii ade (agentic development environment) is an example of a iii Worker. Database and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
-        anchors: [".onboarding-composer", ".composer-shell"],
+        anchors: [".learn-iii-composer", ".composer-shell"],
         condition: {
           type: "harness::turn-completed",
           config: {},
@@ -108,8 +108,8 @@ export const TOURS = [
         // The tabs AND the + — the body talks about both, so the box takes in
         // both. The tab row alone is the fallback for an older console.
         anchors: [
-          ".onboarding-workspaces",
-          ".onboarding-tabs",
+          ".learn-iii-workspaces",
+          ".learn-iii-tabs",
           '[role="tablist"][aria-label="Workspace tabs"]',
         ],
       },
@@ -141,7 +141,7 @@ export const TOURS = [
         id: "observability",
         title: "Observability",
         body: "Traces follows the chat you are in and opens its latest turn. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
-        anchors: [".onboarding-traces", 'section[aria-label="traces"]'],
+        anchors: [".learn-iii-traces", 'section[aria-label="traces"]'],
         // Opened by the operator, not for them: a fresh workspace already has
         // Traces beside the chat, and when it is gone the page points at where
         // it opens — the + first, then the traces row of the new tab's picker
@@ -153,7 +153,7 @@ export const TOURS = [
           elsewhere: "Traces is open in another tab. Switch to that tab, lit up in the tab row, to see it.",
           anchors: [
             '[role="option"][data-screen="traces"]',
-            ".onboarding-new-tab",
+            ".learn-iii-new-tab",
             '[aria-label="New workspace"]',
             '[aria-label="search the ADE"]',
           ],
@@ -171,7 +171,7 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes) and that emits Triggers when a change happens (ie. register trigger type). Do not navigate the user away from the current workspace. Do not use screenshots or other UI based checks. Verify via functions. This is an onboarding demo. Open the TODO page for me when it is done.",
+          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes) and that emits Triggers when a change happens (ie. register trigger type). Do not navigate the user away from the current workspace. Do not use screenshots or other UI based checks. Verify via functions. This is an learn-iii demo. Open the TODO page for me when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
@@ -182,7 +182,7 @@ export const TOURS = [
         on_closed: {
           screen: "traces",
           body: "You can always open traces in a new tab.",
-          // The console publishes no `onboarding-*` class on its new-tab
+          // The console publishes no `learn-iii-*` class on its new-tab
           // button, so this rides the button's own stable aria-label.
           anchors: ['[aria-label="New workspace"]'],
         },
@@ -199,7 +199,7 @@ export const TOURS = [
       {
         id: "clean-up",
         ask: {
-          text: "Remove the onboarding worker from this project.",
+          text: "Remove the learn-iii worker from this project.",
           label: "Ask the agent",
         },
         title: "Clean up",
@@ -230,7 +230,7 @@ export function getTour(id) {
 
 /**
  * The step, its tour, and its 1-based number in that tour — the number is
- * what the `onboarding:steps:complete` event reports, so it is read from
+ * what the `learn-iii:steps:complete` event reports, so it is read from
  * the ordered step list rather than stored beside it.
  *
  * @returns {{ tour: Tour, step: Step, number: number } | undefined}

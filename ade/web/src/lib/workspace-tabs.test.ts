@@ -828,7 +828,7 @@ describe('withTabSizes', () => {
   const tab: WorkspaceTab = {
     id: 'a',
     columns: 3,
-    screens: ['chat', 'ext:onboarding', 'traces'],
+    screens: ['chat', 'ext:learn-iii', 'traces'],
   }
 
   it('normalizes one positive width per column', () => {

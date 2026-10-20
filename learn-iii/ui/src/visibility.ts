@@ -8,7 +8,7 @@ import { useSyncExternalStore } from 'react'
  */
 export type TourView = 'open' | 'minimized' | 'closed'
 
-const STORAGE_KEY = 'iii.onboarding.view'
+const STORAGE_KEY = 'iii.learn-iii.view'
 const listeners = new Set<() => void>()
 
 function stored(): TourView {
@@ -34,7 +34,7 @@ function set(next: TourView): void {
   for (const listener of [...listeners]) listener()
 }
 
-/** Bring the card up: the console's `Open onboarding`, the wizard, the pill. */
+/** Bring the card up: the console's `Open learn-iii`, the wizard, the pill. */
 export const showTour = () => set('open')
 /** Fold the card to its pill; the tour keeps its place. */
 export const minimizeTour = () => set('minimized')

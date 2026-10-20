@@ -287,12 +287,12 @@ export const PILLARS: readonly Pillar[] = [
 ]
 
 /**
- * The guided tour that follows setup: the `onboarding` worker's page walks
+ * The guided tour that follows setup: the `learn-iii` worker's page walks
  * through the ADE stage by stage, with the models just connected. The Ready
  * step adds the worker when the tour is accepted, then opens its page.
  */
-export const TOUR_WORKER = 'onboarding'
-export const TOUR_PAGE = 'onboarding'
+export const TOUR_WORKER = 'learn-iii'
+export const TOUR_PAGE = 'learn-iii'
 
 /** The console configuration key that overrides worker sources (development). */
 export const WORKER_SOURCES_KEY = 'onboarding'

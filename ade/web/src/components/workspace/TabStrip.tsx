@@ -362,9 +362,9 @@ export function TabStrip({
     : undefined
 
   return (
-    // onboarding-workspaces: tour anchor (workers/onboarding) — the tabs and
+    // learn-iii-workspaces: tour anchor (workers/learn-iii) — the tabs and
     // the + together. Do not remove.
-    <div className="onboarding-workspaces flex min-w-0 items-center gap-1">
+    <div className="learn-iii-workspaces flex min-w-0 items-center gap-1">
       <div
         ref={stripRef}
         role="tablist"
@@ -376,8 +376,8 @@ export function TabStrip({
         style={
           maskImage ? { maskImage, WebkitMaskImage: maskImage } : undefined
         }
-        /* onboarding-tabs: tour anchor (workers/onboarding). Do not remove. */
-        className="onboarding-tabs workspace-tab-strip flex min-w-0 items-center gap-1.5 overflow-x-auto"
+        /* learn-iii-tabs: tour anchor (workers/learn-iii). Do not remove. */
+        className="learn-iii-tabs workspace-tab-strip flex min-w-0 items-center gap-1.5 overflow-x-auto"
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId
@@ -587,8 +587,8 @@ export function TabStrip({
         aria-label="New workspace"
         title={hoverTitle('New workspace', 'workspace.create')}
         onClick={onCreate}
-        /* onboarding-new-tab: tour anchor (workers/onboarding). Do not remove. */
-        className="onboarding-new-tab relative flex size-12 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-9"
+        /* learn-iii-new-tab: tour anchor (workers/learn-iii). Do not remove. */
+        className="learn-iii-new-tab relative flex size-12 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-9"
       >
         <span
           className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"

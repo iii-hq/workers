@@ -46,7 +46,7 @@ test('every step anchors on a console class that still exists', () => {
     for (const step of tour.steps) {
       if (!step.anchors) continue
       assert.ok(step.anchors.length > 0, `${step.id}: empty anchors`)
-      assert.match(step.anchors[0], /^\.onboarding-[a-z-]+$/, `${step.id}: odd first anchor`)
+      assert.match(step.anchors[0], /^\.learn-iii-[a-z-]+$/, `${step.id}: odd first anchor`)
       if (!consoleSrc) continue // packaged worker: no sibling checkout
       const hits = execFileSync('grep', ['-rl', step.anchors[0].slice(1), consoleSrc], {
         encoding: 'utf8',
@@ -71,7 +71,7 @@ test('every condition is a complete trigger binding', () => {
 
 test('the injected page ships the box it draws', () => {
   const css = readFileSync(join(root, 'ui', 'styles.css'), 'utf8')
-  assert.match(css, /\.onboarding-spotlight/)
+  assert.match(css, /\.learn-iii-spotlight/)
 })
 
 /**
@@ -89,7 +89,7 @@ test('every ask carries a prompt and a button label', () => {
 })
 
 /**
- * An `on_closed` anchor cannot use the `onboarding-*` rule above: it points at
+ * An `on_closed` anchor cannot use the `learn-iii-*` rule above: it points at
  * a console control the console publishes no tour class for, so it rides that
  * control's own aria-label. That label is the fragile part — this is the check
  * that fails when someone renames it.
@@ -142,7 +142,7 @@ test('every to_open step names its screen, a body, and anchors the console still
       if (!consoleSrc) continue // packaged worker: no sibling checkout
       for (const anchor of anchors) {
         const needle =
-          /^\.(onboarding-[a-z-]+)$/.exec(anchor)?.[1] ??
+          /^\.(learn-iii-[a-z-]+)$/.exec(anchor)?.[1] ??
           /\[aria-label="([^"]+)"\]/.exec(anchor)?.[1] ??
           (/\[data-screen=/.test(anchor) ? 'data-screen=' : null)
         assert.ok(needle, `${step.id}: odd to_open anchor ${anchor}`)
@@ -158,7 +158,7 @@ test('every to_open step names its screen, a body, and anchors the console still
 
 /**
  * A step the agent finishes, rather than the operator, reports itself done by
- * writing one key into the onboarding state scope. Two halves have to agree
+ * writing one key into the learn-iii state scope. Two halves have to agree
  * or the step never closes: the sentence the prompt ends with, and the
  * `state` trigger the page binds. This is the check that fails when one of
  * them moves.
@@ -168,11 +168,11 @@ test('every agent-finished step names the state key its trigger waits on', () =>
     for (const step of tour.steps) {
       if (step.condition?.type !== 'state') continue
       const key = `step_${step.id}_completed`
-      assert.equal(step.condition.config.scope, 'onboarding', `${step.id}: wrong state scope`)
+      assert.equal(step.condition.config.scope, 'learn-iii', `${step.id}: wrong state scope`)
       assert.equal(step.condition.config.key, key, `${step.id}: trigger waits on the wrong key`)
       assert.ok(step.ask?.text.includes(key), `${step.id}: the prompt never asks for ${key}`)
       assert.ok(
-        step.ask.text.includes('onboarding'),
+        step.ask.text.includes('learn-iii'),
         `${step.id}: the prompt never names the state scope`,
       )
     }
@@ -209,7 +209,7 @@ test('findStep numbers steps from 1 in tour order', () => {
 })
 
 /**
- * `onboarding::steps::observe` closes the steps an early event satisfies.
+ * `learn-iii::steps::observe` closes the steps an early event satisfies.
  * The console reports the example chat's completed turn with it, so the
  * first step — waiting on any completed turn — must match, and a step whose
  * condition filters on a key must not match an event without it.
@@ -220,10 +220,10 @@ test('an observed event matches the conditions it would have fired', () => {
   assert.equal(conditionMatches(message.condition, 'harness::turn-completed', turn), true)
   assert.equal(conditionMatches(message.condition, 'state', turn), false)
   const composability = findStep('console-basics', 'composability').step
-  assert.equal(conditionMatches(composability.condition, 'state', { scope: 'onboarding' }), false)
+  assert.equal(conditionMatches(composability.condition, 'state', { scope: 'learn-iii' }), false)
   assert.equal(
     conditionMatches(composability.condition, 'state', {
-      scope: 'onboarding',
+      scope: 'learn-iii',
       key: 'step_composability_completed',
     }),
     true,

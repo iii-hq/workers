@@ -28,10 +28,10 @@ import { useTour } from './use-tour'
  * away early. A console with the slot shows the card instead (overlay.tsx);
  * both run on `useTour`.
  */
-export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
+export function LearnIiiPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
   const tour = useTour(host, conversationId)
   const { tour: loaded, records, error, open, setOpen, active, framed } = tour
-  const removeButton = <RemoveOnboarding host={host} onClose={onRequestClose} />
+  const removeButton = <RemoveLearnIii host={host} onClose={onRequestClose} />
 
   const caption =
     tour.openStep && loaded ? `${loaded.steps.indexOf(tour.openStep) + 1} · ${tour.openStep.title}` : undefined
@@ -51,11 +51,11 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   if (!loaded) {
     return (
       <Frame onClose={onRequestClose} footer={removeButton}>
-        <div className="ob-loading" role="status" aria-busy="true" aria-label="Loading the tour">
-          <Skeleton className="ob-skeleton ob-skeleton--bar" />
-          <Skeleton className="ob-skeleton" />
-          <Skeleton className="ob-skeleton" />
-          <Skeleton className="ob-skeleton" />
+        <div className="learn-loading" role="status" aria-busy="true" aria-label="Loading the tour">
+          <Skeleton className="learn-skeleton learn-skeleton--bar" />
+          <Skeleton className="learn-skeleton" />
+          <Skeleton className="learn-skeleton" />
+          <Skeleton className="learn-skeleton" />
         </div>
       </Frame>
     )
@@ -67,26 +67,26 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
 
   return (
     <Frame title={loaded.title} description={loaded.description} onClose={onRequestClose} footer={removeButton}>
-      <header className="ob-head">
-        <p className="ob-head-count" role="status">
+      <header className="learn-head">
+        <p className="learn-head-count" role="status">
           {done === total ? (
             'All steps done'
           ) : (
             <>
-              Step <span className="ob-num">{activeIndex + 1}</span> of <span className="ob-num">{total}</span>
+              Step <span className="learn-num">{activeIndex + 1}</span> of <span className="learn-num">{total}</span>
             </>
           )}
-          <span className="ob-head-done">
+          <span className="learn-head-done">
             {' · '}
-            <span className="ob-num">{done}</span> done
+            <span className="learn-num">{done}</span> done
           </span>
         </p>
-        <Button variant="ghost" size="sm" className="ob-ghost" onClick={tour.reset} disabled={done === 0}>
+        <Button variant="ghost" size="sm" className="learn-ghost" onClick={tour.reset} disabled={done === 0}>
           Restart
         </Button>
       </header>
 
-      <ol className="ob-steps">
+      <ol className="learn-steps">
         {loaded.steps.map((step, index) => {
           const record = records[step.id]
           const state = tour.stateOf(step)
@@ -96,49 +96,49 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
           const isOpen = reached && open === step.id
           const last = index === total - 1
           const indicator = (
-            <span className="ob-indicator" data-state={state} aria-hidden="true">
-              <span className="ob-indicator-num">{index + 1}</span>
-              <Check className="ob-indicator-check" strokeWidth={2.5} />
-              {state === 'active' ? <span className={`ob-indicator-pulse ${uiClasses.pulse}`} /> : null}
+            <span className="learn-indicator" data-state={state} aria-hidden="true">
+              <span className="learn-indicator-num">{index + 1}</span>
+              <Check className="learn-indicator-check" strokeWidth={2.5} />
+              {state === 'active' ? <span className={`learn-indicator-pulse ${uiClasses.pulse}`} /> : null}
             </span>
           )
           return (
             <li
               key={step.id}
-              className="ob-step"
+              className="learn-step"
               data-state={state}
               data-open={isOpen || undefined}
               aria-current={state === 'active' ? 'step' : undefined}
             >
               {last ? null : (
-                <span className="ob-line" data-done={state === 'complete' || undefined} aria-hidden="true" />
+                <span className="learn-line" data-done={state === 'complete' || undefined} aria-hidden="true" />
               )}
               {reached ? (
                 <button
                   type="button"
-                  className="ob-row"
+                  className="learn-row"
                   aria-expanded={isOpen}
                   onClick={() => setOpen(isOpen ? null : step.id)}
                 >
                   {indicator}
-                  <span className="ob-title">{step.title}</span>
+                  <span className="learn-title">{step.title}</span>
                   <StateChip state={state} step={step} record={record} />
-                  <ChevronDown className={`ob-chevron ${uiClasses.icon}`} aria-hidden="true" />
+                  <ChevronDown className={`learn-chevron ${uiClasses.icon}`} aria-hidden="true" />
                 </button>
               ) : (
-                <div className="ob-row">
+                <div className="learn-row">
                   {indicator}
-                  <span className="ob-title">{step.title}</span>
-                  <span className="ob-sr">not reached yet</span>
+                  <span className="learn-title">{step.title}</span>
+                  <span className="learn-sr">not reached yet</span>
                 </div>
               )}
               {reached ? (
                 // Mounted while the step is reached and folded with a grid
                 // track, so opening is a transition that can reverse midway
                 // rather than an entrance that restarts from nothing.
-                <div className="ob-panel" data-open={isOpen || undefined} inert={!isOpen}>
-                  <div className="ob-panel-clip">
-                    <div className="ob-panel-body ob-card">
+                <div className="learn-panel" data-open={isOpen || undefined} inert={!isOpen}>
+                  <div className="learn-panel-clip">
+                    <div className="learn-panel-body learn-card">
                       <StepContent host={host} tour={tour} step={step} />
                     </div>
                   </div>
@@ -157,7 +157,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
  * close the card (or the pane). The compose file is named from what
  * the daemon loaded, so a daemon started elsewhere still finds its project.
  */
-export function RemoveOnboarding({
+export function RemoveLearnIii({
   host,
   onClose,
   label = 'Close and remove the tour',
@@ -179,24 +179,24 @@ export function RemoveOnboarding({
       // With several projects loaded, the one running this worker.
       const withFile = (list?.projects ?? []).filter((project) => project.file)
       const file = (
-        withFile.find((project) => project.containers?.some((entry) => entry.container === 'onboarding')) ?? withFile[0]
+        withFile.find((project) => project.containers?.some((entry) => entry.container === 'learn-iii')) ?? withFile[0]
       )?.file
       await host.iii.trigger('compose::remove', {
         ...(file ? { file } : {}),
-        workers: ['onboarding'],
+        workers: ['learn-iii'],
       })
     } catch (err) {
-      setError(`Could not remove the onboarding worker: ${errorMessage(err)}`)
+      setError(`Could not remove the learn-iii worker: ${errorMessage(err)}`)
       setRemoving(false)
       return
     }
     if (onClose) onClose()
-    else await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' }).catch(() => undefined)
+    else await host.iii.trigger('console::workspace::close', { screen: 'ext:learn-iii' }).catch(() => undefined)
   }, [host, onClose])
   return (
     <>
       {error ? <StatusPanel variant="alert" headline={error} role="alert" /> : null}
-      <Button variant="ghost" size="sm" className="ob-ghost" onClick={remove} disabled={removing}>
+      <Button variant="ghost" size="sm" className="learn-ghost" onClick={remove} disabled={removing}>
         {removing ? 'Removing…' : label}
       </Button>
     </>
@@ -204,7 +204,7 @@ export function RemoveOnboarding({
 }
 
 function Frame({
-  title = 'onboarding',
+  title = 'learn-iii',
   description,
   onClose,
   footer,
@@ -229,13 +229,13 @@ function Frame({
             way to reach the last steps. The scroller sits OUTSIDE the centred
             column so the scrollbar rides the pane's edge rather than the
             text's. */}
-        <div className="ob-scroll">
+        <div className="learn-scroll">
           {/* Centred column: the pane is often narrow beside a chat, but a
               page wide enough to be a whole tab should not leave the list
               stranded on one edge. */}
-          <div className="ob-column">{children}</div>
+          <div className="learn-column">{children}</div>
         </div>
-        {footer ? <div className="ob-footer">{footer}</div> : null}
+        {footer ? <div className="learn-footer">{footer}</div> : null}
       </PageMain>
     </PageShell>
   )

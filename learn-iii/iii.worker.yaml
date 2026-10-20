@@ -1,10 +1,10 @@
 iii: v1
-name: onboarding
+name: learn-iii
 language: javascript
 deploy: bundle
 license: Apache-2.0
 manifest: package.json
-tags: [onboarding, tour, console, ui, docs]
+tags: [learn-iii, tour, console, ui, docs]
 description: Guided console tour — step content, per-operator progress in state, and an injected page that spotlights the console element each step talks about.
 
 runtime:
@@ -40,6 +40,6 @@ dependencies:
   # Its bus surface is unchanged, so the page keeps calling `console::*`.
   ade: "latest"
   state: "latest"
-  # `onboarding::steps::complete` announces each closed step on the
-  # `onboarding:steps:complete` topic, which the `queue` worker serves.
+  # `learn-iii::steps::complete` announces each closed step on the
+  # `learn-iii:steps:complete` topic, which the `queue` worker serves.
   queue: "latest"

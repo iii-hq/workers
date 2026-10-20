@@ -29,7 +29,7 @@ export function bindCondition(
   condition: Condition,
   onFire: (fired: Fired) => void,
 ): () => void {
-  const localId = `onboarding::condition::${key}`
+  const localId = `learn-iii::condition::${key}`
   // The handler is registered before the trigger, so a throw from
   // `registerTrigger` must take it back down. A live handler with no trigger
   // behind it would fire alongside the next successful bind.
@@ -61,7 +61,7 @@ export function bindCondition(
  * stays written — so a step the agent reported done while nothing was
  * listening still closes. Event-only conditions (a harness turn) leave no
  * trace to read; the console reports those itself when it has one
- * (`onboarding::steps::observe`).
+ * (`learn-iii::steps::observe`).
  */
 export async function reconcileCondition(host: Host, condition: Condition): Promise<Fired | null> {
   if (condition.type !== 'state') return null

@@ -1,7 +1,7 @@
 /**
- * The guided tour that follows setup lives in the `onboarding` worker. Its
+ * The guided tour that follows setup lives in the `learn-iii` worker. Its
  * UI floats over the workspace as an overlay (a page on consoles without
- * the overlay slot), and the worker's `Open onboarding` command is what
+ * the overlay slot), and the worker's `Open learn-iii` command is what
  * shows it either way. Accepting the tour from the wizard adds that worker
  * when it is not running yet — quietly, since it is how the tour is
  * delivered rather than a choice in setup — and waits for its command.
@@ -20,7 +20,7 @@ import { TOUR_PAGE, TOUR_WORKER } from './catalog'
  */
 export const TOUR_PAGE_TIMEOUT_MS = 15_000
 
-/** The worker's `Open onboarding` palette row, `<page>.<command>`. */
+/** The worker's `Open learn-iii` palette row, `<page>.<command>`. */
 const TOUR_COMMAND_KEY = `${TOUR_PAGE}.open`
 
 function tourCommand() {

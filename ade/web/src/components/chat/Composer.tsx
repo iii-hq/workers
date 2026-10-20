@@ -721,8 +721,8 @@ export function Composer({
       data-composer-streaming={isStreaming ? 'true' : undefined}
       data-composer-compact={compactRow ? 'true' : undefined}
       className={cn(
-        // onboarding-composer: tour anchor (workers/onboarding). Do not remove.
-        'onboarding-composer composer-shell relative',
+        // learn-iii-composer: tour anchor (workers/learn-iii). Do not remove.
+        'learn-iii-composer composer-shell relative',
         hasProjectStrip ? 'pt-8' : 'pt-0',
       )}
     >

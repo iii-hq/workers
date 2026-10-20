@@ -1312,13 +1312,13 @@ workers:
       binary: memory-consolidate
       targets: *id001
     publish: true
-  onboarding:
+  learn-iii:
     source:
-      path: onboarding
+      path: learn-iii
       package_manifest: package.json
     artifact:
       kind: javascript-bundle
-      workspace_root: onboarding
+      workspace_root: learn-iii
       runtime:
         name: node
         version: 22.20.0

@@ -1,6 +1,6 @@
-# onboarding
+# learn-iii
 
-The guided console tour. The page and its tab are called **onboarding**; a
+The guided console tour. The page and its tab are called **learn-iii**; a
 "tour" is one unit of content inside it, so a second tour can be added
 without renaming anything.
 
@@ -9,7 +9,7 @@ Three parts:
 | Part | Lives in | Owns |
 | --- | --- | --- |
 | Content | `src/tours.mjs` | which tours exist, their steps, and the console element each step points at |
-| Progress | the `state` worker, scope `onboarding` | how far each operator got, so a reload resumes mid-tour |
+| Progress | the `state` worker, scope `learn-iii` | how far each operator got, so a reload resumes mid-tour |
 | Rendering | `ui/page.tsx` (injected into the console) | the tour card, the spotlight box, and the page an older console falls back to |
 
 ## How it shows
@@ -34,20 +34,20 @@ pane closed on load, and the card comes up in its place.
 On a console without the slot the same tour renders as a page in a pane
 (`ui/src/page.tsx`). Both run on `ui/src/use-tour.ts`.
 
-`Open onboarding` (the palette row, `onboarding.open`) shows it either way.
+`Open learn-iii` (the palette row, `learn-iii.open`) shows it either way.
 The setup wizard runs that command when the operator starts the tour on its
 Ready step, or — after they pick an example prompt instead — once that chat's
 agent has answered or five minutes have passed, whichever comes first.
 
 ## Functions
 
-- `onboarding::tours::list` — every tour in curriculum order.
-- `onboarding::tours::get` — one tour with all of its steps.
-- `onboarding::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
-- `onboarding::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
-- `onboarding::steps::observe` — report a trigger that fired before the tour was listening; every open step whose condition matches it closes, with the event as evidence. The console calls it with the example chat's completed turn when it opens the tour on its own, so step one does not ask for a message the operator already sent.
-- `onboarding::steps::reset` — forget one tour and start it again.
-- `onboarding::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
+- `learn-iii::tours::list` — every tour in curriculum order.
+- `learn-iii::tours::get` — one tour with all of its steps.
+- `learn-iii::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
+- `learn-iii::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `learn-iii:steps:complete` topic (see Events).
+- `learn-iii::steps::observe` — report a trigger that fired before the tour was listening; every open step whose condition matches it closes, with the event as evidence. The console calls it with the example chat's completed turn when it opens the tour on its own, so step one does not ask for a message the operator already sent.
+- `learn-iii::steps::reset` — forget one tour and start it again.
+- `learn-iii::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
 
 Progress is written with `state::update` and its ordered atomic ops, never
 `state::get` then `state::set`: two invocations can interleave around an
@@ -58,7 +58,7 @@ and the read drops nulls on the way out.
 
 ## Events
 
-Each closed step is published to the `onboarding:steps:complete` topic through the
+Each closed step is published to the `learn-iii:steps:complete` topic through the
 `queue` worker, so anything that follows a tour subscribes instead of reading
 this worker's state. The payload:
 
@@ -98,7 +98,7 @@ its payload over whatever is being read.
 The tour ships two kinds. The first step waits on `harness::turn-completed`,
 so it closes when the agent answers. The four steps whose work the AGENT does
 — Composability, Discoverability, Extensibility, Reactivity — each wait on a
-`state` trigger bound to one key, `step_<id>_completed`, in the `onboarding`
+`state` trigger bound to one key, `step_<id>_completed`, in the `learn-iii`
 scope; their prompts end by telling the agent to write it as it ends its turn.
 The end of the turn is the boundary, not the agent's own sense of being
 finished — asked for the latter it reports while it is still working. The
@@ -114,9 +114,9 @@ running when the prompt goes out.
 ## Anchors
 
 A step's `anchors` are selectors for the console element it talks about, best
-first. The first is always a class the console carries **for this tour**: `onboarding-menu-bar`, `onboarding-tabs`, `onboarding-palette`,
-`onboarding-conversations`, `onboarding-composer`, `onboarding-traces`,
-`onboarding-new-tab`, `onboarding-workspaces` (the tabs and the `+`
+first. The first is always a class the console carries **for this tour**: `learn-iii-menu-bar`, `learn-iii-tabs`, `learn-iii-palette`,
+`learn-iii-conversations`, `learn-iii-composer`, `learn-iii-traces`,
+`learn-iii-new-tab`, `learn-iii-workspaces` (the tabs and the `+`
 together). Each
 one sits in `ade/web/src` beside a short comment that says it is a tour
 anchor. `pnpm test` fails if a step points at a class the console no longer
@@ -177,9 +177,9 @@ from the repo root it installs `ui`'s slice of the shared console-UI workspace
 and builds `ui/dist` with the same builder every worker UI uses. It then
 writes the publishable shape: `dist/bundle/index.mjs` with the worker and its
 dependencies inlined, and the two page assets beside it.
-`onboarding::ui-content` reads whichever layout has the page — beside the
+`learn-iii::ui-content` reads whichever layout has the page — beside the
 bundle, or `ui/dist` in a checkout.
 
-`III_ONBOARDING_UI_WATCH=1` re-registers a changed asset, which hot-swaps the
-page in every open console tab. `III_ONBOARDING_UI_DIR` overrides where the
+`III_LEARN_III_UI_WATCH=1` re-registers a changed asset, which hot-swaps the
+page in every open console tab. `III_LEARN_III_UI_DIR` overrides where the
 assets are read from.

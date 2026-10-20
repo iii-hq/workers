@@ -36,7 +36,7 @@ describe('panel context bridge', () => {
   it('hands a screen request to every workspace listener until it unsubscribes', () => {
     const listener = vi.fn()
     const off = subscribeScreenOpen(listener)
-    const request = { screen: 'traces', relativeTo: 'ext:onboarding' }
+    const request = { screen: 'traces', relativeTo: 'ext:learn-iii' }
     requestScreenOpen(request)
     expect(listener).toHaveBeenCalledWith(request)
     off()

@@ -15,7 +15,7 @@
 
 import { uiClasses } from '@iii-dev/console-ui'
 
-const BOX_CLASS = 'onboarding-spotlight'
+const BOX_CLASS = 'learn-iii-spotlight'
 /** Breathing room between the target's edge and the box. */
 const PAD = 6
 /** Room the label keeps from the window's right edge when it sits beside the box. */
@@ -59,12 +59,12 @@ function ensureBox(): HTMLDivElement {
   box.className = BOX_CLASS
   // Lives outside the injected subtree, so it carries the scope itself —
   // the injectable-UI rule for custom portals (styles.css is scope-only).
-  box.setAttribute('data-iii-ui', 'onboarding')
+  box.setAttribute('data-iii-ui', 'learn-iii')
   box.setAttribute('aria-hidden', 'true')
   const halo = document.createElement('span')
-  halo.className = `onboarding-spotlight-halo ${uiClasses.pulse}`
+  halo.className = `learn-iii-spotlight-halo ${uiClasses.pulse}`
   label = document.createElement('span')
-  label.className = 'onboarding-spotlight-label'
+  label.className = 'learn-iii-spotlight-label'
   box.append(halo, label)
   document.body.appendChild(box)
   return box
@@ -88,7 +88,7 @@ function track(selectors: readonly string[]) {
   let sinceCheck = 0
   const step = () => {
     frame = requestAnimationFrame(step)
-    // Best selector first: the tour's own `onboarding-*` class, then the
+    // Best selector first: the tour's own `learn-iii-*` class, then the
     // console's stable hooks, so the box still lands on a console build that
     // predates the anchor classes.
     const target = firstMatch(selectors)
@@ -183,7 +183,7 @@ function coversControl(spot: SpotlightRect, target: Element): boolean {
  *
  * `document.querySelector` returns the first in DOM order, which is not
  * always the live one. A tab can mount several chat columns, each carrying
- * its own `.onboarding-composer`. A pane that is animating away stays mounted
+ * its own `.learn-iii-composer`. A pane that is animating away stays mounted
  * with `inert` and `aria-hidden` until the transition ends. And a
  * desktop-only anchor can sit inside a `hidden sm:flex` header on a narrow
  * layout — present in the document, never painted. Framing any of those puts

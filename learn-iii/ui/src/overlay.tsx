@@ -1,7 +1,7 @@
 import { Button, type Host, type OverlayRenderProps, Skeleton, StatusPanel, uiClasses } from '@iii-dev/console-ui'
 import { Check, ChevronLeft, ChevronRight, Compass, Minus, X } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { RemoveOnboarding } from './page'
+import { RemoveLearnIii } from './page'
 import { disposeSpotlight, hideSpotlight, onSpotlightMove, type SpotlightRect, showSpotlight } from './spotlight'
 import { StateChip, StepContent } from './step-content'
 import { type TourController, useTour } from './use-tour'
@@ -68,7 +68,7 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
   return (
     <section
       ref={card}
-      className="ob-overlay"
+      className="learn-overlay"
       data-corner={corner}
       role="dialog"
       aria-modal="false"
@@ -82,18 +82,18 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
         }
       }}
     >
-      <header className="ob-overlay-head">
-        <Compass className={`ob-overlay-mark ${uiClasses.icon}`} aria-hidden="true" />
-        <span className="ob-overlay-name">{loaded?.title ?? 'Tour'}</span>
+      <header className="learn-overlay-head">
+        <Compass className={`learn-overlay-mark ${uiClasses.icon}`} aria-hidden="true" />
+        <span className="learn-overlay-name">{loaded?.title ?? 'Tour'}</span>
         {loaded && openStep ? (
-          <span className="ob-overlay-count ob-num">
+          <span className="learn-overlay-count learn-num">
             {index + 1} / {loaded.steps.length}
           </span>
         ) : null}
         <Button
           variant="icon"
           size="icon"
-          className="ob-link"
+          className="learn-link"
           aria-label="Fold the tour"
           title="Fold"
           onClick={minimizeTour}
@@ -103,7 +103,7 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
         <Button
           variant="icon"
           size="icon"
-          className="ob-link"
+          className="learn-link"
           aria-label="Close the tour"
           title="Close"
           onClick={closeTour}
@@ -113,20 +113,20 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
       </header>
       {loaded ? <Progress tour={tour} /> : null}
 
-      <div className="ob-overlay-scroll">
+      <div className="learn-overlay-scroll">
         {tour.error ? (
           <StatusPanel variant="alert" headline={tour.error} role="alert" />
         ) : !loaded ? (
-          <div className="ob-loading" role="status" aria-busy="true" aria-label="Loading the tour">
-            <Skeleton className="ob-skeleton ob-skeleton--bar" />
-            <Skeleton className="ob-skeleton" />
+          <div className="learn-loading" role="status" aria-busy="true" aria-label="Loading the tour">
+            <Skeleton className="learn-skeleton learn-skeleton--bar" />
+            <Skeleton className="learn-skeleton" />
           </div>
         ) : openStep ? (
           // Keyed on the step, so each one arrives instead of the text
           // swapping under the operator's eyes.
-          <div key={openStep.id} className="ob-overlay-step">
-            <h2 id={titleId} className="ob-overlay-title">
-              <span className="ob-overlay-title-text">{openStep.title}</span>
+          <div key={openStep.id} className="learn-overlay-step">
+            <h2 id={titleId} className="learn-overlay-title">
+              <span className="learn-overlay-title-text">{openStep.title}</span>
               <StateChip state={tour.stateOf(openStep)} step={openStep} record={tour.records[openStep.id]} />
             </h2>
             <StepContent host={host} tour={tour} step={openStep} />
@@ -136,8 +136,8 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
         )}
       </div>
 
-      <footer className="ob-overlay-foot">
-        <RemoveOnboarding host={host} onClose={closeTour} label="Remove tour" />
+      <footer className="learn-overlay-foot">
+        <RemoveLearnIii host={host} onClose={closeTour} label="Remove tour" />
         {loaded && openStep ? <StepNav tour={tour} index={index} /> : null}
       </footer>
     </section>
@@ -151,7 +151,7 @@ function TourCard({ host, tour, folded }: { host: Host; tour: TourController; fo
  * yet.
  *
  * Between two reads, the segments that change are numbered in the order they
- * should move (`--ob-seg-order`): forward from the old position, or back from
+ * should move (`--learn-seg-order`): forward from the old position, or back from
  * it, so the fill travels instead of every segment switching at once. A jump
  * across many steps shares the same short sweep rather than a longer one.
  */
@@ -173,18 +173,18 @@ function Progress({ tour }: { tour: TourController }) {
     return 0
   }
   return (
-    <ol className="ob-progress">
+    <ol className="learn-progress">
       {steps.map((step, index) => {
         const state = tour.stateOf(step)
         const here = index === reading && tour.open !== null
         return (
-          <li key={step.id} className="ob-progress-item">
+          <li key={step.id} className="learn-progress-item">
             <button
               type="button"
-              className="ob-progress-seg"
+              className="learn-progress-seg"
               data-filled={index <= reading || undefined}
               data-done={state === 'complete' || undefined}
-              style={{ '--ob-seg-order': order(index) } as React.CSSProperties}
+              style={{ '--learn-seg-order': order(index) } as React.CSSProperties}
               disabled={state === 'pending'}
               aria-current={here ? 'step' : undefined}
               aria-label={`Step ${index + 1}: ${step.title}${state === 'complete' ? ', done' : ''}`}
@@ -209,11 +209,11 @@ function StepNav({ tour, index }: { tour: TourController; index: number }) {
   const next = steps[index + 1]
   const nextReached = next ? tour.stateOf(next) !== 'pending' : false
   return (
-    <span className="ob-overlay-nav">
+    <span className="learn-overlay-nav">
       <Button
         variant="ghost"
         size="sm"
-        className="ob-ghost"
+        className="learn-ghost"
         disabled={!prev}
         onClick={() => prev && tour.setOpen(prev.id)}
       >
@@ -223,7 +223,7 @@ function StepNav({ tour, index }: { tour: TourController; index: number }) {
       <Button
         variant="ghost"
         size="sm"
-        className="ob-ghost"
+        className="learn-ghost"
         disabled={!nextReached}
         onClick={() => next && tour.setOpen(next.id)}
       >
@@ -236,20 +236,20 @@ function StepNav({ tour, index }: { tour: TourController; index: number }) {
 
 function Finished({ tour, titleId }: { tour: TourController; titleId: string }) {
   return (
-    <div className="ob-overlay-step">
-      <h2 id={titleId} className="ob-overlay-title">
-        <span className="ob-overlay-title-text">You have seen the whole tour</span>
-        <span className="ob-chip" data-tone="ok">
-          <Check className="ob-chip-mark" strokeWidth={2.5} aria-hidden="true" />
+    <div className="learn-overlay-step">
+      <h2 id={titleId} className="learn-overlay-title">
+        <span className="learn-overlay-title-text">You have seen the whole tour</span>
+        <span className="learn-chip" data-tone="ok">
+          <Check className="learn-chip-mark" strokeWidth={2.5} aria-hidden="true" />
           All done
         </span>
       </h2>
-      <p className="ob-body">Every step is done. Pick one in the bar above to read it again, or start over.</p>
-      <div className="ob-actions">
-        <Button className="ob-action" onClick={closeTour}>
+      <p className="learn-body">Every step is done. Pick one in the bar above to read it again, or start over.</p>
+      <div className="learn-actions">
+        <Button className="learn-action" onClick={closeTour}>
           Close
         </Button>
-        <Button variant="ghost" className="ob-ghost" onClick={tour.reset}>
+        <Button variant="ghost" className="learn-ghost" onClick={tour.reset}>
           Restart
         </Button>
       </div>
@@ -274,7 +274,7 @@ function Pill({
     <button
       ref={cardRef as React.RefObject<HTMLButtonElement>}
       type="button"
-      className="ob-pill"
+      className="learn-pill"
       data-corner={corner}
       onClick={showTour}
       aria-label={`Open the tour, ${done} of ${steps.length} steps done`}
@@ -282,11 +282,11 @@ function Pill({
       <Compass className={uiClasses.icon} aria-hidden="true" />
       Tour
       {steps.length > 0 ? (
-        <span className="ob-pill-count ob-num">
+        <span className="learn-pill-count learn-num">
           {done}/{steps.length}
         </span>
       ) : null}
-      {waiting ? <span className={`ob-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
+      {waiting ? <span className={`learn-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
     </button>
   )
 }

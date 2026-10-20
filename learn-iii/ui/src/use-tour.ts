@@ -111,15 +111,15 @@ export function useTour(host: Host, conversationId: string | null | undefined): 
     void (async () => {
       try {
         const [list, progress] = await Promise.all([
-          host.iii.trigger<{ tours: { id: string }[] }>('onboarding::tours::list'),
-          host.iii.trigger<ProgressResponse>('onboarding::progress::get', {}),
+          host.iii.trigger<{ tours: { id: string }[] }>('learn-iii::tours::list'),
+          host.iii.trigger<ProgressResponse>('learn-iii::progress::get', {}),
         ])
         const id = progress.next_tour_id ?? list.tours[0]?.id
         if (!id) {
           if (live) setError('This engine has no tours registered.')
           return
         }
-        const { tour: loaded } = await host.iii.trigger<{ tour: Tour }>('onboarding::tours::get', { id })
+        const { tour: loaded } = await host.iii.trigger<{ tour: Tour }>('learn-iii::tours::get', { id })
         if (!live) return
         const stored = progress.tours[id]?.steps ?? {}
         setTour(loaded)
@@ -163,7 +163,7 @@ export function useTour(host: Host, conversationId: string | null | undefined): 
       // lands. A rejected write leaves the step where it was, instead of
       // showing complete until the next reload disagrees.
       void host.iii
-        .trigger<{ step?: StepRecord }>('onboarding::steps::complete', {
+        .trigger<{ step?: StepRecord }>('learn-iii::steps::complete', {
           tour_id: tour.id,
           step_id: stepId,
           ...(fired ? { fired: { trigger_type: fired.trigger_type, payload: fired.payload } } : {}),
@@ -184,7 +184,7 @@ export function useTour(host: Host, conversationId: string | null | undefined): 
   const refresh = useCallback(() => {
     if (!tour) return
     void host.iii
-      .trigger<ProgressResponse>('onboarding::progress::get', {})
+      .trigger<ProgressResponse>('learn-iii::progress::get', {})
       .then((progress) => {
         const stored = progress.tours[tour.id]?.steps ?? {}
         const current = recordsRef.current
@@ -327,7 +327,7 @@ export function useTour(host: Host, conversationId: string | null | undefined): 
         scope && key ? host.iii.trigger('state::delete', { scope, key }).catch(() => undefined) : undefined,
       ),
     )
-      .then(() => host.iii.trigger('onboarding::steps::reset', { tour_id: tour.id }))
+      .then(() => host.iii.trigger('learn-iii::steps::reset', { tour_id: tour.id }))
       .then(() => {
         recordsRef.current = {}
         setRecords({})
@@ -406,7 +406,7 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
         // A console too old for `workspace::list` just never answers; the
         // step treats unknown as "on screen", so it is never a dead end.
         .catch(() => {})
-    const localId = `onboarding::layout::${screen}`
+    const localId = `learn-iii::layout::${screen}`
     let offHandler: () => void = () => {}
     let offTrigger: () => void = () => {}
     try {

@@ -1,36 +1,36 @@
 import type { Host } from '@iii-dev/console-ui'
 import { TourOverlay } from './src/overlay'
-import { OnboardingPage } from './src/page'
+import { LearnIiiPage } from './src/page'
 import { showTour } from './src/visibility'
 
 /**
  * The tour floats over the console as a card where the console has the
  * overlay slot, and is a page in a pane where it does not. Either way
- * `Open onboarding` is how it is shown — the palette row, and the command
+ * `Open learn-iii` is how it is shown — the palette row, and the command
  * the setup wizard runs when the tour is accepted or comes due.
  */
 export default function setup(host: Host) {
   if (host.overlays?.register) {
     host.overlays.register({
-      id: 'onboarding-tour',
+      id: 'learn-iii-tour',
       render: (props) => <TourOverlay host={host} {...props} />,
     })
     void adoptOldPane(host)
   } else {
     host.pages.register({
-      id: 'onboarding',
-      title: 'onboarding',
-      render: (props) => <OnboardingPage host={host} {...props} />,
+      id: 'learn-iii',
+      title: 'learn-iii',
+      render: (props) => <LearnIiiPage host={host} {...props} />,
     })
   }
   const overlay = Boolean(host.overlays?.register)
-  host.commands?.register('onboarding', [
+  host.commands?.register('learn-iii', [
     {
       id: 'open',
-      title: 'Open onboarding',
+      title: 'Open learn-iii',
       detail: 'Guided walkthrough of the console',
-      keywords: ['onboarding', 'tour', 'walkthrough', 'help', 'tutorial'],
-      run: () => (overlay ? showTour() : host.panels?.open({ pageId: 'onboarding' })),
+      keywords: ['learn-iii', 'tour', 'walkthrough', 'help', 'tutorial'],
+      run: () => (overlay ? showTour() : host.panels?.open({ pageId: 'learn-iii' })),
     },
   ])
 }
@@ -44,8 +44,8 @@ export default function setup(host: Host) {
 async function adoptOldPane(host: Host): Promise<void> {
   try {
     const ws = await host.iii.trigger<{ tabs: { screens: string[] }[] }>('console::workspace::list')
-    if (!ws.tabs.some((tab) => tab.screens.includes('ext:onboarding'))) return
-    await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' })
+    if (!ws.tabs.some((tab) => tab.screens.includes('ext:learn-iii'))) return
+    await host.iii.trigger('console::workspace::close', { screen: 'ext:learn-iii' })
     showTour()
   } catch {
     // Nothing to adopt, or nothing that can do it.

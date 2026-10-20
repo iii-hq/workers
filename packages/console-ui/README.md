@@ -151,7 +151,7 @@ looking at, with no bus round trip:
 if (host.panels?.openScreen) {
   host.panels.openScreen({
     screen: 'traces',
-    relativeTo: 'ext:onboarding', // beside this page, in whichever tab shows it
+    relativeTo: 'ext:learn-iii', // beside this page, in whichever tab shows it
     direction: 'right',
     sizes: [0.3, 0.4, 0.3], // the tab after placement; ignored on a mismatch
   })

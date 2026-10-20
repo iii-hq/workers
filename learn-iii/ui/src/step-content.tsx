@@ -23,19 +23,19 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
   const screenElsewhere = reading && Boolean(step.to_open) && tour.screenElsewhere && state !== 'complete'
   return (
     <>
-      <p className="ob-body">{step.body}</p>
+      <p className="learn-body">{step.body}</p>
       {reading && step.on_closed && tour.closedNote ? (
-        <p className="ob-note" role="status">
+        <p className="learn-note" role="status">
           {step.on_closed.body}
         </p>
       ) : null}
       {waitingForScreen ? (
-        <p className="ob-note ob-note--todo" role="status">
+        <p className="learn-note learn-note--todo" role="status">
           {step.to_open?.body}
         </p>
       ) : null}
       {screenElsewhere ? (
-        <p className="ob-note ob-note--todo" role="status">
+        <p className="learn-note learn-note--todo" role="status">
           {step.to_open?.elsewhere ?? 'It is open in another tab. Switch to that tab to see it.'}
         </p>
       ) : null}
@@ -54,9 +54,9 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
         />
       ) : null}
       {step.ask && state !== 'complete' ? (
-        <div className="ob-ask">
-          <div className="ob-actions">
-            <Button className="ob-action" onClick={() => tour.ask(step)}>
+        <div className="learn-ask">
+          <div className="learn-actions">
+            <Button className="learn-action" onClick={() => tour.ask(step)}>
               {step.ask.label}
             </Button>
           </div>
@@ -64,16 +64,16 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
         </div>
       ) : null}
       {state !== 'complete' && !step.condition && !step.ask && step.id !== 'stay-in-touch' ? (
-        <div className="ob-actions">
+        <div className="learn-actions">
           {waitingForScreen || screenElsewhere ? (
             // The operator opens the screen (or brings its tab up); the step
             // moves on when they have. Skipping is there so it is never a
             // dead end.
-            <Button variant="ghost" className="ob-ghost" onClick={() => tour.complete(step.id)}>
+            <Button variant="ghost" className="learn-ghost" onClick={() => tour.complete(step.id)}>
               Skip this step
             </Button>
           ) : (
-            <Button className="ob-action" onClick={() => tour.complete(step.id)}>
+            <Button className="learn-action" onClick={() => tour.complete(step.id)}>
               {step.to_open ? 'Continue' : 'Got it'}
             </Button>
           )}
@@ -97,11 +97,11 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
  */
 function Prompt({ text }: { text: string }) {
   return (
-    <div className="ob-prompt">
-      <span className="ob-prompt-head">
-        <span className="ob-prompt-label">Message to the agent</span>
+    <div className="learn-prompt">
+      <span className="learn-prompt-head">
+        <span className="learn-prompt-label">Message to the agent</span>
       </span>
-      <p className="ob-prompt-text">{text}</p>
+      <p className="learn-prompt-text">{text}</p>
     </div>
   )
 }
@@ -111,15 +111,15 @@ export function StateChip({ state, step, record }: { state: StepState; step: Ste
   if (state === 'pending') return null
   if (state === 'complete') {
     return (
-      <span className="ob-chip" data-tone="ok">
-        <Check className="ob-chip-mark" strokeWidth={2.5} aria-hidden="true" />
+      <span className="learn-chip" data-tone="ok">
+        <Check className="learn-chip-mark" strokeWidth={2.5} aria-hidden="true" />
         {record ? `Done ${when(record.at)}` : 'Done'}
       </span>
     )
   }
   return (
-    <span className="ob-chip" data-tone={step.condition ? 'live' : 'now'}>
-      {step.condition ? <span className={`ob-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
+    <span className="learn-chip" data-tone={step.condition ? 'live' : 'now'}>
+      {step.condition ? <span className={`learn-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
       {step.condition ? 'Waiting' : 'Now'}
     </span>
   )
@@ -145,35 +145,35 @@ function ConditionRow({
 }) {
   const hasConfig = Object.keys(condition.config ?? {}).length > 0
   return (
-    <div className="ob-condition" data-fired={fired ? 'true' : undefined}>
-      <button type="button" className="ob-disclosure" aria-expanded={open} onClick={onToggle}>
-        <ChevronRight className={`ob-caret ${uiClasses.icon}`} data-open={open || undefined} aria-hidden="true" />
-        <span className="ob-disclosure-label">Trigger</span>
-        <span className="ob-disclosure-summary">
+    <div className="learn-condition" data-fired={fired ? 'true' : undefined}>
+      <button type="button" className="learn-disclosure" aria-expanded={open} onClick={onToggle}>
+        <ChevronRight className={`learn-caret ${uiClasses.icon}`} data-open={open || undefined} aria-hidden="true" />
+        <span className="learn-disclosure-label">Trigger</span>
+        <span className="learn-disclosure-summary">
           {fired ? (
             <>
-              <Check className="ob-chip-mark" strokeWidth={2.5} aria-hidden="true" />
+              <Check className="learn-chip-mark" strokeWidth={2.5} aria-hidden="true" />
               Fired {when(fired.at)}
             </>
           ) : (
             <>
-              <span className={`ob-chip-dot ${uiClasses.pulse}`} aria-hidden="true" />
+              <span className={`learn-chip-dot ${uiClasses.pulse}`} aria-hidden="true" />
               {condition.label}
             </>
           )}
         </span>
       </button>
-      <div className="ob-panel ob-panel--inner" data-open={open || undefined} inert={!open}>
-        <div className="ob-panel-clip">
-          <div className="ob-panel-body ob-terminal">
-            <span className="ob-terminal-line">
-              <span className="ob-terminal-prompt">$</span> {fired?.trigger_type ?? condition.type}
-              {hasConfig ? <span className="ob-terminal-dim"> {JSON.stringify(condition.config)}</span> : null}
+      <div className="learn-panel learn-panel--inner" data-open={open || undefined} inert={!open}>
+        <div className="learn-panel-clip">
+          <div className="learn-panel-body learn-terminal">
+            <span className="learn-terminal-line">
+              <span className="learn-terminal-prompt">$</span> {fired?.trigger_type ?? condition.type}
+              {hasConfig ? <span className="learn-terminal-dim"> {JSON.stringify(condition.config)}</span> : null}
             </span>
             {fired ? (
-              <pre className="ob-pre">{format(fired.payload)}</pre>
+              <pre className="learn-pre">{format(fired.payload)}</pre>
             ) : (
-              <span className="ob-terminal-dim"># {condition.hint ?? condition.label}</span>
+              <span className="learn-terminal-dim"># {condition.hint ?? condition.label}</span>
             )}
           </div>
         </div>
@@ -233,7 +233,7 @@ function StayInTouch({
       if (!email.trim() || status === 'sending') return
       setStatus('sending')
       void host.iii
-        .trigger('onboarding::subscribe', { email: email.trim(), source: 'onboarding_flow' })
+        .trigger('learn-iii::subscribe', { email: email.trim(), source: 'learn_iii_flow' })
         .then(() => {
           setStatus('done')
           onSubscribed()
@@ -249,19 +249,19 @@ function StayInTouch({
   )
 
   return (
-    <div className="ob-stack">
+    <div className="learn-stack">
       {/* One inset panel for the signup, so the field and its two actions
           read as one thing; the confirmation takes its place in the same
           panel, so the card does not jump. */}
-      <div className="ob-signup">
+      <div className="learn-signup">
         {subscribed || status === 'done' ? (
-          <p className="ob-signup-done" role="status">
+          <p className="learn-signup-done" role="status">
             <Check className={uiClasses.icon} strokeWidth={2.5} aria-hidden="true" />
             You are on the list.
           </p>
         ) : (
-          <form className="ob-form" onSubmit={submit}>
-            <label className="ob-signup-label" htmlFor={fieldId}>
+          <form className="learn-form" onSubmit={submit}>
+            <label className="learn-signup-label" htmlFor={fieldId}>
               Email for product updates
             </label>
             <Input
@@ -271,19 +271,19 @@ function StayInTouch({
               value={email}
               onChange={setEmail}
               placeholder="you@example.com"
-              className="ob-field"
+              className="learn-field"
             />
-            <div className="ob-form-actions">
+            <div className="learn-form-actions">
               <Button
                 type="button"
                 variant="ghost"
-                className="ob-ghost"
+                className="learn-ghost"
                 onClick={onSkip}
                 disabled={status === 'sending'}
               >
                 Skip this step
               </Button>
-              <Button type="submit" className="ob-action" disabled={status === 'sending'}>
+              <Button type="submit" className="learn-action" disabled={status === 'sending'}>
                 {status === 'sending' ? 'Sending…' : 'Get updates'}
               </Button>
             </div>
@@ -291,11 +291,11 @@ function StayInTouch({
         )}
         {status === 'failed' ? <StatusPanel variant="alert" headline={message} role="alert" /> : null}
       </div>
-      <div className="ob-follow">
-        <span className="ob-follow-label">Follow along</span>
-        <div className="ob-links">
+      <div className="learn-follow">
+        <span className="learn-follow-label">Follow along</span>
+        <div className="learn-links">
           {SOCIALS.map((social) => (
-            <Button key={social.label} asChild variant="icon" size="icon" className="ob-link">
+            <Button key={social.label} asChild variant="icon" size="icon" className="learn-link">
               <a href={social.href} target="_blank" rel="noreferrer" aria-label={social.label} title={social.label}>
                 {/* Brand marks lucide does not ship. lint-allow no-inline-svg */}
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={uiClasses.icon}>
@@ -315,13 +315,13 @@ function StayInTouch({
 function Copyable({ label, text }: { label: string; text: string }) {
   const { state, copy } = useCopyFlash(text)
   return (
-    <div className="ob-prompt">
-      <div className="ob-prompt-head">
-        <span className="ob-prompt-label">{label}</span>
+    <div className="learn-prompt">
+      <div className="learn-prompt-head">
+        <span className="learn-prompt-label">{label}</span>
         <Button
           variant="ghost"
           size="sm"
-          className="ob-ghost"
+          className="learn-ghost"
           onClick={copy}
           aria-label={state === 'copied' ? 'Copied' : 'Copy'}
         >
@@ -333,7 +333,7 @@ function Copyable({ label, text }: { label: string; text: string }) {
           {state === 'copied' ? 'Copied' : 'Copy'}
         </Button>
       </div>
-      <p className="ob-prompt-text">{text}</p>
+      <p className="learn-prompt-text">{text}</p>
     </div>
   )
 }

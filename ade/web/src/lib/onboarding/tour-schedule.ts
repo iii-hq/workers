@@ -131,7 +131,7 @@ export function useScheduledTour(): void {
         .then(openTour)
         .catch((error: unknown) => {
           // Nobody asked for this tour in the moment, so a failure is not
-          // worth a dialog; the palette's `Open onboarding` still works.
+          // worth a dialog; the palette's `Open learn-iii` still works.
           console.warn('[onboarding] the scheduled tour could not open', error)
         })
     }
