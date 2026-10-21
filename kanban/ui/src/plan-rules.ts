@@ -276,7 +276,7 @@ export function triggerScope(triggerType: string, config: Record<string, unknown
   const parts = [
     given('ticket_id'),
     given('parent_id') && `${given('parent_id')} and its subtasks`,
-    triggerType.endsWith(':change') && given('release_id') && `tickets in ${given('release_id')}`,
+    triggerType === 'kanban:change' && given('release_id') && `tickets in ${given('release_id')}`,
   ].filter(Boolean)
   return parts.length > 0 ? parts.join(' · ') : 'any ticket'
 }

@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("registering kanban configuration schema")?;
-    let reload = configuration::bind_reload(&iii, config.clone(), ctx.subscribers.clone())
+    let reload = configuration::bind_reload(&iii, config.clone())
         .map_err(anyhow::Error::msg)
         .context("binding configuration trigger")?;
     // Closes the boot gap: fetch the authoritative value through the same

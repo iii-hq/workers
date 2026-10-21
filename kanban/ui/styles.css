@@ -934,18 +934,6 @@
   color: var(--color-ok);
 }
 
-/* Status and priority pickers: the glyph or dot, then an inline Select that reads as the label. */
-[data-iii-ui="kanban"] .kanban-pick {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-[data-iii-ui="kanban"] .kanban-card__foot .kanban-pick--status {
-  margin-left: -4px;
-}
-
 [data-iii-ui="kanban"] .kanban-priority[data-tone] {
   gap: 6px;
   color: var(--color-ink);
@@ -1379,18 +1367,4 @@
 [data-iii-ui="kanban"] .kanban-board[data-narrow="true"] .kanban-swim__more {
   min-height: 44px;
   padding: 0 12px;
-}
-
-[data-iii-ui="kanban"] .kanban-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-width: 0;
-}
-
-[data-iii-ui="kanban"] .kanban-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
 }

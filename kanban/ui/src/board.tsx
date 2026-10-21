@@ -70,7 +70,6 @@ import {
 import { TicketList } from './list'
 import { CreateTicketDialog } from './overlays'
 import {
-  type Column,
   type AgentProfile,
   api,
   type BoardColumn,
@@ -80,13 +79,10 @@ import {
   PLAN_CHANGED_EVENT,
   PROJECTS_PAGE_ID,
   PriorityChip,
-  StatusPicker,
   RELEASES_PAGE_ID,
   StatusGlyph,
   statusLabel,
-  CONFIG_EVENT,
   subscribeChanges,
-  Pills,
   summarizeTicket,
   TICKET_PAGE_ID,
   type Ticket,
@@ -174,15 +170,10 @@ type TicketCardProps = {
   /** The labels the filters ask for: they come first and show selected. */
   highlight: string[]
   priorities: string[]
-  columns: Column[]
   doneStatus: string
-  canceledStatus: string | null
   canOpenPane: boolean
-  /** A click on the card: the ticket in this pane. */
   onOpen: (key: string) => void
-  /** The corner button: the ticket in a pane of its own. */
-  onOpenPane: (key: string) => void
-  onStatus: (ticket: TicketSummary, status: string) => void
+  onOpenHere: (key: string) => void
   onDragStart: (ticket: TicketSummary, event: DragEvent<HTMLElement>) => void
 }
 
@@ -197,13 +188,10 @@ const TicketCard = memo(function TicketCard({
   subs,
   highlight,
   priorities,
-  columns,
   doneStatus,
-  canceledStatus,
   canOpenPane,
   onOpen,
-  onOpenPane,
-  onStatus,
+  onOpenHere,
   onDragStart,
 }: TicketCardProps) {
   const assignee = agent?.name ?? ticket.assignee
@@ -255,10 +243,10 @@ const TicketCard = memo(function TicketCard({
         {canOpenPane ? (
           <IconButton
             className="kanban-card__here"
-            label="Open in a pane"
+            label="Open in this tab"
             onClick={(event) => {
               event.stopPropagation()
-              onOpenPane(ticket.key)
+              onOpenHere(ticket.key)
             }}
             onKeyDown={(event) => event.stopPropagation()}
             variant="ghost"
@@ -281,15 +269,7 @@ const TicketCard = memo(function TicketCard({
           ) : null}
         </div>
       ) : null}
-      <Pills pills={ticket.pills} />
       <div className="kanban-card__foot">
-        <StatusPicker
-          canceledStatus={canceledStatus}
-          columns={columns}
-          doneStatus={doneStatus}
-          onChange={(status) => onStatus(ticket, status)}
-          status={ticket.status}
-        />
         <span className="kanban-card__key">{ticket.key}</span>
         {notable ? <PriorityChip priority={ticket.priority} priorities={priorities} /> : null}
         <span className="kanban-card__spacer" />
@@ -668,11 +648,6 @@ export function BoardPage({
 
   useEffect(() => {
     return subscribeChanges(host.iii, (event) => {
-      // Columns or statuses changed outside this pane: the board read carries them.
-      if (event?.event === CONFIG_EVENT) {
-        void load(true)
-        return
-      }
       if (!event?.ticket) return
       write(summarizeTicket(event.ticket), {
         moved: event.event === 'ticket.moved',
@@ -967,11 +942,8 @@ export function BoardPage({
         highlight={filters.labels}
         now={ctx.now}
         onDragStart={handleDragStart}
-        canceledStatus={canceledStatus}
-        columns={columns}
-        onOpen={openInline}
-        onOpenPane={openTicket}
-        onStatus={changeStatus}
+        onOpen={openTicket}
+        onOpenHere={openInline}
         // A parent the board does not hold (deleted) is not named: its key would lead nowhere.
         parentKey={ticket.parent_id ? keyById.get(ticket.parent_id) : undefined}
         priorities={priorities}
@@ -1016,16 +988,6 @@ export function BoardPage({
     (lane: Swimlane, status: string, event: DragEvent<HTMLElement>) => handleDrop(lane.id, status, event),
     [handleDrop],
   )
-  /** The card's status picker: the ticket goes to the end of that lane. */
-  const changeStatus = useCallback(
-    (ticket: TicketSummary, status: string) => {
-      if (status === ticket.status) return
-      const lane = dataRef.current?.columns.find((column) => column.id === status)
-      applyMove(ticket.id, status, lane?.tickets.length ?? 0)
-    },
-    [applyMove],
-  )
-
   const swimStatusLabel = useCallback((status: string) => statusLabel(columns, status), [columns])
 
   if (inlineTicketId) {

@@ -2462,7 +2462,6 @@ fn every_ticket_serializes_as_a_view_with_the_contract_field_names() {
             "priority",
             "assignee",
             "labels",
-            "pills",
             "parent_id",
             "project_id",
             "release_id",

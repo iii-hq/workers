@@ -99,12 +99,12 @@ function titleCase(value: string): string {
 }
 
 const TICKET_VERBS: Record<string, string> = {
-  ['kanban::ticket::create']: 'Created',
-  ['kanban::ticket::update']: 'Updated',
-  ['kanban::ticket::move']: 'Moved',
-  ['kanban::ticket::delete']: 'Deleted',
-  ['kanban::ticket::restore']: 'Restored',
-  ['kanban::comment::create']: 'Commented on',
+  'kanban::ticket::create': 'Created',
+  'kanban::ticket::update': 'Updated',
+  'kanban::ticket::move': 'Moved',
+  'kanban::ticket::delete': 'Deleted',
+  'kanban::ticket::restore': 'Restored',
+  'kanban::comment::create': 'Commented on',
 }
 
 function ticketVerb(functionId: string): string | undefined {
@@ -480,7 +480,7 @@ function EntityTable({ kind, entities }: { kind: 'release' | 'project'; entities
   )
 }
 
-/** The cards of 'kanban::release::*' and 'kanban::project::*' results. */
+/** The cards of `kanban::release::*` and `kanban::project::*` results. */
 export function createPlanRenderer(host: Host) {
   const kindOf = (functionId: string): 'release' | 'project' | null =>
     functionId.startsWith('kanban::release::')
@@ -551,7 +551,7 @@ export function createTicketRenderer(host: Host) {
 /**
  * The preview of a `@kanban(id="…")` chat mention: the same card a ticket
  * function result shows, drawn from the mention view's `data` (the board
- * projection plus a description excerpt, see 'kanban/src/mentions.rs').
+ * projection plus a description excerpt, see `kanban/src/mentions.rs`).
  */
 export function createTicketMentionRenderer(host: Host): MentionRendererRegistration {
   return {

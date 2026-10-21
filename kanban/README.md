@@ -174,11 +174,6 @@ never treats it as open. New boards get the Canceled column; a stored board
 without one keeps its columns (add it in the settings form), and a stored board
 that already has a `canceled` column picks it up.
 
-A ticket also carries `pills`: small icon-and-text badges another worker pins
-on it (`[{ "icon": "calendar", "text": "Fri 17:00" }]`, `icon` a lucide icon
-name), set whole on `ticket::create` and `ticket::update` and drawn on the card
-and the ticket page.
-
 `board.json` is now version 2. The first write that upgrades a version 1 file
 keeps the original as `board.v1.json` next to it; going back to an older
 kanban drops projects, releases and subtask links on its next write, so restore
@@ -279,7 +274,7 @@ them is a human's call in the console, which `iii-permissions.yaml` enforces
 
 | Trigger type | Config | Fires when | Payload to subscribers |
 |---|---|---|---|
-| `kanban:change` | `{ ticket_id?, parent_id?, release_id?, events?, ticket?, metadata? }` | After every mutation. `ticket_id` (uuid or key) and `events` narrow it; `parent_id` fires for that ticket and any of its children; `release_id` fires for tickets in that release and for the change that moved one out of it; an empty config fires for everything. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`, `config.updated`. The last carries only `{ event, at }`: the configuration (columns, statuses, priorities) was reloaded; a binding with a `ticket_id`, `parent_id` or `release_id` filter never gets it. |
+| `kanban:change` | `{ ticket_id?, parent_id?, release_id?, events?, ticket?, metadata? }` | After every mutation. `ticket_id` (uuid or key) and `events` narrow it; `parent_id` fires for that ticket and any of its children; `release_id` fires for tickets in that release and for the change that moved one out of it; an empty config fires for everything. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`. |
 | `kanban:comment` | `{ ticket_id \| parent_id, author?, exclude_author?, root_only?, ticket? }` | A comment is created on that ticket, or with `parent_id` on that ticket or any of its children. One of the two is required; `author` keeps one author, `exclude_author` drops one (your own id), `root_only` ignores replies. | `{ event: "comment.created", ticket_id, ticket_key, ticket, comment, author, at }` |
 
 `ticket` on either type is `full` (default: the ticket with comments and
@@ -333,11 +328,10 @@ While the worker is connected it injects four pages into the console:
   a warning dot when it is Done with open subtasks. A **List**
   layout shows the same tickets grouped by status, sortable, with bulk
   status, priority, label, assignee and delete edits. Clicking a card opens
-  the ticket in place of the board; the card's corner **Open in a pane**
-  action opens it beside the board instead (the console reuses any tab that
-  already shows a ticket pane), and the inline view offers **Open in its own
-  pane** too. The card's status is a picker: pick a column and the card
-  moves there.
+  the ticket beside the board; the card's **Open in this tab** action keeps
+  it in the current pane instead (the console reuses any tab that already
+  shows a ticket pane), and the inline view offers **Open in its own pane**
+  to go the other way.
 - **Ticket** (page `kanban-ticket`) — one ticket: status, priority,
   assignee (from `kanban::agent::list`), Project, Release, Parent and editable
   labels, a Markdown description with an editor, linked tickets (from

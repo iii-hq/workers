@@ -55,14 +55,6 @@ pub struct Activity {
     pub comment_id: Option<String>,
 }
 
-/// One badge on a ticket: a lucide icon name (`alarm-clock`, `calendar`,
-/// `flag`) and a short text.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Pill {
-    pub icon: String,
-    pub text: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Ticket {
     /// Internal uuid.
@@ -80,10 +72,6 @@ pub struct Ticket {
     pub assignee: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
-    /// Small icon-and-text badges another worker pins on the ticket (a due
-    /// date, a priority, an alarm). Shown on the card and the ticket page.
-    #[serde(default)]
-    pub pills: Vec<Pill>,
     /// Uuid of the parent ticket. One level deep: a parent has no parent.
     #[serde(default)]
     pub parent_id: Option<String>,

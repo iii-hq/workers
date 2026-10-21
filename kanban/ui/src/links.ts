@@ -3,8 +3,7 @@
  * React so `node ticket-links.check.ts` can run it alone.
  */
 
-// The worker name rule of `worker.ts`, repeated so this module stays import-free for the check script.
-export const TICKET_HREF = `#${/\/ui\/(kanban[^/]*)\/page\.js/.exec(import.meta.url)?.[1] ?? 'kanban'}-ticket/`
+export const TICKET_HREF = '#kanban-ticket/'
 
 /** A ticket the open one is linked to; `status` is the column label. */
 export type LinkedTicket = { key: string; title: string; status: string }

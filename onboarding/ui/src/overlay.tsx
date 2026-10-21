@@ -64,7 +64,6 @@ function paletteKey(): string {
   return /mac|iphone|ipad/i.test(navigator.platform) ? '⌘K' : 'Ctrl+K'
 }
 
-
 /** The card keeps 16px from the viewport's edges, and clears the masthead at the top. */
 const EDGE = 16
 const TOP_EDGE = 72
