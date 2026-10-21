@@ -121,12 +121,17 @@ pub struct BatchResponse {
 
 fn forbidden_call(function_id: &str, approval_gate_running: bool) -> Option<String> {
     if function_id == BATCH_ID || function_id == pipe::PIPE_ID {
-        return Some("batches do not nest, and a pipe is not a batch call — call it directly".into());
+        return Some(
+            "batches do not nest, and a pipe is not a batch call — call it directly".into(),
+        );
     }
     pipe::forbidden_step(function_id, approval_gate_running).map(str::to_string)
 }
 
-fn validate_with_approval_gate(req: &BatchRequest, approval_gate_running: bool) -> Result<Vec<String>, String> {
+fn validate_with_approval_gate(
+    req: &BatchRequest,
+    approval_gate_running: bool,
+) -> Result<Vec<String>, String> {
     if req.calls.is_empty() || req.calls.len() > HARD_MAX_CALLS {
         return Err(format!("a batch takes 1..={HARD_MAX_CALLS} calls"));
     }
@@ -145,7 +150,10 @@ fn validate_with_approval_gate(req: &BatchRequest, approval_gate_running: bool) 
         }
     }
     let mut warnings = Vec::new();
-    let max_calls = req.max_calls.map(|n| n as usize).unwrap_or(DEFAULT_MAX_CALLS);
+    let max_calls = req
+        .max_calls
+        .map(|n| n as usize)
+        .unwrap_or(DEFAULT_MAX_CALLS);
     if req.calls.len() > max_calls {
         warnings.push(format!(
             "{} calls at once (limit {max_calls}): too many calls in one batch may make the \
@@ -213,9 +221,20 @@ async fn one(
     match outcome {
         Ok(value) => {
             let (result, chars, truncated) = capped(value, max_bytes);
-            BatchResult::Ok { id, function, result, chars, truncated }
+            BatchResult::Ok {
+                id,
+                function,
+                result,
+                chars,
+                truncated,
+            }
         }
-        Err((code, message)) => BatchResult::Error { id, function, code, message },
+        Err((code, message)) => BatchResult::Error {
+            id,
+            function,
+            code,
+            message,
+        },
     }
 }
 
@@ -301,7 +320,11 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
         .collect();
     // A skipped entry keeps its function name for the reader.
     let ok = results.iter().all(|r| matches!(r, BatchResult::Ok { .. }));
-    Ok(BatchResponse { ok, results, warnings })
+    Ok(BatchResponse {
+        ok,
+        results,
+        warnings,
+    })
 }
 
 fn invalid(index: usize, call: &BatchCall, message: String) -> BatchResult {
@@ -325,17 +348,33 @@ mod tests {
     fn validates_count_nesting_and_warns_past_the_limit() {
         assert!(validate(&parse(json!({ "calls": [] }))).is_err());
         for nested in [BATCH_ID, pipe::PIPE_ID, "harness::send"] {
-            assert!(validate(&parse(json!({ "calls": [{ "function": nested }] }))).is_err(), "{nested}");
+            assert!(
+                validate(&parse(json!({ "calls": [{ "function": nested }] }))).is_err(),
+                "{nested}"
+            );
         }
-        let twelve: Vec<Value> = (0..12).map(|_| json!({ "function": "fp::size", "payload": { "value": [] } })).collect();
-        assert!(validate(&parse(json!({ "calls": twelve }))).unwrap().is_empty());
-        let thirteen: Vec<Value> = (0..13).map(|_| json!({ "function": "fp::size", "payload": { "value": [] } })).collect();
+        let twelve: Vec<Value> = (0..12)
+            .map(|_| json!({ "function": "fp::size", "payload": { "value": [] } }))
+            .collect();
+        assert!(validate(&parse(json!({ "calls": twelve })))
+            .unwrap()
+            .is_empty());
+        let thirteen: Vec<Value> = (0..13)
+            .map(|_| json!({ "function": "fp::size", "payload": { "value": [] } }))
+            .collect();
         let warnings = validate(&parse(json!({ "calls": thirteen }))).unwrap();
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("too large to deliver"));
-        assert!(validate(&parse(json!({ "calls": thirteen, "max_calls": 20 }))).unwrap().is_empty());
+        assert!(
+            validate(&parse(json!({ "calls": thirteen, "max_calls": 20 })))
+                .unwrap()
+                .is_empty()
+        );
         // Scoped calls need the harness stamp.
-        assert!(validate(&parse(json!({ "calls": [{ "function": "coder::read-file" }] }))).is_err());
+        assert!(validate(&parse(
+            json!({ "calls": [{ "function": "coder::read-file" }] })
+        ))
+        .is_err());
     }
 
     #[test]
@@ -359,7 +398,10 @@ mod tests {
             message: "no such thing".into(),
             stacktrace: None,
         });
-        assert_eq!((code.as_str(), message.as_str()), ("NOT_FOUND", "no such thing"));
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            ("NOT_FOUND", "no such thing")
+        );
         assert_eq!(error_parts(&iii_sdk::Error::Timeout).0, "TIMEOUT");
     }
 
@@ -375,7 +417,13 @@ mod tests {
         assert!(!response.ok);
         assert_eq!(
             response.results[0],
-            BatchResult::Ok { id: "a".into(), function: "fp::size".into(), result: json!(3), chars: 1, truncated: false }
+            BatchResult::Ok {
+                id: "a".into(),
+                function: "fp::size".into(),
+                result: json!(3),
+                chars: 1,
+                truncated: false
+            }
         );
         match &response.results[1] {
             BatchResult::Error { id, code, .. } => {

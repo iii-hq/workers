@@ -142,7 +142,10 @@ pub(crate) fn is_scoped_step(function_id: &str) -> bool {
 /// pipe must stay needs_approval. Residual, accepted: an rbac boundary that
 /// exposes fp::pipe while denying shell::* could launder a scope through a
 /// non-harness call; shell-side caller verification is tracked follow-up.
-pub(crate) fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'static str> {
+pub(crate) fn forbidden_step(
+    function_id: &str,
+    approval_gate_running: bool,
+) -> Option<&'static str> {
     // Private accessors validate their scope, not the caller. A pipe must not
     // turn an agent's request into a privileged read or namespace claim.
     if function_id == "state::claim-namespace"

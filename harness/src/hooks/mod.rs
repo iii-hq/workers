@@ -370,11 +370,12 @@ impl HookRegistry {
         // give them the boundary a direct scoped call would get, or a step
         // would run under a WIDER jail than the same call made directly.
         // shell::exec represents the watch's fixed shell::*/coder::* binding set.
-        let target_function_id = if crate::filesystem_scope::carries_scoped_steps(target_function_id) {
-            "shell::exec"
-        } else {
-            target_function_id
-        };
+        let target_function_id =
+            if crate::filesystem_scope::carries_scoped_steps(target_function_id) {
+                "shell::exec"
+            } else {
+                target_function_id
+            };
         if self.post_trigger.has_function_binding(
             crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
             target_function_id,
