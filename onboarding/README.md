@@ -156,12 +156,10 @@ plugins, and the steps together cover CODER: **Composable** (the agent adds a
 kanban board in the `todo-local` namespace, so it sits apart
 from any board the operator runs), **Observable** (the traces
 step, anchored on the console's traces screen), **Discoverable** (one engine,
-one palette), **Extensible** (the agent builds a TODO worker on that board: a
-narrow sidebar of controls left of it, with a due date, a due time, a
-priority, a repeat and an alarm per item, shown as pills on the cards, and the
-same controls as a web page; the board is the list and Done is a status set
-on it; alarms run through the `cron` worker), **Reactive** (three items, and
-a trigger that fires when the operator moves one to Done). The last step, "Stay in
+one palette), **Extensible** (the agent adds a context-viewer worker: a console page
+with a raw view of the current chat's context, in collapsible sections, with
+a search box), **Reactive** (three tickets on the board, and a trigger that
+fires when the operator moves one to Done). The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
 links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
 "Clean up" asks the agent to remove this worker, and the card goes with it —

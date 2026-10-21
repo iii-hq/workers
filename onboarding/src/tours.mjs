@@ -190,11 +190,11 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Build a TODO worker on the todo-local kanban board: first set the board to two columns, TODO and Done; then a worker whose console page is a narrow sidebar of controls, not a list: an add form and an edit form with a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card. The board is the list and Done is set on the board; a done item with a repeat goes back to TODO with the next date, the same ticket, never a second card; alarms go through the cron worker; a todo:changed trigger type; and the same controls as a web page leveraging the iii browser sdk. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open the TODO page to the left of the board as a narrow column, and open the web page for me in the console's browser in a new tab, not the preview window, and leave me on the tab with the TODO page and the board: do not switch me to the browser tab.",
+          text: "Add a context-viewer worker: a console page that shows a raw view of the current chat's context, in collapsible sections, with a search box. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open its page beside this chat.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Let's extend this application with a new worker, and while doing so we'll take advantage of iii's composability by using the existing Kanban, and Cron workers for the bulk of the work.\n\nWe'll build a simple TODO sidebar of controls that can handle specific properties. In the future it's likely we'll want to leverage the Kanban board for other projects, so we'll put our specific needs in their own worker.\n\nWe'll add a due date, a due time, a priority, a repeat and an alarm (via Cron) on each item. We'll also add the same controls as a web page.\n\nThe web page itself is also a worker just like anything else in iii. So it can make direct calls to other workers, without the need for a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
+        body: "Let's extend this application with a new worker: a context viewer. It shows the raw context of this chat, the way the agent sees it, in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer only reads it and draws it. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },
@@ -202,11 +202,11 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Add 3 items to the TODO list, each with a due date and a priority, and set a Trigger that fires when each one is moved to Done on the board by the user, not you the agent. Pre-existing triggers should work, and were tested in the last step.",
+          text: "Add 3 tickets to the kanban board and set a Trigger that fires when each one is moved to Done on the board by the user, not you the agent.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 items to the TODO list, and to set triggers that fire when you move each one to Done yourself. Watch the agent react as you change the card's status.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
+        body: "Now ask the agent to add 3 tickets to the board, and to set triggers that fire when you move each one to Done yourself. Watch the agent react as you change the card's status.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
       }),
       {
         id: "clean-up",
