@@ -173,7 +173,8 @@ fn claude_command_tag(body: &str) -> Option<&str> {
         .strip_prefix('<')
         .and_then(|rest| rest.split_once('>'))
         .map(|(tag, _)| tag)
-        .filter(|tag| CLAUDE_COMMAND_TAGS.contains(tag))
+        // Closed, too: typed text may open with the bare tag.
+        .filter(|tag| CLAUDE_COMMAND_TAGS.contains(tag) && body.contains(&format!("</{tag}>")))
 }
 
 /// The text of the first `<tag>…</tag>` in `body`, or "" when it has none.
@@ -982,6 +983,12 @@ mod tests {
                 "user",
                 json!("why is <bash-stdout> shown as mine?"),
             ),
+            claude(
+                "opens-with-tag",
+                Some("quoted"),
+                "user",
+                json!("<bash-stdout> is this my output?"),
+            ),
         ]);
         let result = parse(Source::ClaudeCode, ID, bytes.as_slice(), 0).unwrap();
         assert_eq!(
@@ -990,7 +997,15 @@ mod tests {
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect::<Vec<_>>(),
-            ["skill", "reply", "command", "typed", "answer", "quoted"]
+            [
+                "skill",
+                "reply",
+                "command",
+                "typed",
+                "answer",
+                "quoted",
+                "opens-with-tag"
+            ]
         );
         assert_eq!(result.messages[0].text, "/review PR 1234");
         assert_eq!(result.messages[2].text, "/model");
