@@ -190,11 +190,11 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Add a context-viewer worker: a console page that shows a raw view of the current chat's context, in collapsible sections, with a search box, and keeps a searchable history of past contexts in the database worker. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open its page beside this chat.",
+          text: "Add a context-viewer worker: a console page that shows a structured view of the current chat's context, in collapsible sections, with a search box, and keeps a searchable history of past contexts in the database worker. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open its page beside this chat.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Let's extend this application with a new worker: a context viewer. It shows the raw context of this chat, the way the agent sees it, in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer reads it, draws it, and keeps a history in the database worker you just added. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
+        body: "Let's extend this application with a new worker: a context viewer. It shows the context of this chat, the way the agent sees it, structured in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer reads it, draws it, and keeps a history in the database worker you just added. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },

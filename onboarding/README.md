@@ -156,7 +156,7 @@ plugins, and the steps together cover CODER: **Composable** (the agent adds the
 `database` worker), **Observable** (the traces
 step, anchored on the console's traces screen), **Discoverable** (one engine,
 one palette), **Extensible** (the agent adds a context-viewer worker: a console page
-with a raw view of the current chat's context, in collapsible sections, with
+with a structured view of the current chat's context, in collapsible sections, with
 a search box, and a history kept in the database worker), **Reactive** (the
 viewer follows the chat's context as it changes, newest entry at the bottom). The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
