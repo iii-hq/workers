@@ -127,6 +127,10 @@ pub struct ExtractJobInput {
     /// (`scope::Resolved::layer`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub derived: bool,
+    /// The session's agent profile, its bank read under `bank`
+    /// (`scope::Resolved::agent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// The turn ran without memory (an invalid or deleted bank): the job
     /// only steps the cursor past it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -202,21 +206,27 @@ pub async fn pre_generate(
             annotations: Some(annotations),
         });
     };
-    let layer = scope.layer(&cfg.default_bank);
-    let bank_name = scope.bank;
+    let layers = scope.layers(&cfg.default_bank);
     // Persisted on the step's assistant entry: a turn this process never
-    // saw (a restart) reads both back (`scope::stamped_bank`).
-    annotations.insert("memory_bank".into(), json!(bank_name));
-    if let Some(layer) = layer {
+    // saw (a restart) reads them back (`scope::stamped_bank`).
+    annotations.insert("memory_bank".into(), json!(scope.bank));
+    if let Some(layer) = scope.layer(&cfg.default_bank) {
         annotations.insert("memory_layer".into(), json!(layer));
     }
+    if let Some(agent) = &scope.agent {
+        annotations.insert(
+            "memory_agent".into(),
+            json!(crate::scope::agent_bank(agent)),
+        );
+    }
+    let bank_name = scope.bank;
 
     // Recall only on the step that opens the turn: the appended message is
     // persisted and replayed on later steps, so re-recalling would stack copies.
     let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
     let query = (input.step == 0).then_some(query.as_str());
     let seen = injected_in_window(input.generate.as_ref().map(|g| &g.messages));
-    let injected = injection(deps, &cfg, &bank_name, layer, query, &seen).await;
+    let injected = injection(deps, &cfg, &bank_name, &layers, query, &seen).await;
     if injected.rules > 0 {
         annotations.insert("memory_rules".into(), json!(injected.rules));
     }
@@ -321,26 +331,30 @@ pub(crate) fn rules_section(
     (section, rules.len(), truncated)
 }
 
-/// Build what a turn on `bank_name` is given, with `layer` read under it
-/// (`scope::Resolved::layer`): the layer's rules first, labelled with its
-/// name so two `learned` rules never read as one, and its memories about
-/// the user in the same recall and floor. `query` is the user message to
-/// recall for (`None`: no recall, as on a turn's later steps), `seen` the
-/// memory texts the window already carries ([`injected_in_window`]).
+/// Build what a turn on `bank_name` is given, with `layers` read under it
+/// (`scope::Resolved::layers`): their rules first ([`turn_rules`]), each labelled with its
+/// bank's name so two `learned` rules never read as one, and the memories
+/// of theirs it reads (`scope::layer_keeps`) in the same recall and floor.
+/// `query` is the user message to recall for (`None`: no recall, as on a
+/// turn's later steps), `seen` the memory texts the window already carries
+/// ([`injected_in_window`]).
 pub(crate) async fn injection(
     deps: &Deps,
     cfg: &WorkerConfig,
     bank_name: &str,
-    layer: Option<&str>,
+    layers: &[String],
     query: Option<&str>,
     seen: &HashSet<String>,
 ) -> Injection {
     let store = deps.store().await;
     let bank = store.bank(bank_name).await.ok();
-    let layer = match layer {
-        Some(name) => store.bank(name).await.ok().map(|b| (name, b)),
-        None => None,
-    };
+    let mut opened = Vec::new();
+    for name in layers {
+        if let Ok(b) = store.bank(name).await {
+            opened.push((name.as_str(), b));
+        }
+    }
+    let layers = opened;
     let rules_of = |b: &Bank| {
         if cfg.inject_rules {
             b.list_rules().unwrap_or_default()
@@ -349,11 +363,15 @@ pub(crate) async fn injection(
         }
     };
     let rules = turn_rules(
-        layer.as_ref().map(|(name, b)| (*name, rules_of(b))),
+        layers
+            .iter()
+            .map(|(name, b)| (*name, rules_of(b)))
+            .collect(),
         bank.as_deref().map(rules_of).unwrap_or_default(),
+        bank_name == cfg.default_bank,
     );
     let (section, rules_count, rules_truncated) =
-        rules_section(cfg, bank_name, bank.is_some() || layer.is_some(), &rules);
+        rules_section(cfg, bank_name, bank.is_some() || !layers.is_empty(), &rules);
     let mut out = Injection {
         section,
         rules: rules_count,
@@ -365,14 +383,17 @@ pub(crate) async fn injection(
         .map(crate::store::cap_query);
     // On the turn's opening step, like recall: the message is persisted.
     let reminder = query.as_ref().and_then(|_| rules_reminder(&rules));
-    // The turn's bank whole, then the layer's memories about the user.
-    let sources: Vec<(&Bank, bool)> = bank
+    // The turn's bank whole, then the memories of each layer it reads.
+    let sources: Vec<(&str, &Bank, bool)> = bank
         .as_deref()
-        .map(|b| (b, false))
+        .map(|b| (bank_name, b, false))
         .into_iter()
-        .chain(layer.as_ref().map(|(_, b)| (b.as_ref(), true)))
+        .chain(layers.iter().map(|(name, b)| (*name, b.as_ref(), true)))
         .filter(|_| cfg.inject_memories)
         .collect();
+    let keeps = |name: &str, layered: bool, m: &Memory| {
+        !layered || crate::scope::layer_keeps(name, &cfg.default_bank, m)
+    };
     let Some(query) = query.filter(|_| !sources.is_empty()) else {
         out.message = append_reminder(None, bank_name, reminder);
         return out;
@@ -389,15 +410,16 @@ pub(crate) async fn injection(
     // would lift a layer matching only the `user` every first-person query
     // carries level with the bank's strong hits.
     let mut bm25_max = 0.0_f32;
-    for (b, layered) in &sources {
-        let keep = |m: &Memory| !layered || crate::scope::in_layer(m);
+    for (name, b, layered) in &sources {
+        let keep = |m: &Memory| keeps(name, *layered, m);
         bm25_max = bm25_max.max(b.bm25_max(&query, keep).await);
     }
-    let (mut hits, mut top, mut own) = (Vec::new(), Vec::new(), HashSet::new());
-    for (b, layered) in sources {
-        let keep = |m: &Memory| !layered || crate::scope::in_layer(m);
-        // The layer's memories about the user may rank past the limit.
-        let fetch = if layered {
+    let (mut hits, mut top, mut held) = (Vec::new(), Vec::new(), HashMap::new());
+    for (name, b, layered) in sources {
+        let keep = |m: &Memory| keeps(name, layered, m);
+        // The default bank's memories it reads as a layer may rank past the
+        // limit; an agent layer keeps every memory, so the limit is enough.
+        let fetch = if layered && name == cfg.default_bank {
             usize::MAX
         } else {
             cfg.recall_limit
@@ -415,9 +437,10 @@ pub(crate) async fn injection(
             .await;
         let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
         let strongest = b.top_memories(cfg.recall_limit, keep).await;
-        if !layered {
-            own.extend(found.iter().map(|(m, _)| m.id.clone()));
-            own.extend(strongest.iter().map(|m| m.id.clone()));
+        // The first bank holding a memory holds it, as `merge_ranked` keeps
+        // the first copy.
+        for m in found.iter().map(|(m, _)| m).chain(&strongest) {
+            held.entry(m.id.clone()).or_insert(name);
         }
         hits.extend(found);
         top.extend(strongest);
@@ -441,11 +464,8 @@ pub(crate) async fn injection(
             .filter(|m| ids.contains(&m.id))
             .map(|m| {
                 let score = scores.remove(&m.id).unwrap_or(0.0);
-                let held = match &layer {
-                    Some((name, _)) if !own.contains(&m.id) => name,
-                    _ => bank_name,
-                };
-                (m, score, held.to_string())
+                let holder = held.get(&m.id).copied().unwrap_or(bank_name);
+                (m, score, holder.to_string())
             })
             .collect();
         out.message = Some(body);
@@ -454,24 +474,26 @@ pub(crate) async fn injection(
     out
 }
 
-/// A turn's rules, under one `max_rule_chars` budget: the layer's first,
-/// labelled with its name so two `learned` rules never read as one, then
-/// the bank's own.
+/// A turn's rules, under one `max_rule_chars` budget: each layer's in
+/// order, labelled with its bank's name so two `learned` rules never read as
+/// one, then the bank's own; the bank's own first when it is `default_bank`,
+/// whose rules come before every layer's.
 fn turn_rules(
-    layer: Option<(&str, Vec<crate::types::Rule>)>,
+    layers: Vec<(&str, Vec<crate::types::Rule>)>,
     own: Vec<crate::types::Rule>,
+    own_first: bool,
 ) -> Vec<crate::types::Rule> {
-    let Some((name, rules)) = layer else {
-        return own;
-    };
-    rules
-        .into_iter()
-        .map(|r| crate::types::Rule {
+    let layered = layers.into_iter().flat_map(|(name, rules)| {
+        rules.into_iter().map(move |r| crate::types::Rule {
             name: format!("{} ({name})", r.name),
             ..r
         })
-        .chain(own)
-        .collect()
+    });
+    if own_first {
+        own.into_iter().chain(layered).collect()
+    } else {
+        layered.chain(own).collect()
+    }
 }
 
 /// Hits from a turn's bank, then from its layer, as one ranking: deduped
@@ -728,6 +750,7 @@ pub(crate) fn plan_extraction(
     Some(ExtractJobInput {
         session_id: input.session_id.clone(),
         derived: bank.as_ref().is_some_and(|b| b.derived),
+        agent: bank.as_ref().and_then(|b| b.agent.clone()),
         bank: bank.map(|b| b.bank),
         skip,
         until,
@@ -1133,9 +1156,14 @@ mod tests {
         let repo = crate::scope::Resolved {
             bank: "w-abc123".into(),
             derived: true,
+            agent: Some("reviewer".into()),
         };
         let job = plan_extraction(&finished(), Some(Some(repo)), None).unwrap();
-        assert_eq!((job.bank.as_deref(), job.derived), (Some("w-abc123"), true));
+        assert_eq!(
+            (job.bank.as_deref(), job.derived, job.agent.as_deref()),
+            (Some("w-abc123"), true, Some("reviewer")),
+            "and so does its agent profile"
+        );
         // Not seen by this process (a restart): the job resolves it.
         let job = plan_extraction(&finished(), None, None).unwrap();
         assert_eq!((job.bank, job.skip), (None, false));
@@ -1310,25 +1338,41 @@ Formal."
             )
         };
         let rules = turn_rules(
-            Some(("main", vec![learned("Never use emoji.")])),
+            vec![
+                ("main", vec![learned("Never use emoji.")]),
+                ("agent-reviewer", vec![learned("Check the tests first.")]),
+            ],
             vec![learned("Use pnpm."), rule("style", &"s".repeat(300))],
+            false,
         );
-        let (section, truncated) = build_rules_section(&rules, 220);
+        let (section, truncated) = build_rules_section(&rules, 240);
         let theirs = section
             .find("## learned (main)\n- Never use emoji.")
             .unwrap();
+        let agents = section
+            .find("## learned (agent-reviewer)\n- Check the tests first.")
+            .unwrap();
         let own = section.find("## learned\n- Use pnpm.").unwrap();
-        assert!(theirs < own, "{section}");
-        assert!(truncated, "one budget across both banks: {section}");
+        assert!(theirs < agents && agents < own, "{section}");
+        assert!(truncated, "one budget across every bank: {section}");
         assert!(section.contains("## style [omitted"), "{section}");
-        let reminder = rules_reminder(&rules[..2]).unwrap();
+        let reminder = rules_reminder(&rules[..3]).unwrap();
         assert!(
-            reminder.contains("- Never use emoji.\n- Use pnpm."),
+            reminder.contains("- Never use emoji.\n- Check the tests first.\n- Use pnpm."),
             "{reminder}"
         );
 
-        let alone = turn_rules(None, vec![learned("Use pnpm.")]);
+        let alone = turn_rules(Vec::new(), vec![learned("Use pnpm.")], false);
         assert_eq!(alone[0].name, "learned");
+
+        // In a default_bank session its own rules spend the budget first.
+        let main = turn_rules(
+            vec![("agent-reviewer", vec![learned("Check the tests first.")])],
+            vec![learned("Never use emoji.")],
+            true,
+        );
+        let names: Vec<&str> = main.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["learned", "learned (agent-reviewer)"]);
     }
 
     #[test]

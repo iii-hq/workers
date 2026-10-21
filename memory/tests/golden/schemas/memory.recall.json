@@ -16,7 +16,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to search; omitted: the calling session's bank (with the default bank's memories about the user under one its directory chose, as the hook reads), else the configured default.",
+        "description": "Bank to search; omitted: the calling session's bank (with the default bank's memories about the user under one its directory chose, and its agent profile's bank, as the hook reads), else the configured default.",
         "type": [
           "string",
           "null"
@@ -226,7 +226,7 @@
       "ScoredMemory": {
         "properties": {
           "bank": {
-            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose.",
+            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose, or its agent profile's bank.",
             "type": [
               "string",
               "null"

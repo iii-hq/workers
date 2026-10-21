@@ -10,8 +10,10 @@
 //!   instruction, task progress, what a correction leaves behind, a learned
 //!   rule restated, a turn with nothing to keep. The report also counts the
 //!   trap hits the rule gate would still let into the bank.
-//! - placement ([`placement`]): what holds for the user wherever they work
-//!   must reach the default bank, and nothing project-only may.
+//! - placement ([`lands`]): what holds for the user wherever they work
+//!   must reach the default bank, and nothing project-only may; with agents
+//!   listed (MOT-5464), what the user tells one about its role's work must
+//!   reach that agent's bank, and nothing about the user or the project may.
 //!
 //! Live, so ignored: `III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns>
 //! EXTRACTION_MODEL=<id> cargo test -p memory --lib extract::eval --
@@ -54,6 +56,8 @@ struct Want {
     user: bool,
     /// The known memory it corrects, 1-based like the prompt's numbers.
     replaces: Option<usize>,
+    /// The listed agent whose bank it lands in (`user` is then false).
+    agent: Option<&'static str>,
 }
 
 struct Case {
@@ -62,6 +66,10 @@ struct Case {
     /// Already remembered, with whether the layer holds it; the bank's own
     /// first, as in production.
     known: &'static [(&'static str, bool)],
+    /// The agents listed in the input; with `own`, the first is the
+    /// session's own profile, the rest its sub-agents'.
+    agents: &'static [&'static str],
+    own: bool,
     /// Learned lines already in force, the same way, numbered after `known`.
     learned: &'static [(&'static str, bool)],
     /// `(role, text)` excerpt lines, roles as [`parse_entry`] reads them.
@@ -75,6 +83,7 @@ const fn fact(has: &'static [&'static str], user: bool) -> Want {
         rule: Some(false),
         user,
         replaces: None,
+        agent: None,
     }
 }
 
@@ -84,6 +93,7 @@ const fn rule(has: &'static [&'static str], user: bool) -> Want {
         rule: Some(true),
         user,
         replaces: None,
+        agent: None,
     }
 }
 
@@ -93,6 +103,16 @@ const fn either(has: &'static [&'static str], user: bool) -> Want {
         rule: None,
         user,
         replaces: None,
+        agent: None,
+    }
+}
+
+/// `want`, landing in the bank of the listed `agent`.
+const fn to(agent: &'static str, want: Want) -> Want {
+    Want {
+        user: false,
+        agent: Some(agent),
+        ..want
     }
 }
 
@@ -106,10 +126,45 @@ const fn case(
         id,
         category,
         known: &[],
+        agents: &[],
+        own: false,
         learned: &[],
         lines,
         want,
     }
+}
+
+/// `case` in a session listing `agents`, the first its own profile when
+/// `own`.
+const fn among(agents: &'static [&'static str], own: bool, case: Case) -> Case {
+    Case {
+        agents,
+        own,
+        ..case
+    }
+}
+
+/// The bank an item lands in, as [`lands`] routes it under a layer.
+fn landing(agent: Option<&str>, up: bool) -> String {
+    match agent {
+        Some(agent) => crate::scope::agent_bank(agent),
+        None if up => "main".into(),
+        None => "repo".into(),
+    }
+}
+
+/// Where `want` must land.
+fn want_bank(want: &Want) -> String {
+    landing(want.agent, want.user)
+}
+
+/// A landing that breaks scope: a project item in main, anything in an
+/// agent bank not its own, an agent's item in main or the repository.
+fn misplaced(want: &str, got: &str) -> bool {
+    let agent = |bank: &str| bank.starts_with("agent-");
+    (got == "main" && want == "repo")
+        || (agent(got) && want != got)
+        || (agent(want) && !agent(got) && got != "dropped")
 }
 
 const CASES: &[Case] = &[
@@ -271,6 +326,8 @@ const CASES: &[Case] = &[
         id: "npm-here",
         category: "here only",
         known: &[("The user prefers npm for JavaScript projects.", true)],
+        agents: &[],
+        own: false,
         learned: &[],
         lines: &[
             ("user", "In this repo I use pnpm, not npm."),
@@ -357,6 +414,8 @@ const CASES: &[Case] = &[
         id: "porto",
         category: "corrections",
         known: &[("The user lives in Lisbon.", true)],
+        agents: &[],
+        own: false,
         learned: &[],
         lines: &[
             ("user", "I moved to Porto last month."),
@@ -367,12 +426,15 @@ const CASES: &[Case] = &[
             rule: Some(false),
             user: true,
             replaces: Some(1),
+            agent: None,
         }],
     },
     Case {
         id: "postgres-16",
         category: "corrections",
         known: &[("The ledger service runs on Postgres 15.", false)],
+        agents: &[],
+        own: false,
         learned: &[],
         lines: &[
             (
@@ -386,6 +448,7 @@ const CASES: &[Case] = &[
             rule: Some(false),
             user: false,
             replaces: Some(1),
+            agent: None,
         }],
     },
     Case {
@@ -395,6 +458,8 @@ const CASES: &[Case] = &[
             "The user has a dentist appointment on 2026-10-16 at 3pm.",
             true,
         )],
+        agents: &[],
+        own: false,
         learned: &[],
         lines: &[
             ("user", "The dentist moved my appointment to Monday, same time."),
@@ -405,6 +470,7 @@ const CASES: &[Case] = &[
             rule: Some(false),
             user: true,
             replaces: Some(1),
+            agent: None,
         }],
     },
     // Corrected in the excerpt itself: only the corrected fact is kept.
@@ -959,6 +1025,8 @@ const CASES: &[Case] = &[
             "The user works at Acme as a backend engineer.",
             true,
         )],
+        agents: &[],
+        own: false,
         learned: &[],
         lines: &[
             ("user", "I switched to the platform team last week, still at Acme."),
@@ -969,6 +1037,7 @@ const CASES: &[Case] = &[
             rule: Some(false),
             user: true,
             replaces: Some(1),
+            agent: None,
         }],
     },
     // A learned line restated, or corrected: rewritten where it is, never
@@ -977,6 +1046,8 @@ const CASES: &[Case] = &[
         id: "emoji-again",
         category: "learned rules",
         known: &[],
+        agents: &[],
+        own: false,
         learned: &[("Never use emoji in your answers.", true)],
         lines: &[
             ("user", "And no emojis in replies, please, ever."),
@@ -988,6 +1059,8 @@ const CASES: &[Case] = &[
         id: "english-to-portuguese",
         category: "learned rules",
         known: &[],
+        agents: &[],
+        own: false,
         learned: &[("Always reply to me in English.", true)],
         lines: &[
             ("user", "From now on reply to me in Portuguese, not English."),
@@ -998,12 +1071,15 @@ const CASES: &[Case] = &[
             rule: Some(true),
             user: true,
             replaces: Some(1),
+            agent: None,
         }],
     },
     Case {
         id: "fmt-unrelated",
         category: "learned rules",
         known: &[],
+        agents: &[],
+        own: false,
         learned: &[
             ("Never use emoji in your answers.", true),
             ("Always reply to me in English.", true),
@@ -1033,6 +1109,165 @@ const CASES: &[Case] = &[
         ],
         &[],
     ),
+    // How an agent profile does its role's work, wherever it works.
+    among(
+        &["reviewer"],
+        true,
+        case(
+            "review-order",
+            "agent rules",
+            &[
+                (
+                    "user",
+                    "When you review my pull requests, always check the tests before you look at style.",
+                ),
+                ("assistant", "Got it: tests first, then style."),
+            ],
+            &[to("reviewer", rule(&["test", "style"], false))],
+        ),
+    ),
+    among(
+        &["reviewer"],
+        true,
+        case(
+            "unwrap-in-tests",
+            "agent facts",
+            &[
+                (
+                    "user",
+                    "Stop flagging unwrap in test code. Our team accepts it in tests, in every repo.",
+                ),
+                ("assistant", "Understood, I won't flag unwrap in tests anymore."),
+            ],
+            &[to("reviewer", either(&["unwrap"], false))],
+        ),
+    ),
+    // A parent passes the user's correction on to its sub-agent's profile.
+    among(
+        &["tech-lead", "reviewer"],
+        true,
+        case(
+            "tell-reviewer",
+            "agent rules",
+            &[
+                (
+                    "notice",
+                    "[notification] reviewer finished: 14 style nits in parser.rs; the tests were not run.",
+                ),
+                (
+                    "assistant",
+                    "The reviewer flagged 14 style nits in parser.rs but never ran the tests.",
+                ),
+                (
+                    "user",
+                    "Tell the reviewer to always run the tests before it looks at style.",
+                ),
+                ("assistant", "Will do: the reviewer runs the tests first from now on."),
+            ],
+            &[to("reviewer", rule(&["test", "style"], false))],
+        ),
+    ),
+    among(
+        &["reviewer"],
+        false,
+        case(
+            "reviewer-errors",
+            "agent rules",
+            &[
+                (
+                    "user",
+                    "From now on the reviewer should check error handling before naming.",
+                ),
+                ("assistant", "I'll pass that on to the reviewer."),
+            ],
+            &[to("reviewer", rule(&["error"], false))],
+        ),
+    ),
+    // What the user or the project owns stays theirs, agents listed or not.
+    among(
+        &["reviewer"],
+        true,
+        case(
+            "agent-portuguese",
+            "agent guards",
+            &[
+                ("user", "Always reply to me in Portuguese."),
+                ("assistant", "Combinado, vou responder em português."),
+            ],
+            &[rule(&["portuguese"], true)],
+        ),
+    ),
+    among(
+        &["coder"],
+        true,
+        case(
+            "agent-emoji",
+            "agent guards",
+            &[
+                ("user", "Never use emoji in your answers."),
+                ("assistant", "Understood, no emoji."),
+            ],
+            &[rule(&["emoji"], true)],
+        ),
+    ),
+    among(
+        &["reviewer"],
+        true,
+        case(
+            "agent-pnpm",
+            "agent guards",
+            &[
+                (
+                    "user",
+                    "This repo uses pnpm workspaces, so add zod to the ui package only.",
+                ),
+                ("assistant", "Added zod with `pnpm --filter ui add zod`."),
+            ],
+            &[fact(&["pnpm"], false)],
+        ),
+    ),
+    among(
+        &["reviewer"],
+        true,
+        case(
+            "agent-versions",
+            "agent guards",
+            &[
+                ("user", "Never bump versions by hand in this repo."),
+                ("assistant", "Understood, the release bot bumps them."),
+            ],
+            &[rule(&["version"], false)],
+        ),
+    ),
+    among(
+        &["tech-lead", "reviewer"],
+        true,
+        case(
+            "agent-vegetarian",
+            "agent guards",
+            &[
+                (
+                    "user",
+                    "I'm vegetarian, by the way. Anyway, have the reviewer look at the login fix.",
+                ),
+                ("assistant", "Sent the login fix to the reviewer."),
+            ],
+            &[fact(&["vegetarian"], true)],
+        ),
+    ),
+    among(
+        &["tech-lead", "reviewer"],
+        true,
+        case(
+            "review-812",
+            "one-off",
+            &[
+                ("user", "Have the reviewer look at PR #812 next."),
+                ("assistant", "Started the reviewer on #812."),
+            ],
+            &[],
+        ),
+    ),
 ];
 
 #[derive(Default)]
@@ -1043,17 +1278,21 @@ struct Tally {
     missed: usize,
     traps: usize,
     main: usize,
+    agent: usize,
     harmful: usize,
 }
 
 /// One returned item as a report line: `text / scope / kind / lands`.
-fn line(item: &ExtractedItem, main: bool, retires: bool) -> String {
+fn line(item: &ExtractedItem, bank: &str, retires: bool) -> String {
     format!(
-        "{} / {} / {} / {}{}",
+        "{} / {}{} / {} / {bank}{}",
         item.text,
         item.scope.as_deref().unwrap_or("-"),
+        item.agent
+            .as_deref()
+            .map(|a| format!(":{a}"))
+            .unwrap_or_default(),
         item.kind.as_deref().unwrap_or("-"),
-        if main { "main" } else { "repo" },
         match (retires, item.replaces) {
             (true, Some(n)) => format!(" retires [{n}]"),
             _ => String::new(),
@@ -1081,7 +1320,9 @@ async fn extraction_eval() {
     let (mut expected, mut captured, mut wrong, mut missed) = (0, 0, 0, 0);
     let (mut traps, mut kept, mut extras) = (0, 0, 0);
     let (mut matched, mut kind_ok, mut user_matched, mut user_main, mut harmful) = (0, 0, 0, 0, 0);
+    let (mut agent_matched, mut agent_landed) = (0, 0);
     for case in CASES {
+        let agents: Vec<String> = case.agents.iter().map(|a| a.to_string()).collect();
         let known: Vec<Memory> = case
             .known
             .iter()
@@ -1094,6 +1335,7 @@ async fn extraction_eval() {
                     kind: None,
                     replaces: None,
                     scope: None,
+                    agent: None,
                 };
                 new_memory(item, case.id, None, TS)
             })
@@ -1133,14 +1375,16 @@ async fn extraction_eval() {
                 &model,
                 cfg.max_memories_per_turn,
                 120_000,
-                extraction_input(&known, &learned, &transcript),
+                extraction_input(&agents, case.own, &known, &learned, &transcript),
+                !agents.is_empty(),
                 case.id,
                 repository,
             )
             .await
             .unwrap_or_else(|e| panic!("{tag}: {e}"));
-            // Where each item lands, as `try_run` routes it under a layer.
-            let lands: Vec<(bool, bool)> = items
+            // Where each item lands, as `try_run` routes it under a layer;
+            // an agent item naming no listed agent is dropped there.
+            let landed: Vec<(String, bool)> = items
                 .iter()
                 .map(|item| {
                     let target_in_layer = match item.is_rule() {
@@ -1150,7 +1394,11 @@ async fn extraction_eval() {
                         false => correction_target(&known, item.replaces)
                             .map(|t| layered.contains(&t.id)),
                     };
-                    placement(item.is_user(), target_in_layer)
+                    let (agent, up, retires) = lands(item, &agents, true, target_in_layer);
+                    match item.is_agent() && agent.is_none() {
+                        true => ("dropped".to_string(), false),
+                        false => (landing(agent, up), retires),
+                    }
                 })
                 .collect();
             // Why item `i` is not what `want` expects, if it is not.
@@ -1158,7 +1406,7 @@ async fn extraction_eval() {
                 let item = &items[i];
                 if want.rule.is_some_and(|r| r != item.is_rule()) {
                     Some("kind")
-                } else if lands[i].0 != want.user {
+                } else if landed[i].0 != want_bank(want) {
                     Some("lands")
                 } else if item.replaces != want.replaces
                     && (want.replaces.is_some() || !case.learned.is_empty())
@@ -1197,33 +1445,40 @@ async fn extraction_eval() {
                         report.push(format!(
                             "MISS {tag}: {:?} / {} / {} / {}",
                             want.has,
-                            if want.user { "user" } else { "project" },
+                            match (want.user, want.agent) {
+                                (_, Some(_)) => "agent",
+                                (true, None) => "user",
+                                (false, None) => "project",
+                            },
                             match want.rule {
                                 Some(true) => "rule",
                                 Some(false) => "memory",
                                 None => "either",
                             },
-                            if want.user { "main" } else { "repo" },
+                            want_bank(want),
                         ));
                     }
                 }
             }
             for (i, item) in items.iter().enumerate() {
-                let (main, retires) = lands[i];
+                let (bank, retires) = (landed[i].0.as_str(), landed[i].1);
+                let main = bank == "main";
                 // Retiring a memory the case never asked to correct.
                 let stray = retires && !case.want.iter().any(|w| w.replaces == item.replaces);
                 // Unmatched too: a second, user-scope copy of a project fact
-                // still reaches every repository.
-                let leak = main
-                    && match want_of[i] {
-                        Some(w) => !w.user,
-                        None => {
-                            let text = item.text.to_lowercase();
-                            case.want
-                                .iter()
-                                .any(|w| !w.user && w.has.iter().all(|s| text.contains(s)))
-                        }
-                    };
+                // still reaches every repository, and a copy of either in an
+                // agent bank every session of that agent.
+                let leak = match want_of[i] {
+                    Some(w) => misplaced(&want_bank(w), bank),
+                    None => {
+                        let text = item.text.to_lowercase();
+                        case.want.iter().any(|w| {
+                            w.agent.is_none()
+                                && w.has.iter().all(|s| text.contains(s))
+                                && misplaced(&want_bank(w), bank)
+                        })
+                    }
+                };
                 if leak || stray {
                     harmful += 1;
                     tally.harmful += 1;
@@ -1233,9 +1488,14 @@ async fn extraction_eval() {
                         matched += 1;
                         kind_ok += usize::from(want.rule.is_none_or(|r| r == item.is_rule()));
                         tally.main += usize::from(main);
+                        tally.agent += usize::from(bank.starts_with("agent-"));
                         if want.user {
                             user_matched += 1;
                             user_main += usize::from(main);
+                        }
+                        if want.agent.is_some() {
+                            agent_matched += 1;
+                            agent_landed += usize::from(bank == want_bank(want));
                         }
                         match fault(i, want) {
                             None => {
@@ -1270,25 +1530,26 @@ async fn extraction_eval() {
                 } else {
                     label
                 };
-                report.push(format!("{label} {tag}: {}", line(item, main, retires)));
+                report.push(format!("{label} {tag}: {}", line(item, bank, retires)));
             }
         }
     }
 
     let ratio = |a: usize, b: usize| if b == 0 { 0.0 } else { a as f64 / b as f64 };
     let user_landing = ratio(user_main, user_matched);
+    let agent_landing = ratio(agent_landed, agent_matched);
     println!(
         "extraction eval: model {model}, repository rule {repository}, {} cases x {REPEATS} repeats",
         CASES.len()
     );
     println!(
-        "{:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>5} {:>8}",
-        "category", "n", "captured", "wrong", "missed", "traps", "main", "harmful"
+        "{:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>5} {:>6} {:>8}",
+        "category", "n", "captured", "wrong", "missed", "traps", "main", "agent", "harmful"
     );
     for (category, t) in &by_category {
         println!(
-            "{category:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>5} {:>8}",
-            t.n, t.captured, t.wrong, t.missed, t.traps, t.main, t.harmful
+            "{category:<14} {:>4} {:>9} {:>6} {:>7} {:>6} {:>5} {:>6} {:>8}",
+            t.n, t.captured, t.wrong, t.missed, t.traps, t.main, t.agent, t.harmful
         );
     }
     for line in &report {
@@ -1300,15 +1561,21 @@ async fn extraction_eval() {
     );
     println!(
         "placement: kind accuracy {:.3} ({kind_ok}/{matched}), user landing \
-         {user_landing:.3} ({user_main}/{user_matched}), harmful {harmful}",
+         {user_landing:.3} ({user_main}/{user_matched}), agent landing \
+         {agent_landing:.3} ({agent_landed}/{agent_matched}), harmful {harmful}",
         ratio(kind_ok, matched),
     );
     assert_eq!(
         harmful, 0,
-        "a project-only item reached main, or a stray retire"
+        "an item left its scope (a project one in main, an agent bank's not \
+         its own, an agent's outside its bank), or a stray retire"
     );
     assert!(
         user_landing >= 0.85,
         "user landing {user_landing:.3} < 0.85"
+    );
+    assert!(
+        agent_landing >= 0.85,
+        "agent landing {agent_landing:.3} < 0.85"
     );
 }
