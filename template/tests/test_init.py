@@ -41,7 +41,8 @@ class InitTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="template-init-test-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # init.sh resolves symlinks (pwd -P); macOS temp dirs sit behind /var -> /private/var.
+        self.root = Path(temporary.name).resolve()
         self.launcher = self.root / "local template"
         self.launcher.mkdir()
         shutil.copy2(TEMPLATE / "init.sh", self.launcher / "init.sh")
