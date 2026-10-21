@@ -108,7 +108,7 @@ export function GroupedTraceList({
 
   if (unavailable) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 px-6 text-center font-mono text-[12px] text-ink-faint">
+      <div className="flex flex-col items-center justify-center py-12 px-6 text-center text-[13px] text-ink-faint">
         <Layers className="w-6 h-6 mb-2 opacity-50" />
         <div className="font-medium text-ink mb-1">Group-by not available</div>
         <div className="max-w-md leading-[1.7]">
@@ -125,7 +125,7 @@ export function GroupedTraceList({
 
   if (isLoading && groups.length === 0) {
     return (
-      <div className="flex items-center justify-center py-12 font-mono text-[12px] text-ink-faint gap-2">
+      <div className="flex items-center justify-center py-12 text-[13px] text-ink-faint gap-2">
         <Loader2 className="w-4 h-4 animate-spin" />
         Loading groups…
       </div>
@@ -134,7 +134,7 @@ export function GroupedTraceList({
 
   if (groups.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 px-6 text-center font-mono text-[12px] text-ink-faint">
+      <div className="flex flex-col items-center justify-center py-12 px-6 text-center text-[13px] text-ink-faint">
         <Layers className="w-6 h-6 mb-2 opacity-50" />
         <div>No traces carry this attribute yet.</div>
       </div>
@@ -214,7 +214,7 @@ function GroupHeaderRow({
       onClick={onToggle}
       aria-expanded={isExpanded}
       className={cn(
-        'w-full flex items-center gap-2 px-3 py-2 text-left border-b border-rule-2 transition-colors hover:bg-surface-hover',
+        'flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors hover:bg-surface-hover',
         containsSelection && 'border-l-2 border-l-edge',
       )}
       title={`${heading} (${group.trace_ids.length} trace${group.trace_ids.length === 1 ? '' : 's'})`}
@@ -233,13 +233,13 @@ function GroupHeaderRow({
       />
       <span
         className={cn(
-          'font-mono text-[12px] truncate',
+          'truncate text-[13px] font-medium',
           opaque ? 'text-ink-faint' : 'text-ink',
         )}
       >
         {heading}
       </span>
-      <span className="ml-auto font-mono text-[11px] text-ink-faint flex-shrink-0 tabular-nums">
+      <span className="ml-auto flex-shrink-0 text-xs text-ink-faint tabular-nums">
         {summarizeGroup(group)}
       </span>
     </button>
@@ -304,7 +304,7 @@ function GroupMembers({
 
   if (isLoading && !data) {
     return (
-      <div className="flex items-center gap-2 pl-8 py-2 font-mono text-[11px] text-ink-faint">
+      <div className="flex items-center gap-2 pl-8 py-2 text-xs text-ink-faint">
         <Loader2 className="size-4 animate-spin" />
         Loading traces…
       </div>
@@ -318,7 +318,7 @@ function GroupMembers({
 
   if (rows.length === 0) {
     return (
-      <div className="pl-8 py-2 font-mono text-[11px] text-ink-faint">
+      <div className="pl-8 py-2 text-xs text-ink-faint">
         No visible traces in this group.
       </div>
     )

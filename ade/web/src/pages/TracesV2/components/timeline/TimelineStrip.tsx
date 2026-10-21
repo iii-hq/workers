@@ -65,7 +65,6 @@ import {
   useState,
 } from 'react'
 import { Badge } from '@/components/ui/Badge'
-import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import type { StoredSpan } from '../../api/traces'
 import type { SpanFilterControls } from '../../lib/spanFilters'
@@ -811,25 +810,22 @@ export function TimelineStrip({
         className,
       )}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-rule-2 bg-bg">
+      <div className="flex shrink-0 items-center justify-between bg-bg">
         <div className="flex items-center gap-3 px-3 py-2">
-          <Eyebrow as="div" size="lg">
-            <span className="text-accent">$</span>
-            <span className="text-ink ml-2">Traces</span>
-          </Eyebrow>
+          <span className="text-[13px] font-semibold text-ink">Activity</span>
           {isPaused ? (
             <Badge variant="warn">
               <Pause className="size-4" />
               paused
             </Badge>
           ) : (
-            <Eyebrow className="flex items-center gap-1.5 text-ink-ghost">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400">
               <span
                 aria-hidden
-                className="inline-block size-1.5 rounded-full bg-accent pulse-dot"
+                className="inline-block size-1.5 rounded-full bg-sky-500 pulse-dot"
               />
-              live
-            </Eyebrow>
+              Live
+            </span>
           )}
         </div>
 

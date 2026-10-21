@@ -32,7 +32,6 @@ import {
 import { useEffect, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from '@/components/ui/Button'
-import { Caret } from '@/components/ui/Caret'
 import { ModeToggle } from '@/components/ui/ModeToggle'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { cn } from '@/lib/utils'
@@ -189,10 +188,10 @@ function currentTimeRangeIndex(filters: TraceFilterState): number {
 }
 
 const inputClass =
-  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors'
+  'h-8 px-2.5 rounded-xl text-[13px] bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors'
 
 const selectClass =
-  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors appearance-none cursor-pointer'
+  'h-8 px-2.5 rounded-xl text-[13px] bg-surface border border-transparent text-ink hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors appearance-none cursor-pointer'
 
 // Lightweight popover anchored to a trigger via getBoundingClientRect.
 // Portals into document.body so it isn't clipped by overflow-hidden
@@ -307,25 +306,23 @@ function SearchInput({
   return (
     <label
       className={cn(
-        'flex items-center gap-2 h-8 px-2 rounded-sm border bg-surface transition-[border-color,box-shadow]',
+        'flex h-8 items-center gap-2 rounded-xl border bg-surface px-2.5 transition-[border-color,box-shadow]',
         searchFocused
-          ? 'border-rule-focus ring-[3px] ring-accent/10'
+          ? 'border-neutral-400 ring-[3px] ring-neutral-500/10 dark:border-neutral-600'
           : 'border-transparent',
         className,
       )}
     >
       <Search className="size-4 text-ink-faint flex-shrink-0" />
-      <span className="text-accent font-mono text-[12px] select-none">$</span>
       <input
         type="text"
         value={searchQuery}
         onChange={(e) => onSearchChange?.(e.target.value)}
         onFocus={() => setSearchFocused(true)}
         onBlur={() => setSearchFocused(false)}
-        placeholder="search traces..."
-        className="flex-1 bg-transparent font-mono text-[12px] text-ink placeholder:text-ink-ghost focus:outline-none min-w-0"
+        placeholder="Search traces"
+        className="min-w-0 flex-1 bg-transparent text-[13px] text-ink placeholder:text-ink-ghost focus:outline-none"
       />
-      {searchFocused && !searchQuery && <Caret className="h-[12px] w-[5px]" />}
       {searchQuery && (
         <button
           type="button"
@@ -358,13 +355,13 @@ export function StatsBlock({
   if (!stats) return null
   const held = heldNew && heldNew.count > 0 ? heldNew : null
   return (
-    <div className="flex items-stretch rounded-md bg-surface">
+    <div className="flex items-stretch rounded-xl bg-surface">
       {held ? (
         <button
           type="button"
           onClick={held.onShow}
           data-trace-list-held={held.count}
-          className="flex items-center gap-1.5 rounded-l-md px-2.5 py-1 font-mono text-[11px] text-accent transition-colors hover:bg-surface-hover"
+          className="flex items-center gap-1.5 rounded-l-xl px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-surface-hover"
           title={
             held.onPage1
               ? `${held.count} new ${held.count === 1 ? 'trace' : 'traces'} waiting — show them at the top`
@@ -388,26 +385,28 @@ export function StatsBlock({
         </button>
       ) : null}
       <div
-        className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint"
+        className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-ink-faint"
         title={`${stats.pageTraceCount} traces on this page, ${stats.totalTraces} total matching traces`}
       >
         <Hash className="size-4 text-ink-faint" />
-        <span className="text-ink tabular-nums">{stats.totalTraces}</span>
+        <span className="font-mono text-ink tabular-nums">
+          {stats.totalTraces}
+        </span>
         <span className="text-ink-ghost">Traces</span>
       </div>
       <div
         className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px]',
+          'flex items-center gap-1.5 px-2.5 py-1 text-xs',
           stats.errorCount > 0 ? 'text-alert' : 'text-ink-faint',
         )}
       >
         <XCircle className="size-4" />
-        <span className="tabular-nums">{stats.errorCount}</span>
+        <span className="font-mono tabular-nums">{stats.errorCount}</span>
         <span className="text-ink-ghost">Page errors</span>
       </div>
-      <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint">
+      <div className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-ink-faint">
         <Timer className="size-4" />
-        <span className="text-ink tabular-nums">
+        <span className="font-mono text-ink tabular-nums">
           {formatDurationMs(stats.avgDuration)}
         </span>
         <span className="text-ink-ghost">Page avg</span>
@@ -727,7 +726,7 @@ export function TraceFilters({
           type="button"
           onClick={() => setPopoverOpen((v) => !v)}
           className={cn(
-            'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] transition-colors',
+            'inline-flex h-8 items-center gap-2 rounded-xl px-2.5 text-[13px] transition-colors',
             popoverOpen || advancedFilterCount > 0
               ? 'bg-accent-muted text-ink'
               : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
@@ -738,7 +737,7 @@ export function TraceFilters({
           <SlidersHorizontal className="size-4" />
           <span>More filters</span>
           {advancedFilterCount > 0 && (
-            <span className="px-1 py-0 rounded-xs bg-accent text-accent-fg font-mono text-[11px] tabular-nums leading-none flex items-center min-w-[14px] justify-center">
+            <span className="px-1 py-0 rounded-md bg-accent text-accent-fg text-[11px] font-medium tabular-nums leading-none flex items-center min-w-[14px] justify-center">
               {advancedFilterCount}
             </span>
           )}
@@ -771,7 +770,7 @@ export function TraceFilters({
               onClick={() =>
                 filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
               }
-              className="flex items-center gap-1 px-2 py-1 rounded-sm bg-surface hover:bg-surface-hover hover:text-ink font-mono text-[11px] text-ink-faint transition-colors group"
+              className="group flex items-center gap-1 rounded-lg bg-surface px-2 py-1 text-xs text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink"
             >
               <span>{filter.label}</span>
               <X className="size-4 opacity-50 group-hover:opacity-100 transition-all" />

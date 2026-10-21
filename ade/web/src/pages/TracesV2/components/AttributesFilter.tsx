@@ -85,7 +85,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
   return (
     <div className="space-y-2">
       {draft.length === 0 ? (
-        <div className="font-mono text-[12px] text-ink-faint italic">
+        <div className="text-[13px] text-ink-faint italic">
           Filter by span attributes (e.g. http.request.method = post)
         </div>
       ) : (
@@ -153,7 +153,7 @@ export function AttributesFilter({ value, onChange }: AttributesFilterProps) {
                 key={attr}
                 type="button"
                 onClick={() => handleSuggestionClick(attr)}
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded-xs font-mono text-[11px] text-ink-faint bg-surface hover:bg-surface-hover hover:text-ink transition-colors"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs text-ink-faint bg-surface hover:bg-surface-hover hover:text-ink transition-colors"
                 title={`add ${attr}`}
               >
                 <Tag className="size-4" />

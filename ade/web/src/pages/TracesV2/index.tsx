@@ -47,6 +47,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { useTraceFocusRequest } from '@/lib/trace-focus'
 import { requestChatMessageFocus } from '@/lib/trace-links'
 import { startTraceActivityFeed } from '@/lib/traces-activity'
@@ -849,7 +850,7 @@ export function TracesV2({
   // border continues the selected row's marker.
   const traceDetail =
     selectedTraceId !== null ? (
-      <div className="bg-panel-raised shadow-raised">
+      <div className="mx-2 my-2 overflow-hidden rounded-xl bg-panel-raised ring-1 ring-neutral-200 dark:ring-neutral-800">
         {isLoadingSpans && (
           <TraceDetailSkeleton
             onClose={() => selectTrace(null)}
@@ -895,7 +896,7 @@ export function TracesV2({
               onOpenMessage={handleOpenMessage}
               loadingSpans={seedProgress}
             />
-            <div className="border-b border-rule-2 px-3 py-2">
+            <div className="px-4 py-1">
               <ViewSwitcher
                 currentView={activeView}
                 onViewChange={setActiveView}
@@ -964,7 +965,10 @@ export function TracesV2({
     <section
       ref={rootRef}
       aria-label="traces"
-      className="onboarding-traces flex-1 flex flex-col overflow-hidden"
+      className={cn(
+        'onboarding-traces flex flex-1 flex-col overflow-hidden font-inter',
+        NEUTRAL_SURFACE,
+      )}
     >
       <PageHeader
         icon={<GitBranch />}
@@ -980,7 +984,7 @@ export function TracesV2({
         onToggleFollowTurns={conversationsCtx ? toggleFollowTurns : undefined}
       />
 
-      <div className="px-3 py-2 border-b border-rule-2">
+      <div className="px-3 py-2.5">
         <ErrorBoundary>
           <TraceFilters
             filters={filterState}

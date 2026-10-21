@@ -14,15 +14,18 @@
  * `style={{ backgroundColor: ... }}` or as an SVG `stroke`/`fill`).
  */
 
+/* Eight muted hues — periwinkle, teal, sand, mauve, sage, terracotta,
+   steel, ochre — desaturated enough to sit on the neutral surfaces without
+   shouting, distinct enough to tell workers apart at a glance. */
 export const WORKER_PALETTE = [
-  '#6366f1',
-  '#0ea5e9',
-  '#14b8a6',
-  '#f59e0b',
-  '#ec4899',
-  '#8b5cf6',
-  '#10b981',
-  '#f97316',
+  '#5e6ad2',
+  '#4a9d9c',
+  '#c08a5a',
+  '#9b6fa8',
+  '#6f9a74',
+  '#c76c66',
+  '#6c82a6',
+  '#b89a4f',
 ] as const
 
 function hashString(input: string): number {
@@ -39,8 +42,8 @@ export function getWorkerColor(worker: string): string {
 
 export const SPAN_STATUS_COLORS = {
   ok: 'var(--color-ink)',
-  error: 'var(--color-alert)',
-  pending: 'var(--color-warn)',
+  error: '#d2524e',
+  pending: 'var(--color-neutral-400)',
   unset: 'var(--color-ink-ghost)',
 } as const
 

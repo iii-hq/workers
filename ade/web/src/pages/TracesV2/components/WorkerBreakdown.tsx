@@ -83,7 +83,7 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-bg transition-colors text-left"
+        className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-surface-hover"
         aria-label="toggle workers section"
         aria-expanded={isExpanded}
       >
@@ -93,20 +93,26 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
             isExpanded && 'rotate-90',
           )}
         />
-        <span className="iii-ui-eyebrow">workers</span>
+        <span className="text-[13px] font-medium text-ink">Workers</span>
 
-        <div className="flex items-center gap-3 ml-auto font-mono text-[11px] text-ink-faint tabular-nums">
+        <div className="ml-auto flex items-center gap-3 text-xs text-ink-faint">
           <span>
             p50{' '}
-            <span className="text-ink">{formatDuration(percentiles.p50)}</span>
+            <span className="font-mono text-ink tabular-nums">
+              {formatDuration(percentiles.p50)}
+            </span>
           </span>
           <span>
             p95{' '}
-            <span className="text-ink">{formatDuration(percentiles.p95)}</span>
+            <span className="font-mono text-ink tabular-nums">
+              {formatDuration(percentiles.p95)}
+            </span>
           </span>
           <span>
             p99{' '}
-            <span className="text-ink">{formatDuration(percentiles.p99)}</span>
+            <span className="font-mono text-ink tabular-nums">
+              {formatDuration(percentiles.p99)}
+            </span>
           </span>
         </div>
       </button>
@@ -118,25 +124,25 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
               <div className="flex items-center gap-2 mb-1">
                 <span
                   aria-hidden
-                  className="w-2 h-2 flex-shrink-0"
+                  className="size-2 flex-shrink-0 rounded-sm"
                   style={{ backgroundColor: worker.color }}
                 />
-                <span className="font-mono text-[12px] text-ink truncate flex-1">
+                <span className="flex-1 truncate text-[13px] font-medium text-ink">
                   {worker.name}
                 </span>
-                <span className="font-mono text-[11px] text-ink-faint tabular-nums">
+                <span className="text-xs text-ink-faint tabular-nums">
                   {worker.spanCount} span{worker.spanCount !== 1 ? 's' : ''}
                 </span>
-                <span className="font-mono text-[11px] text-ink tabular-nums w-16 text-right">
+                <span className="w-16 text-right font-mono text-xs text-ink tabular-nums">
                   {formatDuration(worker.totalDuration)}
                 </span>
                 {worker.errorCount > 0 && (
-                  <span className="font-mono text-[11px] text-alert font-semibold tabular-nums">
+                  <span className="text-xs font-semibold text-alert tabular-nums">
                     {worker.errorCount} err
                   </span>
                 )}
               </div>
-              <div className="h-1 rounded-full bg-surface overflow-hidden ml-4">
+              <div className="ml-4 h-1.5 overflow-hidden rounded-full bg-surface">
                 <div
                   className="h-full transition-all duration-[var(--motion-duration-panel)]"
                   style={{

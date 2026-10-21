@@ -81,7 +81,7 @@ export function ViewsDropdown({
           <button
             type="button"
             className={cn(
-              'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] transition-colors',
+              'inline-flex h-8 items-center gap-2 rounded-xl px-2.5 text-[13px] transition-colors',
               activeView
                 ? 'bg-surface-selected text-ink'
                 : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
@@ -159,7 +159,7 @@ export function ViewsDropdown({
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
               placeholder="view name"
-              className="h-8 px-2 font-mono text-[12px] rounded-sm bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors"
+              className="h-8 rounded-xl bg-surface px-2.5 text-[13px] border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors"
             />
             <div className="flex items-center justify-end gap-2">
               <DialogClose asChild>

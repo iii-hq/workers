@@ -819,7 +819,7 @@ export function TraceTimeline({
                           onSpanClick ? () => handleClick(span) : undefined
                         }
                         className={cn(
-                          'timeline-enter timeline-glide absolute flex items-center gap-1 overflow-hidden rounded-[4px] px-[3px]',
+                          'timeline-enter timeline-glide absolute flex items-center gap-1 overflow-hidden rounded-md px-[3px]',
                           'focus-visible:outline-1 focus-visible:outline-accent',
                           onSpanClick ? 'cursor-pointer' : 'cursor-default',
                         )}

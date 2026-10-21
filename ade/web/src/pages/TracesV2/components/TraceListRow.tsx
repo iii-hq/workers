@@ -72,7 +72,7 @@ export function TraceListRow({
       onAnimationEnd={onAnimationEnd}
       aria-expanded={isSelected}
       className={cn(
-        'group/row w-full px-3 py-2.5 rounded-sm text-left transition-colors',
+        'group/row w-full rounded-xl px-3 py-2.5 text-left transition-colors duration-[var(--motion-duration-control)]',
         isSelected ? 'bg-surface-selected' : 'hover:bg-surface-hover',
         isNew && 'trace-flash',
       )}
@@ -88,7 +88,7 @@ export function TraceListRow({
           tone={statusDotTone(trace.status)}
           pulse={trace.status === 'pending' || isLive}
         />
-        <span className="font-mono text-[13px] text-ink truncate flex-1">
+        <span className="flex-1 truncate text-[13px] font-medium text-ink">
           {resolved.prefix && (
             <Eyebrow className="mr-1">{resolved.prefix}</Eyebrow>
           )}
@@ -119,9 +119,11 @@ export function TraceListRow({
           </span>
         )}
       </div>
-      <div className="flex items-center gap-3 font-mono text-[11px] text-ink-faint">
-        <code className="tabular-nums">{trace.traceId.slice(0, 8)}</code>
-        <span className="flex items-center gap-1 tabular-nums">
+      <div className="flex items-center gap-3 pl-6 text-xs text-ink-faint">
+        <code className="font-mono tabular-nums">
+          {trace.traceId.slice(0, 8)}
+        </code>
+        <span className="flex items-center gap-1 font-mono tabular-nums">
           <Timer className="size-4" />
           {trace.status === 'pending' && trace.duration === undefined
             ? 'running…'
@@ -131,7 +133,7 @@ export function TraceListRow({
           <Zap className="size-4" />
           {trace.workers.join(', ')}
         </span>
-        <span className="ml-auto tabular-nums">
+        <span className="ml-auto font-mono tabular-nums">
           {formatTime(trace.startTime)}
         </span>
       </div>
