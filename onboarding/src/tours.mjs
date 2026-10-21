@@ -45,11 +45,13 @@
 const STATE_SCOPE = "learn-iii";
 
 /**
- * The agent profile the tour talks to: the harness's built-in default. The
- * first step starts a new chat under it; every later prompt goes to the
- * chat the operator is in, which is that one unless they moved.
+ * The agent profile the tour talks to: the one the harness template ships
+ * for its setup examples (`agents/ade-worker-builder.md`, shown as
+ * "Onboarding"). The first step starts a new chat under it; every later
+ * prompt goes to the chat the operator is in, which is that one unless they
+ * moved.
  */
-export const TOUR_AGENT = "default";
+export const TOUR_AGENT = "ade-worker-builder";
 
 /**
  * A step the AGENT finishes, not the operator.
