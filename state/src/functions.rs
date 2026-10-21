@@ -667,11 +667,10 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
     }
 }
 
-/// Input for [`CLAIM_NAMESPACE_ID`]. `_caller_worker_id` is engine-stamped
-/// (overwritten on every dispatch, so a caller cannot forge it); the handler
-/// resolves the caller (see `caller_worker_id`) to its worker NAME and
-/// requires it to equal `functions_prefix`. Kept for 0.24 engines, which
-/// send only this.
+/// Input for [`CLAIM_NAMESPACE_ID`]. The handler resolves the caller (see
+/// `caller_worker_id`) to its worker NAME and requires it to equal
+/// `functions_prefix`. `_caller_worker_id` is kept for 0.24 engines, which
+/// identify the caller only there, and is read only on such an engine.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ClaimNamespaceInput {
     /// Must equal the calling worker's name.
@@ -693,23 +692,30 @@ pub struct ClaimNamespaceResult {
 }
 
 /// The engine-stamped id of the worker that made the current invocation:
-/// `current_invocation().caller.worker_id` (iii 0.25), else the payload's
-/// `_caller_worker_id` (0.24 engines; 0.25 still stamps it for one
-/// deprecation window), else `None` and the caller fails closed. Reads the
-/// task-local invocation, so call it from the handler's own future.
+/// `current_invocation().caller.worker_id`, else `None` and the caller fails
+/// closed. The payload's `_caller_worker_id` is read only when
+/// `engine_observes` is `Some(false)`: a 0.24 engine sends nothing else,
+/// while an engine with observe stamps the caller on the invocation itself,
+/// so there the payload field is never trusted (nor while the engine's
+/// support is unknown). Reads the task-local invocation, so call it from the
+/// handler's own future.
 ///
 /// Observer activations are never trusted for caller identity: the engine
 /// invokes the target on an observer's behalf, so there is no calling worker,
 /// and the payload was not stamped for this call. An activation fails closed
 /// before the payload fallback.
-fn caller_worker_id(stamped: Option<&str>) -> Option<String> {
+fn caller_worker_id(stamped: Option<&str>, engine_observes: Option<bool>) -> Option<String> {
     let ctx = iii_sdk::current_invocation();
     if ctx.as_ref().is_some_and(|ctx| ctx.activation.is_some()) {
         return None;
     }
     ctx.and_then(|ctx| ctx.caller)
         .and_then(|caller| caller.worker_id)
-        .or_else(|| stamped.map(str::to_string))
+        .or_else(|| {
+            stamped
+                .filter(|_| engine_observes == Some(false))
+                .map(str::to_string)
+        })
 }
 
 /// Resolve the engine-stamped caller worker id to its registered NAME.
@@ -773,13 +779,15 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                         "RESERVED_SCOPE: `{scope}` is state worker bookkeeping"
                     )));
                 }
-                let caller_worker_id = caller_worker_id(input.caller_worker_id.as_deref())
-                    .ok_or_else(|| {
-                        Error::Handler(
-                            "UNKNOWN_CALLER: the engine did not stamp _caller_worker_id"
-                                .to_string(),
-                        )
-                    })?;
+                let caller_worker_id = caller_worker_id(
+                    input.caller_worker_id.as_deref(),
+                    client.engine_supports_observe(),
+                )
+                .ok_or_else(|| {
+                    Error::Handler(
+                        "UNKNOWN_CALLER: the engine did not identify the caller".to_string(),
+                    )
+                })?;
                 let caller = caller_worker_name(&client, &caller_worker_id).await?;
                 if caller != input.functions_prefix {
                     return Err(Error::Handler(format!(
@@ -1318,33 +1326,61 @@ mod private_namespace_tests {
         }
     }
 
+    /// With observe, without it (0.24), and not known yet.
+    const ENGINES: [Option<bool>; 3] = [Some(true), Some(false), None];
+
     #[tokio::test]
     async fn the_invocation_caller_wins_over_the_payload_stamp() {
-        let resolved = iii_sdk::scope(invocation(Some("from-ctx")), async {
-            caller_worker_id(Some("from-payload"))
-        })
-        .await;
-        assert_eq!(resolved.as_deref(), Some("from-ctx"));
+        for engine in ENGINES {
+            let resolved = iii_sdk::scope(invocation(Some("from-ctx")), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved.as_deref(), Some("from-ctx"));
+        }
     }
 
     #[tokio::test]
-    async fn the_payload_stamp_serves_engines_without_a_caller() {
+    async fn the_payload_stamp_serves_engines_without_observe() {
         // 0.24: no caller on the invocation (or no worker id in it).
         let no_worker_id = iii_sdk::scope(invocation(None), async {
-            caller_worker_id(Some("from-payload"))
+            caller_worker_id(Some("from-payload"), Some(false))
         })
         .await;
         assert_eq!(no_worker_id.as_deref(), Some("from-payload"));
         let mut no_caller = invocation(None);
         no_caller.caller = None;
-        let resolved =
-            iii_sdk::scope(no_caller, async { caller_worker_id(Some("from-payload")) }).await;
+        let resolved = iii_sdk::scope(no_caller, async {
+            caller_worker_id(Some("from-payload"), Some(false))
+        })
+        .await;
         assert_eq!(resolved.as_deref(), Some("from-payload"));
         // Outside any invocation.
         assert_eq!(
-            caller_worker_id(Some("from-payload")).as_deref(),
+            caller_worker_id(Some("from-payload"), Some(false)).as_deref(),
             Some("from-payload")
         );
+    }
+
+    #[tokio::test]
+    async fn the_payload_stamp_is_never_read_unless_the_engine_lacks_observe() {
+        // An engine with observe stamps the caller on the invocation; until
+        // the engine's support is known, nothing is trusted either.
+        for engine in [Some(true), None] {
+            let no_worker_id = iii_sdk::scope(invocation(None), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(no_worker_id, None);
+            let mut no_caller = invocation(None);
+            no_caller.caller = None;
+            let resolved = iii_sdk::scope(no_caller, async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved, None);
+            assert_eq!(caller_worker_id(Some("from-payload"), engine), None);
+        }
     }
 
     #[tokio::test]
@@ -1360,23 +1396,32 @@ mod private_namespace_tests {
             observer_id: "obs-1".to_string(),
             activation_id: Some("act-1".to_string()),
         });
-        let resolved = iii_sdk::scope(activation.clone(), async {
-            caller_worker_id(Some("from-payload"))
-        })
-        .await;
-        assert_eq!(resolved, None);
+        for engine in ENGINES {
+            let resolved = iii_sdk::scope(activation.clone(), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved, None);
+        }
         // Even with a worker id on the activation's caller.
         activation.caller.as_mut().unwrap().worker_id = Some("engine-id".to_string());
-        let resolved =
-            iii_sdk::scope(activation, async { caller_worker_id(Some("from-payload")) }).await;
-        assert_eq!(resolved, None);
+        for engine in ENGINES {
+            let resolved = iii_sdk::scope(activation.clone(), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved, None);
+        }
     }
 
     #[tokio::test]
     async fn no_stamp_at_all_fails_closed() {
-        assert_eq!(caller_worker_id(None), None);
-        let resolved = iii_sdk::scope(invocation(None), async { caller_worker_id(None) }).await;
-        assert_eq!(resolved, None);
+        for engine in ENGINES {
+            assert_eq!(caller_worker_id(None, engine), None);
+            let resolved =
+                iii_sdk::scope(invocation(None), async { caller_worker_id(None, engine) }).await;
+            assert_eq!(resolved, None);
+        }
     }
 
     #[tokio::test]
