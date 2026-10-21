@@ -417,8 +417,9 @@ pub(crate) async fn injection(
     let (mut hits, mut top, mut held) = (Vec::new(), Vec::new(), HashMap::new());
     for (name, b, layered) in sources {
         let keep = |m: &Memory| keeps(name, layered, m);
-        // A layer's memories it reads may rank past the limit.
-        let fetch = if layered {
+        // The default bank's memories it reads as a layer may rank past the
+        // limit; an agent layer keeps every memory, so the limit is enough.
+        let fetch = if layered && name == cfg.default_bank {
             usize::MAX
         } else {
             cfg.recall_limit

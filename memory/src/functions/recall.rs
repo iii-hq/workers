@@ -160,7 +160,7 @@ async fn rank(
     bm25_max: f32,
 ) -> Vec<(Memory, f32)> {
     let limit = req.limit.unwrap_or(cfg.recall_limit).min(100);
-    let fetch = if req.tag.is_some() || layer.is_some() {
+    let fetch = if req.tag.is_some() || layer == Some(cfg.default_bank.as_str()) {
         usize::MAX
     } else {
         limit
