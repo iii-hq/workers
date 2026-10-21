@@ -365,7 +365,14 @@ async fn console_terminal_is_a_live_tmux_client() {
     let sink = Arc::new(Captured::default());
     let console = ConsoleClients::default();
     let collector = Arc::new(Collector::new(w.collector_config(), console.clone()));
-    let manager = TerminalManager::new(sink.clone(), collector.clone(), console, Arc::new(|| {}));
+    // As on a 0.24 engine, which identifies the caller only in the payload.
+    let manager = TerminalManager::new(
+        sink.clone(),
+        collector.clone(),
+        console,
+        Arc::new(|| {}),
+        Arc::new(|| Some(false)),
+    );
 
     let refused = manager
         .open(OpenRequest {

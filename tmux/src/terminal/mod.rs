@@ -106,6 +106,9 @@ pub struct TerminalManager {
     console: ConsoleClients,
     terminals: Arc<RwLock<HashMap<String, Arc<Terminal>>>>,
     on_change: Arc<dyn Fn() + Send + Sync>,
+    /// The engine's observe support (`IIIClient::engine_supports_observe`),
+    /// which decides whether the payload's caller stamp may be read.
+    engine_observes: Arc<dyn Fn() -> Option<bool> + Send + Sync>,
 }
 
 pub fn validate_output_function_id(function_id: &str) -> Result<(), String> {
@@ -131,15 +134,17 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), String> {
 }
 
 /// The worker calling a terminal function, as the engine stamped it: the
-/// invocation's `caller.worker_id` (0.25 engines), else the payload's
-/// `_caller_worker_id` (0.24 engines; 0.25 still sends it for one
-/// deprecation window). Fails closed without either, and for an observer
+/// invocation's `caller.worker_id`. The payload's `_caller_worker_id` is read
+/// only when `engine_observes` is `Some(false)`: a 0.24 engine sends nothing
+/// else, while an engine with observe stamps the caller on the invocation
+/// itself, so there the payload field is never trusted. Fails closed without
+/// a caller, while the engine's support is unknown, and for an observer
 /// activation: terminal calls come straight from the page that opened the
 /// terminal, and an activation carries the engine's or an owner's identity,
 /// not the page's.
 ///
 /// Reads the task-local invocation, so call it in the handler's own future.
-fn require_caller(stamped: Option<&str>) -> Result<String, String> {
+fn require_caller(stamped: Option<&str>, engine_observes: Option<bool>) -> Result<String, String> {
     let invocation = iii_sdk::current_invocation();
     if invocation
         .as_ref()
@@ -152,7 +157,7 @@ fn require_caller(stamped: Option<&str>) -> Result<String, String> {
         .filter(|caller| !caller.is_empty())
         .or_else(|| {
             stamped
-                .filter(|caller| !caller.is_empty())
+                .filter(|caller| engine_observes == Some(false) && !caller.is_empty())
                 .map(str::to_string)
         })
         .ok_or_else(|| "terminal calls require engine-stamped caller identity".to_string())
@@ -228,6 +233,7 @@ impl TerminalManager {
         collector: Arc<Collector>,
         console: ConsoleClients,
         on_change: Arc<dyn Fn() + Send + Sync>,
+        engine_observes: Arc<dyn Fn() -> Option<bool> + Send + Sync>,
     ) -> Self {
         Self {
             sink,
@@ -235,11 +241,16 @@ impl TerminalManager {
             console,
             terminals: Arc::new(RwLock::new(HashMap::new())),
             on_change,
+            engine_observes,
         }
     }
 
+    fn caller(&self, stamped: Option<&str>) -> Result<String, String> {
+        require_caller(stamped, (self.engine_observes)())
+    }
+
     async fn authenticated(&self, reference: &TerminalRef) -> Result<Arc<Terminal>, String> {
-        let caller = require_caller(reference.caller_worker_id.as_deref())?;
+        let caller = self.caller(reference.caller_worker_id.as_deref())?;
         let terminal = self
             .terminals
             .read()
@@ -255,7 +266,7 @@ impl TerminalManager {
     }
 
     pub async fn open(&self, request: OpenRequest) -> Result<OpenResponse, String> {
-        let caller = require_caller(request.caller_worker_id.as_deref())?;
+        let caller = self.caller(request.caller_worker_id.as_deref())?;
         validate_size(request.cols, request.rows)?;
         validate_output_function_id(&request.output_function_id)?;
         let max = self.collector.config().max_terminals;
@@ -553,7 +564,7 @@ impl TerminalManager {
     }
 
     pub async fn close(&self, request: TerminalRef) -> Result<CloseResponse, String> {
-        let caller = require_caller(request.caller_worker_id.as_deref())?;
+        let caller = self.caller(request.caller_worker_id.as_deref())?;
         let terminal = self
             .terminals
             .read()
@@ -741,44 +752,72 @@ mod tests {
         })
     }
 
-    async fn caller_in(ctx: InvocationCtx, stamped: Option<&str>) -> Result<String, String> {
-        scope(ctx, async { require_caller(stamped) }).await
+    const ENGINES: [Option<bool>; 3] = [Some(true), Some(false), None];
+
+    async fn caller_in(
+        ctx: InvocationCtx,
+        stamped: Option<&str>,
+        engine_observes: Option<bool>,
+    ) -> Result<String, String> {
+        scope(ctx, async { require_caller(stamped, engine_observes) }).await
     }
 
     #[tokio::test]
     async fn invocation_caller_wins_over_the_payload_stamp() {
-        for stamped in [Some("forged"), Some(""), None] {
-            assert_eq!(
-                caller_in(invocation(stamped_caller("page"), None), stamped).await,
-                Ok("page".to_string())
-            );
+        for engine in ENGINES {
+            for stamped in [Some("forged"), Some(""), None] {
+                assert_eq!(
+                    caller_in(invocation(stamped_caller("page"), None), stamped, engine).await,
+                    Ok("page".to_string())
+                );
+            }
         }
     }
 
     #[tokio::test]
-    async fn payload_stamp_is_the_fallback_without_an_invocation_caller() {
+    async fn payload_stamp_serves_engines_without_observe() {
         // A 0.24 engine sends no caller, or one without a worker id.
         for caller in [None, stamped_caller(""), Some(Caller::default())] {
             assert_eq!(
-                caller_in(invocation(caller, None), Some("page")).await,
+                caller_in(invocation(caller, None), Some("page"), Some(false)).await,
                 Ok("page".to_string())
             );
         }
         // Outside any invocation.
-        assert_eq!(require_caller(Some("page")), Ok("page".to_string()));
+        assert_eq!(
+            require_caller(Some("page"), Some(false)),
+            Ok("page".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn payload_stamp_is_never_read_unless_the_engine_lacks_observe() {
+        // An engine with observe stamps the caller on the invocation; until
+        // the engine's support is known, nothing is trusted either.
+        for engine in [Some(true), None] {
+            for caller in [None, stamped_caller(""), Some(Caller::default())] {
+                assert!(caller_in(invocation(caller, None), Some("page"), engine)
+                    .await
+                    .unwrap_err()
+                    .contains("require engine-stamped caller identity"));
+            }
+            assert!(require_caller(Some("page"), engine).is_err());
+        }
     }
 
     #[tokio::test]
     async fn no_caller_at_all_fails_closed() {
-        for stamped in [None, Some("")] {
-            for result in [
-                require_caller(stamped),
-                caller_in(invocation(None, None), stamped).await,
-                caller_in(invocation(stamped_caller(""), None), stamped).await,
-            ] {
-                assert!(result
-                    .unwrap_err()
-                    .contains("require engine-stamped caller identity"));
+        for engine in ENGINES {
+            for stamped in [None, Some("")] {
+                for result in [
+                    require_caller(stamped, engine),
+                    caller_in(invocation(None, None), stamped, engine).await,
+                    caller_in(invocation(stamped_caller(""), None), stamped, engine).await,
+                ] {
+                    assert!(result
+                        .unwrap_err()
+                        .contains("require engine-stamped caller identity"));
+                }
             }
         }
     }
@@ -789,15 +828,21 @@ mod tests {
             observer_id: "obs-1".into(),
             activation_id: Some("act-1".into()),
         };
-        for (caller, stamped) in [
-            (stamped_caller("page"), Some("page")),
-            (None, Some("page")),
-            (None, None),
-        ] {
-            let refused = caller_in(invocation(caller, Some(activation.clone())), stamped)
+        for engine in ENGINES {
+            for (caller, stamped) in [
+                (stamped_caller("page"), Some("page")),
+                (None, Some("page")),
+                (None, None),
+            ] {
+                let refused = caller_in(
+                    invocation(caller, Some(activation.clone())),
+                    stamped,
+                    engine,
+                )
                 .await
                 .unwrap_err();
-            assert!(refused.contains("observer activation"));
+                assert!(refused.contains("observer activation"));
+            }
         }
     }
 
