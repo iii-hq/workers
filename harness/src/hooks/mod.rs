@@ -366,12 +366,11 @@ impl HookRegistry {
         &self,
         target_function_id: &str,
     ) -> crate::filesystem_scope::FilesystemBoundary {
-        // fp::pipe is stamped on behalf of its scoped steps: give it the
-        // boundary a direct scoped call would get, or a pipe step would run
-        // under a WIDER jail than the same call made directly. shell::exec
-        // represents the watch's fixed shell::*/coder::* binding set.
-        let target_function_id = if target_function_id == crate::filesystem_scope::PIPE_FUNCTION_ID
-        {
+        // fp::pipe and fp::batch are stamped on behalf of their scoped steps:
+        // give them the boundary a direct scoped call would get, or a step
+        // would run under a WIDER jail than the same call made directly.
+        // shell::exec represents the watch's fixed shell::*/coder::* binding set.
+        let target_function_id = if crate::filesystem_scope::carries_scoped_steps(target_function_id) {
             "shell::exec"
         } else {
             target_function_id
@@ -527,6 +526,10 @@ mod tests {
         );
         assert_eq!(
             registry.filesystem_boundary("fp::pipe"),
+            FilesystemBoundary::Workspace
+        );
+        assert_eq!(
+            registry.filesystem_boundary("fp::batch"),
             FilesystemBoundary::Workspace
         );
         assert_eq!(
