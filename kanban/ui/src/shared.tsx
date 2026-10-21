@@ -3,7 +3,6 @@ import * as lucide from 'lucide-react'
 import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon, Tag } from 'lucide-react'
 import { type SyntheticEvent, useSyncExternalStore } from 'react'
 import { type StatusStep, statusStep } from './board-state'
-import { WORKER } from './worker'
 
 export type Column = { id: string; label: string }
 
@@ -168,7 +167,7 @@ export type AgentProfile = {
   model: string | null
 }
 
-/** `kanban::ticket::links`: tickets this one mentions by key, and tickets whose text mentions it. */
+/** 'kanban::ticket::links': tickets this one mentions by key, and tickets whose text mentions it. */
 export type TicketLinks = { mentions: TicketSummary[]; mentioned_by: TicketSummary[] }
 
 export type ConfigInfo = {
@@ -197,17 +196,17 @@ export type ChangeEvent = {
   at: string
 }
 
-/** The `kanban:change` event that names no ticket: the configuration was reloaded. */
+/** The 'kanban:change' event that names no ticket: the configuration was reloaded. */
 export const CONFIG_EVENT = 'config.updated'
 
-export const COLUMNS_CONFIGURATION_ID = WORKER
-export const BOARD_PAGE_ID = `${WORKER}-board`
-export const TICKET_PAGE_ID = `${WORKER}-ticket`
-export const RELEASES_PAGE_ID = `${WORKER}-releases`
-export const PROJECTS_PAGE_ID = `${WORKER}-projects`
+export const COLUMNS_CONFIGURATION_ID = 'kanban'
+export const BOARD_PAGE_ID = 'kanban-board'
+export const TICKET_PAGE_ID = 'kanban-ticket'
+export const RELEASES_PAGE_ID = 'kanban-releases'
+export const PROJECTS_PAGE_ID = 'kanban-projects'
 
 /**
- * Project and release writes fire no `kanban:change` event. Pages that make one dispatch this window event
+ * Project and release writes fire no 'kanban:change' event. Pages that make one dispatch this window event
  * (same tab) so open boards and pickers read the plan again; other tabs catch up on their next read.
  */
 export const PLAN_CHANGED_EVENT = 'kanban:plan-changed'
@@ -217,44 +216,44 @@ export function announcePlanChange(): void {
 }
 
 export const api = {
-  board: (iii: ExtensionIii) => iii.trigger<BoardData>(`${WORKER}::board::get`, {}),
-  config: (iii: ExtensionIii) => iii.trigger<ConfigInfo>(`${WORKER}::config::info`, {}),
+  board: (iii: ExtensionIii) => iii.trigger<BoardData>('kanban::board::get', {}),
+  config: (iii: ExtensionIii) => iii.trigger<ConfigInfo>('kanban::config::info', {}),
   agents: (iii: ExtensionIii) =>
-    iii.trigger<{ agents: AgentProfile[]; source: string; error?: string }>(`${WORKER}::agent::list`, {}),
-  ticket: (iii: ExtensionIii, id: string) => iii.trigger<Ticket>(`${WORKER}::ticket::get`, { id }),
+    iii.trigger<{ agents: AgentProfile[]; source: string; error?: string }>('kanban::agent::list', {}),
+  ticket: (iii: ExtensionIii, id: string) => iii.trigger<Ticket>('kanban::ticket::get', { id }),
   create: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>(`${WORKER}::ticket::create`, payload),
+    iii.trigger<Ticket>('kanban::ticket::create', payload),
   update: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>(`${WORKER}::ticket::update`, payload),
-  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.trigger<Ticket>(`${WORKER}::ticket::move`, payload),
+    iii.trigger<Ticket>('kanban::ticket::update', payload),
+  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.trigger<Ticket>('kanban::ticket::move', payload),
   remove: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>(`${WORKER}::ticket::delete`, payload),
+    iii.trigger<Ticket>('kanban::ticket::delete', payload),
   restore: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>(`${WORKER}::ticket::restore`, payload),
+    iii.trigger<Ticket>('kanban::ticket::restore', payload),
   comment: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<{ comment: Comment; ticket: Ticket }>(`${WORKER}::comment::create`, payload),
-  links: (iii: ExtensionIii, id: string) => iii.trigger<TicketLinks>(`${WORKER}::ticket::links`, { id }),
+    iii.trigger<{ comment: Comment; ticket: Ticket }>('kanban::comment::create', payload),
+  links: (iii: ExtensionIii, id: string) => iii.trigger<TicketLinks>('kanban::ticket::links', { id }),
   projects: (iii: ExtensionIii, includeArchived = true) =>
-    iii.trigger<{ projects: ProjectView[] }>(`${WORKER}::project::list`, { include_archived: includeArchived }),
+    iii.trigger<{ projects: ProjectView[] }>('kanban::project::list', { include_archived: includeArchived }),
   createProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ProjectView>(`${WORKER}::project::create`, payload),
+    iii.trigger<ProjectView>('kanban::project::create', payload),
   updateProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ProjectView>(`${WORKER}::project::update`, payload),
-  archiveProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>(`${WORKER}::project::archive`, { id }),
-  restoreProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>(`${WORKER}::project::restore`, { id }),
-  releases: (iii: ExtensionIii) => iii.trigger<{ releases: ReleaseView[] }>(`${WORKER}::release::list`, {}),
+    iii.trigger<ProjectView>('kanban::project::update', payload),
+  archiveProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::archive', { id }),
+  restoreProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::restore', { id }),
+  releases: (iii: ExtensionIii) => iii.trigger<{ releases: ReleaseView[] }>('kanban::release::list', {}),
   createRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ReleaseView>(`${WORKER}::release::create`, payload),
+    iii.trigger<ReleaseView>('kanban::release::create', payload),
   updateRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ReleaseView>(`${WORKER}::release::update`, payload),
+    iii.trigger<ReleaseView>('kanban::release::update', payload),
   /** `move_open_to`: a release id, `null` to take not-done tickets out of any release; required when some aren't done. */
   shipRelease: (iii: ExtensionIii, payload: { id: string; move_open_to?: string | null }) =>
-    iii.trigger<{ release: ReleaseView; moved: TicketSummary[] }>(`${WORKER}::release::ship`, payload),
-  reopenRelease: (iii: ExtensionIii, id: string) => iii.trigger<ReleaseView>(`${WORKER}::release::reopen`, { id }),
+    iii.trigger<{ release: ReleaseView; moved: TicketSummary[] }>('kanban::release::ship', payload),
+  reopenRelease: (iii: ExtensionIii, id: string) => iii.trigger<ReleaseView>('kanban::release::reopen', { id }),
   deleteRelease: (iii: ExtensionIii, id: string) =>
-    iii.trigger<{ deleted: boolean }>(`${WORKER}::release::delete`, { id }),
+    iii.trigger<{ deleted: boolean }>('kanban::release::delete', { id }),
   convertLabel: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ConvertResult>(`${WORKER}::label::convert`, payload),
+    iii.trigger<ConvertResult>('kanban::label::convert', payload),
 }
 
 type Listener = (event: ChangeEvent) => void
@@ -274,7 +273,7 @@ function hubInit(iii: ExtensionIii): void {
     }
   })
   const offTrigger = iii.registerTrigger({
-    type: `${WORKER}:change`,
+    type: 'kanban:change',
     function_id: `${handlerId}::${iii.browserId}`,
     config: {},
   })

@@ -24,7 +24,6 @@ import { ChevronRight, Flag, MessageCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ProjectGlyph, StatusBadge } from './plan-dialogs'
 import { formatTarget, plural, releaseStatusText, triggerScope } from './plan-rules'
-import { WORKER } from './worker'
 import {
   api,
   type Column,
@@ -41,18 +40,18 @@ import {
 } from './shared'
 
 const TICKET_FUNCTIONS = [
-  `${WORKER}::ticket::get`,
-  `${WORKER}::ticket::create`,
-  `${WORKER}::ticket::update`,
-  `${WORKER}::ticket::move`,
-  `${WORKER}::ticket::restore`,
-  `${WORKER}::ticket::delete`,
-  `${WORKER}::ticket::list`,
-  `${WORKER}::board::get`,
-  `${WORKER}::comment::create`,
-  `${WORKER}::comment::list`,
-  `${WORKER}::activity::list`,
-  `${WORKER}::agent::list`,
+  'kanban::ticket::get',
+  'kanban::ticket::create',
+  'kanban::ticket::update',
+  'kanban::ticket::move',
+  'kanban::ticket::restore',
+  'kanban::ticket::delete',
+  'kanban::ticket::list',
+  'kanban::board::get',
+  'kanban::comment::create',
+  'kanban::comment::list',
+  'kanban::activity::list',
+  'kanban::agent::list',
 ]
 
 function unwrapDetails(output: unknown): unknown {
@@ -100,12 +99,12 @@ function titleCase(value: string): string {
 }
 
 const TICKET_VERBS: Record<string, string> = {
-  [`${WORKER}::ticket::create`]: 'Created',
-  [`${WORKER}::ticket::update`]: 'Updated',
-  [`${WORKER}::ticket::move`]: 'Moved',
-  [`${WORKER}::ticket::delete`]: 'Deleted',
-  [`${WORKER}::ticket::restore`]: 'Restored',
-  [`${WORKER}::comment::create`]: 'Commented on',
+  ['kanban::ticket::create']: 'Created',
+  ['kanban::ticket::update']: 'Updated',
+  ['kanban::ticket::move']: 'Moved',
+  ['kanban::ticket::delete']: 'Deleted',
+  ['kanban::ticket::restore']: 'Restored',
+  ['kanban::comment::create']: 'Commented on',
 }
 
 function ticketVerb(functionId: string): string | undefined {
@@ -481,12 +480,12 @@ function EntityTable({ kind, entities }: { kind: 'release' | 'project'; entities
   )
 }
 
-/** The cards of `kanban::release::*` and `kanban::project::*` results. */
+/** The cards of 'kanban::release::*' and 'kanban::project::*' results. */
 export function createPlanRenderer(host: Host) {
   const kindOf = (functionId: string): 'release' | 'project' | null =>
-    functionId.startsWith(`${WORKER}::release::`)
+    functionId.startsWith('kanban::release::')
       ? 'release'
-      : functionId.startsWith(`${WORKER}::project::`)
+      : functionId.startsWith('kanban::project::')
         ? 'project'
         : null
   const verbOf = (functionId: string, kind: 'release' | 'project') =>
@@ -504,7 +503,7 @@ export function createPlanRenderer(host: Host) {
   }
 
   return {
-    id: `${WORKER}/page.js#plan`,
+    id: 'kanban/page.js#plan',
     isMatch: (functionId: string) => kindOf(functionId) !== null,
     metadata: { display: true },
     tryRenderDisplay: card,
@@ -528,7 +527,7 @@ export function createTicketRenderer(host: Host) {
   }
 
   return {
-    id: `${WORKER}/page.js#ticket`,
+    id: 'kanban/page.js#ticket',
     isMatch: (functionId: string) => TICKET_FUNCTIONS.includes(functionId),
     metadata: { display: true },
     tryRenderDisplay: (message: FunctionTriggerMessage) => {
@@ -552,11 +551,11 @@ export function createTicketRenderer(host: Host) {
 /**
  * The preview of a `@kanban(id="…")` chat mention: the same card a ticket
  * function result shows, drawn from the mention view's `data` (the board
- * projection plus a description excerpt, see `kanban/src/mentions.rs`).
+ * projection plus a description excerpt, see 'kanban/src/mentions.rs').
  */
 export function createTicketMentionRenderer(host: Host): MentionRendererRegistration {
   return {
-    provider: WORKER,
+    provider: 'kanban',
     Preview: ({ view }: MentionRendererProps) => {
       const data = view.data as (Partial<Ticket> & { comment_count?: number }) | undefined
       const ticket = asTicket(data ? { ...data, comments: [], activity: [] } : null)
@@ -569,7 +568,7 @@ export function createTicketMentionRenderer(host: Host): MentionRendererRegistra
 }
 
 export function createKanbanTriggerRenderer(host: Host) {
-  const isKanbanType = (triggerType: string) => triggerType === `${WORKER}:change` || triggerType === `${WORKER}:comment`
+  const isKanbanType = (triggerType: string) => triggerType === 'kanban:change' || triggerType === 'kanban:comment'
 
   const describe = (activity: TriggerActivityMessage): string => {
     const payload = activity.payload as Record<string, unknown> | undefined
@@ -581,7 +580,7 @@ export function createKanbanTriggerRenderer(host: Host) {
   }
 
   return {
-    id: `${WORKER}/page.js#trigger-activity`,
+    id: 'kanban/page.js#trigger-activity',
     isMatch: isKanbanType,
     tryRenderDisplay: (activity: TriggerActivityMessage) => (
       <span className="kanban-chat-line">

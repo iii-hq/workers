@@ -13,8 +13,6 @@ use std::sync::Arc;
 use iii_console_ui::ConsoleUi;
 use iii_sdk::IIIClient;
 
-use crate::namespace;
-
 pub const PAGE_PATH: &str = "kanban/page.js";
 pub const STYLES_PATH: &str = "kanban/styles.css";
 
@@ -22,22 +20,9 @@ const PAGE_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist
 const STYLES_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/styles.css"));
 
 fn console_ui() -> ConsoleUi {
-    ConsoleUi::new(namespace::worker_name())
-        .script(namespace::scoped(PAGE_PATH), PAGE_JS)
-        .style(namespace::scoped(STYLES_PATH), scoped_styles())
-}
-
-/// The stylesheet is built under `[data-iii-ui="kanban"]`; a namespaced
-/// worker renders under its own name, so the scope moves with it.
-fn scoped_styles() -> String {
-    // The minified sheet drops the quotes; a watch build keeps them.
-    let name = namespace::worker_name();
-    STYLES_CSS
-        .replace("[data-iii-ui=kanban]", &format!("[data-iii-ui={name}]"))
-        .replace(
-            r#"[data-iii-ui="kanban"]"#,
-            &format!(r#"[data-iii-ui="{name}"]"#),
-        )
+    ConsoleUi::new("kanban")
+        .script(PAGE_PATH, PAGE_JS)
+        .style(STYLES_PATH, STYLES_CSS)
 }
 
 /// Register the console UI. Call after the worker's functions are registered.
@@ -58,13 +43,13 @@ mod tests {
     fn embedded_page_registers_every_kanban_surface() {
         assert!(PAGE_JS.contains("export"), "built page.js looks wrong");
         for needle in [
-            "-board",
-            "-ticket",
+            "kanban-board",
+            "kanban-ticket",
             "configForms",
             "functionTriggers",
             "triggerRenderers",
-            "page.js#ticket",
-            "page.js#trigger-activity",
+            "kanban/page.js#ticket",
+            "kanban/page.js#trigger-activity",
         ] {
             assert!(
                 PAGE_JS.contains(needle),

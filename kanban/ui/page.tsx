@@ -16,13 +16,12 @@ import {
   RELEASES_PAGE_ID,
   TICKET_PAGE_ID,
 } from './src/shared'
-import { NAMESPACE } from './src/worker'
 import { TicketPage } from './src/ticket'
 
 export default function setup(host: Host) {
   host.pages.register({
     id: BOARD_PAGE_ID,
-    title: NAMESPACE ? `Kanban (${NAMESPACE})` : 'Kanban',
+    title: 'Kanban',
     configurationId: COLUMNS_CONFIGURATION_ID,
     render: (props) => <BoardPage {...props} host={host} />,
   })

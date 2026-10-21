@@ -95,7 +95,6 @@ import {
 } from './shared'
 import { cellKey, DragLine, type DropTarget, SwimlaneGrid, SwimlaneSections } from './swimlanes'
 import { TicketScreen } from './ticket'
-import { WORKER } from './worker'
 
 type DragState = { id: string; from: string; height: number }
 
@@ -140,7 +139,7 @@ const handledContexts = new Set<number>()
 const DRAG_TYPE = 'application/x-kanban-ticket'
 const carriesTicket = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes(DRAG_TYPE)
 
-const VIEWS_KEY = `${WORKER}:views`
+const VIEWS_KEY = 'kanban:views'
 /** Dispatched on window after the views are written, so the other panes of this document pick them up. */
 const VIEWS_EVENT = 'kanban:views-changed'
 

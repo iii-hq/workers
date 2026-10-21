@@ -74,10 +74,7 @@ fn default_priorities() -> Vec<String> {
 impl Default for KanbanConfig {
     fn default() -> Self {
         Self {
-            data_path: iii_worker_paths::default_path(format!(
-                "data/{}",
-                crate::namespace::worker_name()
-            )),
+            data_path: iii_worker_paths::default_path("data/kanban"),
             id_prefix: DEFAULT_PREFIX.to_string(),
             default_status: "backlog".to_string(),
             done_status: "done".to_string(),

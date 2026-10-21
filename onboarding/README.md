@@ -153,7 +153,7 @@ build older than a component it would otherwise import.
 
 The tour says that this is an engine with workers, not a chat app with
 plugins, and the steps together cover CODER: **Composable** (the agent adds a
-kanban board, namespaced `todo-local` with `KANBAN_NAMESPACE`, so it sits apart
+kanban board in the `todo-local` namespace, so it sits apart
 from any board the operator runs), **Observable** (the traces
 step, anchored on the console's traces screen), **Discoverable** (one engine,
 one palette), **Extensible** (the agent builds a TODO worker on that board: a

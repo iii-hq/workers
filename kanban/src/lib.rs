@@ -18,7 +18,6 @@ pub mod configuration;
 pub mod events;
 pub mod functions;
 pub mod mentions;
-pub mod namespace;
 pub mod plan;
 pub mod store;
 pub mod ui;

@@ -14,7 +14,6 @@ use serde_json::json;
 
 use crate::board::{self, summarize};
 use crate::config::KanbanConfig;
-use crate::namespace::scoped;
 use crate::store::{Board, Ticket};
 
 pub const SEARCH_FN: &str = "kanban::mention::search";
@@ -25,11 +24,11 @@ pub const TICKET_PAGE: &str = "kanban-ticket";
 pub const ICON: &str = "ticket";
 
 pub fn provider() -> MentionProvider {
-    MentionProvider::new(scoped(MENTION_NAME), "Tickets", scoped(SEARCH_FN))
+    MentionProvider::new(MENTION_NAME, "Tickets", SEARCH_FN)
         .description("A kanban ticket, by uuid or human key (KAN-12)")
         .icon(ICON)
         .color(color::BLUE)
-        .details(scoped("kanban::ticket::get"), "id")
+        .details("kanban::ticket::get", "id")
 }
 
 /// Search rows for the `@kanban:` menu.
@@ -111,7 +110,7 @@ pub fn view(board: &Board, ticket: &Ticket, config: &KanbanConfig) -> MentionVie
         icon: Some(ICON.to_string()),
         color: Some(ticket_color(ticket).to_string()),
         open: Some(MentionOpen::Page {
-            page: scoped(TICKET_PAGE),
+            page: TICKET_PAGE.to_string(),
             context: Some(json!({ "id": ticket.key })),
         }),
         summary: Some(summary(board, ticket, config)),

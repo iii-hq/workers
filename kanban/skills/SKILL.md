@@ -46,12 +46,6 @@ the ticket page: `pills: [{ "icon": "calendar", "text": "Fri 17:00" }]` on
 replaces the set, `[]` clears it). Use them for what the board does not model
 itself: a due date, an alarm, a source system.
 
-A second board runs apart from the default one with `KANBAN_NAMESPACE=<name>`
-on its container: the worker is then `kanban-<name>` and every function,
-trigger type and page id starts with that name (`kanban-<name>::ticket::create`,
-`kanban-<name>:change`, `kanban-<name>-board`). `kanban::config::info` reports
-the name as `worker`.
-
 ## Boundaries
 
 - Not a general task queue or a durable job store; use `queue` for work that

@@ -417,7 +417,7 @@ pub struct LabelConvertInput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ConfigInfo {
-    /// The worker name: `kanban`, or `kanban-<namespace>` when `KANBAN_NAMESPACE` is set. Every function id, trigger type and page id starts with it.
+    /// The worker name, `kanban`: every function id, trigger type and page id starts with it.
     pub worker: String,
     pub configuration_id: String,
     /// Configured path, as written.
@@ -726,7 +726,7 @@ async fn read(ctx: &Ctx) -> Result<Board, Error> {
 async fn config_info(ctx: Arc<Ctx>, _: Empty) -> Result<ConfigInfo, Error> {
     let config = config_snapshot(&ctx.config);
     Ok(ConfigInfo {
-        worker: crate::namespace::worker_name().to_string(),
+        worker: "kanban".to_string(),
         configuration_id: crate::configuration::config_id().to_string(),
         data_path: config.data_path.clone(),
         data_path_resolved: config.data_path_resolved().display().to_string(),
@@ -1321,7 +1321,7 @@ fn register_with<I, O, F, Fut>(
         function = function.metadata(metadata);
     }
     ctx.iii
-        .register_function(crate::namespace::scoped_static(id), function);
+        .register_function(id, function);
 }
 
 /// Registration metadata of the mention search function: console plumbing,

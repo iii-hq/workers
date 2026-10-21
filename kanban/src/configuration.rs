@@ -14,8 +14,7 @@ use crate::config::{self, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME, KanbanConf
 use crate::events::{self, Subscribers};
 use crate::store::ConfigCell;
 
-/// Process-stable entry identity: `III_CONFIG_NAME`, else the worker name
-/// (`kanban`, or `kanban-<namespace>`); the form family remains CONFIG_ID.
+/// Process-stable entry identity; the form family remains CONFIG_ID.
 pub fn config_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| {
@@ -23,7 +22,7 @@ pub fn config_id() -> &'static str {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| crate::namespace::worker_name().to_string())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
     })
     .as_str()
 }
@@ -70,7 +69,7 @@ pub fn bind_reload(
     iii_config_client::on_change(
         iii,
         config_id(),
-        crate::namespace::scoped_static(RELOAD_FN_ID),
+        RELOAD_FN_ID,
         "Internal: re-read the kanban configuration after an operator change.",
         move || {
             let engine = engine.clone();
