@@ -8,7 +8,12 @@
 
 /** A bus that holds what it cannot deliver yet, and drains on subscribe.
  * The buffer is bounded: with no listener the oldest entries fall off, so
- * a page publishing into a never-opened composer cannot grow memory. */
+ * a page publishing into a never-opened composer cannot grow memory.
+ *
+ * The drain waits a microtask, so every listener a mounting composer adds
+ * in the same effect flush (the editor shell's and the composer's own) gets
+ * what was held; drained to the first one alone, a held send request would
+ * reach the editor as text and never reach the composer that sends it. */
 const PENDING_CAP = 16
 
 function bufferedBus<T>() {
@@ -26,9 +31,12 @@ function bufferedBus<T>() {
     subscribe(listener: (value: T) => void): () => void {
       listeners.add(listener)
       if (pending.length > 0) {
-        const drained = pending
-        pending = []
-        for (const value of drained) listener(value)
+        queueMicrotask(() => {
+          if (listeners.size === 0) return
+          const drained = pending
+          pending = []
+          for (const value of drained) for (const each of listeners) each(value)
+        })
       }
       return () => {
         listeners.delete(listener)

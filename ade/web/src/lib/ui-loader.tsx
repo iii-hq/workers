@@ -99,6 +99,18 @@ export interface ConversationAdapter {
   selectConversation(sessionId: string): void
   openDraft(draft: { text: string; title?: string }): void
   composerModel(conversationId?: string | null): string | null
+  /**
+   * A new chat that sends `text` the way a setup example prompt does: the
+   * agent profile selected (the default one when absent or not served; an
+   * unserved profile leaves the text as a draft), the first listed model
+   * this machine has chosen, then the chat shown. Resolves to its id.
+   */
+  startChat(request: {
+    text: string
+    agent?: string
+    models?: { provider: string; model: string; effort?: string }[]
+    effort?: string
+  }): Promise<string>
 }
 
 /**
@@ -277,9 +289,9 @@ function makeHost(
             ...overlay,
             scope,
             path,
-            render: () => (
+            render: (renderProps) => (
               <ScopedExtension scope={scope} path={path}>
-                <Overlay />
+                <Overlay {...renderProps} />
               </ScopedExtension>
             ),
           }),
@@ -442,6 +454,9 @@ function makeHost(
       },
       composerModel(conversationId) {
         return conversationAdapter.composerModel(conversationId)
+      },
+      startChat(request) {
+        return conversationAdapter.startChat(request)
       },
     },
   }

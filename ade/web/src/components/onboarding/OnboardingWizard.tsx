@@ -32,7 +32,7 @@ import {
   readableError,
   saveOnboardingState,
 } from '@/lib/onboarding/api'
-import { type JudgeOption, TOUR_PAGE } from '@/lib/onboarding/catalog'
+import type { JudgeOption } from '@/lib/onboarding/catalog'
 import { chromiumMissing } from '@/lib/onboarding/chromium'
 import {
   type KitInstall,
@@ -57,36 +57,19 @@ import {
   type SetupStepId,
   type SetupStepProperties,
 } from '@/lib/onboarding/telemetry'
-import { prepareTour } from '@/lib/onboarding/tour'
+import { openTour, prepareTour } from '@/lib/onboarding/tour'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
-import { fetchNewChatWorkingDir } from '@/lib/working-dir'
 import { BrowserStep } from './BrowserStep'
-import { openExamplePrompt } from './example-prompt'
+import { ExploreStep, type TourState } from './ExploreStep'
+import { startExamplePrompt } from './example-prompt'
 import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
 import type { StepPosition } from './parts'
-import { ReadyStep, type TourState } from './ReadyStep'
+import { ReadyStep } from './ReadyStep'
 import { Stepper, type StepperStep } from './Stepper'
 import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
-
-/**
- * The longest an example waits for its profile or folder lookup once the
- * wizard has closed. Past it the chat opens with what is known, and the
- * prompt waits for a manual send (see `openExamplePrompt`) while the chat
- * looks up its folder itself.
- */
-const LOOKUP_WAIT_MS = 3000
-
-function withinLookupWait<T>(lookup: Promise<T>, fallback: T): Promise<T> {
-  return Promise.race([
-    lookup,
-    new Promise<T>((resolve) =>
-      window.setTimeout(() => resolve(fallback), LOOKUP_WAIT_MS),
-    ),
-  ])
-}
 
 const STEPS: readonly StepperStep[] = [
   { id: 'welcome', title: 'Welcome', description: 'What the ADE does' },
@@ -104,7 +87,8 @@ const STEPS: readonly StepperStep[] = [
     description: 'Small decision models',
     optional: true,
   },
-  { id: 'ready', title: 'Ready', description: 'Start building' },
+  { id: 'ready', title: 'Ready', description: 'What setup connected' },
+  { id: 'explore', title: 'Explore iii', description: 'Where to start' },
 ]
 
 /** "Step N of M" counts the steps that set something up. */
@@ -113,7 +97,8 @@ export function stepPosition(
   id: WizardStepId,
 ): StepPosition | undefined {
   const setup = steps.filter(
-    (entry) => entry.id !== 'welcome' && entry.id !== 'ready',
+    (entry) =>
+      entry.id !== 'welcome' && entry.id !== 'ready' && entry.id !== 'explore',
   )
   const index = setup.findIndex((entry) => entry.id === id)
   return index < 0 ? undefined : { index: index + 1, total: setup.length }
@@ -132,13 +117,12 @@ export function stepPosition(
  * workspace layout in the ADE's data directory, so it never reopens on its
  * own after either.
  *
- * Ready offers the example prompts the project's template declares
- * (`onboarding.yaml`, read through `console::onboarding::prompts`): a click
+ * Ready shows what setup connected. Explore iii, after it, offers three
+ * ways in: the example prompts the project's template declares
+ * (`onboarding.yaml`, read through `console::onboarding::prompts`; a click
  * opens a new chat that sends the prompt, its agent profile and model chosen
- * (see `openExamplePrompt`). Once a model is connected it also offers the
- * guided tour. Accepting adds the `onboarding` worker that carries it —
- * quietly: it is how the tour is delivered, not a choice in setup — and
- * opens its page beside the chat.
+ * — see `openExamplePrompt`), the learn-iii tour (its worker added when it
+ * is not running yet), or closing setup to explore alone.
  */
 export function OnboardingWizardHost() {
   const reduceMotion = useReducedMotion()
@@ -302,7 +286,12 @@ export function OnboardingWizardHost() {
     const previous = lastStep.current
     lastStep.current = step
     const order = stepIds.split(',')
-    if (previous !== step && order.indexOf(step) > order.indexOf(previous)) {
+    // Ready is announced as it shows, so leaving it for Explore is not.
+    if (
+      previous !== step &&
+      previous !== 'ready' &&
+      order.indexOf(step) > order.indexOf(previous)
+    ) {
       reportRef.current(previous as SetupStepId, outcomeRef.current(previous))
       if (step === 'ready') {
         reportRef.current('ready', {
@@ -331,7 +320,7 @@ export function OnboardingWizardHost() {
   // without the dialog (see `useOnboarding`).
   const close = useCallback(() => {
     setOpen(false)
-    if (step === 'ready') return
+    if (step === 'ready' || step === 'explore') return
     report('closed', { at_step: step })
     record('dismissed')
   }, [record, report, step])
@@ -378,16 +367,19 @@ export function OnboardingWizardHost() {
     ],
   )
 
-  const start = useCallback(() => {
-    report('finish', { outcome: 'start_building' })
-    setOpen(false)
-    window.requestAnimationFrame(requestComposerFocus)
-  }, [report])
+  const start = useCallback(
+    (outcome = 'start_building') => {
+      report('finish', { outcome })
+      setOpen(false)
+      window.requestAnimationFrame(requestComposerFocus)
+    },
+    [report],
+  )
 
-  // Ready reads the project's example prompts, and the agent profiles they
+  // Explore reads the project's example prompts, and the agent profiles they
   // name, each time it shows: the project's file may have changed since.
   useEffect(() => {
-    if (!open || step !== 'ready') return
+    if (!open || step !== 'explore') return
     if (!live) {
       setPrompts([])
       return
@@ -435,42 +427,13 @@ export function OnboardingWizardHost() {
       starting.current = true
       reportRef.current('finish', { outcome: 'example_prompt' })
       setOpen(false)
-      const [profiles, workingDir] = await Promise.all([
-        // Profiles still loading (a quick click): ask for them once more.
-        agents ??
-          withinLookupWait(
-            getIiiClient()
-              .then(listAgents)
-              .catch(() => []),
-            [],
-          ),
-        // `undefined` = the lookup did not finish, timed out or failed (not:
-        // it found none).
-        withinLookupWait<string | null | undefined>(
-          fetchNewChatWorkingDir().catch(() => undefined),
-          undefined,
-        ),
-      ])
       const api = ctxRef.current
       if (!api) return
-      openExamplePrompt(api, prompt, profiles, workingDir)
+      await startExamplePrompt(api, prompt, agents)
       window.requestAnimationFrame(requestComposerFocus)
     },
     [agents],
   )
-
-  // A kit whose plan needs review opens that plan in Directory → Kits (the
-  // kit's own page exists only once it is installed).
-  const reviewKit = useCallback((install: KitInstall) => {
-    setOpen(false)
-    requestPanelOpen({
-      pageId: 'directory',
-      context: {
-        collection: 'kits',
-        ...(install.planId ? { plan_id: install.planId } : {}),
-      },
-    })
-  }, [])
 
   const startTour = useCallback(async () => {
     setTour({ kind: 'preparing' })
@@ -483,7 +446,20 @@ export function OnboardingWizardHost() {
     setTour({ kind: 'idle' })
     reportRef.current('finish', { outcome: 'tour' })
     setOpen(false)
-    requestPanelOpen({ pageId: TOUR_PAGE })
+    openTour()
+  }, [])
+
+  // A kit whose plan needs review opens that plan in Directory → Kits (the
+  // kit's own page exists only once it is installed).
+  const reviewKit = useCallback((install: KitInstall) => {
+    setOpen(false)
+    requestPanelOpen({
+      pageId: 'directory',
+      context: {
+        collection: 'kits',
+        ...(install.planId ? { plan_id: install.planId } : {}),
+      },
+    })
   }, [])
 
   const content = useRef<HTMLDivElement>(null)
@@ -500,7 +476,7 @@ export function OnboardingWizardHost() {
 
   // Finished steps stay a click away until Ready: setup is recorded then.
   const reachable = new Set<WizardStepId>(
-    busy || step === 'ready' ? [] : visited,
+    busy || step === 'ready' || step === 'explore' ? [] : visited,
   )
 
   return (
@@ -599,19 +575,30 @@ export function OnboardingWizardHost() {
                     onBack={() => go(showBrowser ? 'browser' : 'models')}
                     onNext={finishTo}
                   />
-                ) : (
+                ) : step === 'ready' ? (
                   <ReadyStep
                     onboarding={onboarding}
                     judges={judges}
+                    onNext={() => go('explore')}
+                    kits={kits}
+                    onRetryKit={(kit) => void retryOnboardingKit(kit)}
+                    onReviewKit={reviewKit}
+                  />
+                ) : (
+                  <ExploreStep
+                    connected={
+                      (onboarding.snapshot.providers ?? []).filter(
+                        servesUsableModels,
+                      ).length > 0
+                    }
                     prompts={prompts}
                     agentNames={agentNames}
                     onPrompt={(prompt) => void startPrompt(prompt)}
                     tour={tour}
-                    onStartTour={() => void startTour()}
-                    onStart={start}
-                    kits={kits}
-                    onRetryKit={(kit) => void retryOnboardingKit(kit)}
-                    onReviewKit={reviewKit}
+                    onTour={() => void startTour()}
+                    onOwn={() => start()}
+                    onFinish={() => start('finished')}
+                    onBack={() => go('ready')}
                   />
                 )}
               </m.div>

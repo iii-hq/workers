@@ -2,8 +2,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolScan } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
+import { ExampleList, ExploreStep } from './ExploreStep'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep, type TourState } from './ReadyStep'
+import { ReadyStep } from './ReadyStep'
 import {
   type ActivityEntry,
   type MachineSnapshot,
@@ -274,20 +275,42 @@ const CONNECTED: MachineSnapshot['providers'] = [
 
 function ready(
   snapshot: Partial<MachineSnapshot>,
-  tour: TourState = { kind: 'idle' },
   activity: ActivityEntry[] = [],
-  prompts: readonly ExamplePrompt[] | null = [],
 ) {
   return renderToStaticMarkup(
     <ReadyStep
       onboarding={controller(snapshot, activity)}
       judges={[]}
+      onNext={noop}
+    />,
+  )
+}
+
+function examples(prompts: readonly ExamplePrompt[] | null) {
+  return renderToStaticMarkup(
+    <ExampleList
       prompts={prompts}
       agentNames={new Map([['ade-worker-builder', 'Onboarding']])}
       onPrompt={noop}
-      tour={tour}
-      onStartTour={noop}
-      onStart={noop}
+    />,
+  )
+}
+
+function explore(
+  connected: boolean,
+  prompts: readonly ExamplePrompt[] | null = PROMPTS,
+) {
+  return renderToStaticMarkup(
+    <ExploreStep
+      connected={connected}
+      prompts={prompts}
+      agentNames={new Map()}
+      onPrompt={noop}
+      tour={{ kind: 'idle' }}
+      onTour={noop}
+      onOwn={noop}
+      onFinish={noop}
+      onBack={noop}
     />,
   )
 }
@@ -298,12 +321,7 @@ describe('ReadyStep', () => {
       <ReadyStep
         onboarding={controller({ providers: CONNECTED })}
         judges={[]}
-        prompts={[]}
-        agentNames={new Map()}
-        onPrompt={noop}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
-        onStart={noop}
+        onNext={noop}
         kits={[
           { kit: 'iii/deepwork', state: 'installing' },
           { kit: 'iii/done', state: 'installed' },
@@ -338,7 +356,7 @@ describe('ReadyStep', () => {
   })
 
   it('sums up what is connected and every worker setup added', () => {
-    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [
+    const html = ready({ providers: CONNECTED }, [
       {
         id: 1,
         group: 'models',
@@ -379,30 +397,51 @@ describe('ReadyStep', () => {
     expect(html).not.toContain('env://')
   })
 
-  it('offers the guided tour in place of starter prompts, without naming its worker', () => {
-    const html = ready({ providers: CONNECTED })
-    expect(html).toContain('Keep going with a guided tour')
-    expect(html).toContain('Start the tour')
-    expect(html).toContain('Skip the tour')
-    expect(html).not.toContain('Try one of these first')
-    expect(html).not.toContain('onboarding worker')
+  it('moves on to Explore iii, with or without a model', () => {
+    expect(ready({ providers: CONNECTED })).toContain('Next')
+    expect(ready({ providers: [] })).toContain('Next')
+    expect(ready({ providers: CONNECTED })).not.toContain('Try an example')
+  })
+})
+
+describe('ExploreStep', () => {
+  it('offers the examples, the tour and exploring alone', () => {
+    const html = explore(true)
+    expect(html).toContain('Explore iii')
+    expect(html).toContain('Build an example project')
+    expect(html).toContain('Take the learn-iii tour')
+    expect(html).toContain('Explore on my own')
+    expect(html).toContain('Finish')
+    expect(html).not.toContain('disabled=""')
   })
 
-  it('shows the tour getting ready, and why it could not start', () => {
-    expect(ready({ providers: CONNECTED }, { kind: 'preparing' })).toContain(
-      'Preparing the tour…',
-    )
-    const failed = ready(
-      { providers: CONNECTED },
-      { kind: 'failed', error: 'compose is not running' },
-    )
-    expect(failed).toContain('The tour could not start: compose is not running')
-    expect(failed).toContain('Try again')
+  it('needs a model for the examples and the tour, not for exploring alone', () => {
+    const html = explore(false)
+    expect(html).toContain('Connect a model first.')
+    expect(html.match(/disabled=""/g)).toHaveLength(2)
   })
 
+  it('shows why the tour could not start', () => {
+    const html = renderToStaticMarkup(
+      <ExploreStep
+        connected
+        prompts={PROMPTS}
+        agentNames={new Map()}
+        onPrompt={noop}
+        tour={{ kind: 'failed', error: 'compose is not running' }}
+        onTour={noop}
+        onOwn={noop}
+        onFinish={noop}
+        onBack={noop}
+      />,
+    )
+    expect(html).toContain('The tour could not start: compose is not running')
+  })
+})
+
+describe('ExampleList', () => {
   it('offers the four example prompts as chats to start, each with its agent', () => {
-    const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [], PROMPTS)
-    expect(html).toContain('Try an example')
+    const html = examples(PROMPTS)
     expect(html).toContain('aria-label="Start a chat: Build a link shortener"')
     expect(html).toContain('Build an expense tracker')
     expect(html).toContain('Create a test reviewer agent')
@@ -414,23 +453,8 @@ describe('ReadyStep', () => {
     expect(html).not.toContain('link-shortener')
   })
 
-  it('shows placeholders while the prompts are read, and nothing for a project without any', () => {
-    expect(
-      ready({ providers: CONNECTED }, { kind: 'idle' }, [], null),
-    ).toContain('Loading example prompts')
-    expect(
-      ready({ providers: CONNECTED }, { kind: 'idle' }, [], []),
-    ).not.toContain('Try an example')
-    // No model, no prompt to answer it.
-    expect(
-      ready({ providers: [] }, { kind: 'idle' }, [], PROMPTS),
-    ).not.toContain('Try an example')
-  })
-
-  it('offers no tour without a model to run it', () => {
-    const html = ready({ providers: [] })
-    expect(html).not.toContain('Keep going with a guided tour')
-    expect(html).toContain('Start building')
+  it('shows placeholders while the prompts are read', () => {
+    expect(examples(null)).toContain('Loading example prompts')
   })
 })
 

@@ -1757,9 +1757,9 @@ function Header({
         onOpenPalette={onOpenPalette}
       />
 
-      {/* onboarding-menu-bar: tour anchor (workers/onboarding) — a selector,
+      {/* learn-iii-menu-bar: tour anchor (workers/learn-iii) — a selector,
           not styling. Do not remove. */}
-      <header className="onboarding-menu-bar hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
+      <header className="learn-iii-menu-bar hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <Wordmark />
           <TabStrip
@@ -1781,8 +1781,8 @@ function Header({
             onClick={onOpenPalette}
             aria-label={hoverTitle('Search and commands', 'palette.toggle')}
             title={hoverTitle('Search and commands', 'palette.toggle')}
-            /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-            className="onboarding-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-rule-focus focus-visible:outline-none active:scale-[0.97]"
+            /* learn-iii-palette: tour anchor (workers/learn-iii). Do not remove. */
+            className="learn-iii-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-rule-focus focus-visible:outline-none active:scale-[0.97]"
           >
             <KeyCombo
               binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
@@ -1796,8 +1796,8 @@ function Header({
             aria-label="ADE settings"
             title="ADE settings"
             className={cn(
-              // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
-              'onboarding-settings relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
+              // learn-iii-settings: tour anchor (workers/learn-iii). Do not remove.
+              'learn-iii-settings relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
               settingsOpen
                 ? 'border-transparent bg-ink text-bg'
                 : 'border-transparent bg-transparent text-ink-faint hover:bg-surface-hover hover:text-ink',

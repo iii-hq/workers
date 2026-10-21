@@ -1,7 +1,6 @@
 import {
   Button,
   type Host,
-  Input,
   PageHeader,
   PageMain,
   type PageRenderProps,
@@ -11,377 +10,36 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { useCopyFlash } from '@iii-dev/console-ui/hooks'
-import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { bindCondition, type Condition, type Fired } from './conditions'
-import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from './spotlight'
+import { Check, ChevronDown } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { disposeSpotlight, hideSpotlight, showSpotlight } from './spotlight'
+import { StateChip, StepContent } from './step-content'
+import { useTour } from './use-tour'
 
 /**
- * One vertical stepper, one open step.
+ * The tour as a page, for a console without the overlay slot: one vertical
+ * stepper, one open step.
  *
  * The list reads top to bottom as a path: a numbered dot per step on a
  * hairline that fills as steps complete, the title beside it, and — for the
  * step that is open — what to read and the one thing to do, in a panel that
  * grows under the title. Reached steps open and close in place; steps ahead
  * of the front are plain text until they are reached, so nothing is given
- * away early. The stylesheet next door carries the stepper, the spotlight
- * box and the page's own layout; controls come from the shared components.
+ * away early. A console with the slot shows the card instead (overlay.tsx);
+ * both run on `useTour`.
  */
+export function LearnIiiPage({ host, onRequestClose }: { host: Host } & PageRenderProps) {
+  const tour = useTour(host)
+  const { tour: loaded, records, error, open, setOpen, active, framed } = tour
+  const removeButton = <RemoveLearnIii host={host} onClose={onRequestClose} label="Remove this worker" />
 
-/**
- * The step whose prompt starts the tour, and the reasoning effort the tour
- * asks for when it is sent.
- *
- * Every later step hands the agent a short, concrete build task and then
- * waits on it. Left at the operator's usual level the agent spends the tour
- * deliberating over instructions that are already explicit, which is time the
- * operator spends watching a spinner. The console owns the setting — the page
- * asks, and a console too old to be asked simply is not.
- */
-const FIRST_STEP_ID = 'message'
-const TOUR_THINKING_LEVEL = 'lowest'
-
-/**
- * How long `Opening…` may stand before the button gives up and offers
- * `Continue` anyway. The console re-reads its layout when
- * `console::workspace::changed` rings, or, on an older console without that
- * trigger, within its five-second poll; this leaves room for a slow one
- * without ever stranding the operator.
- */
-const OPEN_TIMEOUT_MS = 8_000
-
-/** Chat, the tour, then the panel a step opens beside it. */
-const TOUR_PANEL_SIZES = [0.3, 0.4, 0.3]
-
-/** How long the box stays on what a step's `on_closed` note points at. */
-const HINT_SPOTLIGHT_MS = 5_000
-
-interface Step {
-  id: string
-  title: string
-  body: string
-  anchors?: string[]
-  condition?: Condition
-  /** A console screen the step's button opens beside the tour, e.g. `traces`. */
-  screen?: string
-  /** A prompt the step hands to the chat composer and sends. */
-  ask?: { text: string; label: string }
-  /** A screen the step suggests closing, with what to show once it is gone. */
-  on_closed?: { screen: string; body: string; anchors?: string[] }
-}
-
-interface Tour {
-  id: string
-  title: string
-  description: string
-  steps: Step[]
-}
-
-interface StepRecord {
-  status: 'complete'
-  at: number
-  fired?: { trigger_type: string | null; payload: unknown; at: number } | null
-}
-
-type StepRecords = Record<string, StepRecord | undefined>
-
-interface ProgressResponse {
-  tours: Record<string, { steps?: StepRecords } | undefined>
-  next_tour_id: string | null
-  /** When the operator signed up for product updates; never the address. */
-  subscribed_at?: number | null
-}
-
-type StepState = 'complete' | 'active' | 'pending'
-
-/** Guide initial setup and react to the console's workspace layout changes. */
-export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
-  const [tour, setTour] = useState<Tour | null>(null)
-  const [records, setRecords] = useState<StepRecords>({})
-  const [open, setOpen] = useState<string | null>(null)
-  // Which step's condition row is expanded. Opened by the operator only — a
-  // trigger that fires does not throw its payload open over what is being
-  // read; the row is there when the detail is wanted.
-  const [openSub, setOpenSub] = useState<string | null>(null)
-  // The step whose screen has been placed. Its button becomes `Continue`, so
-  // opening a panel and being done reading it are two separate clicks — the
-  // step used to close on the first one, before the panel had been looked at.
-  const [opened, setOpened] = useState<string | null>(null)
-  // The step whose panel has been asked for but is not on screen yet. The
-  // engine stores the layout in milliseconds and the console re-reads it on
-  // the next `console::workspace::changed` ring (up to five seconds on a
-  // console without it), so the button says `Opening…` for that gap instead
-  // of looking like the click was missed.
-  const [opening, setOpening] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  // Signed up for product updates, now or on an earlier visit.
-  const [subscribed, setSubscribed] = useState(false)
-  const removeButton = <RemoveOnboarding host={host} onClose={onRequestClose} />
-
+  const caption =
+    tour.openStep && loaded ? `${loaded.steps.indexOf(tour.openStep) + 1} · ${tour.openStep.title}` : undefined
   useEffect(() => {
-    let live = true
-    void (async () => {
-      try {
-        const [list, progress] = await Promise.all([
-          host.iii.trigger<{ tours: { id: string }[] }>('onboarding::tours::list'),
-          host.iii.trigger<ProgressResponse>('onboarding::progress::get', {}),
-        ])
-        const id = progress.next_tour_id ?? list.tours[0]?.id
-        if (!id) {
-          if (live) setError('This engine has no tours registered.')
-          return
-        }
-        const { tour: loaded } = await host.iii.trigger<{ tour: Tour }>('onboarding::tours::get', { id })
-        if (!live) return
-        const stored = progress.tours[id]?.steps ?? {}
-        setTour(loaded)
-        setRecords(stored)
-        setSubscribed(Boolean(progress.subscribed_at))
-        setOpen(firstIncomplete(loaded, stored)?.id ?? loaded.steps[0]?.id ?? null)
-      } catch (cause) {
-        if (live) setError(errorMessage(cause))
-      }
-    })()
-    return () => {
-      live = false
-    }
-  }, [host])
-
-  const complete = useCallback(
-    (stepId: string, fired?: Fired) => {
-      if (!tour) return
-      // The engine owns progress, so the list moves only once the write
-      // lands. A rejected write leaves the step where it was, instead of
-      // showing complete until the next reload disagrees.
-      void host.iii
-        .trigger<{ step?: StepRecord }>('onboarding::steps::complete', {
-          tour_id: tour.id,
-          step_id: stepId,
-          ...(fired ? { fired: { trigger_type: fired.trigger_type, payload: fired.payload } } : {}),
-        })
-        .then((result) => {
-          setRecords((current) => {
-            if (current[stepId]?.status === 'complete') return current
-            // The worker's own record, not a second copy of it: its payload is
-            // capped and its timestamps are the ones a reload will show.
-            const next = { ...current, [stepId]: result.step ?? { status: 'complete' as const, at: Date.now() } }
-            // Finishing a step opens the next one that is still open for
-            // business, so the list reads as one moving front instead of a
-            // closed accordion. Read from `next`, so two completions landing
-            // together cannot reopen a step the other just closed.
-            setOpen(firstIncomplete(tour, next)?.id ?? null)
-            return next
-          })
-        })
-        .catch((cause: unknown) => setError(errorMessage(cause)))
-    },
-    [host, tour],
-  )
-
-  /**
-   * The step's button. A step that names a screen opens it in the workspace
-   * first, to the RIGHT of this page rather than the console's default (right
-   * of chat) — a panel the tour is pointing at belongs on the far side of the
-   * tour, not wedged between the tour and the conversation.
-   *
-   * `host.panels.openScreen` places it in this browser, in the tab showing
-   * this page: optimistic, with no bus round trip, and never in whichever tab
-   * another browser clicked last. The widths ride along, so placement and
-   * sizing are one step: chat, the tour, then the panel. A tab the screen is
-   * only reused in keeps its own widths.
-   *
-   * An older console has no `openScreen`, so the page falls back to
-   * `console::workspace::open`, where a `sizes` that does not match the
-   * column count is rejected outright and the call retries without it. The
-   * button moves on whether or not that call lands: the step is about reading
-   * the panel, not about us. The step itself closes on the `Continue` this
-   * turns into.
-   *
-   * `Continue` waits for the panel to be ON SCREEN, not for the call to
-   * return: over the bus, returning only means the engine stored the layout,
-   * and the console re-reads it when the layout-change ring reaches it (or,
-   * on an older console, on its five-second poll).
-   */
-  const openScreen = useCallback(
-    (step: Step) => {
-      const screen = step.screen
-      const open = (sizes?: number[]) =>
-        host.iii.trigger('console::workspace::open', {
-          screen,
-          relative_to: 'ext:onboarding',
-          direction: 'right',
-          ...(sizes ? { sizes } : {}),
-        })
-      const place = (): Promise<unknown> => {
-        if (!screen) return Promise.resolve()
-        if (host.panels?.openScreen) {
-          host.panels.openScreen({
-            screen,
-            relativeTo: 'ext:onboarding',
-            direction: 'right',
-            sizes: TOUR_PANEL_SIZES,
-          })
-          return Promise.resolve()
-        }
-        // The widths are the nicety; the screen is the step, so a rejection
-        // retries without them.
-        return open(TOUR_PANEL_SIZES)
-          .catch(() => open())
-          .catch(() => {})
-      }
-      const placed = place()
-      setOpening(step.id)
-      void placed
-        .then(() => waitForAnchor(step.anchors, OPEN_TIMEOUT_MS))
-        .then(() => {
-          setOpening(null)
-          setOpened(step.id)
-        })
-    },
-    [host],
-  )
-
-  /**
-   * Hand the step's prompt to the chat composer and send it. The console does
-   * the sending, so the message is a normal turn — the same one the step's
-   * condition is waiting for.
-   *
-   * A step with a condition closes when its trigger fires; one without closes
-   * here, because sending WAS the step.
-   */
-  const ask = useCallback(
-    (step: Step) => {
-      if (!step.ask) return
-      if (!host.chat?.compose) {
-        setError('This console is too old to send a prompt for you. Type it in the chat instead.')
-        return
-      }
-      // Before the prompt, so the turn it starts is the first one to run at
-      // the lower effort. Feature-detected, and refused by the console when
-      // this page is not beside the conversation it names — neither is an
-      // error the operator needs to hear about, the step is the prompt.
-      if (step.id === FIRST_STEP_ID && conversationId) {
-        host.chat.requestThinkingLevelChange?.({
-          sessionId: conversationId,
-          level: TOUR_THINKING_LEVEL,
-        })
-      }
-      host.chat.compose({ text: step.ask.text, submit: true })
-      if (!step.condition) complete(step.id)
-    },
-    [complete, conversationId, host],
-  )
-
-  // Every step that is still open for business gets its condition bound, so a
-  // step can be satisfied before the operator reads down to it.
-  useEffect(() => {
-    if (!tour) return
-    const unbinds = tour.steps
-      .filter((step) => step.condition && records[step.id]?.status !== 'complete')
-      .map((step) =>
-        bindCondition(host, `${tour.id}::${step.id}`, step.condition as Condition, (fired) => complete(step.id, fired)),
-      )
-    return () => {
-      for (const unbind of unbinds) unbind()
-    }
-  }, [host, tour, records, complete])
-
-  const openStep = useMemo(() => tour?.steps.find((step) => step.id === open) ?? null, [tour, open])
-
-  /**
-   * A step's `on_closed` screen, once the operator has closed it.
-   *
-   * The console rings `console::workspace::changed` after every layout
-   * write, closing a pane or a tab included. That makes this reactive rather
-   * than polled: one read of the layout per layout change, and none while
-   * nothing moves. A console without the trigger leaves the binding pending,
-   * and only the check below runs.
-   *
-   * Checked once when the step opens too: the operator may have closed the
-   * screen before reading down this far.
-   */
-  const [closed, setClosed] = useState<string | null>(null)
-  const watching = openStep?.on_closed?.screen ?? null
-  useEffect(() => {
-    if (!watching) {
-      setClosed(null)
-      return
-    }
-    let live = true
-    const check = () =>
-      void host.iii
-        .trigger<{ tabs: { screens: string[] }[] }>('console::workspace::list')
-        .then((ws) => {
-          if (!live) return
-          setClosed(ws.tabs.some((tab) => tab.screens.includes(watching)) ? null : watching)
-        })
-        // A console too old for `workspace::list` just never shows the note;
-        // the step itself is unaffected, so this is not the operator's error.
-        .catch(() => {})
-    const localId = `onboarding::layout::${watching}`
-    let offHandler: () => void = () => {}
-    let offTrigger: () => void = () => {}
-    try {
-      offHandler = host.iii.on(localId, check)
-      offTrigger = host.iii.registerTrigger({
-        type: 'console::workspace::changed',
-        function_id: `${localId}::${host.iii.browserId}`,
-        config: {},
-      })
-    } catch {
-      // Same rule as `bindCondition`: no handler without its trigger. The
-      // check below still runs once.
-      offHandler()
-      offHandler = () => {}
-    }
-    // Bind first, then read: a close that landed before the binding still counts.
-    check()
-    return () => {
-      live = false
-      offTrigger()
-      offHandler()
-    }
-  }, [host, watching])
-
-  /**
-   * The box frames whatever step is open, and leaves with the page. A step
-   * whose `on_closed` screen is gone points at what brings it back instead
-   * of at the empty space where it used to be — for a few seconds, and then
-   * the box goes back to the step. That hint answers one question ("where did
-   * the panel go?"), and a box still lit long after it is answered is just
-   * something on the screen the operator cannot turn off.
-   */
-  const hinting = Boolean(openStep?.on_closed && closed === openStep.on_closed.screen)
-  const [hintDone, setHintDone] = useState(false)
-  useEffect(() => {
-    if (!hinting) {
-      setHintDone(false)
-      return
-    }
-    setHintDone(false)
-    const timer = setTimeout(() => setHintDone(true), HINT_SPOTLIGHT_MS)
-    return () => clearTimeout(timer)
-  }, [hinting])
-  const framed = hinting && !hintDone ? (openStep?.on_closed?.anchors ?? null) : (openStep?.anchors ?? null)
-  useEffect(() => {
-    showSpotlight(framed)
+    showSpotlight(framed, caption)
     return hideSpotlight
-  }, [framed])
+  }, [framed, caption])
   useEffect(() => disposeSpotlight, [])
-
-  const reset = useCallback(() => {
-    if (!tour) return
-    // Same order as `complete`: the stored progress is the truth, so the list
-    // empties after the write, not before it.
-    void host.iii
-      .trigger('onboarding::steps::reset', { tour_id: tour.id })
-      .then(() => {
-        setRecords({})
-        setOpen(tour.steps[0]?.id ?? null)
-      })
-      .catch((cause: unknown) => setError(errorMessage(cause)))
-  }, [host, tour])
 
   if (error) {
     return (
@@ -390,154 +48,102 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
       </Frame>
     )
   }
-  if (!tour) {
+  if (!loaded) {
     return (
-      <Frame onClose={onRequestClose} footer={removeButton}>
-        <div className="ob-loading" role="status" aria-busy="true" aria-label="Loading the tour">
-          <Skeleton className="ob-skeleton ob-skeleton--bar" />
-          <Skeleton className="ob-skeleton" />
-          <Skeleton className="ob-skeleton" />
-          <Skeleton className="ob-skeleton" />
+      <Frame onClose={onRequestClose}>
+        <div className="learn-loading" role="status" aria-busy="true" aria-label="Loading the tour">
+          <Skeleton className="learn-skeleton learn-skeleton--bar" />
+          <Skeleton className="learn-skeleton" />
+          <Skeleton className="learn-skeleton" />
+          <Skeleton className="learn-skeleton" />
         </div>
       </Frame>
     )
   }
 
-  const active = firstIncomplete(tour, records)
-  const total = tour.steps.length
-  const done = tour.steps.filter((step) => records[step.id]?.status === 'complete').length
-  const activeIndex = active ? tour.steps.indexOf(active) : -1
+  const total = loaded.steps.length
+  const done = loaded.steps.filter((step) => records[step.id]?.status === 'complete').length
+  const activeIndex = active ? loaded.steps.indexOf(active) : -1
+  // Removing the worker is the last step's business, and the finished tour's.
+  const atEnd = done === total || open === loaded.steps[total - 1]?.id
 
   return (
-    <Frame title={tour.title} description={tour.description} onClose={onRequestClose} footer={removeButton}>
-      <header className="ob-head">
-        <p className="ob-head-count" role="status">
+    <Frame
+      title={loaded.title}
+      description={loaded.description}
+      onClose={onRequestClose}
+      footer={atEnd ? removeButton : undefined}
+    >
+      <header className="learn-head">
+        <p className="learn-head-count" role="status">
           {done === total ? (
             'All steps done'
           ) : (
             <>
-              Step <span className="ob-num">{activeIndex + 1}</span> of <span className="ob-num">{total}</span>
+              Step <span className="learn-num">{activeIndex + 1}</span> of <span className="learn-num">{total}</span>
             </>
           )}
-          <span className="ob-head-done">
+          <span className="learn-head-done">
             {' · '}
-            <span className="ob-num">{done}</span> done
+            <span className="learn-num">{done}</span> done
           </span>
         </p>
-        <Button variant="ghost" size="sm" className="ob-ghost" onClick={reset} disabled={done === 0}>
-          Restart
-        </Button>
       </header>
 
-      <ol className="ob-steps">
-        {tour.steps.map((step, index) => {
+      <ol className="learn-steps">
+        {loaded.steps.map((step, index) => {
           const record = records[step.id]
-          const state: StepState =
-            record?.status === 'complete' ? 'complete' : step.id === active?.id ? 'active' : 'pending'
+          const state = tour.stateOf(step)
           // A step opens once it is reached. Reading ahead would give away a
           // box the operator has not been shown yet.
           const reached = state !== 'pending'
           const isOpen = reached && open === step.id
           const last = index === total - 1
           const indicator = (
-            <span className="ob-indicator" data-state={state} aria-hidden="true">
-              <span className="ob-indicator-num">{index + 1}</span>
-              <Check className="ob-indicator-check" strokeWidth={2.5} />
-              {state === 'active' ? <span className={`ob-indicator-pulse ${uiClasses.pulse}`} /> : null}
+            <span className="learn-indicator" data-state={state} aria-hidden="true">
+              <span className="learn-indicator-num">{index + 1}</span>
+              <Check className="learn-indicator-check" strokeWidth={2.5} />
+              {state === 'active' ? <span className={`learn-indicator-pulse ${uiClasses.pulse}`} /> : null}
             </span>
           )
           return (
             <li
               key={step.id}
-              className="ob-step"
+              className="learn-step"
               data-state={state}
               data-open={isOpen || undefined}
               aria-current={state === 'active' ? 'step' : undefined}
             >
               {last ? null : (
-                <span className="ob-line" data-done={state === 'complete' || undefined} aria-hidden="true" />
+                <span className="learn-line" data-done={state === 'complete' || undefined} aria-hidden="true" />
               )}
               {reached ? (
                 <button
                   type="button"
-                  className="ob-row"
+                  className="learn-row"
                   aria-expanded={isOpen}
                   onClick={() => setOpen(isOpen ? null : step.id)}
                 >
                   {indicator}
-                  <span className="ob-title">{step.title}</span>
+                  <span className="learn-title">{step.title}</span>
                   <StateChip state={state} step={step} record={record} />
-                  <ChevronDown className={`ob-chevron ${uiClasses.icon}`} aria-hidden="true" />
+                  <ChevronDown className={`learn-chevron ${uiClasses.icon}`} aria-hidden="true" />
                 </button>
               ) : (
-                <div className="ob-row">
+                <div className="learn-row">
                   {indicator}
-                  <span className="ob-title">{step.title}</span>
-                  <span className="ob-sr">not reached yet</span>
+                  <span className="learn-title">{step.title}</span>
+                  <span className="learn-sr">not reached yet</span>
                 </div>
               )}
               {reached ? (
                 // Mounted while the step is reached and folded with a grid
                 // track, so opening is a transition that can reverse midway
                 // rather than an entrance that restarts from nothing.
-                <div className="ob-panel" data-open={isOpen || undefined} inert={!isOpen}>
-                  <div className="ob-panel-clip">
-                    <div className="ob-panel-body ob-card">
-                      <p className="ob-body">{step.body}</p>
-                      {step.on_closed && closed === step.on_closed.screen ? (
-                        <p className="ob-note" role="status">
-                          {step.on_closed.body}
-                        </p>
-                      ) : null}
-                      {step.condition?.prompt && state !== 'complete' ? (
-                        <Copyable label="Or ask the agent" text={step.condition.prompt} />
-                      ) : null}
-                      {step.id === 'stay-in-touch' ? (
-                        <StayInTouch
-                          host={host}
-                          subscribed={subscribed}
-                          onSubscribed={() => {
-                            setSubscribed(true)
-                            if (state !== 'complete') complete(step.id)
-                          }}
-                          onSkip={() => (state === 'complete' ? setOpen(null) : complete(step.id))}
-                        />
-                      ) : null}
-                      {step.ask && state !== 'complete' ? (
-                        <div className="ob-ask">
-                          <div className="ob-actions">
-                            <Button className="ob-action" onClick={() => ask(step)}>
-                              {step.ask.label}
-                            </Button>
-                          </div>
-                          <Prompt text={step.ask.text} />
-                        </div>
-                      ) : null}
-                      {state !== 'complete' && !step.condition && !step.ask && step.id !== 'stay-in-touch' ? (
-                        <div className="ob-actions">
-                          {step.screen && opened !== step.id ? (
-                            <Button
-                              className="ob-action"
-                              disabled={opening === step.id}
-                              onClick={() => openScreen(step)}
-                            >
-                              {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
-                            </Button>
-                          ) : (
-                            <Button className="ob-action" onClick={() => complete(step.id)}>
-                              {step.screen ? 'Continue' : 'Got it'}
-                            </Button>
-                          )}
-                        </div>
-                      ) : null}
-                      {step.condition ? (
-                        <ConditionRow
-                          condition={step.condition}
-                          fired={record?.fired ?? null}
-                          open={openSub === step.id}
-                          onToggle={() => setOpenSub(openSub === step.id ? null : step.id)}
-                        />
-                      ) : null}
+                <div className="learn-panel" data-open={isOpen || undefined} inert={!isOpen}>
+                  <div className="learn-panel-clip">
+                    <div className="learn-panel-body learn-card">
+                      <StepContent host={host} tour={tour} step={step} />
                     </div>
                   </div>
                 </div>
@@ -551,102 +157,20 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
 }
 
 /**
- * What a step's button sends, shown as the message it is: a label, then the
- * text. The operator reads it before pressing, and never has to type it.
- */
-function Prompt({ text }: { text: string }) {
-  return (
-    <div className="ob-prompt">
-      <span className="ob-prompt-head">
-        <span className="ob-prompt-label">Message to the agent</span>
-      </span>
-      <p className="ob-prompt-text">{text}</p>
-    </div>
-  )
-}
-
-/** The row's trailing state, as the dialog's chips: a dot for a live one. */
-function StateChip({ state, step, record }: { state: StepState; step: Step; record: StepRecord | undefined }) {
-  if (state === 'pending') return null
-  if (state === 'complete') {
-    return (
-      <span className="ob-chip" data-tone="ok">
-        <Check className="ob-chip-mark" strokeWidth={2.5} aria-hidden="true" />
-        {record ? `Done ${when(record.at)}` : 'Done'}
-      </span>
-    )
-  }
-  return (
-    <span className="ob-chip" data-tone={step.condition ? 'live' : 'now'}>
-      {step.condition ? <span className={`ob-chip-dot ${uiClasses.pulse}`} aria-hidden="true" /> : null}
-      {step.condition ? 'Waiting' : 'Now'}
-    </span>
-  )
-}
-
-/**
- * What the step is waiting on, as one line at the foot of its panel: the
- * state, the trigger, and — once it fires — when. Expanding it shows the
- * binding and the payload the engine delivered, the way the harness shows a
- * function call. It opens when the operator opens it: a trigger that fires
- * does not throw its payload over whatever is being read.
- */
-function ConditionRow({
-  condition,
-  fired,
-  open,
-  onToggle,
-}: {
-  condition: Condition
-  fired: StepRecord['fired']
-  open: boolean
-  onToggle: () => void
-}) {
-  const hasConfig = Object.keys(condition.config ?? {}).length > 0
-  return (
-    <div className="ob-condition" data-fired={fired ? 'true' : undefined}>
-      <button type="button" className="ob-disclosure" aria-expanded={open} onClick={onToggle}>
-        <ChevronRight className={`ob-caret ${uiClasses.icon}`} data-open={open || undefined} aria-hidden="true" />
-        <span className="ob-disclosure-label">Trigger</span>
-        <span className="ob-disclosure-summary">
-          {fired ? (
-            <>
-              <Check className="ob-chip-mark" strokeWidth={2.5} aria-hidden="true" />
-              Fired {when(fired.at)}
-            </>
-          ) : (
-            <>
-              <span className={`ob-chip-dot ${uiClasses.pulse}`} aria-hidden="true" />
-              {condition.label}
-            </>
-          )}
-        </span>
-      </button>
-      <div className="ob-panel ob-panel--inner" data-open={open || undefined} inert={!open}>
-        <div className="ob-panel-clip">
-          <div className="ob-panel-body ob-terminal">
-            <span className="ob-terminal-line">
-              <span className="ob-terminal-prompt">$</span> {fired?.trigger_type ?? condition.type}
-              {hasConfig ? <span className="ob-terminal-dim"> {JSON.stringify(condition.config)}</span> : null}
-            </span>
-            {fired ? (
-              <pre className="ob-pre">{format(fired.payload)}</pre>
-            ) : (
-              <span className="ob-terminal-dim"># {condition.hint ?? condition.label}</span>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/**
- * The way out, under the scroller on every step: take the tour's worker out
- * of the project and close the pane. The compose file is named from what
+ * The way out, on every step: take the tour's worker out of the project and
+ * close the card (or the pane). The compose file is named from what
  * the daemon loaded, so a daemon started elsewhere still finds its project.
  */
-function RemoveOnboarding({ host, onClose }: { host: Host; onClose?: () => void }) {
+export function RemoveLearnIii({
+  host,
+  onClose,
+  label = 'Remove this worker',
+}: {
+  host: Host
+  onClose?: () => void
+  /** The card is narrow, so it says less. */
+  label?: string
+}) {
   const [removing, setRemoving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const remove = useCallback(async () => {
@@ -671,151 +195,20 @@ function RemoveOnboarding({ host, onClose }: { host: Host; onClose?: () => void 
       return
     }
     if (onClose) onClose()
-    else await host.iii.trigger('console::workspace::close', { screen: 'ext:onboarding' }).catch(() => undefined)
+    else await host.iii.trigger('console::workspace::close', { screen: 'ext:learn-iii' }).catch(() => undefined)
   }, [host, onClose])
   return (
     <>
       {error ? <StatusPanel variant="alert" headline={error} role="alert" /> : null}
-      <Button variant="ghost" size="sm" className="ob-ghost" onClick={remove} disabled={removing}>
-        {removing ? 'Removing…' : 'Close and remove the tour'}
+      <Button variant="ghost" size="sm" className="learn-ghost" onClick={remove} disabled={removing}>
+        {removing ? 'Removing…' : label}
       </Button>
     </>
   )
 }
 
-/** The product-update links. Kept here and not in the tour content: they are
-    chrome for one step, not text. */
-const SOCIALS: { label: string; href: string; path: string }[] = [
-  {
-    label: 'Discord',
-    href: 'https://discord.gg/iiidev',
-    path: 'M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.245.197.372.292a.077.077 0 0 1-.006.128 12.299 12.299 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z',
-  },
-  {
-    label: 'GitHub',
-    href: 'https://github.com/iii-hq/iii',
-    path: 'M12 0C5.37 0 0 5.37 0 12a12 12 0 0 0 8.205 11.385c.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23a9.6 9.6 0 0 1 3-.405c1.02 0 2.04.135 3 .405 2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.005 12.005 0 0 0 24 12c0-6.63-5.37-12-12-12z',
-  },
-  {
-    label: 'X',
-    href: 'https://x.com/iiidevs',
-    path: 'M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z',
-  },
-  {
-    label: 'LinkedIn',
-    href: 'https://www.linkedin.com/company/iii-dev',
-    path: 'M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.225 0z',
-  },
-]
-
-/**
- * The signup box, then the same places as links. The worker does the POST —
- * the page only carries the address the operator typed.
- */
-function StayInTouch({
-  host,
-  subscribed,
-  onSubscribed,
-  onSkip,
-}: {
-  host: Host
-  subscribed: boolean
-  onSubscribed: () => void
-  onSkip: () => void
-}) {
-  const [email, setEmail] = useState('')
-  const [status, setStatus] = useState<'idle' | 'sending' | 'done' | 'failed'>('idle')
-  const [message, setMessage] = useState('')
-
-  const submit = useCallback(
-    (event: React.FormEvent) => {
-      event.preventDefault()
-      if (!email.trim() || status === 'sending') return
-      setStatus('sending')
-      void host.iii
-        .trigger('onboarding::subscribe', { email: email.trim(), source: 'onboarding_flow' })
-        .then(() => {
-          setStatus('done')
-          onSubscribed()
-        })
-        .catch((error: unknown) => {
-          setStatus('failed')
-          setMessage(error instanceof Error ? error.message : 'the signup did not go through')
-        })
-    },
-    [email, host, status, onSubscribed],
-  )
-
-  return (
-    <div className="ob-stack">
-      {subscribed || status === 'done' ? (
-        <StatusPanel variant="success" headline="You are on the list." role="status" />
-      ) : (
-        <form className="ob-form" onSubmit={submit}>
-          <Input
-            type="email"
-            required
-            value={email}
-            onChange={setEmail}
-            placeholder="you@example.com"
-            aria-label="Email address for product updates"
-            className="ob-grow"
-          />
-          <Button type="submit" className="ob-action" disabled={status === 'sending'}>
-            {status === 'sending' ? 'Sending…' : 'Sign me up'}
-          </Button>
-          <Button type="button" variant="ghost" className="ob-ghost" onClick={onSkip} disabled={status === 'sending'}>
-            Skip
-          </Button>
-        </form>
-      )}
-      {status === 'failed' ? <StatusPanel variant="alert" headline={message} role="alert" /> : null}
-      <div className="ob-links">
-        {SOCIALS.map((social) => (
-          <Button key={social.label} asChild variant="icon" size="icon" className="ob-link">
-            <a href={social.href} target="_blank" rel="noreferrer" aria-label={social.label} title={social.label}>
-              {/* Brand marks lucide does not ship. lint-allow no-inline-svg */}
-              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={uiClasses.icon}>
-                <path d={social.path} />
-              </svg>
-            </a>
-          </Button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-/** A block the operator can copy in one click — the fallback is the text
-    itself, which is selectable either way. */
-function Copyable({ label, text }: { label: string; text: string }) {
-  const { state, copy } = useCopyFlash(text)
-  return (
-    <div className="ob-prompt">
-      <div className="ob-prompt-head">
-        <span className="ob-prompt-label">{label}</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="ob-ghost"
-          onClick={copy}
-          aria-label={state === 'copied' ? 'Copied' : 'Copy'}
-        >
-          {state === 'copied' ? (
-            <Check className={uiClasses.icon} aria-hidden="true" />
-          ) : (
-            <Copy className={uiClasses.icon} aria-hidden="true" />
-          )}
-          {state === 'copied' ? 'Copied' : 'Copy'}
-        </Button>
-      </div>
-      <p className="ob-prompt-text">{text}</p>
-    </div>
-  )
-}
-
 function Frame({
-  title = 'onboarding',
+  title = 'learn-iii',
   description,
   onClose,
   footer,
@@ -840,30 +233,14 @@ function Frame({
             way to reach the last steps. The scroller sits OUTSIDE the centred
             column so the scrollbar rides the pane's edge rather than the
             text's. */}
-        <div className="ob-scroll">
+        <div className="learn-scroll">
           {/* Centred column: the pane is often narrow beside a chat, but a
               page wide enough to be a whole tab should not leave the list
               stranded on one edge. */}
-          <div className="ob-column">{children}</div>
+          <div className="learn-column">{children}</div>
         </div>
-        {footer ? <div className="ob-footer">{footer}</div> : null}
+        {footer ? <div className="learn-footer">{footer}</div> : null}
       </PageMain>
     </PageShell>
   )
-}
-
-function firstIncomplete(tour: Tour, records: StepRecords): Step | undefined {
-  return tour.steps.find((step) => records[step.id]?.status !== 'complete')
-}
-
-function when(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-}
-
-function format(payload: unknown): string {
-  try {
-    return JSON.stringify(payload, null, 2) ?? 'null'
-  } catch {
-    return String(payload)
-  }
 }

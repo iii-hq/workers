@@ -333,12 +333,7 @@ describe('ReadyStep after a Chromium download', () => {
           activity: [downloadEntry('done')],
         })}
         judges={[]}
-        prompts={[]}
-        agentNames={new Map()}
-        onPrompt={noop}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
-        onStart={noop}
+        onNext={noop}
       />,
     )
     expect(out).toContain('Chromium is ready for agents')
@@ -351,12 +346,7 @@ describe('ReadyStep after a Chromium download', () => {
       <ReadyStep
         onboarding={controller({ snapshot: { browser: READY } })}
         judges={[]}
-        prompts={[]}
-        agentNames={new Map()}
-        onPrompt={noop}
-        tour={{ kind: 'idle' }}
-        onStartTour={noop}
-        onStart={noop}
+        onNext={noop}
       />,
     )
     expect(out).not.toContain('Chromium')

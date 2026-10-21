@@ -3,19 +3,25 @@
  *
  * A step carries:
  *   - `anchors`: selectors for the console element the step talks about, best
- *     first. The first one is always the `onboarding-*` class the console
+ *     first. The first one is always the `learn-iii-*` class the console
  *     carries FOR THIS TOUR (added in console/web/src, and checked by
  *     tests/); the ones after it are the console's own stable hooks, so the
  *     spotlight still lands on a console build that predates the anchor
  *     classes.
  *   - `ask` (optional): a prompt the step's button puts in the chat composer
  *     and sends, so the operator talks to the agent instead of copying text
- *     out of the tour.
- *   - `on_closed` (optional): a console screen the step suggests closing, and
- *     the body and anchor to show once it is gone. The page binds the
- *     console's `console::workspace::changed` trigger, which rings after
- *     every layout write, so a closed pane is reported as it happens. Never
- *     required to finish the step.
+ *     out of the tour. With `agent` (a profile id) the button starts a NEW
+ *     chat under that profile and sends the prompt there, the way the setup
+ *     wizard's example prompts do; without it the prompt goes to the chat
+ *     the operator is in.
+ *   - `to_close` (optional): a console screen the tour closes for the
+ *     operator when the step opens and is not done yet, to make room.
+ *   - `to_open` (optional): a console screen the step talks about. While it
+ *     is on screen the step frames its own anchors; while it is not, the
+ *     page shows this body, frames these anchors — where the screen opens by
+ *     hand — and offers a button (`label`) that opens it beside the chat.
+ *     Open only in a tab that is not showing, the page shows `elsewhere`
+ *     and frames that tab.
  *   - `condition` (optional): a real engine trigger the step waits for. The
  *     page binds it, shows what it is waiting for, and when it fires shows
  *     the trigger and its payload. A step with no condition is closed by the
@@ -24,9 +30,10 @@
 
 /**
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
- * @typedef {{ text: string, label: string }} Ask
- * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
- * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, on_closed?: OnClosed }} Step
+ * @typedef {{ text: string, label: string, agent?: string }} Ask
+ * @typedef {{ screen: string }} ToClose
+ * @typedef {{ screen: string, label: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, ask?: Ask, to_close?: ToClose, to_open?: ToOpen }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
@@ -34,13 +41,22 @@
  * The state scope the tour keeps everything in — progress, and the keys the
  * steps below wait on.
  */
-const STATE_SCOPE = 'onboarding'
+const STATE_SCOPE = "learn-iii";
+
+/**
+ * The agent profile the tour talks to: the one the harness template ships
+ * for its setup examples (`agents/ade-worker-builder.md`, shown as
+ * "Onboarding"). The first step starts a new chat under it; every later
+ * prompt goes to the chat the operator is in, which is that one unless they
+ * moved.
+ */
+export const TOUR_AGENT = "ade-worker-builder";
 
 /**
  * A step the AGENT finishes, not the operator.
  *
  * Its prompt ends by telling the agent to write `step_<id>_completed` into
- * the onboarding state scope as it ENDS ITS TURN — not merely when it thinks
+ * the learn-iii state scope as it ENDS ITS TURN — not merely when it thinks
  * it is done, which it reports too early — and the step waits on a `state`
  * trigger bound to that one key. The page binds every reachable condition when the step is
  * DISPLAYED, before any button is clicked, so the step the operator is
@@ -54,7 +70,7 @@ const STATE_SCOPE = 'onboarding'
  * binding both carry the key, and the test fails when one of them moves.
  */
 const agentStep = (step) => {
-  const key = `step_${step.id}_completed`
+  const key = `step_${step.id}_completed`;
   return {
     ...step,
     ask: {
@@ -62,66 +78,70 @@ const agentStep = (step) => {
       text: `${step.ask.text} When you are ending your turn, write ${key}: true to state, scope "${STATE_SCOPE}".`,
     },
     condition: {
-      type: 'state',
+      type: "state",
       config: { scope: STATE_SCOPE, key },
-      label: 'Waiting for the agent to report this step done',
+      label: "Waiting for the agent to report this step done",
       hint: `The agent writes ${key} into the "${STATE_SCOPE}" state scope when it has finished.`,
     },
-  }
-}
+  };
+};
 
 /** @type {Tour[]} */
 export const TOURS = [
   {
-    id: "console-basics",
+    id: "learn-iii",
     title: "Find your way around",
     description: "The surfaces of the console, and the engine underneath them.",
     steps: [
       {
         id: "message",
         ask: {
-          text: "hello",
-          label: "Say hi",
+          text: "hey",
+          label: "Send a message",
+          agent: TOUR_AGENT,
         },
         title: "Send a message",
-        body: "Say 'hello' to the agent. We've setup a trigger to run when you get the agent's response. The iii ade (agentic development environment) is an example of a iii Worker. Database and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
-        anchors: [".onboarding-composer", ".composer-shell"],
+        body: "Say 'hey' to the agent. The button opens a new chat and sets a 'trigger' here which is how iii handles events and reactivity universally. When the agent fires the trigger this worker will react immediately and continue to the next step. This is not a frontend, backend, data, or other type of trigger, it is universal and works everywhere across a iii application.",
+        anchors: [".learn-iii-composer", ".composer-shell"],
         condition: {
           type: "harness::turn-completed",
           config: {},
           label: "Waiting for a harness turn to finish",
-          hint: "Send any message in a chat pane.",
+          hint: "Say hey in the chat pane.",
         },
       },
       {
         id: "tabs",
         title: "Workspaces",
-        body: "Each tab is a workspace of one or more panes, side by side. You can open as many or as you need.",
+        body: "Each tab is a workspace: one or more panes, side by side, that you arrange for one piece of work. The + at the end of the row opens another, and you can keep as many as you need.",
+        // The tabs AND the + — the body talks about both, so the box takes in
+        // both. The tab row alone is the fallback for an older console.
         anchors: [
-          ".onboarding-tabs",
+          ".learn-iii-workspaces",
+          ".learn-iii-tabs",
           '[role="tablist"][aria-label="Workspace tabs"]',
         ],
       },
       {
         id: "coder",
         title: "CODER",
-        body: "The goal of iii is to be Composable, Observable, Discoverable, Extensible, and Reactive. We demonstrated a few of the properties in the last step. Now let's take a look at them one by one.",
+        body: "The goal of iii is to be composable, observable, discoverable, extensible, and reactive. Let's take a look at each property one by one.",
         // No anchor: this step names the five properties, it does not point at
         // a console surface. The spotlight stays hidden.
       },
       agentStep({
         id: "composability",
         ask: {
-          text: "Add a database worker to this project, then tell me what it can do.",
+          text: "Add the database worker to this project.",
           label: "Ask the agent",
         },
         title: "Composability",
-        body: "iii is composable like Node or Python, except when you add to iii you're adding a working service and not a library. Let's ask the agent to add a database worker.",
+        body: "iii is composable like Node or Python, add libraries and other parts of your application can use them. Except when you add to iii you add a fully working service.\n\nWe call these services 'workers'. When one is added every other worker immediately has access to its functions and triggers.\n\nThis means, for example, that your agent will be able to use the database worker without skills, or a long discovery and research process. Now ask the agent to add it.",
       }),
       {
         id: "stay-in-touch",
         title: "Stay in touch",
-        body: "iii moves quickly. Put your email in for the roadmap and the product updates — what is being built, and what shipped. The links below go to the same places, if you would rather read along there.",
+        body: "iii moves quickly. Add your email for occasional product updates and tips on making the most out of iii.",
         // No anchor: this step is about the page itself, and there is nothing
         // in the console to point at. The page renders the signup box and the
         // links for this step id.
@@ -129,57 +149,65 @@ export const TOURS = [
       {
         id: "observability",
         title: "Observability",
-        body: "Open Traces to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
-        anchors: [".onboarding-traces", 'section[aria-label="traces"]'],
-        // The step's button places this console screen beside the tour, so the
-        // operator reads the trace instead of hunting for the palette row.
-        screen: "traces",
+        body: "Everything in a iii worker is defined as either a function or a trigger. This property makes it so that all of a iii application is inherently observable, out of the box, truly end-to-end, even the new worker you're building today. No agent, database, or other usecase-specific framework necessary.\n\nThe observability worker lets you see traces in the UI, query traces directly, ask agents for specific details of what happened, and export them to any OpenTelemetry-compatible service.",
+        anchors: [".learn-iii-traces", 'section[aria-label="traces"]'],
+        // The step's button opens Traces beside the chat. Until then the page
+        // points at where it opens by hand too — the + first, then the traces
+        // row of the new tab's picker (best match first, so the box moves on
+        // once the picker is up). A phone has no tab row: its search button
+        // is how Traces opens there.
+        to_open: {
+          screen: "traces",
+          label: "Open traces",
+          body: "Traces is not open yet. Open it with the button, or pick traces from a new tab's list.",
+          elsewhere:
+            "Traces is open in another tab. Switch to that tab, lit up in the tab row, to see it.",
+          anchors: [
+            '[role="option"][data-screen="traces"]',
+            ".learn-iii-new-tab",
+            '[aria-label="New workspace"]',
+            '[aria-label="search the ADE"]',
+          ],
+        },
       },
       agentStep({
         id: "discoverability",
         ask: {
-          text: "What can this system do right now? List the workers that are registered and the functions each one exposes.",
+          text: "What do the database, state, and harness workers do?",
           label: "Ask the agent",
         },
         title: "Discoverability",
-        body: "See what the system can do. Let's ask the agent what the current capabilities are.",
+        body: "An earlier step mentioned that agents don't have a long discoverability step. This project is made up of about 14 or so services. Ask the agent what three of them do and you'll get a quick answer, with most of the time spent waiting on the LLM to write its text.\n\nHow long would it take your other agents to do this? How accurate would their results be?",
       }),
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes) and that emits Triggers when a change happens (ie. register trigger type). Do not navigate the user away from the current workspace. Do not use screenshots or other UI based checks. Verify via functions. This is an onboarding demo. Open the TODO page for me when it is done.",
+          text: "Build an expense tracker. Each expense has a description, an amount, a category, and whether it was reimbursed. Show the total still to be reimbursed.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done. Since we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
-        // The close is an invitation, not a requirement: the step closes
-        // when the agent reports done. When the operator does take it, the
-        // page swaps in this note so dropping the panel is never a dead end.
-        on_closed: {
-          screen: "traces",
-          body: "You can always open traces in a new tab.",
-          // The console publishes no `onboarding-*` class on its new-tab
-          // button, so this rides the button's own stable aria-label.
-          anchors: ['[aria-label="New workspace"]'],
-        },
+        body: "Let's extend this application with a new worker: an expense tracker.\n\nThe new worker calls the existing workers directly, without a REST API in between. That is iii's composability at work.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
+        // The step closes when the agent reports done; the panel goes as the
+        // step opens, so the new page has room.
+        to_close: { screen: "traces" },
       }),
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off by the user, not you the agent. Pre-existing triggers should work, and were tested in the last step.",
+          text: "Make the expense tracker reactive, have it fire triggers for new expenses being added. Then create a trigger in the chat that to run when that trigger happens.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you check each one off yourself. The agent adds the items and the Triggers; you tick the boxes. Watch the Triggers react as you do.",
+        body: "Now ask the agent to make the expense tracker react. Then add an expense and watch the chat react.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
       }),
       {
         id: "clean-up",
         ask: {
-          text: "Remove the onboarding worker from this project, then close the onboarding pane.",
+          text: "Remove the onboarding worker from this project.",
           label: "Ask the agent",
         },
         title: "Clean up",
-        body: "Removing a worker is the same move as adding one. Ask the agent to take the tour back out, and it will close this pane on the way.",
+        body: "Removing a worker is the same move as adding one. Ask the agent to remove this worker and this card will close with it.",
         // No condition, and this is the one step where that is not a choice:
         // the worker this page waits on is the worker being removed, so
         // nothing survives to report the step done. Sending the prompt IS the
@@ -213,7 +241,8 @@ export function getTour(id) {
  */
 export function findStep(tourId, stepId) {
   const tour = getTour(tourId);
-  const index = tour?.steps.findIndex((step) => step.id === stepId) ?? -1;
-  if (!tour || index < 0) return undefined;
+  if (!tour) return undefined;
+  const index = tour.steps.findIndex((step) => step.id === stepId);
+  if (index < 0) return undefined;
   return { tour, step: tour.steps[index], number: index + 1 };
 }

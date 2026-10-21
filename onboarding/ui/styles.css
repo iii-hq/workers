@@ -1,10 +1,10 @@
-/* Onboarding: the spotlight box (it lives in `document.body`, so spotlight.ts
+/* LearnIii: the spotlight box (it lives in `document.body`, so spotlight.ts
    stamps the scope on it) and the tour layouts the shared recipes do not
    cover. Everything else is `uiClasses` and the shared components. */
 
 /* ------------------------------------------------------------------ box --- */
 
-[data-iii-ui='onboarding'].onboarding-spotlight {
+[data-iii-ui='learn-iii'].learn-iii-spotlight {
   position: fixed;
   top: 0;
   left: 0;
@@ -28,8 +28,403 @@
     opacity var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'].onboarding-spotlight[data-visible='true'] {
+[data-iii-ui='learn-iii'].learn-iii-spotlight[data-visible='true'] {
   opacity: 1;
+}
+
+/* A soft second ring that breathes (the shared pulse, stilled under reduced
+   motion), so a lit element reads at a glance across a busy console. */
+[data-iii-ui='learn-iii'] .learn-iii-spotlight-halo {
+  position: absolute;
+  inset: -6px;
+  border-radius: var(--radius-lg);
+  outline: 4px solid var(--color-accent-muted);
+  pointer-events: none;
+}
+
+/* What is lit and why: the step's number and title, on the box's edge. It
+   hangs under the box when the target sits at the top of the window. */
+[data-iii-ui='learn-iii'] .learn-iii-spotlight-label {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: -2px;
+  max-width: 20rem;
+  overflow: hidden;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='learn-iii'].learn-iii-spotlight[data-label-side='below'] .learn-iii-spotlight-label {
+  top: calc(100% + 0.5rem);
+  bottom: auto;
+}
+
+[data-iii-ui='learn-iii'].learn-iii-spotlight[data-label-side='end'] .learn-iii-spotlight-label {
+  top: 50%;
+  bottom: auto;
+  left: calc(100% + 0.5rem);
+  transform: translateY(-50%);
+}
+
+/* Kept in layout when no side is clear, only not shown: the next check
+   measures the label, and a `display: none` one measures 0×0 — which fits
+   anywhere, comes back, and flickers. */
+[data-iii-ui='learn-iii'].learn-iii-spotlight[data-label-side='none'] .learn-iii-spotlight-label {
+  visibility: hidden;
+}
+
+[data-iii-ui='learn-iii'] .learn-iii-spotlight-label[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------- overlay --- */
+
+/* The tour as a card over the console: fixed to one corner, 368px wide,
+   never taller than the window allows. The overlay layer lets clicks
+   through; the card and the pill opt back in. */
+
+[data-iii-ui='learn-iii'] .learn-overlay,
+[data-iii-ui='learn-iii'] .learn-pill {
+  position: fixed;
+  pointer-events: auto;
+  border: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-floating);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay {
+  display: flex;
+  width: min(23rem, calc(100vw - 2rem));
+  /* As tall as the step needs, up to the viewport: the body is read whole,
+     never scrolled for. */
+  max-height: calc(100vh - 5.5rem);
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  animation: learn-iii-card-enter var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+/* 1rem from the edges; 4.5rem from the top, under the masthead and tabs. */
+[data-iii-ui='learn-iii'] :is(.learn-overlay, .learn-pill)[data-corner='bottom-right'] {
+  right: 1rem;
+  bottom: 1rem;
+}
+
+[data-iii-ui='learn-iii'] :is(.learn-overlay, .learn-pill)[data-corner='bottom-left'] {
+  bottom: 1rem;
+  left: 1rem;
+}
+
+[data-iii-ui='learn-iii'] :is(.learn-overlay, .learn-pill)[data-corner='top-right'] {
+  top: 4.5rem;
+  right: 1rem;
+}
+
+[data-iii-ui='learn-iii'] :is(.learn-overlay, .learn-pill)[data-corner='top-left'] {
+  top: 4.5rem;
+  left: 1rem;
+}
+
+/* Placed in pixels from the top-left; the corner rules above are the pill's and the first paint's. */
+[data-iii-ui='learn-iii'] .learn-overlay[style*='translate'] {
+  top: 0;
+  right: auto;
+  bottom: auto;
+  left: 0;
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay[data-settled] {
+  transition: translate var(--motion-duration-panel) var(--motion-ease-standard);
+}
+
+
+[data-iii-ui='learn-iii'] .learn-overlay-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.5rem 0.375rem 0.875rem;
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-mark {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-count {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+}
+
+/* The bar: a segment per step. Each is a 12px-tall button drawing a 4px
+   track, so a short bar is still an easy target. */
+[data-iii-ui='learn-iii'] .learn-progress {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+  margin: 0;
+  padding: 0 0.875rem 0.25rem;
+  list-style: none;
+}
+
+[data-iii-ui='learn-iii'] .learn-progress-item {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+
+/* The bar says where the operator is: segments up to the step being read
+   are filled, the rest are empty, so stepping back drains it. A step done
+   ahead of that point keeps a faint track, so completion still shows.
+
+   Each segment is a 12px button: a 4px track (::before) and an ink fill
+   (::after) over it that grows from the left. The fill is a transform, and
+   `--learn-seg-order` (set per move by the page) staggers the segments, so the
+   fill sweeps forward when the operator advances and drains back when they
+   step back, instead of segments blinking one colour to another. The
+   delays ride the motion tokens, so reduced motion makes the move instant. */
+[data-iii-ui='learn-iii'] .learn-progress-seg {
+  position: relative;
+  width: 100%;
+  height: 0.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='learn-iii'] .learn-progress-seg:disabled {
+  cursor: default;
+}
+
+[data-iii-ui='learn-iii'] .learn-progress-seg::before,
+[data-iii-ui='learn-iii'] .learn-progress-seg::after {
+  content: '';
+  position: absolute;
+  inset: 0.25rem 0;
+  border-radius: var(--radius-full);
+}
+
+[data-iii-ui='learn-iii'] .learn-progress-seg::before {
+  background: var(--color-edge);
+  transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+/* Done, but ahead of the step being read. */
+[data-iii-ui='learn-iii'] .learn-progress-seg[data-done]::before {
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui='learn-iii'] .learn-progress-seg::after {
+  background: var(--color-ink);
+  transform: scaleX(0);
+  /* Left in both directions: filling grows rightward, draining pulls the
+     right edge back. */
+  transform-origin: left center;
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard)
+    calc(var(--learn-seg-order, 0) * var(--motion-duration-fast) / 3);
+}
+
+[data-iii-ui='learn-iii'] .learn-progress-seg[data-filled]::after {
+  transform: scaleX(1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui='learn-iii'] .learn-progress-seg:not(:disabled):hover::before {
+    background: var(--color-ink-faint);
+  }
+}
+
+[data-iii-ui='learn-iii'] .learn-progress-seg:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem 0.875rem 0.875rem;
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  animation: learn-iii-step-enter var(--motion-duration-control) var(--motion-ease-enter);
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.375rem;
+  letter-spacing: -0.01em;
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-title-text {
+  min-width: 0;
+  flex: 1;
+  text-wrap: balance;
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-foot {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-top: 1px solid var(--color-rule);
+}
+
+[data-iii-ui='learn-iii'] .learn-overlay-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+
+/* What the operator does next, when the step waits on them: open a screen. */
+[data-iii-ui='learn-iii'] .learn-note--todo {
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-muted);
+  color: var(--color-ink);
+}
+
+/* The folded card: a pill in the same corner, with its own close. */
+[data-iii-ui='learn-iii'] .learn-pill {
+  display: inline-flex;
+  height: 2.25rem;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+[data-iii-ui='learn-iii'] .learn-pill-open,
+[data-iii-ui='learn-iii'] .learn-pill-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui='learn-iii'] .learn-pill-open {
+  padding: 0 0.5rem 0 0.875rem;
+}
+
+[data-iii-ui='learn-iii'] .learn-pill-close {
+  padding: 0 0.625rem 0 0.375rem;
+  color: var(--color-ink-faint);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui='learn-iii'] .learn-pill-open:hover,
+  [data-iii-ui='learn-iii'] .learn-pill-close:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+[data-iii-ui='learn-iii'] .learn-pill-open:focus-visible,
+[data-iii-ui='learn-iii'] .learn-pill-close:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+/* The tour moved on while folded. */
+[data-iii-ui='learn-iii'] .learn-pill-alert {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--color-alert);
+  color: var(--color-panel-raised);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* After the pill's close: how to get the tour back, for a few seconds. */
+[data-iii-ui='learn-iii'] .learn-hint {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-full);
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-floating);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  pointer-events: none;
+  animation: learn-iii-card-enter var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+[data-iii-ui='learn-iii'] .learn-pill-count {
+  color: var(--color-ink-faint);
+  font-weight: 500;
+}
+
+@keyframes learn-iii-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem) scale(0.98);
+  }
+}
+
+@keyframes learn-iii-step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='learn-iii'] .learn-overlay,
+  [data-iii-ui='learn-iii'] .learn-hint,
+  [data-iii-ui='learn-iii'] .learn-overlay-step {
+    animation: none;
+    transition: none;
+  }
 }
 
 /* ---------------------------------------------------------------- page --- */
@@ -39,14 +434,14 @@
    hairline dividers, pill chips and semibold 12px-cornered buttons, the dark terminal
    block for machine output, and the surface ramp for every hover. */
 
-[data-iii-ui='onboarding'] .ob-scroll {
+[data-iii-ui='learn-iii'] .learn-scroll {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-[data-iii-ui='onboarding'] .ob-column {
+[data-iii-ui='learn-iii'] .learn-column {
   display: flex;
   width: 100%;
   max-width: 40rem;
@@ -61,7 +456,7 @@
   line-height: 1.25rem;
 }
 
-[data-iii-ui='onboarding'] .ob-sr {
+[data-iii-ui='learn-iii'] .learn-sr {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -70,32 +465,32 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='onboarding'] .ob-num {
+[data-iii-ui='learn-iii'] .learn-num {
   font-variant-numeric: tabular-nums;
 }
 
 /* ------------------------------------------------------------- loading --- */
 
-[data-iii-ui='onboarding'] .ob-loading {
+[data-iii-ui='learn-iii'] .learn-loading {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-[data-iii-ui='onboarding'] .ob-skeleton {
+[data-iii-ui='learn-iii'] .learn-skeleton {
   display: block;
   height: 2.5rem;
   border-radius: var(--radius-xl);
 }
 
-[data-iii-ui='onboarding'] .ob-skeleton--bar {
+[data-iii-ui='learn-iii'] .learn-skeleton--bar {
   height: 1rem;
   width: 40%;
 }
 
 /* ---------------------------------------------------------------- head --- */
 
-[data-iii-ui='onboarding'] .ob-head {
+[data-iii-ui='learn-iii'] .learn-head {
   display: flex;
   min-height: 2rem;
   align-items: center;
@@ -103,7 +498,7 @@
   gap: 0.75rem;
 }
 
-[data-iii-ui='onboarding'] .ob-head-count {
+[data-iii-ui='learn-iii'] .learn-head-count {
   margin: 0;
   color: var(--color-ink);
   font-size: 0.8125rem;
@@ -111,14 +506,14 @@
   line-height: 1.25rem;
 }
 
-[data-iii-ui='onboarding'] .ob-head-done {
+[data-iii-ui='learn-iii'] .learn-head-done {
   color: var(--color-ink-faint);
   font-weight: 400;
 }
 
 /* --------------------------------------------------------------- steps --- */
 
-[data-iii-ui='onboarding'] .ob-steps {
+[data-iii-ui='learn-iii'] .learn-steps {
   display: flex;
   flex-direction: column;
   margin: 0;
@@ -126,7 +521,7 @@
   list-style: none;
 }
 
-[data-iii-ui='onboarding'] .ob-step {
+[data-iii-ui='learn-iii'] .learn-step {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -136,7 +531,7 @@
 /* The hairline from this dot's bottom edge to the next dot's top edge; it
    fills in ink once the step is done. The row is 40px with a 20px dot, so
    the dot's bottom edge sits at 30px. */
-[data-iii-ui='onboarding'] .ob-line {
+[data-iii-ui='learn-iii'] .learn-line {
   position: absolute;
   top: 1.875rem;
   bottom: -0.25rem;
@@ -146,7 +541,7 @@
   background: var(--color-edge);
 }
 
-[data-iii-ui='onboarding'] .ob-line::after {
+[data-iii-ui='learn-iii'] .learn-line::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -156,12 +551,12 @@
   transition: transform var(--motion-duration-panel) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] .ob-line[data-done]::after {
+[data-iii-ui='learn-iii'] .learn-line[data-done]::after {
   transform: scaleY(1);
 }
 
 /* The row: dot, title, trailing chip, a chevron for the ones that open. */
-[data-iii-ui='onboarding'] .ob-row {
+[data-iii-ui='learn-iii'] .learn-row {
   position: relative;
   z-index: 1;
   display: flex;
@@ -178,22 +573,22 @@
   transition: background-color var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] button.ob-row {
+[data-iii-ui='learn-iii'] button.learn-row {
   cursor: pointer;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  [data-iii-ui='onboarding'] button.ob-row:hover {
+  [data-iii-ui='learn-iii'] button.learn-row:hover {
     background: var(--color-surface-hover);
   }
 }
 
-[data-iii-ui='onboarding'] button.ob-row:focus-visible {
+[data-iii-ui='learn-iii'] button.learn-row:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
 }
 
-[data-iii-ui='onboarding'] .ob-title {
+[data-iii-ui='learn-iii'] .learn-title {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -205,23 +600,23 @@
   transition: color var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] .ob-step[data-state='pending'] .ob-title {
+[data-iii-ui='learn-iii'] .learn-step[data-state='pending'] .learn-title {
   color: var(--color-ink-ghost);
 }
 
-[data-iii-ui='onboarding'] .ob-chevron {
+[data-iii-ui='learn-iii'] .learn-chevron {
   flex: 0 0 auto;
   color: var(--color-ink-ghost);
   transition: rotate var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] .ob-step[data-open] > .ob-row .ob-chevron {
+[data-iii-ui='learn-iii'] .learn-step[data-open] > .learn-row .learn-chevron {
   rotate: 180deg;
 }
 
 /* The dot, as the dialog's rail draws it: a number until the step is done,
    then a check; both stay in the DOM and cross-fade (scale, opacity, blur). */
-[data-iii-ui='onboarding'] .ob-indicator {
+[data-iii-ui='learn-iii'] .learn-indicator {
   position: relative;
   display: inline-flex;
   width: 1.25rem;
@@ -243,21 +638,21 @@
     color var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] .ob-indicator[data-state='active'] {
+[data-iii-ui='learn-iii'] .learn-indicator[data-state='active'] {
   border-color: var(--color-ink);
   color: var(--color-ink);
   outline: 2px solid var(--color-surface-selected);
   outline-offset: 0;
 }
 
-[data-iii-ui='onboarding'] .ob-indicator[data-state='complete'] {
+[data-iii-ui='learn-iii'] .learn-indicator[data-state='complete'] {
   border-color: var(--color-ink);
   background: var(--color-ink);
   color: var(--color-bg);
 }
 
-[data-iii-ui='onboarding'] .ob-indicator-num,
-[data-iii-ui='onboarding'] .ob-indicator-check {
+[data-iii-ui='learn-iii'] .learn-indicator-num,
+[data-iii-ui='learn-iii'] .learn-indicator-check {
   position: absolute;
   transition:
     opacity var(--motion-duration-control) var(--motion-ease-standard),
@@ -265,7 +660,7 @@
     filter var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] .ob-indicator-check {
+[data-iii-ui='learn-iii'] .learn-indicator-check {
   width: 0.75rem;
   height: 0.75rem;
   opacity: 0;
@@ -273,26 +668,26 @@
   filter: blur(4px);
 }
 
-[data-iii-ui='onboarding'] .ob-indicator[data-state='complete'] .ob-indicator-num {
+[data-iii-ui='learn-iii'] .learn-indicator[data-state='complete'] .learn-indicator-num {
   opacity: 0;
   transform: scale(0.25);
   filter: blur(4px);
 }
 
-[data-iii-ui='onboarding'] .ob-indicator[data-state='complete'] .ob-indicator-check {
+[data-iii-ui='learn-iii'] .learn-indicator[data-state='complete'] .learn-indicator-check {
   opacity: 1;
   transform: scale(1);
   filter: blur(0);
 }
 
-[data-iii-ui='onboarding'] .ob-indicator-pulse {
+[data-iii-ui='learn-iii'] .learn-indicator-pulse {
   display: none;
 }
 
 /* --------------------------------------------------------------- chips --- */
 
 /* The dialog's status chip: a 20px pill; `ok` and `live` carry a mark. */
-[data-iii-ui='onboarding'] .ob-chip {
+[data-iii-ui='learn-iii'] .learn-chip {
   display: inline-flex;
   height: 1.25rem;
   flex: 0 0 auto;
@@ -310,18 +705,18 @@
   font-variant-numeric: tabular-nums;
 }
 
-[data-iii-ui='onboarding'] .ob-step[data-state='active'] .ob-chip {
+[data-iii-ui='learn-iii'] .learn-step[data-state='active'] .learn-chip {
   color: var(--color-ink);
 }
 
-[data-iii-ui='onboarding'] .ob-chip-mark {
+[data-iii-ui='learn-iii'] .learn-chip-mark {
   width: 0.75rem;
   height: 0.75rem;
   flex: 0 0 auto;
   color: var(--color-ink);
 }
 
-[data-iii-ui='onboarding'] .ob-chip-dot {
+[data-iii-ui='learn-iii'] .learn-chip-dot {
   width: 0.375rem;
   height: 0.375rem;
   flex: 0 0 auto;
@@ -333,7 +728,7 @@
 
 /* Folded with a grid track: opening and closing are one transition that can
    turn around midway, and the content stays mounted for a reached step. */
-[data-iii-ui='onboarding'] .ob-panel {
+[data-iii-ui='learn-iii'] .learn-panel {
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
@@ -342,18 +737,18 @@
     opacity var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] .ob-panel[data-open] {
+[data-iii-ui='learn-iii'] .learn-panel[data-open] {
   grid-template-rows: 1fr;
   opacity: 1;
 }
 
-[data-iii-ui='onboarding'] .ob-panel-clip {
+[data-iii-ui='learn-iii'] .learn-panel-clip {
   min-height: 0;
   overflow: hidden;
 }
 
 /* The open step's content: a card, indented to the title. */
-[data-iii-ui='onboarding'] .ob-card {
+[data-iii-ui='learn-iii'] .learn-card {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
@@ -364,30 +759,30 @@
   background: var(--color-panel-raised);
 }
 
-[data-iii-ui='onboarding'] .ob-body,
-[data-iii-ui='onboarding'] .ob-note {
+[data-iii-ui='learn-iii'] .learn-body,
+[data-iii-ui='learn-iii'] .learn-note {
   margin: 0;
   font-size: 0.8125rem;
   line-height: 1.25rem;
   text-wrap: pretty;
 }
 
-[data-iii-ui='onboarding'] .ob-body {
+[data-iii-ui='learn-iii'] .learn-body {
   color: var(--color-ink);
 }
 
-[data-iii-ui='onboarding'] .ob-note {
+[data-iii-ui='learn-iii'] .learn-note {
   color: var(--color-ink-faint);
 }
 
-[data-iii-ui='onboarding'] .ob-stack,
-[data-iii-ui='onboarding'] .ob-ask {
+[data-iii-ui='learn-iii'] .learn-stack,
+[data-iii-ui='learn-iii'] .learn-ask {
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
 }
 
-[data-iii-ui='onboarding'] .ob-actions {
+[data-iii-ui='learn-iii'] .learn-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -395,7 +790,7 @@
 }
 
 /* The dialog's buttons: 36px, 12px corners, a semibold 13px label. */
-[data-iii-ui='onboarding'] .ob-action {
+[data-iii-ui='learn-iii'] .learn-action {
   height: 2.25rem;
   padding: 0 1.25rem;
   border-radius: var(--radius-xl);
@@ -404,13 +799,13 @@
   letter-spacing: -0.005em;
 }
 
-[data-iii-ui='onboarding'] .ob-ghost {
+[data-iii-ui='learn-iii'] .learn-ghost {
   border-radius: var(--radius-xl);
   font-weight: 600;
 }
 
 /* What the button sends: a card with a header row, the dialog's key card. */
-[data-iii-ui='onboarding'] .ob-prompt {
+[data-iii-ui='learn-iii'] .learn-prompt {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -419,7 +814,7 @@
   background: var(--color-panel);
 }
 
-[data-iii-ui='onboarding'] .ob-prompt-head {
+[data-iii-ui='learn-iii'] .learn-prompt-head {
   display: flex;
   min-height: 2rem;
   align-items: center;
@@ -429,15 +824,20 @@
   border-bottom: 1px solid var(--color-edge);
 }
 
-[data-iii-ui='onboarding'] .ob-prompt-label {
+[data-iii-ui='learn-iii'] .learn-prompt-label {
   flex: 0 0 auto;
   color: var(--color-ink);
   font-size: 0.75rem;
   font-weight: 500;
 }
 
-[data-iii-ui='onboarding'] .ob-prompt-text {
+/* The message keeps to its first five lines; the rest scrolls inside the
+   card, so the body above it is never pushed out of view. */
+[data-iii-ui='learn-iii'] .learn-prompt-text {
   margin: 0;
+  max-height: calc(5 * 1.25rem + 1.25rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.625rem 0.75rem;
   color: var(--color-ink-faint);
   font-size: 0.8125rem;
@@ -446,35 +846,133 @@
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='onboarding'] .ob-form {
+/* ------------------------------------------------------------- signup --- */
+
+/* The signup is one inset panel: a step darker than the card, so the field
+   reads as a field in both themes and the field and its two actions read as
+   one group. The follow-along links sit outside it, as the quieter option. */
+[data-iii-ui='learn-iii'] .learn-signup {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
+}
+
+[data-iii-ui='learn-iii'] .learn-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+[data-iii-ui='learn-iii'] .learn-signup-label {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+}
+
+[data-iii-ui='learn-iii'] .learn-field {
+  width: 100%;
+  height: 2.25rem;
+  border-radius: var(--radius-xl);
+}
+
+[data-iii-ui='learn-iii'] .learn-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+/* The quiet action's label lines up with the field's edge above it: its
+   padding becomes a hover area that extends outward instead. */
+[data-iii-ui='learn-iii'] .learn-form-actions .learn-ghost {
+  margin-left: -0.5rem;
+  padding-inline: 0.5rem;
+}
+
+/* Press feedback the shared button does not carry: a slight give, on the
+   transform alone, so the press reads as heard. */
+[data-iii-ui='learn-iii'] .learn-signup .learn-action,
+[data-iii-ui='learn-iii'] .learn-link {
+  transition-property: background-color, color, border-color, transform;
+  transition-duration: var(--motion-duration-control);
+  transition-timing-function: var(--motion-ease-enter);
+}
+
+[data-iii-ui='learn-iii'] .learn-signup .learn-action:active:not(:disabled),
+[data-iii-ui='learn-iii'] .learn-link:active {
+  transform: scale(0.97);
+}
+
+/* Signed up: the same panel says so, arriving rather than swapping in. */
+[data-iii-ui='learn-iii'] .learn-signup-done {
+  display: flex;
+  min-height: 2.25rem;
   align-items: center;
   gap: 0.5rem;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  animation: learn-iii-signup-done var(--motion-duration-panel) var(--motion-ease-enter);
 }
 
-[data-iii-ui='onboarding'] .ob-grow {
-  flex: 1;
-  min-width: 12rem;
-  border-radius: var(--radius-xl);
+@keyframes learn-iii-signup-done {
+  from {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
 }
 
-[data-iii-ui='onboarding'] .ob-links {
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='learn-iii'] .learn-signup-done {
+    animation: none;
+  }
+}
+
+/* The quieter way to keep up: a label on the left, the marks on the right. */
+[data-iii-ui='learn-iii'] .learn-follow {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 0.25rem 0 0.75rem;
 }
 
-[data-iii-ui='onboarding'] .ob-link {
-  border-radius: var(--radius-xl);
+[data-iii-ui='learn-iii'] .learn-follow-label {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+[data-iii-ui='learn-iii'] .learn-links {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+[data-iii-ui='learn-iii'] .learn-link {
+  border-radius: var(--radius-md);
+  color: var(--color-ink-faint);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui='learn-iii'] .learn-link:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-ink);
+  }
 }
 
 /* ---------------------------------------------------------- disclosure --- */
 
 /* The trigger the step waits on, as the dialog's "Engine log" row: a caret,
    a label, and the state as its summary. Opens onto a terminal block. */
-[data-iii-ui='onboarding'] .ob-condition {
+[data-iii-ui='learn-iii'] .learn-condition {
   display: flex;
   flex-direction: column;
   margin-top: 0.125rem;
@@ -482,7 +980,7 @@
   border-top: 1px solid var(--color-edge);
 }
 
-[data-iii-ui='onboarding'] .ob-disclosure {
+[data-iii-ui='learn-iii'] .learn-disclosure {
   display: flex;
   height: 2rem;
   align-items: center;
@@ -504,31 +1002,31 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  [data-iii-ui='onboarding'] .ob-disclosure:hover {
+  [data-iii-ui='learn-iii'] .learn-disclosure:hover {
     background: var(--color-surface-hover);
     color: var(--color-ink);
   }
 }
 
-[data-iii-ui='onboarding'] .ob-disclosure:focus-visible {
+[data-iii-ui='learn-iii'] .learn-disclosure:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
 }
 
-[data-iii-ui='onboarding'] .ob-caret {
+[data-iii-ui='learn-iii'] .learn-caret {
   flex: 0 0 auto;
   transition: rotate var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-[data-iii-ui='onboarding'] .ob-caret[data-open] {
+[data-iii-ui='learn-iii'] .learn-caret[data-open] {
   rotate: 90deg;
 }
 
-[data-iii-ui='onboarding'] .ob-disclosure-label {
+[data-iii-ui='learn-iii'] .learn-disclosure-label {
   flex: 0 0 auto;
 }
 
-[data-iii-ui='onboarding'] .ob-disclosure-summary {
+[data-iii-ui='learn-iii'] .learn-disclosure-summary {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -544,14 +1042,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-[data-iii-ui='onboarding'] .ob-condition[data-fired] .ob-disclosure-summary {
+[data-iii-ui='learn-iii'] .learn-condition[data-fired] .learn-disclosure-summary {
   color: var(--color-ink);
 }
 
 /* The dialog's code surface: one neutral step off the card, in the code
    font — a light panel with a hairline in the light theme, the raised dark
    panel in the dark theme. */
-[data-iii-ui='onboarding'] .ob-terminal {
+[data-iii-ui='learn-iii'] .learn-terminal {
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
@@ -567,21 +1065,21 @@
   line-height: 1.25rem;
 }
 
-[data-iii-ui='onboarding'] .ob-terminal:where([data-theme='dark'] *) {
+[data-iii-ui='learn-iii'] .learn-terminal:where([data-theme='dark'] *) {
   background: var(--color-panel-raised);
 }
 
-[data-iii-ui='onboarding'] .ob-terminal-line {
+[data-iii-ui='learn-iii'] .learn-terminal-line {
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='onboarding'] .ob-terminal-prompt,
-[data-iii-ui='onboarding'] .ob-terminal-dim {
+[data-iii-ui='learn-iii'] .learn-terminal-prompt,
+[data-iii-ui='learn-iii'] .learn-terminal-dim {
   color: var(--color-ink-ghost);
 }
 
 /* A payload, inside the terminal. */
-[data-iii-ui='onboarding'] .ob-pre {
+[data-iii-ui='learn-iii'] .learn-pre {
   margin: 0;
   padding: 0;
   border: 0;
@@ -596,7 +1094,7 @@
 
 /* The remove button: pinned under the scroller at the pane's bottom right,
    so it is in view on every step. */
-[data-iii-ui='onboarding'] .ob-footer {
+[data-iii-ui='learn-iii'] .learn-footer {
   display: flex;
   flex-shrink: 0;
   flex-direction: column;

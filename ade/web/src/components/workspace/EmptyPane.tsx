@@ -196,6 +196,9 @@ export function EmptyPane({
                       tabIndex={-1}
                       aria-selected={active}
                       data-highlighted={active || undefined}
+                      // The screen this option attaches: the onboarding
+                      // tour points at `[data-screen="traces"]`.
+                      data-screen={option.value}
                       onMouseEnter={() => setActiveIndex(index)}
                       onClick={() => onAttach(option.value)}
                       className={cn(

@@ -601,7 +601,13 @@ export interface ComposerControlRegistration {
 export interface OverlayRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
-  render: React.ComponentType
+  render: React.ComponentType<OverlayRenderProps>
+}
+
+/** What the console hands an overlay on every render. */
+export interface OverlayRenderProps {
+  /** Active chat session id, as pages get it; absent on older consoles. */
+  conversationId?: string | null
 }
 
 /** One labelled value of a mention preview card. */
@@ -788,6 +794,20 @@ export interface Host {
       sessionId: string
       level: string
     }): boolean
+    /**
+     * Start a new chat that sends `text`, the way a setup example prompt
+     * does: `agent` (a profile id; the default profile when absent) is
+     * selected, the first of `models` this machine serves is chosen with its
+     * effort (the chat's usual model when none is), and the chat is shown.
+     * A profile that is not served leaves the text as a draft to send by
+     * hand. Resolves to the chat's session id. Absent on older consoles;
+     * feature-detect.
+     */
+    startChat?(request: {
+      text: string
+      agent?: string
+      models?: { provider: string; model: string; effort?: string }[]
+    }): Promise<string>
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }
