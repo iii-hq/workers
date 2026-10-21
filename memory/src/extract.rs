@@ -597,10 +597,64 @@ fn session_pass(session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     passes.entry(session_id.to_string()).or_default().clone()
 }
 
+/// How passes have gone since boot, for `memory::doctor`: a pass that
+/// fails every time is otherwise only a log line.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PassHealth {
+    pub passes: u64,
+    /// Passes failed since the last one that succeeded.
+    pub failed_in_a_row: u64,
+    pub last_error: Option<String>,
+}
+
+impl PassHealth {
+    /// `Ok(false)` is a pass that never asked the model: it says nothing
+    /// about whether extraction works, so it is not counted.
+    fn record(&mut self, result: &Result<bool, String>) {
+        match result {
+            Ok(false) => return,
+            Ok(true) => {
+                self.failed_in_a_row = 0;
+                self.last_error = None;
+            }
+            Err(e) => {
+                self.failed_in_a_row += 1;
+                self.last_error = Some(e.clone());
+            }
+        }
+        self.passes += 1;
+    }
+}
+
+// ponytail: per process, like SESSION_PASSES; replicated, each replica's
+// doctor sees only its own passes.
+static PASS_HEALTH: Mutex<PassHealth> = Mutex::new(PassHealth {
+    passes: 0,
+    failed_in_a_row: 0,
+    last_error: None,
+});
+
+pub fn pass_health() -> PassHealth {
+    PASS_HEALTH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// One pass over the job's span. Every error is returned, so the queue
 /// retries the same span: a failed session lookup included — skipping
 /// would lose the turn, guessing a bank would leak it.
 pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
+    let result = one_pass(deps, job).await;
+    PASS_HEALTH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .record(&result);
+    result.map(|_| ())
+}
+
+/// `Ok(true)` once the model was asked for the span's items.
+async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
     let session_id = job.session_id.as_str();
     let pass = session_pass(session_id);
     let _pass = pass.lock().await;
@@ -647,7 +701,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         if let Some(id) = newest.filter(|_| until_seen || job.until.is_none()) {
             cursor_set(&deps.iii, session_id, id).await;
         }
-        return Ok(());
+        return Ok(false);
     };
     let bank_name = resolved.bank.as_str();
     let layer_name = resolved.layer(&cfg.default_bank);
@@ -666,7 +720,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
-        return Ok(());
+        return Ok(false);
     }
     // Fail-soft semantic signal; lexical-only when it misses.
     let query_vec = crate::embed_client::query_vector(deps, &crate::store::cap_query(&query)).await;
@@ -697,7 +751,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
-        return Ok(());
+        return Ok(true);
     }
 
     let store = deps.store().await;
@@ -895,7 +949,7 @@ pub async fn try_run(deps: &Deps, job: &ExtractJobInput) -> Result<(), String> {
             crate::embed_client::spawn_backfill(deps, name);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// A known memory `text` re-observed, live and unpinned: `(m, true)`
@@ -977,7 +1031,7 @@ fn new_memory(item: ExtractedItem, session_id: &str, entry_id: Option<&str>, now
     }
 }
 
-const CURSOR_SCOPE: &str = "memory_cursor";
+pub(crate) const CURSOR_SCOPE: &str = "memory_cursor";
 /// Page size while walking a session. The walk follows `next_cursor` to
 /// the leaf (a hard page cap would permanently strand sessions longer
 /// than the cap: `session::messages` is root->leaf, so the new turn lives
@@ -2634,6 +2688,43 @@ mod tests {
         let _ = session_pass("third");
         let passes = SESSION_PASSES.lock().unwrap();
         assert!(!passes.contains_key("other"));
+    }
+
+    #[test]
+    fn a_success_ends_the_failure_streak() {
+        let mut health = PassHealth::default();
+        health.record(&Err("router::complete: timeout".into()));
+        health.record(&Err("router::complete: timeout".into()));
+        assert_eq!(health.failed_in_a_row, 2);
+        assert_eq!(
+            health.last_error.as_deref(),
+            Some("router::complete: timeout")
+        );
+        health.record(&Ok(true));
+        assert_eq!(
+            health,
+            PassHealth {
+                passes: 3,
+                failed_in_a_row: 0,
+                last_error: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pass_that_never_asks_the_model_keeps_the_failure_streak() {
+        let mut health = PassHealth::default();
+        health.record(&Err("router::complete: no provider".into()));
+        // An automation session's turn, or a span under 20 characters.
+        health.record(&Ok(false));
+        assert_eq!(
+            health,
+            PassHealth {
+                passes: 1,
+                failed_in_a_row: 1,
+                last_error: Some("router::complete: no provider".into()),
+            }
+        );
     }
 
     #[test]

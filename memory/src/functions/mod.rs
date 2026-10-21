@@ -104,9 +104,10 @@ pub const RULE_SET_DESC: &str =
 
 pub const DOCTOR_ID: &str = "memory::doctor";
 pub const DOCTOR_DESC: &str =
-    "Self-test memory end to end: data-dir writability, a scratch-bank write/read/trash \
-     roundtrip, and sibling reachability (router, session-manager). Reports degraded states \
-     explicitly, not a bare process-up health.";
+    "Self-test memory end to end: data-dir writability, a scratch-bank write/read/delete \
+     roundtrip, sibling reachability (router, session-manager, state), whether embeddings \
+     answer, and whether recent extraction passes failed. Reports degraded states explicitly, \
+     not a bare process-up health.";
 
 pub const RELOAD_ID: &str = "memory::reload";
 pub const RELOAD_DESC: &str =
