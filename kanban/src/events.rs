@@ -161,6 +161,25 @@ pub struct ChangeEvent {
     pub releases: Vec<ReleaseRef>,
 }
 
+/// `config.updated` on `kanban:change`: the board's configuration changed.
+/// It names no ticket.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigEvent {
+    /// Always `config.updated`.
+    pub event: String,
+    pub at: String,
+}
+
+/// What a `kanban:change` binding receives: a ticket event, or a
+/// configuration event. Published as the trigger's call format only.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code, clippy::large_enum_variant)]
+enum ChangeDelivery {
+    Ticket(ChangeEvent),
+    Config(ConfigEvent),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommentEvent {
     /// Always `comment.created`.
@@ -227,7 +246,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
             BindingTable(subscribers.change.clone()),
         )
         .trigger_request_format::<ChangeConfig>()
-        .call_request_format::<ChangeEvent>(),
+        .call_request_format::<ChangeDelivery>(),
     );
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
@@ -433,8 +452,14 @@ pub fn emit_config_updated(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
     let bindings = matching(&subscribers.change, |binding| {
         matches_config(&binding.config)
     });
-    let payload = serde_json::json!({ "event": CONFIG_EVENT, "at": crate::board::now() });
-    deliver(iii.clone(), bindings, payload.clone(), payload);
+    let event = ConfigEvent {
+        event: CONFIG_EVENT.to_string(),
+        at: crate::board::now(),
+    };
+    match serde_json::to_value(&event) {
+        Ok(payload) => deliver(iii.clone(), bindings, payload.clone(), payload),
+        Err(error) => tracing::error!(error = %error, "kanban config event failed to serialize"),
+    }
 }
 
 pub fn emit_comment(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &CommentEvent) {
@@ -451,6 +476,15 @@ pub fn emit_comment(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &Com
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn change_call_format_admits_the_config_event() {
+        let schema = serde_json::to_value(schemars::schema_for!(ChangeDelivery)).unwrap();
+        let variants = schema["anyOf"]
+            .as_array()
+            .expect("one schema per delivery shape");
+        assert_eq!(variants.len(), 2);
+    }
 
     #[test]
     fn config_event_reaches_unfiltered_bindings_only() {

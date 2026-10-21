@@ -485,7 +485,8 @@ export function TicketScreen({
   }, [refreshBoard])
   const boardTickets = useMemo(() => (board ? board.columns.flatMap((column) => column.tickets) : null), [board])
   const boardLabels = useMemo(() => allLabels(boardTickets ?? []), [boardTickets])
-  const doneStatus = board?.done_status || knownDoneStatus || columns[columns.length - 1]?.id || ''
+  // The page's configuration is read again on `config.updated`; the board data is not, so it comes second.
+  const doneStatus = knownDoneStatus || board?.done_status || columns[columns.length - 1]?.id || ''
   const canceledStatus = (board ? board.canceled_status : knownCanceledStatus) ?? null
 
   // A subtask shows its parent's numbers and its siblings: the parent as the worker returns it.
