@@ -207,13 +207,9 @@ async fn one(
 ) -> BatchResult {
     let id = call.id.clone().unwrap_or_else(|| index.to_string());
     let function = call.function.clone();
-    // A namespaced call always goes to the engine: the local fp:: shortcut
-    // only stands in for this worker's own functions.
-    let local = match call.namespace {
-        None => util::apply(&function, &args),
-        Some(_) => None,
-    };
-    let outcome: Result<Value, (String, String)> = match local {
+    // Transforms are pure, so they run inline whatever the namespace: the
+    // result is the same value, never the `{ value }` wrapper of a bus call.
+    let outcome: Result<Value, (String, String)> = match util::apply(&function, &args) {
         Some(result) => result.map_err(|message| ("INVALID_ARGS".to_string(), message)),
         None => {
             let request = TriggerRequest {
