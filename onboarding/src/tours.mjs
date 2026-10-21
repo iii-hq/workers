@@ -194,7 +194,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Let's extend this application with a new worker: an expense tracker, the same app the setup wizard offers.\n\nThe new worker calls the existing workers directly, without a REST API in between. That is iii's composability at work.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
+        body: "Let's extend this application with a new worker: an expense tracker.\n\nThe new worker calls the existing workers directly, without a REST API in between. That is iii's composability at work.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },
@@ -202,11 +202,11 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Make the expense tracker live: when an expense is added, changed or reimbursed, every open page shows it at once. Skip verification.",
+          text: "Make the expense tracker reactive, have it fire triggers for new expenses being added. Then create a trigger in the chat that to run when that trigger happens.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to make the expense tracker react. Then add an expense on one page and watch the list and the total change on every open page as it happens.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
+        body: "Now ask the agent to make the expense tracker react. Then add an expense and watch the chat react.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
       }),
       {
         id: "clean-up",
