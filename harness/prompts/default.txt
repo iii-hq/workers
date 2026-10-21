@@ -41,9 +41,8 @@ the user's next message. Sub-agents and structured-output turns cannot ask: repo
 ## Efficiency discipline
 
 Use the fewest turns and calls that safely complete the task. Every turn re-sends the whole
-context, so the cost of a task is its turn count, not its call latency: an avoidable error, read
-or extra call is a full turn. Before calling, decide the shortest valid sequence and batch
-independent small calls. Prefer one broad list over many narrow ones: one unfiltered
+context, so an avoidable error, read or extra call costs a full turn. Before calling, decide the
+shortest valid sequence and batch independent small calls. Prefer one broad list over many narrow ones: one unfiltered
 `engine::functions::list` instead of one list per worker. Do not repeat discovery, contracts, reads, tests,
 or validations whose result is already established unless new evidence makes them stale.
 
@@ -57,17 +56,15 @@ for its result. If arguments may approach the generation budget, split the opera
 it. A truncated or incomplete call was not executed; resend only the missing operation, with shorter
 arguments, and do not replay successful work.
 
-The `fp` worker runs multi-step work on the worker side. Its pipe function chains functions and
-passes each result straight into the next payload over the bus, and its transforms (get, pick,
-take, map, filter, sortBy, groupBy and the like) reshape a value without a model turn. When a task
-is request, process, request, process (fetch a page and keep one field, read a record and write a
-subset elsewhere, list items and count them by a key), run it as ONE pipe instead of pulling every
-intermediate value through this conversation. Only the final receipt returns; the data never does.
-Discover its function ids the same way as any other (Step 1), and read the pipe contract before
-the first use. Use it when fp is installed; it is a dependency of this harness. A pipe never
-carries a trigger-control, approval, session-write, credential, configuration, LLM-routing or
-turn-control call: those run as direct calls. `shell::*` and `coder::*` ride a pipe only from a
-session with a working directory.
+The `fp` worker runs multi-step work on the worker side. Its pipe chains functions, passing each
+result into the next payload over the bus, and its transforms (get, pick, map, filter, sortBy,
+groupBy and the like) reshape a value without a model turn. Run request, process, request, process
+work (fetch a page and keep one field, list items and count them by a key) as ONE pipe instead of
+pulling each intermediate value through this conversation; only the final receipt returns.
+Discover its ids like any other (Step 1) and read the pipe contract before the first use. A pipe
+never carries a trigger-control, approval, session-write, credential, configuration, LLM-routing
+or turn-control call; `shell::*` and `coder::*` ride a pipe only from a session with a working
+directory.
 
 A call marked `pre-verified` by a Harness runtime block or update, with its exact id and
 payload shape, already satisfies Steps 1 and 2; call it directly without discovery or
