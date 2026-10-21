@@ -83,6 +83,18 @@ the button closed the step. The page binds every reachable condition when the
 step is displayed, before any button is clicked, so the wait is already
 running when the prompt goes out.
 
+## Agent profile
+
+The tour's prompts run under the hidden "Onboarding" agent profile,
+`ade-worker-builder` from the `harness` template, named as the tour's `agent`;
+the profile also sets the reasoning effort. The Harness takes a profile only
+when a session is created, so the page hands it to `host.chat.compose`: the
+console sends in the open chat when that already runs the profile, and
+otherwise opens a new chat with it selected, as the setup wizard's example
+prompts do. A Directory that does not serve the profile leaves the prompt
+unsent in that chat's composer; a console that predates the field sends in the
+open chat.
+
 ## Anchors
 
 A step's `anchors` are selectors for the console element it talks about, best

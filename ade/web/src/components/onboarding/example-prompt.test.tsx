@@ -11,8 +11,13 @@ import { claimDraftSend } from '@/lib/composer-insert'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { fetchTranscriptTail, listSessions } from '@/lib/sessions/api'
+import { fetchNewChatWorkingDir } from '@/lib/working-dir'
 import type { ModelOption } from '@/types/chat'
-import { openExamplePrompt } from './example-prompt'
+import {
+  openExamplePrompt,
+  type PromptChatApi,
+  startExamplePrompt,
+} from './example-prompt'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
 vi.mock('@/lib/sessions/api', async (original) => ({
@@ -21,6 +26,10 @@ vi.mock('@/lib/sessions/api', async (original) => ({
   getSession: vi.fn(),
   fetchTranscriptTail: vi.fn(),
   ensureSession: vi.fn(),
+}))
+vi.mock('@/lib/working-dir', async (original) => ({
+  ...(await original<typeof import('@/lib/working-dir')>()),
+  fetchNewChatWorkingDir: vi.fn(),
 }))
 vi.mock('@/lib/sessions/events', () => ({
   subscribeSessionDirectory: vi.fn(() => () => {}),
@@ -205,5 +214,54 @@ describe('openExamplePrompt', () => {
     })
     expect(reused).toBe(chat.id)
     expect(claimDraftSend(chat.id)).toBeUndefined()
+  })
+})
+
+describe('startExamplePrompt', () => {
+  /** The store as it is now, the way the console's context hands it over. */
+  const current = (): PromptChatApi => ({
+    ...api,
+    openConversation: (chat) => api.select(chat),
+    modelOptions: MODELS,
+  })
+
+  /** An injected page's prompt: a profile and a text, no model list. */
+  const HELLO: ExamplePrompt = {
+    title: 'hello',
+    agent: 'ade-worker-builder',
+    prompt: 'hello',
+    models: [],
+  }
+
+  it('opens the chat in the new-chat folder with the profile, and sends', async () => {
+    vi.mocked(fetchNewChatWorkingDir).mockResolvedValue('/home/me/shop')
+    let id: string | null = null
+    await act(async () => {
+      id = await startExamplePrompt(current, HELLO, [BUILDER])
+    })
+    const chat = api.conversations.find(
+      (conversation) => conversation.id === id,
+    )
+    expect(chat).toMatchObject({
+      agentProfile: { id: 'ade-worker-builder' },
+      workingDir: '/home/me/shop',
+    })
+    expect(api.activeId).toBe(id)
+    expect(claimDraftSend(id ?? '')).toBe('hello')
+  })
+
+  it('leaves the prompt unsent when the profiles cannot be read', async () => {
+    // The mocked client serves no functions, so the profile lookup fails.
+    vi.mocked(fetchNewChatWorkingDir).mockResolvedValue('/home/me/shop')
+    let id: string | null = null
+    await act(async () => {
+      id = await startExamplePrompt(current, HELLO)
+    })
+    const chat = api.conversations.find(
+      (conversation) => conversation.id === id,
+    )
+    expect(chat?.agentProfile).toBeUndefined()
+    expect(api.getDraftText(id ?? '')).toBe('hello')
+    expect(claimDraftSend(id ?? '')).toBeUndefined()
   })
 })

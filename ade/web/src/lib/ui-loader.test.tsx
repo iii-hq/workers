@@ -5,9 +5,11 @@ import { TooltipProvider } from '@/components/ui/Tooltip'
 import type {
   ConfigFormProps,
   ConsoleApi,
+  Host,
   SetupFn,
   UiAssetsPush,
 } from '../types/injectable-ui'
+import { type ComposerInsert, onComposerInsert } from './composer-insert'
 import type { IiiClient } from './iii-client'
 import {
   getPanelContext,
@@ -86,6 +88,8 @@ function createHarness({
     selectConversation: vi.fn(),
     openDraft: vi.fn(),
     composerModel: vi.fn(() => null),
+    activeAgentProfile: vi.fn(() => null),
+    openAgentPrompt: vi.fn(),
   },
   importModule = vi.fn(async () => setupForm('default')),
   manifest = Promise.resolve({ disabled: false }),
@@ -656,6 +660,8 @@ describe('injectable UI conversation adapters', () => {
         openDraft,
         selectConversation,
         composerModel: () => null,
+        activeAgentProfile: () => null,
+        openAgentPrompt: vi.fn(),
       },
       importModule: async () => ({
         default(host) {
@@ -684,6 +690,70 @@ describe('injectable UI conversation adapters', () => {
     harness.stop()
   })
 
+  /** A page that composes `draft` beside a chat running profile `active`. */
+  async function compose(
+    draft: Parameters<Host['chat']['compose']>[0],
+    active: string | null,
+  ) {
+    const inserts: ComposerInsert[] = []
+    const off = onComposerInsert((insert) => inserts.push(insert))
+    const openAgentPrompt = vi.fn()
+    const composed = vi.fn()
+    const harness = createHarness({
+      conversationAdapter: {
+        selectConversation: vi.fn(),
+        openDraft: vi.fn(),
+        composerModel: () => null,
+        activeAgentProfile: () => active,
+        openAgentPrompt,
+      },
+      importModule: async () => ({
+        default(host) {
+          host.chat.compose(draft)
+          composed()
+        },
+      }),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'onboarding/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(composed).toHaveBeenCalledOnce())
+    off()
+    harness.stop()
+    return { inserts, openAgentPrompt }
+  }
+
+  it('sends a prompt for a profile the active chat does not run in a new chat', async () => {
+    const { inserts, openAgentPrompt } = await compose(
+      { text: 'hello', submit: true, agent: 'ade-worker-builder' },
+      'default',
+    )
+    expect(openAgentPrompt).toHaveBeenCalledWith({
+      text: 'hello',
+      agent: 'ade-worker-builder',
+    })
+    expect(inserts).toEqual([])
+  })
+
+  it('sends a prompt for the profile the active chat runs in place', async () => {
+    const { inserts, openAgentPrompt } = await compose(
+      { text: 'hello', submit: true, agent: 'ade-worker-builder' },
+      'ade-worker-builder',
+    )
+    expect(openAgentPrompt).not.toHaveBeenCalled()
+    expect(inserts).toEqual([{ text: 'hello', inline: false, submit: true }])
+  })
+
+  it('composes in place when no profile is named', async () => {
+    const { inserts, openAgentPrompt } = await compose(
+      { text: 'hello', submit: true },
+      'default',
+    )
+    expect(openAgentPrompt).not.toHaveBeenCalled()
+    expect(inserts).toEqual([{ text: 'hello', inline: false, submit: true }])
+  })
+
   it('keeps concurrent loader hosts isolated through teardown and reload', async () => {
     const selectA = vi.fn()
     const selectB = vi.fn()
@@ -701,6 +771,8 @@ describe('injectable UI conversation adapters', () => {
         selectConversation: selectA,
         openDraft: vi.fn(),
         composerModel: modelA,
+        activeAgentProfile: () => null,
+        openAgentPrompt: vi.fn(),
       },
       importModule: async () => moduleFor('session-a'),
     })
@@ -709,6 +781,8 @@ describe('injectable UI conversation adapters', () => {
         selectConversation: selectB,
         openDraft: vi.fn(),
         composerModel: modelB,
+        activeAgentProfile: () => null,
+        openAgentPrompt: vi.fn(),
       },
       importModule: async () => moduleFor('session-b'),
     })
