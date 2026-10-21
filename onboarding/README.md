@@ -35,11 +35,10 @@ On a console without the slot the same tour renders as a page in a pane
 (`ui/src/page.tsx`). Both run on `ui/src/use-tour.ts`.
 
 `Open learn-iii` (the palette row, `learn-iii.open`) shows it either way.
-The console runs that command by itself once the operator has had the ADE
-for five minutes: the ADE records its first open (`console::onboarding::get`,
-`setup_ended_at`) and the console's tour gate counts from there, across
-reloads and restarts, waits for the setup wizard to close, and opens the tour
-once (`tour_opened_at`). The wizard's Ready step does not start it.
+The console runs that command by itself as soon as setup ends: the ADE
+records the moment (`console::onboarding::get`, `setup_ended_at`), and the
+console's tour gate waits for the setup wizard to close and opens the tour
+once (`tour_opened_at`), across reloads and restarts. The wizard's Ready step does not start it.
 
 The first step's button starts a new chat under the Onboarding agent profile
 (`ade-worker-builder`, which the harness template ships) and sends "hey"

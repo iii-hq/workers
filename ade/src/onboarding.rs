@@ -146,9 +146,8 @@ pub struct OnboardingState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<Value>,
     /// Milliseconds since the epoch of the moment setup ended: the wizard
-    /// finished or was dismissed. The learn-iii tour opens by itself once
-    /// five minutes have passed since then (see the console's `tour-gate`),
-    /// restarts included. Never set while setup is still open.
+    /// finished or was dismissed. The learn-iii tour opens by itself then
+    /// (see the console's `tour-gate`), restarts included. Never set while setup is still open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_ended_at: Option<i64>,
     /// When the learn-iii tour opened by itself; it opens that way once.
@@ -323,8 +322,7 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
                 if let Some(status) = input.status {
                     state.status = status;
                     match status {
-                        // Setup ending either way starts the tour's five
-                        // minutes.
+                        // Setup ending either way makes the tour due.
                         OnboardingStatus::Completed => {
                             state.completed_at = Some(now);
                             state.setup_ended_at = Some(now);

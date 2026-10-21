@@ -117,9 +117,9 @@ export function stepPosition(
  * (`onboarding.yaml`, read through `console::onboarding::prompts`): a click
  * opens a new chat that sends the prompt, its agent profile and model chosen
  * (see `openExamplePrompt`). Finish closes the wizard. The learn-iii tour is
- * not started here: it opens by itself once the operator has had the ADE for
- * five minutes (see `useTourGate`, mounted beside this host so it waits for
- * the dialog to close).
+ * not started here: it opens by itself as soon as setup ends (see
+ * `useTourGate`, mounted beside this host so it waits for the dialog to
+ * close).
  */
 export function OnboardingWizardHost() {
   const reduceMotion = useReducedMotion()

@@ -26,7 +26,7 @@ vi.mock('./tour', () => ({
   openTour: harness.open,
 }))
 
-import { TOUR_AFTER_MS, tourDueAt, useTourGate } from './tour-gate'
+import { tourIsDue, useTourGate } from './tour-gate'
 
 let root: Root | null = null
 
@@ -50,8 +50,6 @@ async function flush() {
 }
 
 beforeEach(() => {
-  vi.useFakeTimers()
-  vi.setSystemTime(1_000_000)
   harness.prepare.mockClear()
   harness.open.mockClear()
   harness.mark.mockClear()
@@ -62,76 +60,44 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root?.unmount())
   root = null
-  vi.useRealTimers()
 })
 
-describe('tourDueAt', () => {
-  it('is five minutes after the first open', () => {
+describe('tourIsDue', () => {
+  it('is due once setup has ended', () => {
     expect(
-      tourDueAt({ status: 'new', updated_at: 0, setup_ended_at: 10 }, false),
-    ).toBe(10 + TOUR_AFTER_MS)
+      tourIsDue({ status: 'new', updated_at: 0, setup_ended_at: 10 }, false),
+    ).toBe(true)
   })
 
-  it('is never due once the tour has opened, without a first open, or where nothing opens by itself', () => {
+  it('is never due once the tour has opened, before setup ends, or where nothing opens by itself', () => {
     const base = {
       status: 'completed' as const,
       updated_at: 0,
       setup_ended_at: 10,
     }
-    expect(tourDueAt({ ...base, tour_opened_at: 20 }, false)).toBeNull()
-    expect(tourDueAt({ status: 'completed', updated_at: 0 }, false)).toBeNull()
-    expect(tourDueAt({ ...base, auto_open: false }, false)).toBeNull()
-    expect(tourDueAt(base, true)).toBeNull()
-    expect(tourDueAt(null, false)).toBeNull()
+    expect(tourIsDue({ ...base, tour_opened_at: 20 }, false)).toBe(false)
+    expect(tourIsDue({ status: 'completed', updated_at: 0 }, false)).toBe(false)
+    expect(tourIsDue({ ...base, auto_open: false }, false)).toBe(false)
+    expect(tourIsDue(base, true)).toBe(false)
+    expect(tourIsDue(null, false)).toBe(false)
   })
 })
 
 describe('useTourGate', () => {
-  it('opens the tour five minutes after the first open, and records that it did', async () => {
+  it('opens the tour as soon as setup has ended, and records that it did', async () => {
     render()
-    await flush()
-    expect(harness.open).not.toHaveBeenCalled()
-    await act(async () => {
-      vi.advanceTimersByTime(TOUR_AFTER_MS - 1)
-    })
-    expect(harness.open).not.toHaveBeenCalled()
-    await act(async () => {
-      vi.advanceTimersByTime(1)
-    })
     await flush()
     expect(harness.prepare).toHaveBeenCalledTimes(1)
     expect(harness.open).toHaveBeenCalledTimes(1)
     expect(harness.mark).toHaveBeenCalledTimes(1)
   })
 
-  it('opens at once on a load past the mark (a restart, a reload)', async () => {
-    harness.state = {
-      status: 'completed',
-      setup_ended_at: 1_000_000 - TOUR_AFTER_MS - 5,
-    }
-    render()
-    await flush()
-    await act(async () => {
-      vi.advanceTimersByTime(0)
-    })
-    await flush()
-    expect(harness.open).toHaveBeenCalledTimes(1)
-  })
-
   it('waits for the wizard to close', async () => {
     harness.state = { status: 'new', setup_ended_at: 0 }
     render(true)
     await flush()
-    await act(async () => {
-      vi.advanceTimersByTime(TOUR_AFTER_MS)
-    })
-    await flush()
     expect(harness.open).not.toHaveBeenCalled()
     act(() => root?.render(<Host wizardOpen={false} />))
-    await flush()
-    await act(async () => {
-      vi.advanceTimersByTime(0)
-    })
     await flush()
     expect(harness.open).toHaveBeenCalledTimes(1)
   })
@@ -144,31 +110,19 @@ describe('useTourGate', () => {
     }
     render()
     await flush()
-    await act(async () => {
-      vi.advanceTimersByTime(TOUR_AFTER_MS)
-    })
-    await flush()
     expect(harness.open).not.toHaveBeenCalled()
     act(() => root?.unmount())
     harness.state = { status: 'completed', setup_ended_at: 0 }
     harness.automated = true
     render()
     await flush()
-    await act(async () => {
-      vi.advanceTimersByTime(TOUR_AFTER_MS)
-    })
-    await flush()
     expect(harness.open).not.toHaveBeenCalled()
   })
 
-  it('forgets a pending open when unmounted before it is due', async () => {
+  it('opens nothing when unmounted before the state arrives', async () => {
     render()
-    await flush()
     act(() => root?.unmount())
     root = null
-    await act(async () => {
-      vi.advanceTimersByTime(TOUR_AFTER_MS)
-    })
     await flush()
     expect(harness.open).not.toHaveBeenCalled()
   })
