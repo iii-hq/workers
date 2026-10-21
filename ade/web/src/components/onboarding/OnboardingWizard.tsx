@@ -367,11 +367,14 @@ export function OnboardingWizardHost() {
     ],
   )
 
-  const start = useCallback(() => {
-    report('finish', { outcome: 'start_building' })
-    setOpen(false)
-    window.requestAnimationFrame(requestComposerFocus)
-  }, [report])
+  const start = useCallback(
+    (outcome = 'start_building') => {
+      report('finish', { outcome })
+      setOpen(false)
+      window.requestAnimationFrame(requestComposerFocus)
+    },
+    [report],
+  )
 
   // Explore reads the project's example prompts, and the agent profiles they
   // name, each time it shows: the project's file may have changed since.
@@ -593,7 +596,8 @@ export function OnboardingWizardHost() {
                     onPrompt={(prompt) => void startPrompt(prompt)}
                     tour={tour}
                     onTour={() => void startTour()}
-                    onOwn={start}
+                    onOwn={() => start()}
+                    onFinish={() => start('finished')}
                     onBack={() => go('ready')}
                   />
                 )}

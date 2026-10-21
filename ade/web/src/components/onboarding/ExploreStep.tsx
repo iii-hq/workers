@@ -171,6 +171,7 @@ export function ExploreStep({
   tour,
   onTour,
   onOwn,
+  onFinish,
   onBack,
 }: {
   /** A model is connected: the examples and the tour can run. */
@@ -186,6 +187,8 @@ export function ExploreStep({
   onTour: () => void
   /** Close the wizard and hand the composer the focus. */
   onOwn: () => void
+  /** Close the wizard. */
+  onFinish: () => void
   /** Back to Ready. */
   onBack: () => void
 }) {
@@ -197,10 +200,13 @@ export function ExploreStep({
     return (
       <StepLayout
         footer={
-          <Button variant="ghost" onClick={() => setExamples(false)}>
-            <ArrowLeft aria-hidden />
-            Back
-          </Button>
+          <>
+            <Button variant="ghost" onClick={() => setExamples(false)}>
+              <ArrowLeft aria-hidden />
+              Back
+            </Button>
+            <Button onClick={onFinish}>Finish</Button>
+          </>
         }
       >
         <ExampleList
@@ -216,10 +222,15 @@ export function ExploreStep({
     <StepLayout
       centered
       footer={
-        <Button variant="ghost" onClick={onBack} disabled={preparing}>
-          <ArrowLeft aria-hidden />
-          Back
-        </Button>
+        <>
+          <Button variant="ghost" onClick={onBack} disabled={preparing}>
+            <ArrowLeft aria-hidden />
+            Back
+          </Button>
+          <Button onClick={onFinish} disabled={preparing}>
+            Finish
+          </Button>
+        </>
       }
     >
       <div className="flex flex-col gap-1">

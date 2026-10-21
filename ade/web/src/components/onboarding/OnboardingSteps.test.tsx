@@ -309,6 +309,7 @@ function explore(
       tour={{ kind: 'idle' }}
       onTour={noop}
       onOwn={noop}
+      onFinish={noop}
       onBack={noop}
     />,
   )
@@ -410,6 +411,7 @@ describe('ExploreStep', () => {
     expect(html).toContain('Build an example project')
     expect(html).toContain('Take the learn-iii tour')
     expect(html).toContain('Explore on my own')
+    expect(html).toContain('Finish')
     expect(html).not.toContain('disabled=""')
   })
 
@@ -429,6 +431,7 @@ describe('ExploreStep', () => {
         tour={{ kind: 'failed', error: 'compose is not running' }}
         onTour={noop}
         onOwn={noop}
+        onFinish={noop}
         onBack={noop}
       />,
     )
