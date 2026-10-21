@@ -145,14 +145,6 @@ pub struct OnboardingState {
     /// What the wizard set up, for the summary it shows when reopened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<Value>,
-    /// Milliseconds since the epoch of the moment setup ended: the wizard
-    /// finished or was dismissed. The learn-iii tour opens by itself then
-    /// (see the console's `tour-gate`), restarts included. Never set while setup is still open.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub setup_ended_at: Option<i64>,
-    /// When the learn-iii tour opened by itself; it opens that way once.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tour_opened_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -171,16 +163,10 @@ pub struct GetOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetInput {
-    /// The wizard's lifecycle; absent leaves it as it is.
-    #[serde(default)]
-    pub status: Option<OnboardingStatus>,
+    pub status: OnboardingStatus,
     /// Replaces the stored summary when present.
     #[serde(default)]
     pub summary: Option<Value>,
-    /// `true` records that the learn-iii tour opened by itself now;
-    /// `false` forgets it, so the gate fires again.
-    #[serde(default)]
-    pub tour_opened: Option<bool>,
 }
 
 /// File at the project root declaring the setup wizard's example prompts.
@@ -275,19 +261,14 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     let lock = Arc::new(Mutex::new(()));
     let store = workspace.clone();
     let client = iii.clone();
-    let get_lock = lock.clone();
     iii.register_function(
         "console::onboarding::get",
         RegisterFunction::new_async(move |_: GetInput| {
             let store = store.clone();
             let client = client.clone();
-            let lock = get_lock.clone();
             async move {
                 let dir = store.dir().await;
-                let state = {
-                    let _guard = lock.lock().await;
-                    load_state(&dir).await
-                };
+                let state = load_state(&dir).await;
                 let environment = std::env::var(AUTO_OPEN_ENV).ok();
                 // A configuration that cannot be read says nothing about the
                 // switch: stay closed rather than open over a deployed ADE.
@@ -317,43 +298,28 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
                 let _guard = lock.lock().await;
                 let dir = store.dir().await;
                 let mut state = load_state(&dir).await;
-                let now = now_ms();
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_millis() as i64);
+                state.status = input.status;
                 state.updated_at = now;
-                if let Some(status) = input.status {
-                    state.status = status;
-                    match status {
-                        // Setup ending either way makes the tour due.
-                        OnboardingStatus::Completed => {
-                            state.completed_at = Some(now);
-                            state.setup_ended_at = Some(now);
-                        }
-                        OnboardingStatus::Dismissed => state.setup_ended_at = Some(now),
-                        // Starting over forgets what the last run set up, and
-                        // the tour waits for setup to end again.
-                        OnboardingStatus::New => {
-                            state.completed_at = None;
-                            state.summary = None;
-                            state.setup_ended_at = None;
-                            state.tour_opened_at = None;
-                        }
+                match input.status {
+                    OnboardingStatus::Completed => state.completed_at = Some(now),
+                    // Starting over forgets what the last run set up.
+                    OnboardingStatus::New => {
+                        state.completed_at = None;
+                        state.summary = None;
                     }
+                    OnboardingStatus::Dismissed => {}
                 }
                 if input.summary.is_some() {
                     state.summary = input.summary;
-                }
-                match input.tour_opened {
-                    Some(true) => state.tour_opened_at = Some(now),
-                    Some(false) => state.tour_opened_at = None,
-                    None => {}
                 }
                 save_state(&dir, &state).await.map_err(Error::Handler)?;
                 Ok::<_, Error>(state)
             }
         })
-        .description(
-            "Record that the ADE setup wizard was finished, dismissed, or reset, and whether \
-             the learn-iii tour has opened by itself.",
-        )
+        .description("Record that the ADE setup wizard was finished, dismissed, or reset.")
         .metadata(json!({ "internal": true })),
     );
 }
@@ -372,12 +338,6 @@ fn auto_open(configuration: Option<&Value>, environment: Option<&str>) -> bool {
         .and_then(Value::as_bool)
         == Some(false);
     !off_by_environment && !off_by_configuration
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 async fn load_state(dir: &Path) -> OnboardingState {
@@ -1284,18 +1244,11 @@ prompts:
             updated_at: 1,
             completed_at: Some(1),
             summary: Some(json!({ "providers": ["claude-code"] })),
-            setup_ended_at: Some(5),
-            tour_opened_at: None,
         };
         save_state(&dir, &state).await.unwrap();
         let loaded = load_state(&dir).await;
         assert_eq!(loaded.status, OnboardingStatus::Completed);
         assert_eq!(loaded.summary, state.summary);
-        assert_eq!(loaded.setup_ended_at, Some(5));
-        assert_eq!(loaded.tour_opened_at, None);
-        // A file from before the tour gate has neither field.
-        std::fs::write(dir.join(ONBOARDING_FILE), r#"{"status":"completed"}"#).unwrap();
-        assert_eq!(load_state(&dir).await.setup_ended_at, None);
         std::fs::write(dir.join(ONBOARDING_FILE), "{not json").unwrap();
         assert_eq!(load_state(&dir).await.status, OnboardingStatus::New);
     }

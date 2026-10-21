@@ -26,6 +26,7 @@ export type SetupStepId =
   | 'browser'
   | 'judge'
   | 'ready'
+  | 'explore'
   | 'finish'
   | 'closed'
 
@@ -35,6 +36,7 @@ const STEP_TITLES: Record<SetupStepId, string> = {
   browser: 'Browser',
   judge: 'Judge',
   ready: 'Ready',
+  explore: 'Explore iii',
   finish: 'Finish',
   closed: 'Closed setup',
 }

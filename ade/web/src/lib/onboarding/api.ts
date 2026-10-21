@@ -34,10 +34,6 @@ export interface OnboardingState {
    * Absent from a backend older than the switch.
    */
   auto_open?: boolean
-  /** When setup ended (finished or dismissed); absent while it is open. */
-  setup_ended_at?: number
-  /** When the learn-iii tour opened by itself; absent until it has. */
-  tour_opened_at?: number
 }
 
 /** Progress a running step reports; `progress` is 0..1 when known. */
@@ -126,16 +122,6 @@ export async function saveOnboardingState(
   await client.trigger(
     'console::onboarding::set',
     summary === undefined ? { status } : { status, summary },
-    { timeoutMs: 5_000 },
-  )
-}
-
-/** Record that the learn-iii tour opened by itself, so the gate fires once. */
-export async function markTourOpened(): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(
-    'console::onboarding::set',
-    { tour_opened: true },
     { timeoutMs: 5_000 },
   )
 }

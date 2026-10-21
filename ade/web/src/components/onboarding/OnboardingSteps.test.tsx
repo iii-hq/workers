@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolScan } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
+import { ExampleList, ExploreStep } from './ExploreStep'
 import { ModelsStep } from './ModelsStep'
 import { ReadyStep } from './ReadyStep'
 import {
@@ -275,16 +276,40 @@ const CONNECTED: MachineSnapshot['providers'] = [
 function ready(
   snapshot: Partial<MachineSnapshot>,
   activity: ActivityEntry[] = [],
-  prompts: readonly ExamplePrompt[] | null = [],
 ) {
   return renderToStaticMarkup(
     <ReadyStep
       onboarding={controller(snapshot, activity)}
       judges={[]}
+      onNext={noop}
+    />,
+  )
+}
+
+function examples(prompts: readonly ExamplePrompt[] | null) {
+  return renderToStaticMarkup(
+    <ExampleList
       prompts={prompts}
       agentNames={new Map([['ade-worker-builder', 'Onboarding']])}
       onPrompt={noop}
-      onStart={noop}
+    />,
+  )
+}
+
+function explore(
+  connected: boolean,
+  prompts: readonly ExamplePrompt[] | null = PROMPTS,
+) {
+  return renderToStaticMarkup(
+    <ExploreStep
+      connected={connected}
+      prompts={prompts}
+      agentNames={new Map()}
+      onPrompt={noop}
+      tour={{ kind: 'idle' }}
+      onTour={noop}
+      onOwn={noop}
+      onBack={noop}
     />,
   )
 }
@@ -295,10 +320,7 @@ describe('ReadyStep', () => {
       <ReadyStep
         onboarding={controller({ providers: CONNECTED })}
         judges={[]}
-        prompts={[]}
-        agentNames={new Map()}
-        onPrompt={noop}
-        onStart={noop}
+        onNext={noop}
         kits={[
           { kit: 'iii/deepwork', state: 'installing' },
           { kit: 'iii/done', state: 'installed' },
@@ -374,17 +396,49 @@ describe('ReadyStep', () => {
     expect(html).not.toContain('env://')
   })
 
-  it('ends with Finish and never starts the tour itself', () => {
-    const html = ready({ providers: CONNECTED })
-    expect(html).toContain('Finish')
-    expect(html).not.toContain('guided tour')
-    expect(html).not.toContain('Start the tour')
-    expect(html).not.toContain('learn-iii')
+  it('moves on to Explore iii, with or without a model', () => {
+    expect(ready({ providers: CONNECTED })).toContain('Next')
+    expect(ready({ providers: [] })).toContain('Next')
+    expect(ready({ providers: CONNECTED })).not.toContain('Try an example')
+  })
+})
+
+describe('ExploreStep', () => {
+  it('offers the examples, the tour and exploring alone', () => {
+    const html = explore(true)
+    expect(html).toContain('Explore iii')
+    expect(html).toContain('Build an example project')
+    expect(html).toContain('Take the learn-iii tour')
+    expect(html).toContain('Explore on my own')
+    expect(html).not.toContain('disabled=""')
   })
 
+  it('needs a model for the examples and the tour, not for exploring alone', () => {
+    const html = explore(false)
+    expect(html).toContain('Connect a model first.')
+    expect(html.match(/disabled=""/g)).toHaveLength(2)
+  })
+
+  it('shows why the tour could not start', () => {
+    const html = renderToStaticMarkup(
+      <ExploreStep
+        connected
+        prompts={PROMPTS}
+        agentNames={new Map()}
+        onPrompt={noop}
+        tour={{ kind: 'failed', error: 'compose is not running' }}
+        onTour={noop}
+        onOwn={noop}
+        onBack={noop}
+      />,
+    )
+    expect(html).toContain('The tour could not start: compose is not running')
+  })
+})
+
+describe('ExampleList', () => {
   it('offers the four example prompts as chats to start, each with its agent', () => {
-    const html = ready({ providers: CONNECTED }, [], PROMPTS)
-    expect(html).toContain('Try an example')
+    const html = examples(PROMPTS)
     expect(html).toContain('aria-label="Start a chat: Build a link shortener"')
     expect(html).toContain('Build an expense tracker')
     expect(html).toContain('Create a test reviewer agent')
@@ -396,21 +450,8 @@ describe('ReadyStep', () => {
     expect(html).not.toContain('link-shortener')
   })
 
-  it('shows placeholders while the prompts are read, and nothing for a project without any', () => {
-    expect(ready({ providers: CONNECTED }, [], null)).toContain(
-      'Loading example prompts',
-    )
-    expect(ready({ providers: CONNECTED }, [], [])).not.toContain(
-      'Try an example',
-    )
-    // No model, no prompt to answer it.
-    expect(ready({ providers: [] }, [], PROMPTS)).not.toContain(
-      'Try an example',
-    )
-  })
-
-  it('ends with Finish without a model too', () => {
-    expect(ready({ providers: [] })).toContain('Finish')
+  it('shows placeholders while the prompts are read', () => {
+    expect(examples(null)).toContain('Loading example prompts')
   })
 })
 

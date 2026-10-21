@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Compass, Minus, X } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { RemoveLearnIii } from './page'
 import { disposeSpotlight, hideSpotlight, onSpotlightMove, type SpotlightRect, showSpotlight } from './spotlight'
-import { Body, StateChip, StepContent } from './step-content'
+import { StateChip, StepContent } from './step-content'
 import { type TourController, useTour } from './use-tour'
 import { closeTour, minimizeTour, showTour, useTourView } from './visibility'
 
@@ -87,22 +87,20 @@ function TourCard({
   const card = useRef<HTMLElement>(null)
   const { corner, place, settled } = usePlacement(card, folded)
   const titleId = useId()
-  // Step 0: nothing is lit and nothing is counted until the operator says yes.
-  const intro = Boolean(loaded) && tour.records.intro?.status !== 'complete'
 
   const index = loaded && openStep ? loaded.steps.indexOf(openStep) : -1
   const caption = openStep ? `${index + 1} · ${openStep.title}` : undefined
   useEffect(() => {
     // Folded is out of the way: the box goes with the card.
-    if (folded || intro) return
+    if (folded) return
     showSpotlight(framed, caption)
     return hideSpotlight
-  }, [framed, caption, folded, intro])
+  }, [framed, caption, folded])
   useEffect(() => disposeSpotlight, [])
 
   // Every step done: the last one asked the agent to remove this worker, so
   // there is nothing left to say. The card goes, and the worker follows.
-  const finished = Boolean(loaded) && !intro && !openStep
+  const finished = Boolean(loaded) && !openStep
   useEffect(() => {
     if (finished) closeTour()
   }, [finished])
@@ -133,7 +131,7 @@ function TourCard({
       <header className="learn-overlay-head">
         <Compass className={`learn-overlay-mark ${uiClasses.icon}`} aria-hidden="true" />
         <span className="learn-overlay-name">{loaded?.title ?? 'Tour'}</span>
-        {loaded && openStep && !intro ? (
+        {loaded && openStep ? (
           <span className="learn-overlay-count learn-num">
             {index + 1} / {loaded.steps.length}
           </span>
@@ -159,7 +157,7 @@ function TourCard({
           <X className={uiClasses.icon} aria-hidden="true" />
         </Button>
       </header>
-      {loaded && !intro ? <Progress tour={tour} /> : null}
+      {loaded ? <Progress tour={tour} /> : null}
 
       <div className="learn-overlay-scroll">
         {tour.error ? (
@@ -168,21 +166,6 @@ function TourCard({
           <div className="learn-loading" role="status" aria-busy="true" aria-label="Loading the tour">
             <Skeleton className="learn-skeleton learn-skeleton--bar" />
             <Skeleton className="learn-skeleton" />
-          </div>
-        ) : intro && loaded ? (
-          <div className="learn-overlay-step">
-            <h2 id={titleId} className="learn-overlay-title">
-              <span className="learn-overlay-title-text">{loaded.intro.title}</span>
-            </h2>
-            <Body text={loaded.intro.body} />
-            <div className="learn-actions">
-              <Button className="learn-action" onClick={() => tour.complete('intro')}>
-                Show me
-              </Button>
-              <Button variant="ghost" className="learn-ghost" onClick={minimizeTour}>
-                Not now
-              </Button>
-            </div>
           </div>
         ) : openStep ? (
           // Keyed on the step, so each one arrives instead of the text
@@ -199,10 +182,10 @@ function TourCard({
 
       <footer className="learn-overlay-foot">
         {/* Removing the worker is the last step's business. */}
-        {loaded && openStep && !intro && index === loaded.steps.length - 1 ? (
+        {loaded && openStep && index === loaded.steps.length - 1 ? (
           <RemoveLearnIii host={host} onClose={closeTour} label="Remove this worker" />
         ) : null}
-        {loaded && openStep && !intro ? <StepNav tour={tour} index={index} /> : null}
+        {loaded && openStep ? <StepNav tour={tour} index={index} /> : null}
       </footer>
     </section>
   )

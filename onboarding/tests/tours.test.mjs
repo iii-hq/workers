@@ -189,16 +189,6 @@ test('findStep numbers steps from 1 in tour order', () => {
   assert.equal(findStep(TOURS[0].id, 'no-such-step'), undefined)
 })
 
-/** The intro card is step 0 of every tour: reported, never counted among the steps. */
-test('the intro is step 0', () => {
-  for (const tour of TOURS) {
-    const found = findStep(tour.id, 'intro')
-    assert.equal(found?.step, tour.intro)
-    assert.equal(found?.number, 0)
-    assert.ok(!tour.steps.some((step) => step.id === 'intro'), `${tour.id}: intro listed as a step`)
-  }
-})
-
 /**
  * The first step starts the tour's chat under the Onboarding profile, the
  * way a setup example prompt does; every later prompt goes to the chat the

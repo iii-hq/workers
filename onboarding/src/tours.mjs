@@ -34,8 +34,7 @@
  * @typedef {{ screen: string }} ToClose
  * @typedef {{ screen: string, label: string, body: string, anchors: string[], elsewhere?: string }} ToOpen
  * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, ask?: Ask, to_close?: ToClose, to_open?: ToOpen }} Step
- * @typedef {{ id: "intro", title: string, body: string }} Intro
- * @typedef {{ id: string, title: string, description: string, intro: Intro, steps: Step[] }} Tour
+ * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
 /**
@@ -93,13 +92,6 @@ export const TOURS = [
     id: "learn-iii",
     title: "Find your way around",
     description: "The surfaces of the console, and the engine underneath them.",
-    // Step 0: the card asks before it teaches. "Show me" closes it (and is
-    // what the funnel counts); "Not now" folds the card to its pill.
-    intro: {
-      id: "intro",
-      title: "Learn iii?",
-      body: "Want to learn more about iii, the engine that powers this harness and everything you build? Take a 5 minute tour to learn how iii does things differently.",
-    },
     steps: [
       {
         id: "message",
@@ -243,14 +235,13 @@ export function getTour(id) {
 /**
  * The step, its tour, and its 1-based number in that tour — the number is
  * what the `onboarding:steps:complete` event reports, so it is read from
- * the ordered step list rather than stored beside it. The intro is step 0.
+ * the ordered step list rather than stored beside it.
  *
- * @returns {{ tour: Tour, step: Step | Intro, number: number } | undefined}
+ * @returns {{ tour: Tour, step: Step, number: number } | undefined}
  */
 export function findStep(tourId, stepId) {
   const tour = getTour(tourId);
   if (!tour) return undefined;
-  if (stepId === tour.intro.id) return { tour, step: tour.intro, number: 0 };
   const index = tour.steps.findIndex((step) => step.id === stepId);
   if (index < 0) return undefined;
   return { tour, step: tour.steps[index], number: index + 1 };
