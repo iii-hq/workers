@@ -53,9 +53,11 @@ pub struct RuleSetResponse {
 pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, MemoryError> {
     let bank_name = crate::scope::request_bank(deps, req.bank.clone()).await?;
     let store = deps.store().await;
-    // Only the lines the stored rule does not hold yet are screened: one
+    // A shape within a line the stored rule already holds is spared: one
     // written before the screen, or by hand, must not block every later
     // write of the document (memory-consolidate rewrites `learned` whole).
+    // The whole content is read, so a new line cannot finish a held line's
+    // phrase.
     let held = store
         .bank(&bank_name)
         .await
@@ -64,12 +66,7 @@ pub async fn set(deps: &Deps, req: RuleSetRequest) -> Result<RuleSetResponse, Me
         .and_then(|rules| rules.into_iter().find(|r| r.name == req.name))
         .map(|r| r.content)
         .unwrap_or_default();
-    let added: Vec<&str> = req
-        .content
-        .lines()
-        .filter(|line| !held.lines().any(|h| h == *line))
-        .collect();
-    crate::redact::reject_injection("content", &added.join("\n"))?;
+    crate::redact::reject_injection_beside("content", &req.content, &held)?;
     // What `set_rule` keeps: invisible-only content removes the rule.
     let exists = !crate::redact::redact(&req.content).text.trim().is_empty();
     // Deleting from a bank that does not exist must not create it: an
