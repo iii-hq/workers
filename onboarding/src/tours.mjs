@@ -183,7 +183,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Discoverability",
-        body: "An earlier step mentioned that agents don't have a long discoverability step. This project is made up of about 14 or so services. If you ask the agent to report them all you'll get a quick response with the large majority of the time spent waiting on the LLM to generate its text.\n\nHow long would it take your other agents to do this? How accurate would their results be?",
+        body: "An earlier step mentioned that agents don't have a long discoverability step. This project is made up of about 14 or so services. Ask the agent what three of them do and you'll get a quick answer, with most of the time spent waiting on the LLM to write its text.\n\nHow long would it take your other agents to do this? How accurate would their results be?",
       }),
       agentStep({
         id: "extensibility",
