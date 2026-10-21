@@ -13,6 +13,7 @@ const GROUP_LABELS: Record<ContextGroup, string> = {
   subagents: 'Sub-agents',
   triggers: 'Triggers',
   links: 'Links',
+  tracking: 'Tracking',
 }
 
 /** Where a worker's section lands when it asks for no place. */

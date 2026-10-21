@@ -126,6 +126,7 @@ import {
   resolveSubagentAppearance,
   type SubagentVisualStatus,
 } from './active-subagents'
+import { ContextTrackingBody, useContextTracking } from './ContextTracking'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
 import { TriggerDetailDialog } from './SessionTriggers'
 
@@ -471,6 +472,13 @@ export function ChatContextPanel({
   const ticketsWorked = tickets.filter((row) => row.action || row.by).length
   const failingPrs = listedPrs.filter((pr) => pr.failing > 0).length
 
+  const tracking = useContextTracking({
+    sessionId: conversation.id,
+    workingDir,
+    status: conversation.status,
+    active,
+    connectionState,
+  })
   const order = useContextSections()
   const hiddenSections = useHiddenSections()
   const workerSections = useExtContextSections()
@@ -493,6 +501,22 @@ export function ChatContextPanel({
   // Each section by id, null while it has nothing to show. The order
   // kept in this browser places them; hidden ones are left out.
   const groups: Record<string, ReactNode> = {
+    tracking: (
+      <Section
+        id="tracking"
+        label="Tracking"
+        count={tracking.items.length}
+        brief={
+          <span className="truncate text-ink-faint">
+            {tracking.items[0]
+              ? `${tracking.items[0].title}${tracking.items[0].progress !== null ? ` · ${tracking.items[0].progress}%` : ''}`
+              : 'Ask in chat to add tracking'}
+          </span>
+        }
+      >
+        <ContextTrackingBody {...tracking} onAskAgent={onAskAgent} />
+      </Section>
+    ),
     project: (
       <Section
         id="project"
