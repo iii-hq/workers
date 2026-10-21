@@ -41,8 +41,8 @@ for five minutes: the ADE records its first open (`console::onboarding::get`,
 reloads and restarts, waits for the setup wizard to close, and opens the tour
 once (`tour_opened_at`). The wizard's Ready step does not start it.
 
-The first step's button starts a new chat under the default agent profile
-and sends "hey"
+The first step's button starts a new chat under the Onboarding agent profile
+(`ade-worker-builder`, which the harness template ships) and sends "hey"
 there, the way the wizard's example prompts start a chat
 (`host.chat.startChat`); every later prompt goes to the chat the operator is
 in. A step about a console screen (Traces) opens it beside the chat with its
