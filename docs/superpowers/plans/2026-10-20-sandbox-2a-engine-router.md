@@ -10,7 +10,7 @@
 
 **Spec:** docs/superpowers/specs/2026-10-20-sandbox-worker-design.md, sections 2, 5.2, 5.6, 5.7 (router side), 6.1, 6.2, 6.3 (engine part), 6.4 (`CONFIGURABLE_ENGINE_WORKERS` entry with its Compose fixtures, D9, and the engine `migration_guidance` arm), 6.5 (engine code, tests, publish rows), 7.5, 8.2 (README and skill move, D10), 10 (step 2), 11 (engine tests), 12 (keep `_publish-engine-workers.yml` working). Shared names: docs/superpowers/plans/2026-10-20-sandbox-shared-interfaces.md
 
-**Repo and base:** iii repo. Citations are at `a1d08d8b0`. Branch `sandbox/p2a-router`, cut from main after P0 merges (P0 makes `crates/iii-sandbox-contract` a workspace member). It merges only after the `iii/v0.24.7` tag, and no stable tag is cut from main between its merge and 0.25.0 (registry §1). P2b (Compose) follows this PR. Engine 0.25.0 is not cut until P3 merges and `sandbox-builtin` 1.0.0 is in the registry.
+**Repo and base:** iii repo. Citations are at `a1d08d8b0`. Branch `sandbox/p2a-router`, cut from main after P0 merges (P0 makes `crates/iii-sandbox-contract` a workspace member). No stable tag is cut from main between its merge and 0.25.0 (registry §1). P2b (Compose) follows this PR. Engine 0.25.0 is not cut until P3 merges and `sandbox-builtin` 1.0.0 is in the registry.
 
 ## Global Constraints
 
@@ -439,7 +439,7 @@ Expected: both `rg` runs print nothing; the validator exits 0.
   - `engine.workers.iii-sandbox` now fails with the migration arm;
   - the engine no longer spawns `iii-worker`;
   - the Review Focus list.
-- Merge order: after P0 and the `iii/v0.24.7` tag; P2b next; no stable tag from main until 0.25.0, which is cut only after P3 and once `sandbox-builtin` 1.0.0 is in the registry.
+- Merge order: after P0; P2b next; no stable tag from main until 0.25.0, which is cut only after P3 and once `sandbox-builtin` 1.0.0 is in the registry.
 - Known interim state until P2b merges (same release):
   - Compose writes no `sandbox:` binding yet, so `sandbox::*` on a Compose-managed engine answers S303;
   - the Compose `UnsupportedEngineWorker` text still lists `iii-sandbox` (`crates/iii-compose/src/error.rs:46-50`);

@@ -2,7 +2,7 @@
 
 - Status: design, ready for planning. Date: 2026-10-20.
 - Code read: iii repo at `342a7704c`, workers repo at `8773952be`. Nothing was built or run; *inference* marks claims not confirmed by running code.
-- Tags: **[User]** decided by the product owner · **[Designer]** designer's call, accepted, builder may refine · **[Builder]** left to the builder · **[Designer, plan triage]** changed by plan triage decisions D1-D13 (T1 in 13). Settlements S1-S7 (designer's calls) and decisions Q1-Q4 (user) are indexed in 13.
+- Tags: **[User]** decided by the product owner · **[Designer]** designer's call, accepted, builder may refine · **[Builder]** left to the builder · **[Designer, plan triage]** changed by plan triage decisions D1-D13 (T1 in 13). Settlements S1-S7 (designer's calls) and decisions Q1-Q5 (user) are indexed in 13.
 - Paths under `engine/`, `crates/`, `scripts/` are in the iii repo (the installer is `engine/install.sh`); paths under a worker folder or `template/` are in the workers repo.
 
 ## 1. Intent and why
@@ -60,7 +60,7 @@ This serves sandbox consumers (computer, sandbox-code-runner, ide, harness, the 
 
 | Component | Location | Owns |
 |---|---|---|
-| Contract crate `iii-sandbox-contract` | iii: `crates/iii-sandbox-contract` | Id table, types, S-codes, `AdapterInfo`, JSON Schemas |
+| Contract crate `iii-sandbox-contract` (internal, not published) | iii: `crates/iii-sandbox-contract` | Id table, types, S-codes, `AdapterInfo`, JSON Schemas |
 | Router, a built-in engine worker named `iii-sandbox` | iii: `engine/src/workers/sandbox/` | Public `sandbox::*` ids in `default`; forwarding; reserved prefix |
 | Engine config | iii: `EngineConfig.sandbox` | Which adapter, in which namespace |
 | Compose | iii: `crates/iii-compose` | Need detection, auto-install, ordering, VM supervision over the bus |
@@ -87,16 +87,16 @@ This serves sandbox consumers (computer, sandbox-code-runner, ide, harness, the 
 ### 5.1 Location and versioning [Designer b]
 - `crates/iii-sandbox-contract` in the iii repo.
   - Dependencies: `serde`, `serde_json`, `schemars` only; `iii-sdk` is a dev-dependency for one test.
-  - The engine uses it by path. A new `release-iii.yml` job publishes it to crates.io via `_rust-cargo.yml`; alpha tags do not publish it [Designer, plan triage]. Adapters pin it from crates.io.
-  - `version.workspace = true`, so the release's existing root-version bump moves it; no `create-tag.yml` or release-script edit. [Designer, plan triage]
-- The crate version moves in lockstep with the engine. The wire version is separate: `CONTRACT_MAJOR = 1`, `CONTRACT_MINOR = 0`. Only a major bump breaks. An adapter package's major version equals the contract major it implements (7.2). [Designer's call S2]
+  - Internal (`publish = false`): the engine router and Compose use it by path. It is never published to crates.io [User Q5]. An adapter in another repo keeps its own copies of the wire types, pinned by the two fixtures below.
+- The wire version: `CONTRACT_MAJOR = 1`, `CONTRACT_MINOR = 0`. Only a major bump breaks. An adapter package's major version equals the contract major it implements (7.2). [Designer's call S2]
 - Contents:
   - `OPERATIONS` (the 16 ephemeral ids: suffix, schemas; no family enum), the six `worker::*` suffix constants and `adapter_function_id()` [Designer, plan triage];
   - typed requests and responses, with its own copies of `FsEntry`, `FsMatch`, `FsSedFileResult` (no `iii-shell-proto` dependency) and a wire-compatible `StreamChannelRef`. Today `fs::read`/`fs::write` embed `iii_sdk::channels::StreamChannelRef` (`fs/read.rs:17, 71`, `fs/write.rs:19, 147`), and 5.4 uses it. The dev-dependency test pins its JSON to iii-sdk's type. `FsReadMeta` is internal to the shell protocol and is not copied;
   - the `exec.workdir` description corrected to "`/` when omitted" (today "image default when omitted", `exec.rs:132`; see 5.8);
   - `SandboxErrorCode` and the message builder;
   - `AdapterInfo`;
-  - `DOCS_BASE` on iii.dev (today a repo path, `sandbox_daemon/errors.rs:18-19`).
+  - `DOCS_BASE` on iii.dev (today a repo path, `sandbox_daemon/errors.rs:18-19`);
+  - two wire fixtures, `sandbox_error_codes.json` and `wire_examples.json` (one example per info and worker-VM type). `sandbox-builtin` copies both and round-trips them through its own types; the Compose e2e (11) runs the real adapter. [User Q5]
 
 ### 5.2 Function ids
 - Adapter ids are `<adapter>::<suffix>`, where the suffix is the public id without `sandbox::` (`sandbox::fs::ls` becomes `sandbox-builtin::fs::ls`). Every adapter registers `<adapter>::adapter::info`.
@@ -383,7 +383,7 @@ Adapter readiness means its worker name is registered, which is not proof that i
 ```
 sandbox-builtin/
   Cargo.toml        # 1.0.0 (major = CONTRACT_MAJOR, S2); [workspace] members=["crates/*"]; iii-sdk/iii-helpers "=0.24.6";
-                    # iii-sandbox-contract (crates.io); msb_krun "=0.1.16"; release profile from iii Cargo.toml:62-66
+                    # msb_krun "=0.1.16"; release profile from iii Cargo.toml:62-66; no iii-sandbox-contract dependency (5.1)
   Cargo.lock        # seeded from the iii lock (keeps msb_krun_devices 0.1.16; 0.1.39 breaks musl)
   .cargo/config.toml  iii.worker.yaml (deploy: binary)  entitlements.plist  README.md
   firmware/         # libkrunfw blobs as-is + README (5.2.1, ABI 5, kernel 6.12.68, rebuild recipe) + SHA256SUMS
@@ -409,7 +409,7 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
 - `vm_boot_program()` (`worker_manager/libkrun.rs:104-135`) always uses `current_exe`. Today a binary not named `iii-worker` would silently boot an older `iii-worker` found on PATH.
 - `CARGO_BIN_EXE_iii-worker` becomes `sandbox-builtin` (4 test files).
 - Remove the firmware and init download fallbacks (`firmware/download.rs:76-82, 229-232`). A missing embed fails closed.
-- Register `sandbox-builtin::*` and `adapter::info`, using the crate's types (including its `StreamChannelRef`) and errors.
+- Register `sandbox-builtin::*` and `adapter::info` with its own types: today's daemon types and errors, plus local copies of the worker-VM types, `AdapterInfo` and S501-S506, pinned by the contract's two fixtures (5.1). [User Q5]
 - Config through the bus: today the daemon reads a file once at startup and fails closed (`config::load_config(&args.config)`, `cli/sandbox_daemon.rs:12-13`). That becomes one `configuration::get` at startup, still failing closed. A change applies on the next adapter restart, which cycles every sandbox and VM container through the lifeline (12).
 - Implement `worker::*` on `start_worker_impl` (`local_worker.rs:1055-1584`):
   - state under `~/.iii/sandbox/workers/<hash(state_key)>/`;
@@ -509,7 +509,7 @@ No step for `iii worker`: clap has rejected it since 0.23 (`engine/src/main.rs:6
 
 | Step | Repo | Lands | Why main stays green |
 |---|---|---|---|
-| 0 | iii | `iii-sandbox-contract` and its publish job, shipped in the next engine patch | No behaviour change |
+| 0 | iii | `iii-sandbox-contract`, internal (`publish = false`) | No behaviour change; step 1 does not depend on it |
 | 1 | workers | `sandbox-builtin` (moved code, `sandbox-builtin::*`, `worker::*`) and the 8.5 pipeline. Adapter tests and `sandbox-isolation-e2e.sh` call `sandbox-builtin::*`; the script goes through `iii trigger`, with the id prefix in a variable, and the hidden `sandbox` CLI is deleted. Released to the registry as 1.0.0 once the required `sandbox-builtin-vm-linux` passes | Nothing consumes it yet; a 0.24.x engine has no router, so nothing can call `sandbox::*` on it |
 | 2 | iii | Router, reserved prefix, `engine.sandbox` with its default binding, migration errors, Compose client, auto-install; remove `KNOWN_EXTERNAL` and the prefetch | Router tests use a fake adapter (`fake::*`); the Compose e2e (11) pulls `sandbox-builtin` 1.0.0 |
 | 3 | iii | Delete the VM crates, firmware, jobs, `engine/install.sh` sections and Makefile targets (`.cargo/config.toml` stays); update docs | Nothing references them after step 2 |
@@ -545,6 +545,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 - `--frozen` refuses an undeclared adapter that a need requires.
 - A registry fixture with no build for the host: a need fails with `UNSUPPORTED_PLATFORM`.
 - The contract's `StreamChannelRef` serializes to the same JSON as iii-sdk's.
+- `sandbox-builtin`'s types round-trip the contract's `sandbox_error_codes.json` and `wire_examples.json`.
 
 **Release check**
 - The 0.25.0 GitHub release has no `iii-worker-*`, `iii-init-*` or `libkrunfw-*` assets.
@@ -568,6 +569,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | The macOS self re-sign churns the Compose cache | Sign at build time (8.6) |
 | Build drift: the iii repo builds this code on floating `stable` (`dtolnay/rust-toolchain@stable` everywhere, no rust-toolchain file; only `build-worker-musl.sh:14` pins 1.98.1), while the workers repo pins 1.97.1; a fresh lock could pull `msb_krun_devices` 0.1.39 | Compile under 1.97.1 first; seed the lock from iii |
 | Each firmware update adds about 33 MB to the 364 MiB pack | Accepted [User]; never use LFS, and the header/SHA check catches pointer files |
+| `sandbox-builtin`'s copies of the wire types drift from the contract (Q5) | Both sides round-trip the same two fixtures; the Compose e2e runs the real adapter (11) |
 | A new contract operation needs an engine release (fixed router id table) | Additive fields do not; plan operations with releases |
 | The ide e2e registers mock `sandbox::fs::*` and runs standalone `iii -c` with `iii-sandbox` (`ide/tests/e2e/config.yaml:18`) | The mocks become `sandbox-mock::*` and the config binds `sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`; the suite stays standalone (step 5) |
 | The router forwards through `call_value_with_metadata_ns`, which starts a fresh invocation with no invocation id, session or timeout (`engine/src/engine/mod.rs:2536-2548`). A consumer's timeout or cancellation does not stop adapter-side work: create, long exec, fs streams (*inference*). An adapter disconnect mid-exec surfaces as `invocation_stopped`, and a retry can repeat side effects | Documented; not an S-code. [Builder: router ceiling and cancellation] |
@@ -591,7 +593,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | 5 | Compose installs the configured adapter and boots VMs through the contract | User | Bundle workers follow the backend |
 | 6-7 | A migration step with clear errors; success = a bundle worker in a VM via the new worker, consumers unchanged | User | Old configs exist; consumers must not break |
 | 8 | The router owns `sandbox::*` in `default` and forwards to `<adapter>::*` in any namespace | Designer (a) | No consumer change, no hijacking, project-namespace adapters |
-| 9 | A contract crate in the iii repo on crates.io, with two families | Designer (b) | The engine cannot depend on the workers repo |
+| 9 | An internal contract crate in the iii repo, with two families, never published (Q5) | Designer (b), User | The engine cannot depend on the workers repo |
 | 10 | `engine.sandbox.adapter`; adapter settings are the adapter's own config, read at startup | Designer (c) | Console-editable; applies on adapter restart |
 | 11 | `iii-worker` and `iii-init` leave the engine release, `engine/install.sh` and `iii update` | Designer (d) | Follows from 1 |
 | 12 | The doc lives at `docs/superpowers/specs/` in the workers repo | Designer (e) | |
@@ -614,4 +616,5 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | Q3 | No musl at launch (gnu and `aarch64-apple-darwin` only); musl later | User | A product choice; the firmware already covers musl |
 | Q4 | Compose drives bundle and local VMs through the `worker::*` family over the bus, not by exec'ing the adapter binary | User | Fits remote adapters such as iii-cloud |
 | P1 | The v1 cuts listed in 2 | Designer, ponytail review | Nothing uses them yet; each can return additively |
-| T1 | Plan triage decisions D1-D13: contract version, license and trims; no alpha publish; where the acceptance e2e runs; builtin stop; image workflow trigger; no musl scripts; P2a/P2b split; router limits; Compose need, removal and host-root rules; P3 and P5 scope | Designer | Listed in the plan index under `docs/superpowers/plans/`; they override the drafts and are marked [Designer, plan triage] in this spec |
+| T1 | Plan triage decisions D1-D13: contract trims (D1, D2 and D4 superseded by Q5); where the acceptance e2e runs; builtin stop; image workflow trigger; no musl scripts; P2a/P2b split; router limits; Compose need, removal and host-root rules; P3 and P5 scope | Designer | Listed in the plan index under `docs/superpowers/plans/`; they override the drafts and are marked [Designer, plan triage] in this spec |
+| Q5 | `iii-sandbox-contract` is not published to crates.io; `sandbox-builtin` keeps its own copies of the wire types, pinned by the contract's two fixtures | User | Removes the publish job, the license change and the 0.24.7 release ordering; publish when a second adapter lives outside the iii repo |

@@ -2,20 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add the `iii-sandbox-contract` crate (function ids, wire types, S-codes, adapter info) to the iii workspace and publish it to crates.io with the next engine patch, with no behaviour change.
+**Goal:** Add the `iii-sandbox-contract` crate (function ids, wire types, S-codes, adapter info) to the iii workspace as an internal crate (`publish = false`), with no behaviour change.
 
-**Architecture:** A library crate at `crates/iii-sandbox-contract` holds copies of today's daemon wire types plus the new worker-VM, info and error types, all re-exported at the crate root. Parity tests pin its JSON to today's daemon wire and to iii-sdk's `StreamChannelRef`. A `release-iii.yml` job publishes it through `_rust-cargo.yml`; the crate inherits the workspace version, which the release already bumps.
+**Architecture:** A library crate at `crates/iii-sandbox-contract` holds copies of today's daemon wire types plus the new worker-VM, info and error types, all re-exported at the crate root. Parity tests pin its JSON to today's daemon wire and to iii-sdk's `StreamChannelRef`, and two JSON fixtures carry the wire to `sandbox-builtin`, which keeps its own copies of the types. It is never published (spec Q5).
 
 **Tech Stack:** Rust 2024, serde 1, serde_json 1, schemars 0.8 (draft-07 via `schema_for!`, as the SDK registers today); GitHub Actions; Mintlify MDX docs.
 
 **Spec:** docs/superpowers/specs/2026-10-20-sandbox-worker-design.md, sections 2, 5.1-5.7, 10 (step 0), 11. Shared names: docs/superpowers/plans/2026-10-20-sandbox-shared-interfaces.md
 
-**Repo and base:** iii repo at `a1d08d8b0`, branch `sandbox/p0-contract`. No prerequisites. Downstream: P1 pins `=0.24.7` from crates.io once the next `iii/v*` patch tag publishes it, and P2a uses the crate by path.
+**Repo and base:** iii repo at `a1d08d8b0`, branch `sandbox/p0-contract`. No prerequisites. Downstream: P2a and P2b use the crate by path; P1 copies its two fixtures.
 
 ## Global Constraints
 
 - Dependencies: `serde`, `serde_json`, `schemars` only; `iii-sdk` is a dev-dependency for one test (5.1).
-- The crate version moves in lockstep with the engine. The wire version is separate: `CONTRACT_MAJOR = 1`, `CONTRACT_MINOR = 0`. Only a major bump breaks (5.1).
+- Internal crate, `publish = false`, never published (5.1, Q5). Wire version `CONTRACT_MAJOR = 1`, `CONTRACT_MINOR = 0`; only a major bump breaks (5.1).
 - Anti-goal: no change to any `sandbox::*` request or response shape, or to the S-code error wire format (2). Shapes are today's daemon shapes, moved verbatim (5.3).
 - `exec.exit_code` stays `Option<i32>`; it is `null` on signal death (5.3).
 - Own copies of `FsEntry`, `FsMatch`, `FsSedFileResult` (no `iii-shell-proto` dependency) and a wire-compatible `StreamChannelRef`; `FsReadMeta` is not copied (5.1).
@@ -31,7 +31,7 @@
 2. A signal-killed exec answers `"exit_code": null` with the key present, and `fs::read`/`run` replies omit `body`/`sandbox_id` when absent, as ide and sandbox-code-runner read them today. Pinned by Task 2 `exec_response_keeps_null_exit_code`, `optional_reply_fields_stay_omitted`.
 3. Older clients that send extra fields (`sandbox::list {"show_all": true}`, unknown keys on any request) keep working; no moved type gains `deny_unknown_fields`. Pinned by Task 2 `requests_ignore_unknown_fields`.
 4. A user who follows the `docs_url` of any code, including the new S301-S506, lands on an anchor that exists. Pinned by Task 1 `every_code_has_a_docs_anchor`.
-5. The adapter (built from crates.io) and Compose (path dependency) exchange worker-VM JSON as separately built binaries: kind-tagged `WorkerSource`, snake_case `State` and `LogStream`, `exit_code: null`. Pinned by Task 3 `worker_source_is_kind_tagged`, `worker_status_and_log_record_json`.
+5. The adapter (its own copies of the types) and Compose (this crate) exchange worker-VM JSON as separately built binaries: kind-tagged `WorkerSource`, snake_case `State` and `LogStream`, `exit_code: null`. Pinned by Task 3 `wire_examples_round_trip` (the fixture P1 copies), `worker_source_is_kind_tagged`, `worker_status_and_log_record_json`.
 
 ---
 
@@ -54,10 +54,11 @@
 ```toml
 [package]
 name = "iii-sandbox-contract"
-version.workspace = true   # the root version; bump_manifests.py:118-122 moves it on every release
+version.workspace = true
 edition.workspace = true
 rust-version = "1.85"
-license = "Apache-2.0"
+license = "Elastic-2.0"   # like the other iii crates
+publish = false           # internal; P1 copies the fixtures (spec Q5)
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -69,7 +70,7 @@ serde_json = { workspace = true }
 schemars = "0.8"
 
 [dev-dependencies]
-iii-sdk = { workspace = true }   # path-only, so cargo publish strips it
+iii-sdk = { workspace = true }
 ```
 
 ```rust
@@ -136,20 +137,20 @@ iii-sdk = { workspace = true }   # path-only, so cargo publish strips it
 ```
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p iii-sandbox-contract --tests` → `error[E0432]: unresolved import` for `StreamChannelRef`, `ExecRequest`, ….
-- [ ] **Step 3: Implement `channel.rs` and `ephemeral.rs`.** `channel.rs` copies `sdk/packages/rust/iii/src/channels.rs:15-28` (derives per registry §2). `ephemeral.rs` copies each struct with its field docs and serde attributes, `#[schemars(example)]` fn, serde default fns (the two `default_mode` fns become `default_dir_mode` "0755" and `default_file_mode` "0644") and `is_valid_env_name` from the sources in the registry §2 table, without their Elastic License headers (D2), then applies the registry §2 "Changes" paragraph: every request and response derives `Debug, Clone, Serialize, Deserialize, JsonSchema`; `into_kv_vec` returns `Err(<today's format! text>)`; the `workdir` doc ends "`/` when omitted"; the docs at `create.rs:22` and `catalog.rs:93` say "the adapter's `custom_images` config". `lib.rs` adds `mod channel; mod ephemeral;` and their `pub use`.
+- [ ] **Step 3: Implement `channel.rs` and `ephemeral.rs`.** `channel.rs` copies `sdk/packages/rust/iii/src/channels.rs:15-28` (derives per registry §2). `ephemeral.rs` copies each struct with its field docs and serde attributes, `#[schemars(example)]` fn, serde default fns (the two `default_mode` fns become `default_dir_mode` "0755" and `default_file_mode` "0644") and `is_valid_env_name` from the sources in the registry §2 table, keeping their Elastic License headers, then applies the registry §2 "Changes" paragraph: every request and response derives `Debug, Clone, Serialize, Deserialize, JsonSchema`; `into_kv_vec` returns `Err(<today's format! text>)`; the `workdir` doc ends "`/` when omitted"; the docs at `create.rs:22` and `catalog.rs:93` say "the adapter's `custom_images` config". `lib.rs` adds `mod channel; mod ephemeral;` and their `pub use`.
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test -p iii-sandbox-contract --tests` → `test result: ok` for `stream_channel_ref` (1 passed) and `wire_parity` (14 passed).
 - [ ] **Step 5: Commit.** `git add crates/iii-sandbox-contract`; `git commit -m "feat(sandbox): copy the daemon's ephemeral wire types into the contract"`
 
 ### Task 3: Adapter info and worker-VM types
 
 **Files:**
-- Create: `crates/iii-sandbox-contract/src/info.rs`, `crates/iii-sandbox-contract/src/worker.rs`
+- Create: `crates/iii-sandbox-contract/src/info.rs`, `crates/iii-sandbox-contract/src/worker.rs`, `crates/iii-sandbox-contract/tests/fixtures/wire_examples.json`
 - Modify: `crates/iii-sandbox-contract/src/lib.rs`
 - Test: `crates/iii-sandbox-contract/tests/wire_parity.rs`
 
 **Interfaces:**
 - Consumes: Task 2 `StreamChannelRef`.
-- Produces (registry §2, verbatim): `CONTRACT_MAJOR`, `CONTRACT_MINOR` (in `info.rs`), `ContractVersion` with `CURRENT`, `AdapterInfoRequest`, `AdapterInfo`, `RouterInfo`; `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerStartRequest`, `WorkerSource`, `Owner`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`.
+- Produces (registry §2, verbatim): `CONTRACT_MAJOR`, `CONTRACT_MINOR` (in `info.rs`), `ContractVersion` with `CURRENT`, `AdapterInfoRequest`, `AdapterInfo`, `RouterInfo`; `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerStartRequest`, `WorkerSource`, `Owner`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`; the fixture `wire_examples.json`, `{"<TypeName>": <example>}` with one entry per type above, which P1 copies.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -165,11 +166,13 @@ iii-sdk = { workspace = true }   # path-only, so cargo publish strips it
     // "exit_code":null,"signal":9; LogRecord { Stderr, "x", 1, 7 } -> {"stream":"stderr","line":"x","ts_ms":1,"cursor":7}
 #[test] fn worker_start_request_round_trips() // a full literal (owner {"kind":"compose","id":"my-proj","container":"my-bundle"},
     // env {"A":"1"}, no "resources" key) survives to_value(from_value::<WorkerStartRequest>(v)) == v
+#[test] fn wire_examples_round_trip() // every fixture entry: to_value(from_value::<T>(example)) == example for its type name;
+    // the fixture has exactly one key per type in info.rs and worker.rs
 ```
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p iii-sandbox-contract --test wire_parity` → `error[E0432]: unresolved import` for `RouterInfo`, `WorkerSource`, ….
 - [ ] **Step 3: Implement `info.rs` and `worker.rs`** with the fields, derives and serde attributes of registry §2 (spec 5.4, 5.5, 5.7); `CURRENT = ContractVersion { major: CONTRACT_MAJOR, minor: CONTRACT_MINOR }`. No `ArchiveRef`, `Effective`, caps, lease or `Resources` types and no `Local.sync` (D3). `lib.rs` adds both modules and their `pub use`.
-- [ ] **Step 4: Run the tests to verify they pass.** `cargo test -p iii-sandbox-contract --test wire_parity` → `test result: ok. 19 passed`.
+- [ ] **Step 4: Run the tests to verify they pass.** `cargo test -p iii-sandbox-contract --test wire_parity` → `test result: ok. 20 passed`.
 - [ ] **Step 5: Commit.** `git add crates/iii-sandbox-contract`; `git commit -m "feat(sandbox): add adapter info and worker-VM types to the contract"`
 
 ### Task 4: Operation table and adapter ids
@@ -180,7 +183,7 @@ iii-sdk = { workspace = true }   # path-only, so cargo publish strips it
 
 **Interfaces:**
 - Consumes: Task 2 types.
-- Produces (registry §2, verbatim): `PUBLIC_PREFIX`, `DEFAULT_ADAPTER`, `ADAPTER_INFO_SUFFIX`, `ROUTER_INFO_ID`, `adapter_function_id(adapter: &str, id: &str) -> String`, `is_valid_adapter_name(name: &str) -> bool`, `Operation` with `public_id(&self) -> String`, `OPERATIONS: &[Operation]` (16 rows), `WORKER_PREPARE`, `WORKER_START`, `WORKER_STATUS`, `WORKER_LOGS`, `WORKER_STOP`, `WORKER_DESTROY`. P2a registers every row; P1 registers the rows and `WORKER_*` under its prefix; P2b calls `WORKER_*`.
+- Produces (registry §2, verbatim): `PUBLIC_PREFIX`, `DEFAULT_ADAPTER`, `ADAPTER_INFO_SUFFIX`, `ROUTER_INFO_ID`, `adapter_function_id(adapter: &str, id: &str) -> String`, `is_valid_adapter_name(name: &str) -> bool`, `Operation` with `public_id(&self) -> String`, `OPERATIONS: &[Operation]` (16 rows), `WORKER_PREPARE`, `WORKER_START`, `WORKER_STATUS`, `WORKER_LOGS`, `WORKER_STOP`, `WORKER_DESTROY`. P2a registers every row; P2b calls `WORKER_*`; P1 registers the same suffixes from its own copies.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -217,37 +220,19 @@ iii-sdk = { workspace = true }   # path-only, so cargo publish strips it
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test -p iii-sandbox-contract --lib` → `test result: ok. 4 passed`.
 - [ ] **Step 5: Commit.** `git add crates/iii-sandbox-contract`; `git commit -m "feat(sandbox): add the contract's operation table and adapter ids"`
 
-### Task 5: crates.io publish job
-
-**Files:**
-- Modify: `.github/workflows/release-iii.yml:574` (new job `sandbox-contract-rust` after `helpers-rust`, :560-573), `:855`, `:885`, `:918`, `:928` (`notify-complete` needs, env, Slack line, status loop)
-
-**Interfaces:**
-- Consumes: Task 1 `Cargo.toml` (`version.workspace = true`).
-- Produces: `iii-sandbox-contract` on crates.io at each `iii/v*` stable or rc tag's version, never on `iii-alpha/v*` tags (D4: `alpha-release.yml` gets no job); the next patch tag publishes `0.24.7`, which P1 pins as `=0.24.7` (registry §1).
-
-- [ ] **Step 1: Write the failing check.** `rg -n 'package_path: crates/iii-sandbox-contract' .github/workflows/release-iii.yml` prints nothing.
-- [ ] **Step 2: Run it to verify it fails.** The command above exits 1.
-- [ ] **Step 3: Add the job** as a copy of `helpers-rust` (`needs: [setup, create-iii-release]`, `uses: ./.github/workflows/_rust-cargo.yml`, `package_path: crates/iii-sandbox-contract`, `slack_label: Sandbox Contract Rust (cargo)`); in `notify-complete` add `sandbox-contract-rust` to `needs`, `SANDBOX_CONTRACT_RESULT: ${{ needs.sandbox-contract-rust.result }}`, the line `LINES="$LINES$(icon "$SANDBOX_CONTRACT_RESULT") Sandbox Contract Rust\n"`, and `"$SANDBOX_CONTRACT_RESULT"` in the `for r` list. No `create-tag.yml` or `bump_manifests.py` edit: the crate inherits the root version, which `bump_manifests.py:118-122` already bumps and `create-tag.yml:323` validates.
-- [ ] **Step 4: Run the checks to verify they pass.**
-  - `rg -n 'package_path: crates/iii-sandbox-contract' .github/workflows/release-iii.yml` prints one line. As `test-scripts.yml` runs on a `release-iii.yml` change: `python3 .github/scripts/validate_release_worker_matrix.py --repo-root .` exits 0 and `(cd .github/scripts && python -m pytest -q)` passes.
-  - `cargo publish -p iii-sandbox-contract --dry-run --locked --allow-dirty` ends with `warning: aborting upload due to dry run` (packaging strips the path-only dev-dependency and finds `description` and `license`).
-  - `bash .github/scripts/validate_rust_release_version.sh Cargo.toml iii/v0.24.6 iii-sandbox-contract` prints `validated iii-sandbox-contract v0.24.6 against iii/v0.24.6` (the root `Cargo.toml:25` version).
-- [ ] **Step 5: Commit.** `git add .github/workflows/release-iii.yml`; `git commit -m "ci(release): publish iii-sandbox-contract to crates.io"`
-
-### Task 6: Whole-plan verification and PR note
+### Task 5: Whole-plan verification and PR note
 
 **Files:** none.
 
 **Interfaces:**
-- Consumes: Tasks 1-5.
+- Consumes: Tasks 1-4.
 - Produces: a branch ready for review.
 
 - [ ] **Step 1: Run the full checks.**
   - `cargo fmt --all -- --check` → no output.
   - `cargo clippy --locked -p iii-sandbox-contract --all-targets -- -D warnings` → `Finished`, no warnings.
-  - `cargo test --locked -p iii-sandbox-contract` → `ok` for the lib (4), `stream_channel_ref` (1), `wire_parity` (19) and doctests.
+  - `cargo test --locked -p iii-sandbox-contract` → `ok` for the lib (4), `stream_channel_ref` (1), `wire_parity` (20) and doctests.
   - `cargo metadata --locked --format-version 1 > /dev/null` → exit 0 (`Cargo.lock` is consistent, as `create-tag.yml` checks).
   - Spec 11 checks owned here: "Error JSON matches `fixtures/sandbox_error_codes.json`" (`wire_parity::fixture_rows_match_error_payload`) and "The contract's `StreamChannelRef` serializes to the same JSON as iii-sdk's" (`stream_channel_ref`), both green above.
   - `git diff --stat a1d08d8b0 -- crates/iii-worker engine` → empty (spec 10, step 0: no behaviour change).
-- [ ] **Step 2: PR-ready note.** Create the MOT ticket first. Title: `feat(sandbox): iii-sandbox-contract crate (MOT-<n>)`. Body: the new crate (spec 5) and its publish job; no runtime change; first crates.io release is the next engine patch (`0.24.7`), which unblocks P1; the license (Apache-2.0) needs the owner's confirmation before the first publish, and `CARGO_REGISTRY_TOKEN` needs crates.io's `publish-new` scope for this crate name. No AI co-author or "Generated with" line.
+- [ ] **Step 2: PR-ready note.** Create the MOT ticket first. Title: `feat(sandbox): iii-sandbox-contract crate (MOT-<n>)`. Body: the new internal crate (spec 5), never published (spec Q5); no runtime change; P1 copies its two fixtures. No AI co-author or "Generated with" line.

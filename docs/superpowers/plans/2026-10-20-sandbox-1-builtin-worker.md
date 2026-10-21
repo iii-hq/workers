@@ -4,25 +4,22 @@
 
 **Goal:** Move the libkrun VM substrate out of iii's `iii-worker` into a new workers-repo worker, `sandbox-builtin`, that serves `sandbox-builtin::*` (the ephemeral family, `adapter::info` and the worker-VM family) over the bus, and release it to the registry as 1.0.0.
 
-**Architecture:** The `iii-worker` crate and its six inner crates are copied whole into `sandbox-builtin/`, the legacy CLI is deleted, and the daemon becomes the root command of one executable that also answers the hidden `__vm-boot`. Request, response and error types come from the published `iii-sandbox-contract`, and the new `worker::*` operations wrap today's `bundle_vm_command`/`local_vm_command`. Nothing consumes the worker in this step: a 0.24.x engine has no router.
+**Architecture:** The `iii-worker` crate and its six inner crates are copied whole into `sandbox-builtin/`, the legacy CLI is deleted, and the daemon becomes the root command of one executable that also answers the hidden `__vm-boot`. It keeps the daemon's own request, response and error types and adds local copies of the contract's worker-VM types, `AdapterInfo` and S501-S506, pinned by the contract's two JSON fixtures (spec Q5); the new `worker::*` operations wrap today's `bundle_vm_command`/`local_vm_command`. Nothing consumes the worker in this step: a 0.24.x engine has no router.
 
-**Tech Stack:** Rust 1.97.1 (edition 2024), iii-sdk/iii-helpers `=0.24.6`, iii-sandbox-contract `=0.24.7`, msb_krun `=0.1.16`, libkrunfw 5.2.1, tokio, clap, serde, sha2; the Python release train (pytest); GitHub Actions; bash, jq and `iii trigger`.
+**Tech Stack:** Rust 1.97.1 (edition 2024), iii-sdk/iii-helpers `=0.24.6`, msb_krun `=0.1.16`, libkrunfw 5.2.1, tokio, clap, serde, sha2; the Python release train (pytest); GitHub Actions; bash, jq and `iii trigger`.
 
 **Spec:** docs/superpowers/specs/2026-10-20-sandbox-worker-design.md, sections 2, 5.4, 5.5, 5.6 (S501-S506), 5.7 (`AdapterInfo` values), 5.8, 7.6, 7.8, 8.1-8.7, 10 (step 1), 11 (error fixture, VM checks), 12. Shared names: docs/superpowers/plans/2026-10-20-sandbox-shared-interfaces.md
 
-**Repo and base:** workers repo, branch `sandbox/p1-builtin` from `origin/main` (`8773952be` plus one harness-only commit; workers citations are at `8773952be`). `iii:` marks iii paths at `a1d08d8b0`. Files that Task 1 copies keep their iii line numbers, so `sandbox-builtin/src/x.rs:N` means `iii:crates/iii-worker/src/x.rs:N`. Prerequisites: P0 merged in iii. Merging needs `iii-sandbox-contract` 0.24.7 on crates.io (Task 13). Until then Task 3 depends on P0's merge commit directly. A `[patch.crates-io]` entry cannot work: that commit's crate is still 0.24.6 (`version.workspace = true`, D1), which `=0.24.7` rejects.
-```toml
-iii-sandbox-contract = { git = "https://github.com/iii-hq/iii", rev = "<P0 merge commit>" }
-```
-Task 13 replaces it with `"=0.24.7"` and re-locks from crates.io.
+**Repo and base:** workers repo, branch `sandbox/p1-builtin` from `origin/main` (`8773952be` plus one harness-only commit; workers citations are at `8773952be`). `iii:` marks iii paths at `a1d08d8b0`. Files that Task 1 copies keep their iii line numbers, so `sandbox-builtin/src/x.rs:N` means `iii:crates/iii-worker/src/x.rs:N`. Prerequisites: none; it does not depend on the iii repo (spec Q5). Tasks 3 and 4 copy P0's two fixtures from `iii:crates/iii-sandbox-contract/tests/fixtures/` (P0's branch until it merges).
 
 ## Global Constraints
 
 - Folder, manifest name, Cargo package and binary are all `sandbox-builtin`. The function prefix is `sandbox-builtin::` (8.1).
-- `Cargo.toml`: `1.0.0 (major = CONTRACT_MAJOR, S2); [workspace] members=["crates/*"]; iii-sdk/iii-helpers "=0.24.6"; iii-sandbox-contract (crates.io); msb_krun "=0.1.16"; release profile from iii Cargo.toml:62-66` (`strip = true`, `lto = true`, `codegen-units = 1`, `opt-level = 2`).
+- `Cargo.toml`: `1.0.0 (major = CONTRACT_MAJOR, S2); [workspace] members=["crates/*"]; iii-sdk/iii-helpers "=0.24.6"; msb_krun "=0.1.16"; release profile from iii Cargo.toml:62-66` (`strip = true`, `lto = true`, `codegen-units = 1`, `opt-level = 2`).
 - `Cargo.lock` is seeded from the iii lock, which keeps msb_krun_devices 0.1.16 (0.1.39 breaks musl).
 - Firmware is the libkrunfw blobs as-is (5.2.1, ABI 5, kernel 6.12.68), committed without LFS. `.gitattributes` gets `sandbox-builtin/firmware/** binary`.
 - Inner crates keep their names under `crates/` with `publish = false`, so the guest ABI is unchanged.
+- No `iii-sandbox-contract` dependency (spec 5.1, Q5): the adapter keeps its own types, named as in registry §2, and round-trips the contract's `sandbox_error_codes.json` and `wire_examples.json`.
 - There is one executable. The root command serves the adapter, and the hidden `__vm-boot` re-executes `current_exe()`.
 - Never change a `sandbox::*` request or response shape, or the S-code wire format. The wire stays `ErrorBody{code: "invocation_failed", message: <SandboxErrorWire JSON>}`.
 - The 5.8 guarantees are unchanged: exec is argv-only; the timeout is clamped and reported as S200; the whole process group is killed on timeout; 1 MiB cap per stream; ENOENT → 127, EACCES → 126; uid 0; the request's `workdir`, else `/`.
@@ -132,76 +129,68 @@ include!("../build/firmware_check.rs");
   - On macOS: `BUILD_TARGET=aarch64-apple-darwin scripts/build-init.sh`: succeeds.
 - [ ] **Step 5: Commit.** `git add sandbox-builtin/build sandbox-builtin/build.rs sandbox-builtin/Cargo.toml sandbox-builtin/firmware sandbox-builtin/scripts/build-init.sh sandbox-builtin/src/cli/firmware/download.rs sandbox-builtin/tests/firmware_check.rs && git commit -m "feat(sandbox-builtin): embed checked firmware and init and fail closed without them"`
 
-### Task 3: S-codes from the contract, with S501-S506
+### Task 3: S501-S506 and the iii.dev docs base
 
 **Files:**
-- Modify: `sandbox-builtin/Cargo.toml` (the git dependency from the header), `src/sandbox_daemon/errors.rs:9-95` (delete the local `DOCS_BASE` and `SandboxErrorCode`), `errors.rs:97-238` (variants, `code()`), `errors.rs:240-279` (`to_payload`), `errors.rs:293-367` (`fix_hint`), `tests/fixtures/sandbox_error_codes.json`, `tests/sandbox_error_codes_integration.rs:51-84`
-- Delete: `tests/sandbox_docs_anchor_stability.rs` (the anchors now live on iii.dev, P0); `tests/sandbox_error_codes_integration.rs:134-205` (`enforce_exhaustive`, `ALL_VARIANTS`, `every_rust_code_has_a_fixture_row`), since the code list is now the contract's and P0's fixture test pins it
+- Modify: `sandbox-builtin/src/sandbox_daemon/errors.rs:18-19` (`DOCS_BASE`), `:22-95` (`SandboxErrorCode` gains S501-S506), `:97-238` (variants, `code()`), `:293-367` (`fix_hint`), `tests/sandbox_error_codes_integration.rs:51-84, 135-186`
+- Replace: `tests/fixtures/sandbox_error_codes.json` with P0's copy (`iii:crates/iii-sandbox-contract/tests/fixtures/sandbox_error_codes.json`)
+- Delete: `tests/sandbox_docs_anchor_stability.rs` (it reads the README that P2a moves to the router; P0's anchor test covers the iii.dev page)
 
 **Interfaces:**
-- Consumes (P0): `iii_sandbox_contract::{SandboxErrorCode, error_payload, DOCS_BASE}`.
-- Produces: `pub use iii_sandbox_contract::SandboxErrorCode` in `errors.rs`. New `SandboxError` variants, with the Display text in quotes:
+- Consumes (P0): the fixture, copied.
+- Produces: `DOCS_BASE = "https://iii.dev/docs/creating-workers/sandboxes#"` (registry §2); `SandboxErrorCode::{S501, S502, S503, S504, S505, S506}` with the `type` and retryable flags of the registry §2 table. New `SandboxError` variants, with the Display text in quotes:
   - `SourceRejected(String)` → S501 "worker source rejected: {0}"
   - `StateBusy(String)` → S502 "VM state {0} is busy: its VM is running"
   - `InstanceMismatch { vm_id: String, expected: u64, found: u64 }` → S503 "VM {vm_id} is on instance {found}, not {expected}"
   - `VmNotFound(String)` → S504 "no VM {0} on this adapter"
   - `Unauthorized` → S505 "worker::* needs the project token this adapter was started with"
   - `PrepareFailed(String)` → S506 "worker prepare failed: {0}"
-- `to_payload()` returns `error_payload(self.code(), &self.to_string(), fix, fix_note)`. The `RunStepFailed` fix context is unchanged.
+- `to_payload()` keeps today's shape (`errors.rs:263-277`); the `RunStepFailed` fix context is unchanged.
 
 - [ ] **Step 1: Write the failing test.**
-  - In `sandbox_error_codes_integration.rs`, `representative()` gains `"S501" => SandboxError::SourceRejected("x".into())` through `"S506" => SandboxError::PrepareFailed("x".into())`, and `fixture_version_is_supported` asserts `f.docs_base == iii_sandbox_contract::DOCS_BASE`.
-  - The fixture's `docs_base` becomes `"https://iii.dev/docs/creating-workers/sandboxes#"`, and it gains rows S501-S506 with the types and retryable flags of the registry §2 table. S301-S304 get no row: the adapter emits none.
+  - Copy P0's fixture over the local one. It has `docs_base` on iii.dev and rows for S301-S304 (router codes, `"rust_variant": null`) and S501-S506.
+  - In `sandbox_error_codes_integration.rs`, `representative()` gains `"S501" => SandboxError::SourceRejected("x".into())` through `"S506" => SandboxError::PrepareFailed("x".into())`, and `ALL_VARIANTS`/`enforce_exhaustive` (:135-186) gain the six codes.
   - Add:
 ```rust
-#[test] fn docs_url_uses_the_contract_docs_base() {
+#[test] fn docs_url_uses_the_iii_dev_docs_base() {
     let p = SandboxError::Unauthorized.to_payload();
-    assert_eq!(p["docs_url"], format!("{}S505", iii_sandbox_contract::DOCS_BASE));
+    assert_eq!(p["docs_url"], "https://iii.dev/docs/creating-workers/sandboxes#S505");
     assert_eq!((p["type"].as_str(), p["retryable"].as_bool()), (Some("validation"), Some(false)));
 }
 ```
-- [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --test sandbox_error_codes_integration`. Expected: `iii_sandbox_contract` is unresolved and there is `no variant named SourceRejected`.
-- [ ] **Step 3: Implement.** Add the header's git dependency and run `cargo build` once to lock it. Then write the variants and payload above in `errors.rs`. Fix-note texts:
+- [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --test sandbox_error_codes_integration`. Expected: `no variant named SourceRejected`, and the fixture rows fail on `docs_url`.
+- [ ] **Step 3: Implement.** Set `DOCS_BASE`, add the six codes and the variants above. Fix-note texts:
   - `ImageNotInCatalog`: "set `image` to a listed value or add it to the adapter's custom_images config"
   - S504: "the adapter restarted; start the VM again"
   - S505: "call worker::* through Compose, which passes the token"
   - S506: "transient: retry after a short delay"
   - S501-S503: none
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --test sandbox_error_codes_integration && cargo test --locked --lib sandbox_daemon::errors`: pass, including `sandbox_error_wire_display_matches_to_payload_json`.
-- [ ] **Step 5: Commit.** `git add -A sandbox-builtin/Cargo.toml sandbox-builtin/Cargo.lock sandbox-builtin/src/sandbox_daemon/errors.rs sandbox-builtin/tests && git commit -m "feat(sandbox-builtin): emit S-codes through iii-sandbox-contract and add S501-S506"`
+- [ ] **Step 5: Commit.** `git add -A sandbox-builtin/src/sandbox_daemon/errors.rs sandbox-builtin/tests && git commit -m "feat(sandbox-builtin): add S501-S506 and point docs_url at iii.dev"`
 
-### Task 4: Ephemeral request and response types from the contract
+### Task 4: Local copies of the contract's info and worker-VM types
 
 **Files:**
-- Create: `sandbox-builtin/src/sandbox_daemon/wire.rs`
-- Modify the type definitions in `src/sandbox_daemon/`: `create.rs:18-65`, `exec.rs:24-157`, `stop.rs:9-20`, `list.rs:11-35`, `catalog.rs:73-104`, `run.rs:47-117`, `fs/{ls,stat,mkdir,rm,chmod,mv,grep,sed,write,read}.rs`
-- Modify the `into_kv_vec` calls (`exec.rs:195`, `create.rs:199`, `adapters.rs:541`), the channel refs (`fs/read.rs:191`, `fs/write.rs:264`) and the shell-proto results mapped into `LsResponse`, `StatResponse`, `GrepResponse` and `SedResponse`
-- Test: `src/sandbox_daemon/wire.rs`
+- Create: `sandbox-builtin/src/wire.rs` (`pub mod wire;` in `src/lib.rs`), `sandbox-builtin/tests/wire_examples.rs`
+- Create: `sandbox-builtin/tests/fixtures/wire_examples.json`, a copy of P0's (`iii:crates/iii-sandbox-contract/tests/fixtures/wire_examples.json`)
 
 **Interfaces:**
-- Consumes (P0): every ephemeral type in registry section 2, plus `FsEntry`, `FsMatch`, `FsSedFileResult` and `StreamChannelRef`; `EnvShape::into_kv_vec(self) -> Result<Vec<String>, String>`.
-- Produces: `pub(crate) fn rewire<T: Serialize, U: DeserializeOwned>(value: T) -> Result<U, SandboxError>`, a serde round-trip whose failure is `SandboxError::FsIo`. It is the one conversion between the shell-proto/iii-sdk types and the contract copies; `From` cannot be used because both sides are foreign types.
+- Consumes (P0): the fixture, copied.
+- Produces, in `sandbox_builtin::wire`, with the names, fields and serde attributes of registry §2 (copies, not a dependency, spec Q5): `CONTRACT_MAJOR`, `CONTRACT_MINOR`, `ContractVersion` (`CURRENT`), `AdapterInfoRequest`, `AdapterInfo`, `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerStartRequest`, `WorkerSource`, `Owner`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`, and the six `WORKER_*` suffix constants. `WorkerLogsRequest.channel` is `iii_sdk::channels::StreamChannelRef`, whose JSON P0 pins to the contract's. `RouterInfo` is not copied: only the router answers it.
 
 - [ ] **Step 1: Write the failing test.**
 ```rust
-#[test] fn rewire_maps_sdk_and_shell_proto_types_to_the_contract() {
-    let sdk = iii_sdk::channels::StreamChannelRef { channel_id: "c".into(), access_key: "k".into(),
-        direction: iii_sdk::channels::ChannelDirection::Write };
-    let c: iii_sandbox_contract::StreamChannelRef = rewire(sdk.clone()).unwrap();
-    assert_eq!(serde_json::to_value(&c).unwrap(), serde_json::to_value(&sdk).unwrap());
-    let back: iii_sdk::channels::StreamChannelRef = rewire(c).unwrap();
-    assert_eq!(back.channel_id, "c");
-    let entry = iii_shell_proto::FsEntry { name: "a".into(), is_dir: false, size: 3, mode: "0644".into(), mtime: 0, is_symlink: false };
-    let e: iii_sandbox_contract::FsEntry = rewire(entry.clone()).unwrap();
-    assert_eq!(serde_json::to_value(&e).unwrap(), serde_json::to_value(&entry).unwrap());
+// tests/wire_examples.rs
+#[test] fn wire_examples_round_trip() {
+    // fixture {"<TypeName>": <example>}: for each type in Produces,
+    // assert_eq!(to_value(from_value::<T>(example.clone()).unwrap()).unwrap(), example, "{name}");
+    // every fixture key except "RouterInfo" is checked
 }
 ```
-- [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --lib rewire`. Expected: `cannot find function rewire`.
-- [ ] **Step 3: Implement.**
-  - Delete each local struct and put `pub use iii_sandbox_contract::{…}` in the same module, so handler code keeps its paths.
-  - Every `into_kv_vec()?` becomes `.map_err(SandboxError::InvalidRequest)?`, and the test at `exec.rs:508` reads the `String`.
-- [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --workspace`. Every moved handler test passes unchanged, including `sandbox_fs_integration`, `sandbox_fs_decode_error_wire` and `sandbox_lifecycle_integration`. They are the wire-parity check.
-- [ ] **Step 5: Commit.** `git add sandbox-builtin/src/sandbox_daemon && git commit -m "refactor(sandbox-builtin): take the sandbox request and response types from the contract"`
+- [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --test wire_examples`. Expected: `unresolved import sandbox_builtin::wire`.
+- [ ] **Step 3: Implement `src/wire.rs`** per registry §2, with the derives the daemon's request and response types use today.
+- [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --workspace`: pass.
+- [ ] **Step 5: Commit.** `git add sandbox-builtin/src/wire.rs sandbox-builtin/src/lib.rs sandbox-builtin/tests/wire_examples.rs sandbox-builtin/tests/fixtures/wire_examples.json && git commit -m "feat(sandbox-builtin): copy the contract's info and worker-VM types, pinned by its wire fixture"`
 
 ### Task 5: Adapter entry point, `sandbox-builtin::*` ids, `adapter::info` and config over the bus
 
@@ -212,9 +201,9 @@ include!("../build/firmware_check.rs");
 - Test: `src/sandbox_daemon/mod.rs`, `src/sandbox_daemon/config.rs`, `tests/sandbox_daemon_exit_integration.rs`
 
 **Interfaces:**
-- Consumes (P0): `OPERATIONS`, `adapter_function_id`, `ADAPTER_INFO_SUFFIX`, `AdapterInfo`, `AdapterInfoRequest`, `ContractVersion::CURRENT`, `CONTRACT_MAJOR`. Also `iii_config_client::fetch(&IIIClient, &str) -> Result<Option<Value>, String>` (`crates/config-client/src/lib.rs:93`) and `iii_sdk::register_worker_from_env`.
+- Consumes (Task 4): `AdapterInfo`, `AdapterInfoRequest`, `ContractVersion::CURRENT`, `CONTRACT_MAJOR`. Also `iii_config_client::fetch(&IIIClient, &str) -> Result<Option<Value>, String>` (`crates/config-client/src/lib.rs:93`) and `iii_sdk::register_worker_from_env`.
 - Produces:
-  - `pub fn register_all(iii: &IIIClient, config: Arc<SandboxConfig>, registry: Arc<SandboxRegistry>) -> Vec<FunctionRef>`. Each `register_*` returns its `FunctionRef`. The ids are the literal `"sandbox-builtin::<suffix>"`, and each description is its `OPERATIONS` row's, which already names "the adapter's `custom_images` config" (P0).
+  - `pub fn register_all(iii: &IIIClient, config: Arc<SandboxConfig>, registry: Arc<SandboxRegistry>) -> Vec<FunctionRef>`. Each `register_*` returns its `FunctionRef`. The ids are the literal `"sandbox-builtin::<suffix>"`, and each description is today's, with `engine.workers.iii-sandbox.custom_images` replaced by "the adapter's `custom_images` config", as P0 does.
   - `pub fn adapter_info() -> AdapterInfo` = `{ adapter: env!("CARGO_PKG_NAME"), adapter_version: env!("CARGO_PKG_VERSION"), contract: ContractVersion::CURRENT }`, registered as `sandbox-builtin::adapter::info`.
   - `pub fn parse_config(raw: Option<serde_json::Value>) -> anyhow::Result<SandboxConfig>`. `None` gives `SandboxConfig::default()`; it keeps `reject_legacy_wrapped_shape` and `validate_custom_images`.
   - `pub async fn serve() -> anyhow::Result<()>`:
@@ -230,8 +219,9 @@ include!("../build/firmware_check.rs");
     let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
     let ids: BTreeSet<String> = register_all(&iii, Arc::new(SandboxConfig::default()), Arc::new(SandboxRegistry::default()))
         .into_iter().map(|r| r.id).collect();
-    let mut want: BTreeSet<String> = OPERATIONS.iter().map(|op| adapter_function_id("sandbox-builtin", op.suffix)).collect();
-    want.insert(adapter_function_id("sandbox-builtin", ADAPTER_INFO_SUFFIX));
+    let want: BTreeSet<String> = ["create", "exec", "stop", "list", "catalog::list", "run", "fs::ls", "fs::stat", "fs::mkdir",
+        "fs::rm", "fs::chmod", "fs::mv", "fs::grep", "fs::sed", "fs::write", "fs::read", "adapter::info"]
+        .iter().map(|s| format!("sandbox-builtin::{s}")).collect();
     assert_eq!(ids, want);
 }
 #[test] fn adapter_info_names_the_package_and_the_contract() {
@@ -261,7 +251,7 @@ include!("../build/firmware_check.rs");
 - Test: `src/worker_vm.rs`
 
 **Interfaces:**
-- Consumes (P0): `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerSource::{Bundle{package, host_path}, Local{host_path, run_override}}`, `WORKER_PREPARE`.
+- Consumes (Task 4): `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerSource::{Bundle{package, host_path}, Local{host_path, run_override}}`, `WORKER_PREPARE`.
 - Produces:
 ```rust
 pub struct WorkerVms { /* base, token, roots, live map (Task 7) */ }
@@ -286,7 +276,7 @@ pub async fn bundle_vm_command(package: &str, worker_name: &str, install_dir: &P
   - `host_roots_accept_a_path_under_a_symlinked_root`: root `t/link` → `t/real`. Both `t/real/w` and `t/link/w` are admitted, and on macOS so is a root under `/tmp`.
   - `a_bundle_naming_another_package_is_s501`: manifest `name: other`, `package: "probe"` gives S501.
   - `vm_id_is_stable_and_32_hex`: `vm_id("a") == vm_id("a")`, `len() == 32`, and `vm_id("a") != vm_id("b")`.
-  - Extend `registered_ids_…` with `adapter_function_id("sandbox-builtin", WORKER_PREPARE)`.
+  - Extend `registered_ids_…` with `"sandbox-builtin::worker::prepare"`.
 - [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --lib worker_vm`. Expected: `unresolved module worker_vm`.
 - [ ] **Step 3: Implement** the signatures and decisions above. `register_all` builds `WorkerVms::from_env()`.
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --workspace`: pass, including `bundle_vm_command` and `local_vm_command`.
@@ -300,7 +290,7 @@ pub async fn bundle_vm_command(package: &str, worker_name: &str, install_dir: &P
 - Test: `src/worker_vm.rs`, `tests/worker_vm_e2e.rs`
 
 **Interfaces:**
-- Consumes (P0): `WorkerStartRequest`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`, `Owner`, `WORKER_{START, STATUS, STOP, DESTROY}`. From Task 1: `daemon_exit::attach_lifeline(&mut tokio::process::Command) -> io::Result<Lifeline>`.
+- Consumes (Task 4): `WorkerStartRequest`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`, `Owner`, `WORKER_{START, STATUS, STOP, DESTROY}`. From Task 1: `daemon_exit::attach_lifeline(&mut tokio::process::Command) -> io::Result<Lifeline>`.
 - Produces:
 ```rust
 impl WorkerVms {
@@ -351,7 +341,7 @@ impl WorkerVms {
 - Test: `src/worker_vm.rs`
 
 **Interfaces:**
-- Consumes (P0): `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `StreamChannelRef`, `WORKER_LOGS`. From Task 4: `rewire` (contract ref → `iii_sdk::channels::StreamChannelRef`).
+- Consumes (Task 4): `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WORKER_LOGS`; `req.channel` is already `iii_sdk::channels::StreamChannelRef`.
 - Produces:
 ```rust
 pub(crate) fn read_records(path: &Path, from: u64) -> std::io::Result<(Vec<LogRecord>, u64)>;
@@ -364,7 +354,7 @@ impl WorkerVms {
 - Decisions:
   - `LogRecord.cursor` is the byte offset just past that record, the resume point; `cursor: None` reads from 0.
   - With `follow`, the pump polls every 200 ms until that instance has exited and the file is drained.
-  - `logs` checks the token, gives S504 for an unknown `vm_id`, spawns the pump with a `ChannelWriter::new(iii.address(), &sdk_ref)` sink (one `send_message(<LogRecord JSON>)` per record), and returns. The pump closes the writer at the end. A sink error ends the pump.
+  - `logs` checks the token, gives S504 for an unknown `vm_id`, spawns the pump with a `ChannelWriter::new(iii.address(), &req.channel)` sink (one `send_message(<LogRecord JSON>)` per record), and returns. The pump closes the writer at the end. A sink error ends the pump.
 
 - [ ] **Step 1: Write the failing test.**
   - `records_resume_from_a_cursor`: a file of three JSON lines.
@@ -372,7 +362,7 @@ impl WorkerVms {
     - `read_records(p, recs[0].cursor)` gives the last 2 records.
   - `follow_streams_until_the_instance_ends`: launch `sh -c 'echo a; sleep 0.3; echo b >&2'`, then `pump_logs(follow: true)` into a `Vec`. The lines are `["a", "b"]`, the streams are `[Stdout, Stderr]`, and it returns after exit.
   - `follow_on_an_exited_instance_drains_and_returns`: launch `sh -c 'echo a'`, wait for `Exited`. `pump_logs(follow: true)` returns within 2 s with `["a"]`.
-  - `registered_ids_…` now expects exactly the 16 `OPERATIONS` rows, `adapter::info` and the six `WORKER_*` ids.
+  - `registered_ids_…` now expects exactly the 16 ephemeral suffixes, `adapter::info` and the six `WORKER_*` ids.
 - [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --lib -- read_records pump_logs`. Expected: `cannot find function read_records`.
 - [ ] **Step 3: Implement** the signatures and decisions above.
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --workspace`: pass.
@@ -541,11 +531,9 @@ def test_sandbox_builtin_build_extras_are_validated_and_reach_the_schema():
 
 ### Task 13: Whole-plan verification and PR-ready note
 
-**Files:**
-- Modify: `sandbox-builtin/Cargo.toml` (the git dependency becomes `iii-sandbox-contract = "=0.24.7"`), `sandbox-builtin/Cargo.lock`
+**Files:** none changed.
 
-- [ ] **Step 1: Re-lock from crates.io** once `iii-sandbox-contract` 0.24.7 is published. Replace the git dependency, then run `cd sandbox-builtin && cargo update -p iii-sandbox-contract`. Then `cargo tree -i iii-sandbox-contract` shows `iii-sandbox-contract v0.24.7` without a `(https://github.com/iii-hq/iii…)` source, and `rg -n 'github.com/iii-hq/iii' Cargo.toml` prints nothing.
-- [ ] **Step 2: Run the full checks.** In `sandbox-builtin/`:
+- [ ] **Step 1: Run the full checks.** In `sandbox-builtin/`:
   - `cargo fmt --all -- --check`
   - `cargo clippy --locked --workspace --all-targets --features embed-init,embed-libkrunfw -- -D warnings`
   - `cargo test --locked --workspace --features embed-init,embed-libkrunfw`
@@ -556,20 +544,19 @@ def test_sandbox_builtin_build_extras_are_validated_and_reach_the_schema():
   - `actionlint -color`
 
   All pass with no warnings.
-- [ ] **Step 3: Run the spec 11 checks this slice owns.**
+- [ ] **Step 2: Run the spec 11 checks this slice owns.**
   - The error JSON matches `tests/fixtures/sandbox_error_codes.json` (`--test sandbox_error_codes_integration`).
-  - The registered ids are exactly the 16 `OPERATIONS` rows, `adapter::info` and the six `WORKER_*` ids under `sandbox-builtin::` (`registered_ids_…`).
+  - The local wire types round-trip `tests/fixtures/wire_examples.json` (`--test wire_examples`), and both fixtures equal P0's merged copies (`diff` against `iii:crates/iii-sandbox-contract/tests/fixtures/`).
+  - The registered ids are exactly the 16 ephemeral suffixes, `adapter::info` and the six `WORKER_*` ids under `sandbox-builtin::` (`registered_ids_…`).
   - On a Linux KVM host:
     - `cargo test --locked --features embed-init,embed-libkrunfw,integration-vm` passes, including `worker_vm_e2e`.
     - The isolation e2e ends with `0 failure(s)`.
   - On Apple Silicon, after `cargo build --release` and the train's `codesign --sign - --entitlements entitlements.plist --force target/release/sandbox-builtin`, `codesign -d --entitlements - target/release/sandbox-builtin` lists `com.apple.security.hypervisor`.
-- [ ] **Step 4: Commit.** `git add sandbox-builtin/Cargo.toml sandbox-builtin/Cargo.lock && git commit -m "chore(sandbox-builtin): pin iii-sandbox-contract 0.24.7 from crates.io"`
-- [ ] **Step 5: Write the PR-ready note** in the PR body. Do not push or open the PR from this plan.
+- [ ] **Step 3: Write the PR-ready note** in the PR body. Do not push or open the PR from this plan.
   - The PR title carries the MOT ticket.
-  - Prerequisites: P0 merged and 0.24.7 on crates.io.
+  - Prerequisites: none (spec Q5). Its two fixtures are copies of P0's; re-copy them if P0 changes them before merging.
   - Operational, outside the diff:
     - Mark `sandbox-builtin-vm-linux` as a required check (branch protection, D5).
-    - The owner confirms the `Elastic-2.0` license before the first publish (D2).
     - Add `DOCKERHUB_USERNAME` and `DOCKERHUB_PASSWORD` to the workers repo. Do not dispatch `sandbox-builtin-images.yml` before P3 deletes `iii:.github/workflows/docker-worker-images.yml` (D7).
     - After merge, Release Control publishes 1.0.0. P3 cannot merge before it is in the registry.
   - Nothing consumes `sandbox-builtin::*` until engine 0.25.0.

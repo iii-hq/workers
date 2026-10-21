@@ -6,22 +6,21 @@ Reference for the six plans built from `docs/superpowers/specs/2026-10-20-sandbo
 
 | Item | Value |
 |---|---|
-| Contract crate | `iii-sandbox-contract`, lib `iii_sandbox_contract` (spec). `version.workspace = true`: the release's existing bump of the root version (`Cargo.toml:25`, 0.24.6) moves it, with no `create-tag.yml` or release-script edit (D1). First crates.io release **0.24.7**, from the next patch tag (the first stable `iii/v*` tag after P0 merges; if another patch ships first, P1 pins that version instead); alpha tags never publish it (D4). Edition 2024, `rust-version = "1.85"`, `license = "Apache-2.0"` like `sdk/packages/rust/iii/Cargo.toml:6`, since third-party adapters implement it (D2). Deps `serde 1`, `serde_json 1`, `schemars 0.8` (spec; 0.8 as `engine/Cargo.toml:110`); dev-dep `iii-sdk = { workspace = true }` (spec) |
+| Contract crate | `iii-sandbox-contract`, lib `iii_sandbox_contract` (spec). Internal: `publish = false`, used by path by the engine (P2a) and Compose (P2b), never published (spec Q5; supersedes D1, D2, D4). `version.workspace = true`, `license = "Elastic-2.0"` like the other iii crates, edition 2024, `rust-version = "1.85"`. Deps `serde 1`, `serde_json 1`, `schemars 0.8` (spec; 0.8 as `engine/Cargo.toml:110`); dev-dep `iii-sdk = { workspace = true }` (spec) |
 | Engine, Compose | `iii` 0.25.0 is cut at rollout step 4 by `create-tag.yml`; no plan edits engine versions. `iii-compose` stays 0.1.0, path dep (registry) |
-| `sandbox-builtin` | 1.0.0 (spec S2); `license = "Elastic-2.0"`, the moved code's license (D2; the owner confirms both licenses before the first publish, plan index); `iii-sdk = "=0.24.6"`, `iii-helpers = "=0.24.6"` (spec 8.1), `iii-sandbox-contract = "=0.24.7"` (registry) |
-| Unpublished crate (P1) | develop with a direct dependency `iii-sandbox-contract = { git = "https://github.com/iii-hq/iii", rev = "<P0 merge commit>" }` in `sandbox-builtin/Cargo.toml` (a `[patch.crates-io]` entry cannot satisfy `=0.24.7`: that commit's crate is 0.24.6, D1); P1 Task 13 replaces it with `"=0.24.7"` and re-locks from crates.io before merge (registry) |
+| `sandbox-builtin` | 1.0.0 (spec S2); `license = "Elastic-2.0"`, the moved code's license; `iii-sdk = "=0.24.6"`, `iii-helpers = "=0.24.6"` (spec 8.1); no `iii-sandbox-contract` dependency: its own copies of the §2 types (spec Q5) |
 | Commits, PRs | conventional (`feat(sandbox): …`), MOT ticket in the PR title, never an AI co-author or "Generated with" line |
 
 | Plan | Repo | Branch (registry) | Base |
 |---|---|---|---|
 | P0 | iii | `sandbox/p0-contract` | `a1d08d8b0` |
-| P1 | workers | `sandbox/p1-builtin` | `origin/main` (`8773952be` + one harness-only commit); merges after 0.24.7 is on crates.io |
-| P2a / P2b / P3 | iii | `sandbox/p2a-router` / `sandbox/p2b-compose` / `sandbox/p3-engine-cleanup` | main after P0 / P2a / P2b merge. P2a merges only after the `iii/v0.24.7` tag: stable tags come from main (`create-tag.yml:89-92`), so a later patch would ship the router with no adapter in the registry. No stable tag from main between P2a's merge and 0.25.0. P3 cannot merge before `sandbox-builtin` 1.0.0 is in the registry |
+| P1 | workers | `sandbox/p1-builtin` | `origin/main` (`8773952be` + one harness-only commit); independent of the iii repo (Q5) |
+| P2a / P2b / P3 | iii | `sandbox/p2a-router` / `sandbox/p2b-compose` / `sandbox/p3-engine-cleanup` | main after P0 / P2a / P2b merge. No stable tag from main between P2a's merge and 0.25.0: stable tags come from main (`create-tag.yml:89-92`), and a patch would ship the router before Compose binds it. P3 cannot merge before `sandbox-builtin` 1.0.0 is in the registry |
 | P5 | workers | `sandbox/p5-consumers` | main after P1 merges and engine 0.25.0 ships |
 
-## 2. Contract crate API (P0 produces; P1, P2a, P2b, P5 consume)
+## 2. Contract crate API (P0 produces; P2a and P2b consume; P1 keeps copies with these names, Q5)
 
-Files (registry): `crates/iii-sandbox-contract/src/{lib.rs, operations.rs, channel.rs, errors.rs, info.rs, ephemeral.rs, worker.rs}`; tests `tests/{wire_parity.rs, stream_channel_ref.rs, fixtures/sandbox_error_codes.json}`; workspace member in `Cargo.toml:4-22`. `lib.rs` re-exports every item at the root: consumers write `iii_sandbox_contract::ExecRequest`.
+Files (registry): `crates/iii-sandbox-contract/src/{lib.rs, operations.rs, channel.rs, errors.rs, info.rs, ephemeral.rs, worker.rs}`; tests `tests/{wire_parity.rs, stream_channel_ref.rs, fixtures/sandbox_error_codes.json, fixtures/wire_examples.json}` (`wire_examples.json`: `{"<TypeName>": <example>}` for every info and worker-VM type; P1 copies both fixtures and round-trips them, Q5); workspace member in `Cargo.toml:4-22`. `lib.rs` re-exports every item at the root: consumers write `iii_sandbox_contract::ExecRequest`.
 
 ```rust
 pub const CONTRACT_MAJOR: u32 = 1;                           // (spec)
@@ -250,10 +249,10 @@ No `compose::migrate` request, response or CLI form (spec 7.9).
 
 | Name | Producer | Consumers |
 |---|---|---|
-| `CONTRACT_MAJOR/MINOR`, `ContractVersion`, `PUBLIC_PREFIX`, `DEFAULT_ADAPTER`, `adapter_function_id`, `is_valid_adapter_name`, `OPERATIONS`, `WORKER_*` | P0 | P1, P2a, P2b |
-| Ephemeral types, `StreamChannelRef`; worker-VM types, `LogRecord` | P0 | P1, P2a (schemas); P1, P2b |
-| `SandboxErrorCode`, `error_payload`, `code_of`, `DOCS_BASE`, fixture, docs anchors | P0 | P1, P2a, P2b; P3 (keeps the anchors) |
-| `AdapterInfo`, `AdapterInfoRequest`, `ADAPTER_INFO_SUFFIX` | P0 | P1, P2a, P2b, P5 (mock) |
+| `CONTRACT_MAJOR/MINOR`, `ContractVersion`, `PUBLIC_PREFIX`, `DEFAULT_ADAPTER`, `adapter_function_id`, `is_valid_adapter_name`, `OPERATIONS`, `WORKER_*` | P0 | P2a, P2b; P1 copies |
+| Ephemeral types, `StreamChannelRef`; worker-VM types, `LogRecord` | P0 | P2a (schemas), P2b; P1 copies the worker-VM types |
+| `SandboxErrorCode`, `error_payload`, `code_of`, `DOCS_BASE`, both fixtures, docs anchors | P0 | P2a, P2b; P3 (keeps the anchors); P1 copies the codes and both fixtures |
+| `AdapterInfo`, `AdapterInfoRequest`, `ADAPTER_INFO_SUFFIX` | P0 | P2a, P2b; P1 copies; P5's mock writes the same JSON |
 | `RouterInfo`, `ROUTER_INFO_ID` | P0 | P2a, P5 (code-runner probe checks `info != null`; harness) |
 | `SandboxRouter`, `SandboxRouterConfig`, `EngineConfig.sandbox`, `normalize_worker_entries`, `ENGINE_RESERVED_PREFIXES`, `INVALID_SANDBOX_CONFIG`, dropping `iii-sandbox` from `CONFIGURABLE_ENGINE_WORKERS` | P2a | P2b, P3 (docs), P5 |
 | `sandbox::{needs, Need, wire, state_key, RemoteVm}`, `Child`, `Outcome::Unknown`, `VmRecord`, `ChildRecord.vm`, `sandbox_token`, `SandboxSpec`, Compose errors, adapter env, the `compose::add iii-sandbox` reply, `compose-sandbox-e2e-linux` | P2b | P3 (keeps the job; docs), P5 (behaviour) |
