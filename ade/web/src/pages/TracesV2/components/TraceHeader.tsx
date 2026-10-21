@@ -1,17 +1,17 @@
-import {
-  AlertCircle,
-  ChevronRight,
-  Clock,
-  Copy,
-  Layers,
-  Loader2,
-  LocateFixed,
-  X,
-} from 'lucide-react'
-import { Fragment, useMemo } from 'react'
-import { Button } from '@/components/ui/Button'
-import { Eyebrow } from '@/components/ui/Eyebrow'
+/**
+ * The trace card's top: who ran it and what it was, then the numbers that
+ * describe the run at a glance — a stats strip of label-over-value cells,
+ * the way an observability card reads before its waterfall.
+ *
+ * Everything shown is derived from the spans already loaded: duration,
+ * span and worker counts, the longest span, how many are still running
+ * (the Live badge pulses while any are) and how many failed.
+ */
+
+import { Check, Copy, LocateFixed, Sparkles, X } from 'lucide-react'
+import { useMemo } from 'react'
 import { cn } from '@/lib/utils'
+import { formatSpanLabel } from '../lib/spanLabel'
 import type { TraceChatLink } from '../lib/traceChatLink'
 import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
@@ -31,15 +31,46 @@ interface TraceHeaderProps {
   /** Open the linked conversation AND land on this trace's turn. */
   onOpenMessage?: (link: TraceChatLink) => void
   /** Non-null while the paged seed still sweeps — the painted detail is
-   *  incomplete and the span chip counts up instead of stating a total. */
+   *  incomplete and the span count counts up instead of stating a total. */
   loadingSpans?: { loaded: number; total: number } | null
+}
+
+const GHOST_ACTION =
+  'inline-flex size-8 shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400'
+
+interface Stat {
+  label: string
+  value: string
+  /** `alert` paints the value red when it is non-zero. */
+  tone?: 'alert'
+  title?: string
+}
+
+function StatCell({ label, value, tone, title }: Stat) {
+  const hot = tone === 'alert' && value !== '0'
+  return (
+    <div className="flex min-w-0 flex-col gap-1 px-4 py-3" title={title}>
+      <span className="truncate text-xs font-medium text-neutral-500 dark:text-neutral-400">
+        {label}
+      </span>
+      <span
+        className={cn(
+          'truncate text-lg font-semibold leading-6 tracking-tight tabular-nums',
+          hot
+            ? 'text-red-600 dark:text-red-400'
+            : 'text-neutral-900 dark:text-neutral-50',
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  )
 }
 
 export function TraceHeader({
   data,
   traceId,
   onClose,
-  onSpanClick,
   chatLink,
   onOpenMessage,
   loadingSpans,
@@ -47,217 +78,127 @@ export function TraceHeader({
   const { copiedKey, copy } = useCopyToClipboard()
   const copied = copiedKey === 'traceId'
   const rootSpan = data.spans.find((s) => s.depth === 0)
+  const rootWorker = rootSpan ? getWorkerName(rootSpan) : 'trace'
+  const title = rootSpan ? formatSpanLabel(rootSpan) : 'Trace'
 
-  const criticalPath = useMemo(() => {
-    if (!data.spans.length) return []
-
-    const childrenMap = new Map<string, VisualizationSpan[]>()
-    const rootSpans: VisualizationSpan[] = []
-
+  const stats = useMemo(() => {
+    let errors = 0
+    let running = 0
+    let longest: VisualizationSpan | null = null
+    const workers = new Set<string>()
     for (const span of data.spans) {
-      if (!span.parent_span_id) {
-        rootSpans.push(span)
-      } else {
-        const children = childrenMap.get(span.parent_span_id) || []
-        children.push(span)
-        childrenMap.set(span.parent_span_id, children)
-      }
+      if (span.status === 'error') errors++
+      if (span.pending) running++
+      workers.add(getWorkerName(span))
+      if (!longest || span.duration_ms > longest.duration_ms) longest = span
     }
-
-    const path: VisualizationSpan[] = []
-    let current = rootSpans.sort((a, b) => b.duration_ms - a.duration_ms)[0]
-
-    while (current) {
-      path.push(current)
-      const children = childrenMap.get(current.span_id) || []
-      current = children.sort((a, b) => b.duration_ms - a.duration_ms)[0]
-    }
-
-    return path
+    return { errors, running, longest, workers: workers.size }
   }, [data.spans])
 
-  const { errorCount, workerList, workerDurations } = useMemo(() => {
-    let errorCount = 0
-    const workers = new Set<string>()
-    const durationMap = new Map<string, number>()
+  const live = stats.running > 0 || loadingSpans !== null
+  const spanCount = loadingSpans
+    ? `${Math.min(loadingSpans.loaded, loadingSpans.total)}/${loadingSpans.total}`
+    : String(data.span_count)
 
-    for (const span of data.spans) {
-      if (span.status === 'error') errorCount++
-      const worker = getWorkerName(span)
-      if (span.service_name) workers.add(span.service_name)
-      durationMap.set(worker, (durationMap.get(worker) || 0) + span.duration_ms)
-    }
-
-    const workerList = Array.from(workers).filter((s): s is string =>
-      Boolean(s),
-    )
-    return { errorCount, workerList, workerDurations: durationMap }
-  }, [data])
-
-  const hasErrors = errorCount > 0
-  const workerCount = Math.max(workerList.length, 1)
-  const rootWorker = rootSpan ? getWorkerName(rootSpan) : 'trace'
+  const cells: Stat[] = [
+    { label: 'Duration', value: formatDuration(data.total_duration_ms) },
+    { label: 'Spans', value: spanCount },
+    { label: 'Workers', value: String(stats.workers) },
+    {
+      label: 'Longest span',
+      value: stats.longest ? formatDuration(stats.longest.duration_ms) : '—',
+      title: stats.longest ? formatSpanLabel(stats.longest) : undefined,
+    },
+    { label: 'Running', value: String(stats.running) },
+    { label: 'Errors', value: String(stats.errors), tone: 'alert' },
+  ]
 
   return (
-    <div className="border-b border-rule-2 flex-shrink-0">
-      <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
-        <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium flex-shrink-0 rounded-xs bg-surface text-ink-faint">
-          {rootWorker}
+    <div className="@container shrink-0 font-inter">
+      {/* Title row: the worker's colour as the mark, the root span as the
+          name, the trace id to copy, and the run's state on the right. */}
+      <div className="flex h-12 items-center gap-2.5 px-4">
+        <span
+          aria-hidden
+          className="flex size-6 shrink-0 items-center justify-center rounded-md"
+          style={{
+            backgroundColor: `color-mix(in oklab, ${getWorkerColor(rootWorker)} 18%, transparent)`,
+            color: getWorkerColor(rootWorker),
+          }}
+        >
+          <Sparkles className="size-4" />
+        </span>
+        <span className="shrink-0 text-sm font-semibold text-neutral-900 dark:text-neutral-50">
+          Trace
         </span>
         <h2
-          className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0"
-          title={rootSpan?.name || 'Trace details'}
+          className="min-w-0 flex-1 truncate text-sm text-neutral-500 dark:text-neutral-400"
+          title={rootSpan?.name ?? 'Trace details'}
         >
-          {rootSpan?.name || 'Trace details'}
+          {title}
         </h2>
-        <Button
-          variant="icon"
-          size="icon"
-          onClick={onClose}
-          aria-label="close trace detail"
-          title="close (esc)"
-        >
-          <X className="size-4" />
-        </Button>
-      </div>
-
-      <div className="flex items-center gap-2 px-3 pb-2.5 flex-wrap">
         <button
           type="button"
           onClick={() => copy('traceId', traceId)}
-          className="flex items-center gap-1 font-mono text-[11px] text-ink-faint hover:text-ink transition-colors group"
+          title="copy trace id"
+          className="group hidden shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 font-mono text-[11px] text-neutral-400 transition-colors hover:bg-neutral-200/70 hover:text-neutral-900 @lg:flex dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
         >
           <span className="tabular-nums">{traceId.substring(0, 12)}</span>
           {copied ? (
-            <Eyebrow className="text-accent">copied</Eyebrow>
+            <Check className="size-4 text-emerald-500" aria-hidden />
           ) : (
-            <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity" />
+            <Copy
+              className="size-4 opacity-0 transition-opacity group-hover:opacity-100"
+              aria-hidden
+            />
           )}
         </button>
-
-        <span aria-hidden className="w-px h-3 bg-edge" />
-
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-          <Clock className="size-4 text-accent" />
-          <span className="text-[11px] font-mono font-semibold text-accent tabular-nums">
-            {formatDuration(data.total_duration_ms)}
-          </span>
-        </span>
-
-        {loadingSpans ? (
+        <span
+          role="status"
+          className={cn(
+            'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium',
+            live
+              ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
+              : 'bg-neutral-200/70 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300',
+          )}
+        >
           <span
-            role="status"
-            title="spans still loading — the waterfall is filling in"
-            className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface"
-          >
-            <Loader2
-              aria-hidden
-              className="size-4 animate-spin text-ink-faint motion-reduce:animate-none"
-            />
-            <span className="text-[11px] font-mono text-ink-faint tabular-nums">
-              {Math.min(loadingSpans.loaded, loadingSpans.total)}/
-              {loadingSpans.total} spans
-            </span>
-          </span>
-        ) : (
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Layers className="size-4 text-ink-faint" />
-            <span className="text-[11px] font-mono text-ink-faint tabular-nums">
-              {data.span_count} spans
-            </span>
-          </span>
-        )}
-
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-          <span className="text-[11px] font-mono text-ink-faint tabular-nums">
-            {workerCount} worker{workerCount === 1 ? '' : 's'}
-          </span>
+            aria-hidden
+            className={cn(
+              'size-1.5 rounded-full',
+              live ? 'animate-pulse bg-sky-500' : 'bg-neutral-400',
+            )}
+          />
+          {live ? 'Live' : 'Complete'}
         </span>
-
-        {hasErrors && (
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-alert-muted">
-            <AlertCircle className="size-4 text-alert" />
-            <span className="text-[11px] font-mono font-semibold text-alert tabular-nums">
-              {errorCount} err
-            </span>
-          </span>
-        )}
-
         {chatLink?.turnId && onOpenMessage ? (
-          <>
-            <span aria-hidden className="w-px h-3 bg-edge" />
-            <button
-              type="button"
-              onClick={() => onOpenMessage(chatLink)}
-              aria-label="go to message"
-              title="open the chat at this trace's message"
-              className="flex items-center px-1.5 py-0.5 rounded-xs bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
-            >
-              <LocateFixed className="size-4" />
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={() => onOpenMessage(chatLink)}
+            aria-label="go to message"
+            title="open the chat at this trace's message"
+            className={GHOST_ACTION}
+          >
+            <LocateFixed className="size-4" aria-hidden />
+          </button>
         ) : null}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="close trace detail"
+          title="close (esc)"
+          className={GHOST_ACTION}
+        >
+          <X className="size-4" aria-hidden />
+        </button>
       </div>
 
-      {workerList.length > 1 && (
-        <div className="px-3 pb-2.5">
-          <div className="flex h-1.5 rounded-full bg-surface overflow-hidden">
-            {workerList.map((worker, i) => {
-              const workerDuration = workerDurations.get(worker) || 0
-              const pct = (workerDuration / data.total_duration_ms) * 100
-              return (
-                <div
-                  key={worker}
-                  className={cn(
-                    'h-full transition-all duration-[var(--motion-duration-panel)]',
-                    i > 0 && 'border-l border-rule-2',
-                  )}
-                  style={{
-                    width: `${Math.max(2, pct)}%`,
-                    backgroundColor: getWorkerColor(worker),
-                  }}
-                  title={`${worker}: ${pct.toFixed(1)}%`}
-                />
-              )
-            })}
-          </div>
-          <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-            {workerList.map((worker) => (
-              <div
-                key={worker}
-                className="flex items-center gap-1 font-mono text-[11px] text-ink-faint"
-              >
-                <span
-                  aria-hidden
-                  className="w-1.5 h-1.5 flex-shrink-0"
-                  style={{ backgroundColor: getWorkerColor(worker) }}
-                />
-                <span className="truncate">{worker}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {criticalPath.length > 1 && (
-        <div className="flex items-center gap-1 px-3 pb-2.5 overflow-x-auto">
-          {criticalPath.map((span, i) => (
-            <Fragment key={span.span_id}>
-              {i > 0 && (
-                <ChevronRight className="size-4 text-ink-ghost flex-shrink-0" />
-              )}
-              <button
-                type="button"
-                onClick={() => onSpanClick?.(span)}
-                className="font-mono text-[11px] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs truncate max-w-[140px] flex-shrink-0 px-1 py-0.5 transition-colors"
-                title={span.name}
-              >
-                {span.name}
-              </button>
-            </Fragment>
-          ))}
-        </div>
-      )}
+      {/* The stats strip: one quiet band, cells divided by hairlines. */}
+      <div className="mx-4 mb-3 grid grid-cols-3 divide-x divide-neutral-200/80 rounded-xl bg-neutral-100 @2xl:grid-cols-6 dark:divide-neutral-800 dark:bg-neutral-900">
+        {cells.map((cell) => (
+          <StatCell key={cell.label} {...cell} />
+        ))}
+      </div>
     </div>
   )
 }
