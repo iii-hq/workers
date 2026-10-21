@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
 use iii_sdk::IIIClient;
 
 use crate::pipe;
@@ -28,7 +28,7 @@ use crate::util;
 pub const BATCH_ID: &str = "fp::batch";
 pub const BATCH_DESC: &str =
     "Run several INDEPENDENT calls in one request and get every answer in place: \
-     { calls: [{ id?, function, payload?, timeout_ms? }], concurrency?, \
+     { calls: [{ id?, function, payload?, namespace?, timeout_ms? }], concurrency?, \
      stop_on_error?, timeout_ms? (default 10000 per call), max_entry_bytes? (default 16384), \
      max_calls? (default 12; more only warns) } → { ok, results: [{ id, function, status: \
      \"ok\", result, chars, truncated? } | { id, function, status: \"error\", code, message }], \
@@ -81,6 +81,10 @@ pub struct BatchCall {
     pub function: String,
     #[serde(default)]
     pub payload: Option<Value>,
+    /// Namespace of the target function (default: this worker's; say
+    /// `default` for the engine's).
+    #[serde(default)]
+    pub namespace: Option<String>,
     /// Budget for this call alone.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -203,17 +207,27 @@ async fn one(
 ) -> BatchResult {
     let id = call.id.clone().unwrap_or_else(|| index.to_string());
     let function = call.function.clone();
-    let outcome: Result<Value, (String, String)> = match util::apply(&function, &args) {
+    // A namespaced call always goes to the engine: the local fp:: shortcut
+    // only stands in for this worker's own functions.
+    let local = match call.namespace {
+        None => util::apply(&function, &args),
+        Some(_) => None,
+    };
+    let outcome: Result<Value, (String, String)> = match local {
         Some(result) => result.map_err(|message| ("INVALID_ARGS".to_string(), message)),
-        None => iii
-            .trigger(TriggerRequest {
+        None => {
+            let request = TriggerRequest {
                 function_id: function.clone(),
                 payload: args,
                 action: None,
                 timeout_ms: Some(timeout_ms),
-            })
-            .await
-            .map_err(|e| error_parts(&e)),
+            };
+            let request: TriggerRequestWithMetadata = match call.namespace {
+                Some(namespace) => request.namespace(namespace),
+                None => request.into(),
+            };
+            iii.trigger(request).await.map_err(|e| error_parts(&e))
+        }
     };
     match outcome {
         Ok(value) => {
@@ -348,9 +362,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_call_naming_a_namespace_is_refused_not_ignored() {
+    fn a_call_takes_a_namespace_and_refuses_unknown_fields() {
         let call = json!({ "function": "state::get", "namespace": "other" });
-        assert!(serde_json::from_value::<BatchCall>(call).is_err());
+        let call: BatchCall = serde_json::from_value(call).unwrap();
+        assert_eq!(call.namespace.as_deref(), Some("other"));
+        let typo = json!({ "function": "state::get", "namespce": "other" });
+        assert!(serde_json::from_value::<BatchCall>(typo).is_err());
     }
 
     fn parse(v: Value) -> BatchRequest {
