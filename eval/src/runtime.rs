@@ -23,7 +23,7 @@ use crate::contract::{
 use crate::error::{EvalError, EvalFailureV1, EvalPhaseV1};
 use crate::events::EvalEvents;
 use crate::locks::EvalLocks;
-use crate::report::{build_progress, build_report, EvalBenchmarkV1};
+use crate::report::{build_progress, build_report, EvalBenchmarkV1, EvalRunReportV1};
 use crate::state::{EvalJobRecordV1, SessionIndexV1};
 use crate::{ids, queue, state};
 
@@ -399,6 +399,26 @@ pub async fn step(deps: &Deps, request: StepRequestV1) -> Result<StepResponseV1,
     })
 }
 
+/// The session an eval run creates. A run is a machine-driven benchmark, never
+/// the person's own chat: `automation` keeps memory from extracting it.
+fn run_session(evaluation_id: &str, run: &EvalRunReportV1) -> SessionInit {
+    SessionInit {
+        title: Some(format!(
+            "Evaluation {}: {} {}",
+            evaluation_id,
+            run.role.as_str(),
+            run.iteration
+        )),
+        metadata: Some(json!({
+            "evaluation_id": evaluation_id,
+            "eval_run_id": run.run_id,
+            "eval_role": run.role,
+            "eval_iteration": run.iteration,
+        })),
+        kind: Some("automation".into()),
+    }
+}
+
 async fn launch_active(
     deps: &Deps,
     job: &mut EvalJobRecordV1,
@@ -419,21 +439,7 @@ async fn launch_active(
             run.role,
             run.iteration,
         )),
-        session: Some(SessionInit {
-            title: Some(format!(
-                "Evaluation {}: {} {}",
-                job.evaluation_id,
-                run.role.as_str(),
-                run.iteration
-            )),
-            metadata: Some(json!({
-                "evaluation_id": job.evaluation_id,
-                "eval_run_id": run.run_id,
-                "eval_role": run.role,
-                "eval_iteration": run.iteration,
-            })),
-            kind: None,
-        }),
+        session: Some(run_session(&job.evaluation_id, &run)),
         options: Some(send_options(job, variant)),
     };
 
@@ -1011,6 +1017,31 @@ mod tests {
     fn normalized_text_requires_string_expected_argument() {
         assert!(
             normalized_text(evaluator_input(json!("hello"), json!({"text": "hello"}))).is_err()
+        );
+    }
+
+    // Prevents: memory extracting an eval prompt as the user's words, because
+    // the run's session defaulted to kind `user`.
+    #[test]
+    fn run_session_is_automation() {
+        let run: EvalRunReportV1 = serde_json::from_value(json!({
+            "run_id": "control-1",
+            "role": "control",
+            "iteration": 1,
+            "status": "pending",
+            "session_id": "s_eval",
+            "started_at": 0,
+        }))
+        .expect("run");
+        let session = run_session("eval_1", &run);
+        assert_eq!(session.kind.as_deref(), Some("automation"));
+        assert_eq!(
+            session.title.as_deref(),
+            Some("Evaluation eval_1: control 1")
+        );
+        assert_eq!(
+            session.metadata.expect("metadata")["eval_run_id"],
+            "control-1"
         );
     }
 
