@@ -138,7 +138,7 @@ export const TOURS = [
       agentStep({
         id: "composability",
         ask: {
-          text: "Add the database worker to this project and tell me what it can do.",
+          text: "Add the database worker to this project.",
           label: "Ask the agent",
         },
         title: "Composability",
@@ -188,11 +188,11 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Add a context-history-viewer worker: a console page that shows this chat's raw context history in a structured view, every message, tool call and tool result in order, one collapsible section per entry, with a search box. Mirror the entries into the database worker. Skip verification. Open its page beside this chat when done.",
+          text: "Build an expense tracker. Each expense has a description, an amount, a category, and whether it was reimbursed. Show the total still to be reimbursed.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Let's extend this application with a new worker: a context history viewer. It shows this chat's raw context history, every message, tool call and result the way the agent sees it, structured in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer reads it, draws it, and mirrors it into the database worker you just added. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
+        body: "Let's extend this application with a new worker: an expense tracker, the same app the setup wizard offers.\n\nThe new worker calls the existing workers directly, without a REST API in between. That is iii's composability at work.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },
@@ -200,11 +200,11 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Make the context history viewer live: append new history entries at the bottom as they arrive and keep it scrolled to the newest. Skip verification.",
+          text: "Make the expense tracker live: when an expense is added, changed or reimbursed, every open page shows it at once. Skip verification.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to make the viewer react. Then type anything in this chat and watch your message, the agent's reply and every call arrive in the viewer as they happen.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
+        body: "Now ask the agent to make the expense tracker react. Then add an expense on one page and watch the list and the total change on every open page as it happens.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
       }),
       {
         id: "clean-up",

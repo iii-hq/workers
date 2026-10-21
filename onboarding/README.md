@@ -155,11 +155,9 @@ The tour says that this is an engine with workers, not a chat app with
 plugins, and the steps together cover CODER: **Composable** (the agent adds the
 `database` worker), **Observable** (the traces
 step, anchored on the console's traces screen), **Discoverable** (one engine,
-one palette), **Extensible** (the agent adds a context-history-viewer worker: a console page
-with a structured view of the current chat's raw context history, one collapsible
-section per entry, with a search box, and the entries mirrored into the database
-worker), **Reactive** (the viewer follows the chat's history as it grows, newest
-entry at the bottom). The last step, "Stay in
+one palette), **Extensible** (the agent builds the expense tracker, with the same prompt as
+the setup wizard's example), **Reactive** (the agent makes the expense tracker
+live, so every open page shows a change at once). The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
 links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
 "Clean up" asks the agent to remove this worker, and the card goes with it —
