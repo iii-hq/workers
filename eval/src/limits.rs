@@ -147,8 +147,10 @@ impl EvalLimitsV1 {
                     EvalPhaseV1::Limit,
                     format!("cost ${cost:.6} exceeded limit ${limit:.6}"),
                 )),
-                Some(_) => {}
-                None => failures.push(EvalFailureV1::function(
+                // A sum missing a generation's price is a lower bound: it
+                // cannot show the run stayed within the limit.
+                Some(_) if metrics.totals.cost_complete => {}
+                _ => failures.push(EvalFailureV1::function(
                     EvalPhaseV1::Collect,
                     "harness::metrics",
                     "cost validation requires cost_usd from every model generation",
@@ -242,6 +244,38 @@ mod tests {
         let mut limits = EvalLimitsV1::default();
         limits.evaluation.max_function_call_errors = Some(0);
         assert_eq!(limits.failures(&metrics).len(), 1);
+    }
+
+    #[test]
+    fn a_cost_limit_needs_every_generation_priced() {
+        let mut limits = EvalLimitsV1::default();
+        limits.execution.max_cost_usd = Some(1.0);
+        let metrics = |cost_usd, cost_complete| SessionMetricsResponseV1 {
+            root_session_id: "session".into(),
+            complete: true,
+            totals: SessionUsageTotalsV1 {
+                cost_usd,
+                cost_complete,
+                ..Default::default()
+            },
+            by_session: Vec::new(),
+            traces: None,
+        };
+
+        assert!(limits.failures(&metrics(Some(0.5), true)).is_empty());
+
+        let over = limits.failures(&metrics(Some(2.0), true));
+        assert_eq!(over.len(), 1);
+        assert!(over[0].message.contains("exceeded limit"));
+
+        // A lower bound under the limit proves nothing; over it, it still does.
+        let unknown = limits.failures(&metrics(Some(0.5), false));
+        assert_eq!(unknown.len(), 1);
+        assert!(unknown[0].message.contains("every model generation"));
+        let over = limits.failures(&metrics(Some(2.0), false));
+        assert!(over[0].message.contains("exceeded limit"));
+
+        assert_eq!(limits.failures(&metrics(None, false)).len(), 1);
     }
 
     #[test]

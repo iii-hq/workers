@@ -1010,6 +1010,7 @@ mod tests {
             cache_write_tokens: Some(0),
             reasoning_tokens: Some(0),
             cost_usd: Some(0.0),
+            cost_complete: true,
             by_model: Vec::new(),
             context: None,
         }
@@ -1417,6 +1418,7 @@ mod tests {
                 cache_write_tokens: Some(0),
                 reasoning_tokens: Some(0),
                 cost_usd: Some(0.0),
+                cost_complete: true,
             }],
             ..session_usage("s_fork")
         };
