@@ -602,7 +602,7 @@ function PreviewCard({
             <Maximize size={16} aria-hidden />
           </IconButton>
           <IconButton
-            label="Open in a new window"
+            label="Open in a new workspace tab"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation()

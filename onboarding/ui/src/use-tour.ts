@@ -227,7 +227,10 @@ export function useTour(host: Host): TourController {
             return host.iii.trigger('state::set', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY, value: id })
           })
           .catch((cause: unknown) => setError(errorMessage(cause)))
-      } else if (host.chat?.compose) {
+      } else if (!agent && host.chat?.compose) {
+        // A step that starts the tour's chat needs `startChat`: composed into
+        // whatever chat is open, it runs under the wrong profile and never
+        // becomes the tour's chat.
         const { compose, selectConversation } = host.chat
         void tourChat().then((id) => {
           // Back to the tour's chat first: the pane opens again when it was

@@ -691,7 +691,7 @@ export function Composer({
         // The editor has the inserted text now, so a send that came in
         // with it can go. Out of band: `handleSubmit` clears the editor,
         // which must not run inside its own change.
-        if (pendingSubmitRef.current && text.trim().length > 0 && !submitDisabled) {
+        if (pendingSubmitRef.current && text.trim().length > 0 && !submitDisabled && model) {
           pendingSubmitRef.current = false
           queueMicrotask(handleSubmit)
         }

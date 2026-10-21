@@ -301,12 +301,17 @@ function Pill({
   const at = tour.active ? steps.indexOf(tour.active) + 1 : steps.length
   const waiting = Boolean(tour.active?.condition)
   // The tour moved on while folded (a step the agent finished): say so until
-  // the card is opened again, which unmounts the pill.
-  const folded = useRef(activeId)
+  // the card is opened again, which unmounts the pill. The baseline is the
+  // step the tour was at once loaded (the tour and its records land
+  // together), so a reload into a folded pill does not read as a move.
+  const loaded = Boolean(tour.tour)
+  const folded = useRef<string | null | undefined>(undefined)
   const [moved, setMoved] = useState(false)
   useEffect(() => {
-    if (activeId !== folded.current) setMoved(true)
-  }, [activeId])
+    if (!loaded) return
+    if (folded.current === undefined) folded.current = activeId
+    else if (activeId !== folded.current) setMoved(true)
+  }, [loaded, activeId])
   return (
     <span ref={cardRef as React.RefObject<HTMLSpanElement>} className="learn-pill" data-corner={corner}>
       <button
