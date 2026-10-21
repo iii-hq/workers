@@ -19,6 +19,12 @@ import { ProviderMark } from './ProviderMark'
 import { Disclosure, Rows, Section, StatusChip, StepLayout } from './parts'
 import type { OnboardingController } from './use-onboarding'
 
+/**
+ * Whether Ready offers the guided tour. Off for now: the tour is not ready
+ * to ship, so the wizard never adds the `onboarding` worker that carries it.
+ */
+export const TOUR_OFFERED = false
+
 /** The guided tour offered once a model is connected. */
 export type TourState =
   | { kind: 'idle' }
@@ -122,7 +128,7 @@ export function ReadyStep({
   ]
 
   // The tour's first stage is a message to the agent: it needs a model.
-  const offerTour = connected.length > 0
+  const offerTour = TOUR_OFFERED && connected.length > 0
   const preparing = tour.kind === 'preparing'
   // A prompt needs a model to answer it.
   const offerPrompts = connected.length > 0 && prompts?.length !== 0

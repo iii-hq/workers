@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ToolScan } from '@/lib/onboarding/plan'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
 import { ModelsStep } from './ModelsStep'
-import { ReadyStep, type TourState } from './ReadyStep'
+import { ReadyStep, TOUR_OFFERED, type TourState } from './ReadyStep'
 import {
   type ActivityEntry,
   type MachineSnapshot,
@@ -379,26 +379,34 @@ describe('ReadyStep', () => {
     expect(html).not.toContain('env://')
   })
 
-  it('offers the guided tour in place of starter prompts, without naming its worker', () => {
-    const html = ready({ providers: CONNECTED })
-    expect(html).toContain('Keep going with a guided tour')
-    expect(html).toContain('Start the tour')
-    expect(html).toContain('Skip the tour')
-    expect(html).not.toContain('Try one of these first')
-    expect(html).not.toContain('onboarding worker')
-  })
+  it.skipIf(!TOUR_OFFERED)(
+    'offers the guided tour in place of starter prompts, without naming its worker',
+    () => {
+      const html = ready({ providers: CONNECTED })
+      expect(html).toContain('Keep going with a guided tour')
+      expect(html).toContain('Start the tour')
+      expect(html).toContain('Skip the tour')
+      expect(html).not.toContain('Try one of these first')
+      expect(html).not.toContain('onboarding worker')
+    },
+  )
 
-  it('shows the tour getting ready, and why it could not start', () => {
-    expect(ready({ providers: CONNECTED }, { kind: 'preparing' })).toContain(
-      'Preparing the tour…',
-    )
-    const failed = ready(
-      { providers: CONNECTED },
-      { kind: 'failed', error: 'compose is not running' },
-    )
-    expect(failed).toContain('The tour could not start: compose is not running')
-    expect(failed).toContain('Try again')
-  })
+  it.skipIf(!TOUR_OFFERED)(
+    'shows the tour getting ready, and why it could not start',
+    () => {
+      expect(ready({ providers: CONNECTED }, { kind: 'preparing' })).toContain(
+        'Preparing the tour…',
+      )
+      const failed = ready(
+        { providers: CONNECTED },
+        { kind: 'failed', error: 'compose is not running' },
+      )
+      expect(failed).toContain(
+        'The tour could not start: compose is not running',
+      )
+      expect(failed).toContain('Try again')
+    },
+  )
 
   it('offers the four example prompts as chats to start, each with its agent', () => {
     const html = ready({ providers: CONNECTED }, { kind: 'idle' }, [], PROMPTS)
@@ -425,6 +433,12 @@ describe('ReadyStep', () => {
     expect(
       ready({ providers: [] }, { kind: 'idle' }, [], PROMPTS),
     ).not.toContain('Try an example')
+  })
+
+  it.skipIf(TOUR_OFFERED)('offers no tour while it is turned off', () => {
+    const html = ready({ providers: CONNECTED })
+    expect(html).not.toContain('Keep going with a guided tour')
+    expect(html).toContain('Start building')
   })
 
   it('offers no tour without a model to run it', () => {
