@@ -200,7 +200,7 @@ test('the intro is step 0', () => {
 })
 
 /**
- * The first step starts the tour's chat under the Onboarding profile, the
+ * The first step starts the tour's chat under the default profile, the
  * way a setup example prompt does; every later prompt goes to the chat the
  * operator is in. A `to_open` step offers a button that opens its screen.
  */

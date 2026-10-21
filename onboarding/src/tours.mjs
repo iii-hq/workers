@@ -45,13 +45,11 @@
 const STATE_SCOPE = "learn-iii";
 
 /**
- * The agent profile the tour talks to: the one the harness template ships
- * for its setup examples (`agents/ade-worker-builder.md`, shown as
- * "Onboarding"). The first step starts a new chat under it; every later
- * prompt goes to the chat the operator is in, which is that one unless they
- * moved.
+ * The agent profile the tour talks to: the harness's built-in default. The
+ * first step starts a new chat under it; every later prompt goes to the
+ * chat the operator is in, which is that one unless they moved.
  */
-export const TOUR_AGENT = "ade-worker-builder";
+export const TOUR_AGENT = "default";
 
 /**
  * A step the AGENT finishes, not the operator.
@@ -181,7 +179,7 @@ export const TOURS = [
       agentStep({
         id: "discoverability",
         ask: {
-          text: "What can this system do right now? List the workers that are registered and the functions each one exposes.",
+          text: "What do the database, state, and harness workers do?",
           label: "Ask the agent",
         },
         title: "Discoverability",
@@ -190,7 +188,7 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Add a context-viewer worker: a console page that shows a structured view of the current chat's context, in collapsible sections, with a search box, and keeps a searchable history of past contexts in the database worker. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open its page beside this chat.",
+          text: "Add a context-viewer worker: a console page with a structured view of this chat's context in collapsible sections, a search box, and a history kept in the database worker. Skip verification. Open its page beside this chat when done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
@@ -202,7 +200,7 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Make the context viewer live: react to this chat's context as it changes, append each new entry at the bottom as it arrives, and keep the view scrolled to the newest one. Then tell me it is live.",
+          text: "Make the context viewer live: append new context entries at the bottom as they arrive and keep it scrolled to the newest. Skip verification.",
           label: "Ask the agent",
         },
         title: "Reactivity",
