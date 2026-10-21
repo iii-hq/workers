@@ -1,6 +1,10 @@
 /**
  * Tour content. One tour is a title plus an ordered list of steps.
  *
+ * A tour may name `agent`: the Directory agent profile its prompts run
+ * under. The console sends them in a conversation that runs that profile —
+ * the open one when it already does, else a new chat with it selected.
+ *
  * A step carries:
  *   - `anchors`: selectors for the console element the step talks about, best
  *     first. The first one is always the `onboarding-*` class the console
@@ -27,7 +31,7 @@
  * @typedef {{ text: string, label: string }} Ask
  * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
  * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, on_closed?: OnClosed }} Step
- * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
+ * @typedef {{ id: string, title: string, description: string, agent?: string, steps: Step[] }} Tour
  */
 
 /**
@@ -76,6 +80,8 @@ export const TOURS = [
     id: "console-basics",
     title: "Find your way around",
     description: "The surfaces of the console, and the engine underneath them.",
+    // The template's hidden "Onboarding" profile, which also sets the effort.
+    agent: "ade-worker-builder",
     steps: [
       {
         id: "message",

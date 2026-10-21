@@ -151,6 +151,14 @@ test('every step that asks the agent to build waits for it to report done', () =
   }
 })
 
+/**
+ * The tour's prompts run under the template's hidden Onboarding profile, not
+ * whatever profile the open chat has; the console opens a chat with it.
+ */
+test('the console tour names the agent profile its prompts run under', () => {
+  assert.equal(getTour('console-basics').agent, 'ade-worker-builder')
+})
+
 /** The tour names the five CODER properties; `Discover` is not one of them. */
 test('the discoverability step is titled Discoverability', () => {
   const step = getTour('console-basics').steps.find((entry) => entry.id === 'discoverability')

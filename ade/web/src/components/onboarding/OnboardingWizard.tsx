@@ -60,9 +60,8 @@ import {
 import { prepareTour } from '@/lib/onboarding/tour'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
-import { fetchNewChatWorkingDir } from '@/lib/working-dir'
 import { BrowserStep } from './BrowserStep'
-import { openExamplePrompt } from './example-prompt'
+import { startExamplePrompt } from './example-prompt'
 import { JudgeStep } from './JudgeStep'
 import { ModelsStep } from './ModelsStep'
 import type { StepPosition } from './parts'
@@ -70,23 +69,6 @@ import { ReadyStep, type TourState } from './ReadyStep'
 import { Stepper, type StepperStep } from './Stepper'
 import { connectedModelCount, useOnboarding } from './use-onboarding'
 import { WelcomeStep } from './WelcomeStep'
-
-/**
- * The longest an example waits for its profile or folder lookup once the
- * wizard has closed. Past it the chat opens with what is known, and the
- * prompt waits for a manual send (see `openExamplePrompt`) while the chat
- * looks up its folder itself.
- */
-const LOOKUP_WAIT_MS = 3000
-
-function withinLookupWait<T>(lookup: Promise<T>, fallback: T): Promise<T> {
-  return Promise.race([
-    lookup,
-    new Promise<T>((resolve) =>
-      window.setTimeout(() => resolve(fallback), LOOKUP_WAIT_MS),
-    ),
-  ])
-}
 
 const STEPS: readonly StepperStep[] = [
   { id: 'welcome', title: 'Welcome', description: 'What the ADE does' },
@@ -435,26 +417,7 @@ export function OnboardingWizardHost() {
       starting.current = true
       reportRef.current('finish', { outcome: 'example_prompt' })
       setOpen(false)
-      const [profiles, workingDir] = await Promise.all([
-        // Profiles still loading (a quick click): ask for them once more.
-        agents ??
-          withinLookupWait(
-            getIiiClient()
-              .then(listAgents)
-              .catch(() => []),
-            [],
-          ),
-        // `undefined` = the lookup did not finish, timed out or failed (not:
-        // it found none).
-        withinLookupWait<string | null | undefined>(
-          fetchNewChatWorkingDir().catch(() => undefined),
-          undefined,
-        ),
-      ])
-      const api = ctxRef.current
-      if (!api) return
-      openExamplePrompt(api, prompt, profiles, workingDir)
-      window.requestAnimationFrame(requestComposerFocus)
+      await startExamplePrompt(() => ctxRef.current, prompt, agents)
     },
     [agents],
   )

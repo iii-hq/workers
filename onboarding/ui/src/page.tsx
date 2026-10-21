@@ -30,19 +30,6 @@ import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from '.
  */
 
 /**
- * The step whose prompt starts the tour, and the reasoning effort the tour
- * asks for when it is sent.
- *
- * Every later step hands the agent a short, concrete build task and then
- * waits on it. Left at the operator's usual level the agent spends the tour
- * deliberating over instructions that are already explicit, which is time the
- * operator spends watching a spinner. The console owns the setting — the page
- * asks, and a console too old to be asked simply is not.
- */
-const FIRST_STEP_ID = 'message'
-const TOUR_THINKING_LEVEL = 'lowest'
-
-/**
  * How long `Opening…` may stand before the button gives up and offers
  * `Continue` anyway. The console re-reads its layout when
  * `console::workspace::changed` rings, or, on an older console without that
@@ -75,6 +62,8 @@ interface Tour {
   id: string
   title: string
   description: string
+  /** The Directory agent profile the tour's prompts run under. */
+  agent?: string
   steps: Step[]
 }
 
@@ -96,7 +85,7 @@ interface ProgressResponse {
 type StepState = 'complete' | 'active' | 'pending'
 
 /** Guide initial setup and react to the console's workspace layout changes. */
-export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
+export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
@@ -257,20 +246,12 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         setError('This console is too old to send a prompt for you. Type it in the chat instead.')
         return
       }
-      // Before the prompt, so the turn it starts is the first one to run at
-      // the lower effort. Feature-detected, and refused by the console when
-      // this page is not beside the conversation it names — neither is an
-      // error the operator needs to hear about, the step is the prompt.
-      if (step.id === FIRST_STEP_ID && conversationId) {
-        host.chat.requestThinkingLevelChange?.({
-          sessionId: conversationId,
-          level: TOUR_THINKING_LEVEL,
-        })
-      }
-      host.chat.compose({ text: step.ask.text, submit: true })
+      // Under the tour's profile, which also sets the effort: the console
+      // opens a chat with it when the open one runs another.
+      host.chat.compose({ text: step.ask.text, submit: true, agent: tour?.agent })
       if (!step.condition) complete(step.id)
     },
-    [complete, conversationId, host],
+    [complete, host, tour],
   )
 
   // Every step that is still open for business gets its condition bound, so a

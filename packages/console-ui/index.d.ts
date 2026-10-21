@@ -722,6 +722,15 @@ export interface Host {
        * cannot send right now (streaming, blocked): the text stays a draft.
        */
       submit?: boolean
+      /**
+       * Send in a conversation that runs this Directory agent profile: the
+       * active one when it already runs it, else a new chat with the profile
+       * selected, sent once the profile is — as the setup wizard's example
+       * prompts do (a profile the Directory does not serve leaves the prompt
+       * unsent there). Only meaningful with `submit`; consoles that predate
+       * it ignore the field.
+       */
+      agent?: string
     }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */

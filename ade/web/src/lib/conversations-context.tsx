@@ -9,6 +9,10 @@ import {
   useState,
 } from 'react'
 import {
+  type PromptChatApi,
+  startExamplePrompt,
+} from '@/components/onboarding/example-prompt'
+import {
   isApprovalGateAvailable,
   useApprovalGateStatus,
 } from '@/hooks/use-approval-gate-status'
@@ -260,6 +264,9 @@ export function ConversationsProvider({
     requestChatShown(id)
     conversationRequestedRef.current?.(id)
   }, [])
+  // What an injected page's agent prompt opens its chat with: the value
+  // below, set once it is built.
+  const promptChatRef = useRef<PromptChatApi | null>(null)
   const conversationAdapterRef = useRef<ConversationAdapter | null>(null)
   if (!conversationAdapterRef.current) {
     conversationAdapterRef.current = {
@@ -286,6 +293,24 @@ export function ConversationsProvider({
           (conversation) => conversation.id === id,
         )?.model
         return typeof model === 'string' && model.trim() ? model.trim() : null
+      },
+      activeAgentProfile() {
+        const id = activeIdRef.current
+        return (
+          conversationsRef.current.find(
+            (conversation) => conversation.id === id,
+          )?.agentProfile?.id ?? null
+        )
+      },
+      openAgentPrompt({ text, agent }) {
+        // The setup wizard's example-prompt path: profile and folder looked
+        // up, the prompt held unsent when the profile is not served.
+        void startExamplePrompt(() => promptChatRef.current, {
+          title: text,
+          agent,
+          prompt: text,
+          models: [],
+        })
       },
     }
   }
@@ -330,6 +355,7 @@ export function ConversationsProvider({
     kanbanAvailable,
     openConversationInPanel,
   }
+  promptChatRef.current = value
 
   return (
     <ConversationsContext.Provider value={value}>

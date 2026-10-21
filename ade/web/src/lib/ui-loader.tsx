@@ -99,6 +99,10 @@ export interface ConversationAdapter {
   selectConversation(sessionId: string): void
   openDraft(draft: { text: string; title?: string }): void
   composerModel(conversationId?: string | null): string | null
+  /** The agent profile id the active conversation runs, or null. */
+  activeAgentProfile(): string | null
+  /** A new chat with this agent profile selected, sending `text` once it is. */
+  openAgentPrompt(draft: { text: string; agent: string }): void
 }
 
 /**
@@ -422,6 +426,20 @@ function makeHost(
         )
       },
       compose(draft) {
+        // The Harness takes a profile only when a session is created, so a
+        // prompt for one the active chat does not run goes to a new chat.
+        if (
+          draft.agent &&
+          draft.submit === true &&
+          draft.text &&
+          conversationAdapter.activeAgentProfile() !== draft.agent
+        ) {
+          conversationAdapter.openAgentPrompt({
+            text: draft.text,
+            agent: draft.agent,
+          })
+          return
+        }
         if (draft.files && draft.files.length > 0) attachToComposer(draft.files)
         if (draft.text) {
           insertIntoComposer(draft.text, {
