@@ -82,7 +82,7 @@ pub struct WorkerConfig {
     /// workflow corrections) into the bank's auto-managed `learned` rule,
     /// so correcting the agent in chat updates the system prompt for every
     /// later turn. Hand-authored rules are never touched; the learned rule
-    /// only ever gains appended lines.
+    /// gains appended lines, and a line the user corrects is rewritten.
     #[serde(default = "default_true")]
     pub rule_learning_enabled: bool,
 

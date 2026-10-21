@@ -32,7 +32,9 @@ advertises the truth to the model.
 The remote driver fits the guest's frame the way the native driver fits its
 own (the wire's `screenshot` takes no parameters): decode, downscale to
 `max_screenshot_dimension`, JPEG at `screenshot_quality`, and scale every
-pointer coordinate back to the guest's pixels. The sandbox driver encodes at
+pointer coordinate back to the guest's pixels. A guest frame whose bytes match
+the last one reuses that fit, so an idle desktop costs no decode or encode
+(1080p: ~64 ms refitted, ~7 ms reused, in release). The sandbox driver encodes at
 `screenshot_quality` in the guest (`import`) and never downscales: its frame is
 the Xvfb display, sized by `sandbox_width`/`sandbox_height`, 1:1 with input.
 

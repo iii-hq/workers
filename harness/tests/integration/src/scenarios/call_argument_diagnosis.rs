@@ -126,6 +126,11 @@ pub(super) fn scenario() -> ScenarioFixture {
             first.contains("`limit`") && first.contains("integer"),
             "diagnosis does not name the violating field: {first}"
         );
+        // A native tool already carries its schema: only the pointer.
+        anyhow::ensure!(
+            !first.contains("no need to fetch the contract"),
+            "a native tool's diagnosis must not repeat its schema: {first}"
+        );
         let second = message_text(results[1]);
         anyhow::ensure!(
             second.contains(ERROR) && !second.contains(DIAGNOSIS),
