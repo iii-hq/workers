@@ -112,8 +112,18 @@ async fn main() -> Result<()> {
         let monitor = monitor.clone();
         Arc::new(move || monitor.poke()) as Arc<dyn Fn() + Send + Sync>
     };
-    let terminals =
-        TerminalManager::new(Arc::new((*iii).clone()), collector.clone(), console, poke);
+    let engine_observes = {
+        let iii = iii.clone();
+        Arc::new(move || iii.engine_supports_observe())
+            as Arc<dyn Fn() -> Option<bool> + Send + Sync>
+    };
+    let terminals = TerminalManager::new(
+        Arc::new((*iii).clone()),
+        collector.clone(),
+        console,
+        poke,
+        engine_observes,
+    );
 
     functions::register_all(
         &iii,
