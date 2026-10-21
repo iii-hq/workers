@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ade"
-version = "1.9.68"
+version = "1.9.69"
 dependencies = [
  "anyhow",
  "async-trait",
