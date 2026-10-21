@@ -1116,9 +1116,12 @@ async fn extraction_eval() {
             .map(|(i, (role, text))| (format!("e{i}"), role.to_string(), text.to_string(), TS))
             .collect();
         let said = user_words(&entries);
-        // Whether a returned item passes the rule gate, redacted as `try_run` does.
+        // Whether a returned item passes `try_run`'s gates (the injection
+        // screen; for a rule, a user line stating it), on the redacted text.
         let gate = |item: &ExtractedItem| {
-            !item.is_rule() || stated_by_user(&crate::redact::redact(item.text.trim()).text, &said)
+            let text = crate::redact::redact(item.text.trim()).text;
+            crate::redact::reject_injection("item", &text).is_ok()
+                && (!item.is_rule() || stated_by_user(&text, &said))
         };
         let strict = STRICT.contains(&case.category);
         let (transcript, ..) = excerpt(entries, cfg.extraction_window);

@@ -805,6 +805,14 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                 (up, text, old)
             })
             .filter(|(_, t, _)| t.len() >= 3 && t.len() <= 500)
+            // Screened before it appends or rewrites a listed line in place.
+            .filter(|(_, t, _)| match crate::redact::reject_injection("learned rule", t) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(session_id, bank = %bank_name, error = %e, "dropped a learned rule");
+                    false
+                }
+            })
             .filter(|(_, t, _)| {
                 let backed = stated_by_user(t, &user_words);
                 if !backed {
@@ -860,6 +868,10 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         crate::redact::drop_secrets(&mut item.tags);
         let text = item.text.as_str();
         if text.len() < 3 || text.len() > 500 {
+            continue;
+        }
+        if let Err(e) = crate::redact::reject_injection("extracted memory", text) {
+            tracing::warn!(session_id, bank = %bank_name, error = %e, "dropped an extracted memory");
             continue;
         }
         let now = now_ms();
