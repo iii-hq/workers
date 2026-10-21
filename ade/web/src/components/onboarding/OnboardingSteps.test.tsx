@@ -291,7 +291,8 @@ function examples(prompts: readonly ExamplePrompt[] | null) {
     <ExampleList
       prompts={prompts}
       agentNames={new Map([['ade-worker-builder', 'Onboarding']])}
-      onPrompt={noop}
+      picked={null}
+      onPick={noop}
     />,
   )
 }
@@ -309,7 +310,6 @@ function explore(
       tour={{ kind: 'idle' }}
       onTour={noop}
       onOwn={noop}
-      onFinish={noop}
       onBack={noop}
     />,
   )
@@ -405,20 +405,25 @@ describe('ReadyStep', () => {
 })
 
 describe('ExploreStep', () => {
-  it('offers the examples, the tour and exploring alone', () => {
+  it('offers the examples, the tour and exploring alone as one pick', () => {
     const html = explore(true)
     expect(html).toContain('Explore iii')
     expect(html).toContain('Build an example project')
     expect(html).toContain('Take the learn-iii tour')
     expect(html).toContain('Explore on my own')
-    expect(html).toContain('Finish')
-    expect(html).not.toContain('disabled=""')
+    // A radio group with nothing picked yet, and the footer's button
+    // waiting on the pick: the only disabled control on the screen.
+    expect(html.match(/role="radio"/g)).toHaveLength(3)
+    expect(html.match(/aria-checked="false"/g)).toHaveLength(3)
+    expect(html).toContain('Continue')
+    expect(html.match(/disabled=""/g)).toHaveLength(1)
   })
 
   it('needs a model for the examples and the tour, not for exploring alone', () => {
     const html = explore(false)
     expect(html).toContain('Connect a model first.')
-    expect(html.match(/disabled=""/g)).toHaveLength(2)
+    // Two options out, plus the button that waits on a pick.
+    expect(html.match(/disabled=""/g)).toHaveLength(3)
   })
 
   it('shows why the tour could not start', () => {
@@ -431,7 +436,6 @@ describe('ExploreStep', () => {
         tour={{ kind: 'failed', error: 'compose is not running' }}
         onTour={noop}
         onOwn={noop}
-        onFinish={noop}
         onBack={noop}
       />,
     )
@@ -440,9 +444,10 @@ describe('ExploreStep', () => {
 })
 
 describe('ExampleList', () => {
-  it('offers the four example prompts as chats to start, each with its agent', () => {
+  it('offers the four example prompts to pick from, each with its agent', () => {
     const html = examples(PROMPTS)
-    expect(html).toContain('aria-label="Start a chat: Build a link shortener"')
+    expect(html.match(/role="radio"/g)).toHaveLength(4)
+    expect(html).toContain('Build a link shortener')
     expect(html).toContain('Build an expense tracker')
     expect(html).toContain('Create a test reviewer agent')
     expect(html).toContain('Explain this project')

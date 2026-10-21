@@ -597,7 +597,6 @@ export function OnboardingWizardHost() {
                     tour={tour}
                     onTour={() => void startTour()}
                     onOwn={() => start()}
-                    onFinish={() => start('finished')}
                     onBack={() => go('ready')}
                   />
                 )}
