@@ -1,6 +1,6 @@
 import { CornerDownLeft } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/shadcn/dialog'
 import { recentHarnessProjectPaths } from '@/lib/backend/projects'
 import { loadLastModel, loadLastThinkingLevel } from '@/lib/storage'
 import { cn } from '@/lib/utils'
@@ -89,11 +89,8 @@ export function NewChatDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         aria-describedby={undefined}
-        className="flex w-[min(56rem,calc(100vw-2rem))] max-w-none flex-col gap-0 overflow-visible bg-white p-0 font-inter text-neutral-900 ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-50 dark:ring-neutral-800"
-        onOpenAutoFocus={(event) => {
-          event.preventDefault()
-          textareaRef.current?.focus()
-        }}
+        className="flex w-[min(56rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col gap-0 overflow-visible bg-white p-0 font-inter text-neutral-900 ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-50 dark:ring-neutral-800"
+        initialFocus={textareaRef}
       >
         <DialogTitle className="sr-only">New chat</DialogTitle>
 

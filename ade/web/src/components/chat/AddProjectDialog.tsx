@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/shadcn/dialog'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { errMsg, validateWorkspaceDir } from '@/lib/working-dir'
@@ -63,11 +63,9 @@ export function AddProjectDialog({
     >
       <DialogContent
         aria-describedby={undefined}
-        className="flex h-[min(40rem,85vh)] w-[min(60rem,calc(100vw-2rem))] max-w-none flex-col overflow-hidden p-0"
-        onOpenAutoFocus={(event) => {
-          // No keyboard to type with: don't raise the on-screen one.
-          if (!pointerFine) event.preventDefault()
-        }}
+        className="flex h-[min(40rem,85vh)] w-[min(60rem,calc(100vw-2rem))] max-w-none [--dialog-max-width:none] flex-col overflow-hidden p-0"
+        // No keyboard to type with: don't raise the on-screen one.
+        initialFocus={pointerFine ? undefined : () => false}
       >
         <DialogTitle className="px-4 pt-4 pb-3">Add project</DialogTitle>
         <FolderBrowser

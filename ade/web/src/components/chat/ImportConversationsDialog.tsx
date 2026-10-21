@@ -11,15 +11,15 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Badge, type BadgeVariant } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
-import { Checkbox } from '@/components/ui/Checkbox'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
-} from '@/components/ui/Dialog'
+} from '@/components/shadcn/dialog'
+import { Badge, type BadgeVariant } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
+import { Checkbox } from '@/components/ui/Checkbox'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
 import { SearchField } from '@/components/ui/SearchField'
@@ -939,7 +939,7 @@ export function ImportConversationsDialog({
         if (!busy) onOpenChange(next)
       }}
     >
-      <DialogContent className="flex max-h-[90dvh] w-[calc(100%-2rem)] max-w-[960px] flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[90dvh] w-[calc(100%-2rem)] max-w-[960px] [--dialog-max-width:960px] flex-col gap-0 overflow-hidden p-0">
         <div className="px-6 pt-[22px]">
           <DialogTitle>Import conversations</DialogTitle>
           <DialogDescription className="mt-1.5 max-w-[70ch] leading-[1.6]">

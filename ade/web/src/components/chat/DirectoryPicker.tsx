@@ -1,4 +1,3 @@
-import * as PopoverPrimitive from '@radix-ui/react-popover'
 import {
   AlertCircle,
   Check,
@@ -20,6 +19,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { Popover, PopoverContent } from '@/components/shadcn/popover'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -962,26 +962,20 @@ function DirectoryPickerSurface({
   }
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
-      <PopoverPrimitive.Anchor
-        virtualRef={triggerRef as RefObject<HTMLButtonElement>}
-      />
-      <PopoverPrimitive.Portal>
-        <PortalScope>
-          <PopoverPrimitive.Content
-            side="top"
-            align={alignToInlineTrigger ? 'center' : align}
-            sideOffset={8}
-            collisionPadding={12}
-            sticky="always"
-            role="dialog"
-            aria-label="select working directory"
-            className="iii-ui-motion-dropdown z-50 max-h-[var(--radix-popover-content-available-height)] w-[min(320px,calc(100vw-24px))] overflow-y-auto overscroll-contain rounded-lg border border-edge bg-panel-raised p-1 shadow-floating"
-          >
-            {children}
-          </PopoverPrimitive.Content>
-        </PortalScope>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+    <Popover open={open} onOpenChange={(next) => onOpenChange(next)}>
+      <PopoverContent
+        anchor={triggerRef}
+        side="top"
+        align={alignToInlineTrigger ? 'center' : align}
+        sideOffset={8}
+        collisionPadding={12}
+        sticky
+        role="dialog"
+        aria-label="select working directory"
+        className="iii-ui-motion-dropdown max-h-(--available-height) w-[min(320px,calc(100vw-24px))] gap-0 overflow-y-auto overscroll-contain p-1"
+      >
+        <PortalScope>{children}</PortalScope>
+      </PopoverContent>
+    </Popover>
   )
 }

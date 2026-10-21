@@ -12,7 +12,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from '@/components/ui/DropdownMenu'
+} from '@/components/shadcn/dropdown-menu'
 import { IconButton } from '@/components/ui/IconButton'
 import {
   CONVERSATION_GROUPING_OPTIONS,
@@ -64,7 +64,7 @@ function KindChoices({ view, onViewChange, className }: SettingProps) {
         onViewChange(toggleKind(view, option.value, checked === true))
       }
       /* Multi-select: the menu stays open across toggles. */
-      onSelect={(e) => e.preventDefault()}
+      closeOnClick={false}
       className={className}
     >
       {option.label}
@@ -147,36 +147,37 @@ export function ConversationFilterMenu({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <IconButton
-          label="Conversation view options"
-          tooltip={describeConversationListView(view)}
-          data-filtering={filtering || undefined}
-          className={cn(
-            'relative shrink-0',
-            narrow && 'size-11',
-            filtering && 'text-ink',
-          )}
-        >
-          <SlidersVertical aria-hidden />
-          {/* A badge, not a wash: a filled button in the header reads as a
-              stuck hover. The dot says "something is hidden" and the ink
-              glyph says it is on; the tooltip says what. */}
-          {filtering ? (
-            <span
-              aria-hidden
-              className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-ink"
-            />
-          ) : null}
-        </IconButton>
+      <DropdownMenuTrigger
+        render={
+          <IconButton
+            label="Conversation view options"
+            tooltip={describeConversationListView(view)}
+            data-filtering={filtering || undefined}
+            className={cn(
+              'relative shrink-0',
+              narrow && 'size-11',
+              filtering && 'text-ink',
+            )}
+          />
+        }
+      >
+        <SlidersVertical aria-hidden />
+        {/* A badge, not a wash: a filled button in the header reads as a
+            stuck hover. The dot says "something is hidden" and the ink
+            glyph says it is on; the tooltip says what. */}
+        {filtering ? (
+          <span
+            aria-hidden
+            className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-ink"
+          />
+        ) : null}
       </DropdownMenuTrigger>
 
       <DropdownMenuContent
         align="end"
         className={cn(
           'min-w-[12rem]',
-          narrow &&
-            'max-h-[var(--radix-dropdown-menu-content-available-height)] w-[min(20rem,calc(100vw-1rem))] overflow-y-auto',
+          narrow && 'w-[min(20rem,calc(100vw-1rem))]',
         )}
       >
         {narrow ? (
@@ -227,7 +228,7 @@ export function ConversationFilterMenu({
         <DropdownMenuSeparator />
         <DropdownMenuItem
           disabled={!filtering}
-          onSelect={() => onViewChange(DEFAULT_CONVERSATION_LIST_VIEW)}
+          onClick={() => onViewChange(DEFAULT_CONVERSATION_LIST_VIEW)}
           className={rowClass}
         >
           Clear filters
