@@ -3,6 +3,11 @@ import { cn } from 'cn'
 import { XIcon } from 'lucide-react'
 import type * as React from 'react'
 import { Button } from '@/components/shadcn/button'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/shadcn/tooltip'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
@@ -61,19 +66,26 @@ function DialogContent({
       >
         {children}
         {showCloseButton && (
-          <DialogPrimitive.Close
-            data-slot="dialog-close"
-            render={
-              <Button
-                variant="ghost"
-                className="absolute top-2 right-2"
-                size="icon-sm"
-              />
-            }
-          >
-            <XIcon />
-            <span className="sr-only">Close</span>
-          </DialogPrimitive.Close>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <DialogPrimitive.Close
+                  data-slot="dialog-close"
+                  render={
+                    <Button
+                      variant="ghost"
+                      className="absolute top-2 right-2 text-muted-foreground hover:text-foreground"
+                      size="icon-sm"
+                    />
+                  }
+                />
+              }
+            >
+              <XIcon />
+              <span className="sr-only">Close</span>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Close</TooltipContent>
+          </Tooltip>
         )}
       </DialogPrimitive.Popup>
     </DialogPortal>

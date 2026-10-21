@@ -64,13 +64,13 @@ import {
   useRef,
   useState,
 } from 'react'
+import { Toggle } from '@/components/shadcn/toggle'
 import { Badge } from '@/components/ui/Badge'
 import { cn } from '@/lib/utils'
 import type { StoredSpan } from '../../api/traces'
 import type { SpanFilterControls } from '../../lib/spanFilters'
 import { storedSpansToTimelineSpans } from '../../lib/timelineSpans'
 import { formatDuration } from '../../lib/traceUtils'
-import { IconToggleButton } from '../IconToggleButton'
 import { computeTicks, effectiveEnd, type TimelineSpan } from './layout'
 import { SpanFilterMenu } from './SpanFilterMenu'
 import { SpanHoverCard } from './SpanHoverCard'
@@ -832,17 +832,24 @@ export function TimelineStrip({
         {(spanFilter || onToggleFollowTurns) && (
           <div className="flex items-center gap-1 px-2 py-1">
             {onToggleFollowTurns && (
-              <IconToggleButton
-                active={!!followTurns}
-                onClick={onToggleFollowTurns}
-                label={
+              <Toggle
+                pressed={!!followTurns}
+                onPressedChange={() => onToggleFollowTurns()}
+                size="sm"
+                aria-label={
                   followTurns
                     ? 'following your turns — traces auto-open as you chat'
                     : 'follow your turns: auto-open the trace when you send a message'
                 }
+                title={
+                  followTurns
+                    ? 'following your turns — traces auto-open as you chat'
+                    : 'follow your turns: auto-open the trace when you send a message'
+                }
+                className="rounded-xl"
               >
                 <Crosshair className="size-4" />
-              </IconToggleButton>
+              </Toggle>
             )}
             {spanFilter && (
               <SpanFilterMenu

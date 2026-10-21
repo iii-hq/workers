@@ -2,10 +2,16 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Clock, Copy, Layers, X, Zap } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { useFunctionTriggerRenderers } from '@/components/function-trigger/renderer-registry'
+import { Badge } from '@/components/shadcn/badge'
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/shadcn/tabs'
 import { Button } from '@/components/ui/Button'
 import { Eyebrow } from '@/components/ui/Eyebrow'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
 import { fetchOtelLogs } from '../api/otel-logs'
 import { spanRawRedactor } from '../lib/functionTriggerFromSpan'
@@ -244,45 +250,60 @@ export function SpanPanel({
           defaultValue={hasError ? 'errors' : 'info'}
           className="h-full flex flex-col"
         >
-          <TabsList className="px-4 pt-2 pb-0 bg-transparent">
+          <TabsList
+            variant="line"
+            className="w-full justify-start border-b border-border px-4"
+          >
             <TabsTrigger value="info">Info</TabsTrigger>
             <TabsTrigger value="tags">
               Attributes
               {attrCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-md bg-surface normal-case tracking-normal">
+                <Badge
+                  variant="secondary"
+                  className="h-4 px-1 font-mono tabular-nums"
+                >
                   {attrCount}
-                </span>
+                </Badge>
               )}
             </TabsTrigger>
             <TabsTrigger value="logs">
               Events
               {eventCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-md bg-surface normal-case tracking-normal">
+                <Badge
+                  variant="secondary"
+                  className="h-4 px-1 font-mono tabular-nums"
+                >
                   {eventCount}
-                </span>
+                </Badge>
               )}
             </TabsTrigger>
             <TabsTrigger value="errors">
               Errors
               {hasError && (
-                <span className="ml-1 w-1.5 h-1.5 bg-alert rounded-full inline-block" />
+                <span className="inline-block size-1.5 rounded-full bg-destructive" />
               )}
             </TabsTrigger>
             <TabsTrigger value="otel-logs">
               Logs
               {logCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-md bg-surface normal-case tracking-normal">
+                <Badge
+                  variant="secondary"
+                  className="h-4 px-1 font-mono tabular-nums"
+                >
                   {logCount}
-                </span>
+                </Badge>
               )}
             </TabsTrigger>
             <TabsTrigger value="baggage">Context</TabsTrigger>
             {linkCount > 0 && (
               <TabsTrigger value="links">
                 Links
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-md bg-surface normal-case tracking-normal">
+                <Badge
+                  variant="secondary"
+                  className="h-4 px-1 font-mono tabular-nums"
+                >
                   {linkCount}
-                </span>
+                </Badge>
               </TabsTrigger>
             )}
           </TabsList>

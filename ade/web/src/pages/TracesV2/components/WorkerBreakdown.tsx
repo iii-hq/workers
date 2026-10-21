@@ -1,5 +1,10 @@
 import { ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import {
+  Progress,
+  ProgressIndicator,
+  ProgressTrack,
+} from '@/components/shadcn/progress'
 import { cn } from '@/lib/utils'
 import { getWorkerColor } from '../lib/traceColors'
 import type { WaterfallData } from '../lib/traceTransform'
@@ -142,15 +147,18 @@ export function WorkerBreakdown({ data }: WorkerBreakdownProps) {
                   </span>
                 )}
               </div>
-              <div className="ml-4 h-1.5 overflow-hidden rounded-full bg-surface">
-                <div
-                  className="h-full transition-all duration-[var(--motion-duration-panel)]"
-                  style={{
-                    width: `${Math.max(2, worker.percentage)}%`,
-                    backgroundColor: worker.color,
-                  }}
-                />
-              </div>
+              <Progress
+                value={Math.max(2, Math.min(100, worker.percentage))}
+                aria-label={`${worker.name} share of the trace`}
+                className="ml-4"
+              >
+                <ProgressTrack className="h-1.5">
+                  <ProgressIndicator
+                    className="rounded-full transition-all duration-[var(--motion-duration-panel)]"
+                    style={{ backgroundColor: worker.color }}
+                  />
+                </ProgressTrack>
+              </Progress>
             </div>
           ))}
         </div>

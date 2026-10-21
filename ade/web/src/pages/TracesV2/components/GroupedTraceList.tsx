@@ -214,7 +214,7 @@ function GroupHeaderRow({
       onClick={onToggle}
       aria-expanded={isExpanded}
       className={cn(
-        'flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors hover:bg-surface-hover',
+        'flex h-10 w-full items-center gap-2 rounded-xl px-3 text-left transition-colors hover:bg-muted/60',
         containsSelection && 'border-l-2 border-l-edge',
       )}
       title={`${heading} (${group.trace_ids.length} trace${group.trace_ids.length === 1 ? '' : 's'})`}
@@ -239,7 +239,7 @@ function GroupHeaderRow({
       >
         {heading}
       </span>
-      <span className="ml-auto flex-shrink-0 text-xs text-ink-faint tabular-nums">
+      <span className="ml-auto flex-shrink-0 text-xs text-muted-foreground tabular-nums">
         {summarizeGroup(group)}
       </span>
     </button>

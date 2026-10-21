@@ -42,7 +42,6 @@ import { Cell } from '@/components/ui/Cell'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { PageHeader } from '@/components/ui/PageChrome'
-import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
@@ -60,6 +59,7 @@ import { TraceDetailSkeleton } from './components/TraceDetailSkeleton'
 import { TraceFilters } from './components/TraceFilters'
 import { TraceHeader } from './components/TraceHeader'
 import { TraceListRow } from './components/TraceListRow'
+import { TracesPagination } from './components/TracesPagination'
 import { TimelineStrip } from './components/timeline/TimelineStrip'
 import { TraceTimeline } from './components/timeline/TraceTimeline'
 import { ViewSwitcher, type ViewType } from './components/ViewSwitcher'
@@ -1167,8 +1167,8 @@ export function TracesV2({
                         )
                       })}
                     </div>
-                    <div className="flex-shrink-0 border-t border-rule-2 px-3 py-2">
-                      <Pagination
+                    <div className="flex-shrink-0 px-3 py-2">
+                      <TracesPagination
                         currentPage={filterState.page}
                         totalPages={totalPages}
                         totalItems={totalTraceCount}

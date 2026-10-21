@@ -1,14 +1,14 @@
-// Trace filter bar.
+// Trace filter bar, on shadcn.
 //
-// Layout: a single row of always-visible controls (search, group-by,
-// more-filters trigger, stats) with active-filter chips
-// rendered below. The advanced filters (status, time range, sort,
-// duration, worker, operation, attributes) live inside a "more
-// filters" popover so they stay out of the way until needed.
+// Layout: one row of always-visible controls — the saved-views switcher,
+// search, group-by, a "Filters" popover trigger (with a count badge) and
+// the page's stats — with the active filters as removable chips below.
+// The advanced filters (status, time range, sort, duration, worker,
+// operation, display, attributes) live inside the popover.
 //
-// Behaviors preserved from motia:
+// Behaviors preserved:
 //   • 300ms-debounced text inputs (workerName, operationName) — wired
-//     via the parent useTraceFilters hook.
+//     via the parent useTraceFilters hook; here they apply on blur/Enter.
 //   • Min/max duration validation warnings.
 //   • Group-by switching (server-side aggregation).
 //   • Status filtering (ok / error / unset / all).
@@ -21,7 +21,6 @@
 import {
   AlertTriangle,
   ArrowUp,
-  ChevronDown,
   Hash,
   Search,
   SlidersHorizontal,
@@ -29,11 +28,23 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { useEffect, useReducer, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { Button } from '@/components/ui/Button'
-import { ModeToggle } from '@/components/ui/ModeToggle'
-import { StatusPanel } from '@/components/ui/StatusPanel'
+import { useEffect, useReducer, useState } from 'react'
+import { Badge } from '@/components/shadcn/badge'
+import { Button } from '@/components/shadcn/button'
+import { Input } from '@/components/shadcn/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/shadcn/select'
+import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
 import { cn } from '@/lib/utils'
 import type { TraceFilterState } from '../hooks/useTraceFilters'
 import type { GroupByOption } from '../lib/groupTraces'
@@ -76,44 +87,39 @@ export interface TraceFiltersProps {
 }
 
 const TIME_RANGE_PRESETS: Array<{ label: string; ms: number | null }> = [
-  { label: 'all time', ms: null },
-  { label: 'last 15m', ms: 15 * 60 * 1000 },
-  { label: 'last 1h', ms: 60 * 60 * 1000 },
-  { label: 'last 6h', ms: 6 * 60 * 60 * 1000 },
-  { label: 'last 24h', ms: 24 * 60 * 60 * 1000 },
-  { label: 'last 7d', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: 'All time', ms: null },
+  { label: 'Last 15 minutes', ms: 15 * 60 * 1000 },
+  { label: 'Last hour', ms: 60 * 60 * 1000 },
+  { label: 'Last 6 hours', ms: 6 * 60 * 60 * 1000 },
+  { label: 'Last 24 hours', ms: 24 * 60 * 60 * 1000 },
+  { label: 'Last 7 days', ms: 7 * 24 * 60 * 60 * 1000 },
 ]
 
 const SORT_BY_OPTIONS: Array<{
   label: string
   value: 'start_time' | 'duration' | 'service_name'
 }> = [
-  { label: 'start time', value: 'start_time' },
-  { label: 'duration', value: 'duration' },
-  { label: 'worker name', value: 'service_name' },
+  { label: 'Start time', value: 'start_time' },
+  { label: 'Duration', value: 'duration' },
+  { label: 'Worker name', value: 'service_name' },
 ]
 
 type StatusValue = 'all' | 'ok' | 'error' | 'unset'
 
 const STATUS_OPTIONS: Array<{ value: StatusValue; label: string }> = [
-  { value: 'all', label: 'all' },
-  { value: 'ok', label: 'ok' },
-  { value: 'error', label: 'error' },
-  { value: 'unset', label: 'unset' },
+  { value: 'all', label: 'All' },
+  { value: 'ok', label: 'OK' },
+  { value: 'error', label: 'Error' },
+  { value: 'unset', label: 'Unset' },
 ]
 
 const LABEL_MODE_OPTIONS: Array<{
   value: NonNullable<TraceFilterState['labelMode']>
   label: string
 }> = [
-  { value: 'function', label: 'function name' },
-  { value: 'span-name', label: 'span name' },
-  { value: 'attribute', label: 'attribute value' },
-]
-
-const SORT_ORDER_OPTIONS: Array<{ value: 'asc' | 'desc'; label: string }> = [
-  { value: 'desc', label: 'desc' },
-  { value: 'asc', label: 'asc' },
+  { value: 'function', label: 'Function name' },
+  { value: 'span-name', label: 'Span name' },
+  { value: 'attribute', label: 'Attribute value' },
 ]
 
 // --- Temp Inputs Reducer ---
@@ -187,113 +193,25 @@ function currentTimeRangeIndex(filters: TraceFilterState): number {
   return idx === -1 ? 0 : idx
 }
 
-const inputClass =
-  'h-8 px-2.5 rounded-xl text-[13px] bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors'
-
-const selectClass =
-  'h-8 px-2.5 rounded-xl text-[13px] bg-surface border border-transparent text-ink hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors appearance-none cursor-pointer'
-
-// Lightweight popover anchored to a trigger via getBoundingClientRect.
-// Portals into document.body so it isn't clipped by overflow-hidden
-// ancestors (the Traces section is overflow-hidden).
-interface MoreFiltersPopoverProps {
-  open: boolean
-  onClose: () => void
-  triggerRef: React.RefObject<HTMLElement | null>
-  width?: number
-  children: React.ReactNode
-}
-
-function MoreFiltersPopover({
-  open,
-  onClose,
-  triggerRef,
-  width = 520,
+/** A field in the filters popover: a quiet label over its control. */
+function Field({
+  label,
+  className,
   children,
-}: MoreFiltersPopoverProps) {
-  const popoverRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{
-    top: number
-    right: number
-    width: number
-    maxHeight: number
-  } | null>(null)
-
-  useEffect(() => {
-    if (!open || !triggerRef.current) return
-    const MARGIN = 8
-    const update = () => {
-      const trigger = triggerRef.current
-      if (!trigger) return
-      const rect = trigger.getBoundingClientRect()
-      const actualWidth = Math.min(width, window.innerWidth - MARGIN * 2)
-      // Right-align to the trigger, clamped so neither edge leaves the
-      // viewport.
-      const right = Math.min(
-        Math.max(window.innerWidth - rect.right, MARGIN),
-        window.innerWidth - actualWidth - MARGIN,
-      )
-      let top = rect.bottom + 4
-      let maxHeight = window.innerHeight - top - MARGIN
-      const MIN_HEIGHT = 240
-      if (maxHeight < MIN_HEIGHT) {
-        // Not enough room below the trigger — raise the popover (possibly
-        // over the trigger) so the content stays usable and scrollable.
-        maxHeight = Math.min(MIN_HEIGHT, window.innerHeight - MARGIN * 2)
-        top = window.innerHeight - MARGIN - maxHeight
-      }
-      setPos({ top, right, width: actualWidth, maxHeight })
-    }
-    update()
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', update, true)
-    return () => {
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', update, true)
-    }
-  }, [open, triggerRef, width])
-
-  useEffect(() => {
-    if (!open) return
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (popoverRef.current?.contains(target)) return
-      if (triggerRef.current?.contains(target)) return
-      onClose()
-    }
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('mousedown', handleClick)
-    document.addEventListener('keydown', handleEscape)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [open, onClose, triggerRef])
-
-  if (!open || !pos) return null
-
-  return createPortal(
-    <div
-      ref={popoverRef}
-      style={{
-        position: 'fixed',
-        top: pos.top,
-        right: pos.right,
-        width: pos.width,
-        maxHeight: pos.maxHeight,
-        zIndex: 50,
-      }}
-      className="rounded-md bg-panel-raised p-3 shadow-floating overflow-y-auto"
-    >
+}: {
+  label: string
+  className?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className={cn('flex flex-col gap-1.5', className)}>
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
       {children}
-    </div>,
-    document.body,
+    </div>
   )
 }
 
-function SearchInput({
+export function SearchInput({
   searchQuery,
   onSearchChange,
   className,
@@ -302,38 +220,33 @@ function SearchInput({
   onSearchChange?: (value: string) => void
   className?: string
 }) {
-  const [searchFocused, setSearchFocused] = useState(false)
   return (
-    <label
-      className={cn(
-        'flex h-8 items-center gap-2 rounded-xl border bg-surface px-2.5 transition-[border-color,box-shadow]',
-        searchFocused
-          ? 'border-neutral-400 ring-[3px] ring-neutral-500/10 dark:border-neutral-600'
-          : 'border-transparent',
-        className,
-      )}
-    >
-      <Search className="size-4 text-ink-faint flex-shrink-0" />
-      <input
-        type="text"
+    <div className={cn('relative', className)}>
+      <Search
+        className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+        aria-hidden
+      />
+      <Input
+        type="search"
         value={searchQuery}
         onChange={(e) => onSearchChange?.(e.target.value)}
-        onFocus={() => setSearchFocused(true)}
-        onBlur={() => setSearchFocused(false)}
         placeholder="Search traces"
-        className="min-w-0 flex-1 bg-transparent text-[13px] text-ink placeholder:text-ink-ghost focus:outline-none"
+        aria-label="search traces"
+        className="rounded-xl bg-muted/60 pr-8 pl-8 dark:bg-muted/40"
       />
-      {searchQuery && (
-        <button
+      {searchQuery ? (
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           onClick={() => onSearchChange?.('')}
-          className="text-ink-faint hover:text-ink transition-colors"
           aria-label="clear search"
+          className="absolute top-1/2 right-1 -translate-y-1/2"
         >
-          <X className="size-4" />
-        </button>
-      )}
-    </label>
+          <X />
+        </Button>
+      ) : null}
+    </div>
   )
 }
 
@@ -343,6 +256,42 @@ export interface HeldNewTraces {
   /** on a later page the segment offers the latest traces on page 1 */
   onPage1: boolean
   onShow: () => void
+}
+
+/** A stat in the toolbar: a glyph, the number in mono, a quiet label. */
+function Stat({
+  icon,
+  value,
+  label,
+  title,
+  tone,
+}: {
+  icon: React.ReactNode
+  value: string
+  label: string
+  title?: string
+  tone?: 'alert'
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-1.5 px-2.5 text-xs',
+        tone === 'alert' ? 'text-destructive' : 'text-muted-foreground',
+      )}
+      title={title}
+    >
+      {icon}
+      <span
+        className={cn(
+          'font-mono tabular-nums',
+          tone === 'alert' ? 'text-destructive' : 'text-foreground',
+        )}
+      >
+        {value}
+      </span>
+      <span>{label}</span>
+    </div>
+  )
 }
 
 export function StatsBlock({
@@ -355,13 +304,13 @@ export function StatsBlock({
   if (!stats) return null
   const held = heldNew && heldNew.count > 0 ? heldNew : null
   return (
-    <div className="flex items-stretch rounded-xl bg-surface">
+    <div className="flex h-8 items-stretch divide-x divide-border rounded-xl bg-muted/60 dark:bg-muted/40">
       {held ? (
         <button
           type="button"
           onClick={held.onShow}
           data-trace-list-held={held.count}
-          className="flex items-center gap-1.5 rounded-l-xl px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-surface-hover"
+          className="flex items-center gap-1.5 rounded-l-xl px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
           title={
             held.onPage1
               ? `${held.count} new ${held.count === 1 ? 'trace' : 'traces'} waiting — show them at the top`
@@ -373,10 +322,10 @@ export function StatsBlock({
               : 'show the latest traces on page 1'
           }
         >
-          <ArrowUp className="size-4" />
+          <ArrowUp className="size-4" aria-hidden />
           {held.onPage1 ? (
             <>
-              <span className="tabular-nums">{held.count}</span>
+              <span className="font-mono tabular-nums">{held.count}</span>
               <span>new</span>
             </>
           ) : (
@@ -384,33 +333,23 @@ export function StatsBlock({
           )}
         </button>
       ) : null}
-      <div
-        className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-ink-faint"
+      <Stat
+        icon={<Hash className="size-4" aria-hidden />}
+        value={String(stats.totalTraces)}
+        label="Traces"
         title={`${stats.pageTraceCount} traces on this page, ${stats.totalTraces} total matching traces`}
-      >
-        <Hash className="size-4 text-ink-faint" />
-        <span className="font-mono text-ink tabular-nums">
-          {stats.totalTraces}
-        </span>
-        <span className="text-ink-ghost">Traces</span>
-      </div>
-      <div
-        className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1 text-xs',
-          stats.errorCount > 0 ? 'text-alert' : 'text-ink-faint',
-        )}
-      >
-        <XCircle className="size-4" />
-        <span className="font-mono tabular-nums">{stats.errorCount}</span>
-        <span className="text-ink-ghost">Page errors</span>
-      </div>
-      <div className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-ink-faint">
-        <Timer className="size-4" />
-        <span className="font-mono text-ink tabular-nums">
-          {formatDurationMs(stats.avgDuration)}
-        </span>
-        <span className="text-ink-ghost">Page avg</span>
-      </div>
+      />
+      <Stat
+        icon={<XCircle className="size-4" aria-hidden />}
+        value={String(stats.errorCount)}
+        label="Page errors"
+        tone={stats.errorCount > 0 ? 'alert' : undefined}
+      />
+      <Stat
+        icon={<Timer className="size-4" aria-hidden />}
+        value={formatDurationMs(stats.avgDuration)}
+        label="Page avg"
+      />
     </div>
   )
 }
@@ -611,7 +550,7 @@ export function TraceFilters({
     const preset = TIME_RANGE_PRESETS.find((p) => p.ms === diff)
     activeFilters.push({
       key: 'timeRange',
-      label: preset ? preset.label : 'custom range',
+      label: preset ? preset.label.toLowerCase() : 'custom range',
     })
   }
   if (filters.attributes && filters.attributes.length > 0) {
@@ -624,7 +563,7 @@ export function TraceFilters({
     const opt = SORT_BY_OPTIONS.find((o) => o.value === filters.sortBy)
     activeFilters.push({
       key: 'sortBy',
-      label: `sort: ${opt?.label ?? filters.sortBy}`,
+      label: `sort: ${(opt?.label ?? filters.sortBy).toLowerCase()}`,
     })
   }
   if (filters.sortOrder && filters.sortOrder !== 'desc') {
@@ -653,13 +592,9 @@ export function TraceFilters({
   const statusValue: StatusValue = (filters.status ?? 'all') as StatusValue
   const groupByValue = (filters.groupBy ?? 'none') as GroupByOption
   const sortOrderValue = filters.sortOrder ?? 'desc'
-
-  // Chips that aren't already represented by inline controls (group-by);
-  // status lives in the popover, so it counts here.
   const advancedFilterCount = activeFilters.length
 
   const [popoverOpen, setPopoverOpen] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement>(null)
 
   // Hide validation warnings automatically once the underlying values
   // stop being suspect. The parent surfaces a manual dismiss button too.
@@ -674,45 +609,40 @@ export function TraceFilters({
   }, [validationWarnings, onClearWarnings])
 
   return (
-    <div className="space-y-2" data-testid="trace-filters">
+    <div className="flex flex-col gap-2" data-testid="trace-filters">
       {(validationWarnings?.durationSwapped ||
         validationWarnings?.timeRangeSwapped) && (
-        <div className="relative">
-          <StatusPanel
-            variant="warn"
-            icon={<AlertTriangle className="w-full h-full" />}
-            headline="values corrected"
-            detail={
-              <>
-                {validationWarnings.durationSwapped &&
-                  'min/max duration swapped. '}
-                {validationWarnings.timeRangeSwapped &&
-                  'start/end time swapped. '}
-              </>
-            }
-          />
+        <div className="flex items-center gap-2 rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="size-4 shrink-0" aria-hidden />
+          <span className="flex-1">
+            Values corrected:{' '}
+            {validationWarnings.durationSwapped &&
+              'min and max duration were swapped. '}
+            {validationWarnings.timeRangeSwapped &&
+              'start and end time were swapped.'}
+          </span>
           {onClearWarnings && (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon-xs"
               onClick={onClearWarnings}
-              className="absolute top-2 right-2 text-warn hover:text-ink transition-colors"
-              title="dismiss warning"
               aria-label="dismiss warning"
             >
-              <X className="size-4" />
-            </button>
+              <X />
+            </Button>
           )}
         </div>
       )}
 
-      {/* Always-visible row: views, search, group-by, more filters, stats */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* The toolbar: views, search, group-by, filters, stats. */}
+      <div className="flex flex-wrap items-center gap-2">
         {leading}
 
         <SearchInput
           searchQuery={searchQuery}
           onSearchChange={onSearchChange}
-          className="flex-1 min-w-[240px] max-w-[460px]"
+          className="min-w-[240px] max-w-[460px] flex-1"
         />
 
         <GroupByPicker
@@ -721,33 +651,243 @@ export function TraceFilters({
           suggestions={attributeKeySuggestions}
         />
 
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={() => setPopoverOpen((v) => !v)}
-          className={cn(
-            'inline-flex h-8 items-center gap-2 rounded-xl px-2.5 text-[13px] transition-colors',
-            popoverOpen || advancedFilterCount > 0
-              ? 'bg-accent-muted text-ink'
-              : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
-          )}
-          aria-haspopup="dialog"
-          aria-expanded={popoverOpen}
-        >
-          <SlidersHorizontal className="size-4" />
-          <span>More filters</span>
-          {advancedFilterCount > 0 && (
-            <span className="px-1 py-0 rounded-md bg-accent text-accent-fg text-[11px] font-medium tabular-nums leading-none flex items-center min-w-[14px] justify-center">
-              {advancedFilterCount}
-            </span>
-          )}
-          <ChevronDown
-            className={cn(
-              'size-4 transition-transform',
-              popoverOpen && 'rotate-180',
-            )}
-          />
-        </button>
+        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                variant={advancedFilterCount > 0 ? 'secondary' : 'outline'}
+                className="rounded-xl"
+                aria-label="more filters"
+              />
+            }
+          >
+            <SlidersHorizontal data-icon="inline-start" />
+            Filters
+            {advancedFilterCount > 0 ? (
+              <Badge className="ml-0.5 h-4 min-w-4 px-1 font-mono tabular-nums">
+                {advancedFilterCount}
+              </Badge>
+            ) : null}
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="w-[min(34rem,calc(100vw-1rem))] gap-0 p-0"
+          >
+            <div className="flex items-center justify-between px-4 pt-3 pb-2">
+              <span className="text-sm font-semibold">Filters</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onClear}
+                className="-mr-2"
+              >
+                Clear all
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 px-4 pb-4">
+              <Field label="Status" className="col-span-2">
+                <Tabs
+                  value={statusValue}
+                  onValueChange={(next) =>
+                    onFilterChange(
+                      'status',
+                      next === 'all' ? null : (next as StatusValue),
+                    )
+                  }
+                >
+                  <TabsList className="w-full">
+                    {STATUS_OPTIONS.map((option) => (
+                      <TabsTrigger key={option.value} value={option.value}>
+                        {option.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                </Tabs>
+              </Field>
+
+              <Field label="Time range">
+                <Select
+                  value={String(currentTimeRangeIndex(filters))}
+                  onValueChange={(value) =>
+                    handleTimeRangeChange(Number.parseInt(String(value), 10))
+                  }
+                  items={TIME_RANGE_PRESETS.map((preset, i) => ({
+                    value: String(i),
+                    label: preset.label,
+                  }))}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TIME_RANGE_PRESETS.map((preset, i) => (
+                      <SelectItem key={preset.label} value={String(i)}>
+                        {preset.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+
+              <Field label="Sort">
+                <div className="flex gap-2">
+                  <Select
+                    value={filters.sortBy ?? 'start_time'}
+                    onValueChange={(value) =>
+                      onFilterChange(
+                        'sortBy',
+                        value as 'start_time' | 'duration' | 'service_name',
+                      )
+                    }
+                    items={SORT_BY_OPTIONS}
+                  >
+                    <SelectTrigger className="min-w-0 flex-1">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SORT_BY_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Tabs
+                    value={sortOrderValue}
+                    onValueChange={(next) =>
+                      onFilterChange('sortOrder', next as 'asc' | 'desc')
+                    }
+                  >
+                    <TabsList>
+                      <TabsTrigger value="desc">Desc</TabsTrigger>
+                      <TabsTrigger value="asc">Asc</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </div>
+              </Field>
+
+              <Field label="Worker">
+                <Input
+                  type="text"
+                  placeholder="e.g. api-*, backend"
+                  value={tempWorkerName}
+                  onChange={(e) =>
+                    dispatchTempInputs({
+                      type: 'SET_WORKER_NAME',
+                      payload: e.target.value,
+                    })
+                  }
+                  onBlur={applyWorker}
+                  onKeyDown={(e) => handleEnterApply(e, applyWorker)}
+                />
+              </Field>
+
+              <Field label="Operation">
+                <Input
+                  type="text"
+                  placeholder="e.g. get *, post /api/*"
+                  value={tempOperationName}
+                  onChange={(e) =>
+                    dispatchTempInputs({
+                      type: 'SET_OPERATION_NAME',
+                      payload: e.target.value,
+                    })
+                  }
+                  onBlur={applyOperation}
+                  onKeyDown={(e) => handleEnterApply(e, applyOperation)}
+                />
+              </Field>
+
+              <Field label="Duration (ms)" className="col-span-2">
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    placeholder="min"
+                    value={tempMinDuration}
+                    onChange={(e) =>
+                      dispatchTempInputs({
+                        type: 'SET_MIN_DURATION',
+                        payload: e.target.value,
+                      })
+                    }
+                    onBlur={applyDuration}
+                    onKeyDown={(e) => handleEnterApply(e, applyDuration)}
+                    className="font-mono tabular-nums"
+                  />
+                  <span className="text-xs text-muted-foreground">to</span>
+                  <Input
+                    type="number"
+                    inputMode="numeric"
+                    placeholder="max"
+                    value={tempMaxDuration}
+                    onChange={(e) =>
+                      dispatchTempInputs({
+                        type: 'SET_MAX_DURATION',
+                        payload: e.target.value,
+                      })
+                    }
+                    onBlur={applyDuration}
+                    onKeyDown={(e) => handleEnterApply(e, applyDuration)}
+                    className="font-mono tabular-nums"
+                  />
+                </div>
+              </Field>
+
+              <Field label="Label rows by">
+                <Select
+                  value={filters.labelMode ?? 'function'}
+                  onValueChange={(value) =>
+                    onFilterChange(
+                      'labelMode',
+                      value as TraceFilterState['labelMode'],
+                    )
+                  }
+                  items={LABEL_MODE_OPTIONS}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LABEL_MODE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              {filters.labelMode === 'attribute' ? (
+                <Field label="Attribute key">
+                  <Input
+                    type="text"
+                    placeholder="e.g. iii.tag.message"
+                    value={tempLabelAttribute}
+                    onChange={(e) => setTempLabelAttribute(e.target.value)}
+                    onBlur={applyLabelAttribute}
+                    onKeyDown={(e) => handleEnterApply(e, applyLabelAttribute)}
+                    className="font-mono"
+                  />
+                </Field>
+              ) : null}
+
+              <Field label="Attributes" className="col-span-2">
+                <AttributesFilter
+                  value={filters.attributes || []}
+                  onChange={(attrs) =>
+                    onFilterChange(
+                      'attributes',
+                      attrs.length > 0 ? attrs : undefined,
+                    )
+                  }
+                />
+              </Field>
+            </div>
+          </PopoverContent>
+        </Popover>
 
         <div className="ml-auto">
           <StatsBlock stats={stats} heldNew={heldNew} />
@@ -756,249 +896,43 @@ export function TraceFilters({
 
       {/* Active filter chips */}
       {activeFilters.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {isLoading && (
             <span
               aria-hidden
-              className="w-1.5 h-1.5 bg-accent rounded-full pulse-dot mr-0.5"
+              className="mr-0.5 size-1.5 rounded-full bg-sky-500 pulse-dot"
             />
           )}
           {activeFilters.map((filter) => (
-            <button
+            <Badge
               key={filter.key}
-              type="button"
-              onClick={() =>
-                filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
-              }
-              className="group flex items-center gap-1 rounded-lg bg-surface px-2 py-1 text-xs text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink"
+              variant="secondary"
+              className="h-6 gap-1 pr-1 pl-2.5 font-normal"
             >
               <span>{filter.label}</span>
-              <X className="size-4 opacity-50 group-hover:opacity-100 transition-all" />
-            </button>
+              <button
+                type="button"
+                onClick={() =>
+                  filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
+                }
+                aria-label={`remove ${filter.label}`}
+                className="flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+              >
+                <X className="size-4!" aria-hidden />
+              </button>
+            </Badge>
           ))}
-          <Button variant="ghost" size="sm" onClick={onClear} className="ml-1">
-            clear all
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onClear}
+            className="ml-0.5"
+          >
+            Clear all
           </Button>
         </div>
       )}
-
-      <MoreFiltersPopover
-        open={popoverOpen}
-        onClose={() => setPopoverOpen(false)}
-        triggerRef={triggerRef}
-      >
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="iii-ui-eyebrow">more filters</h3>
-            <button
-              type="button"
-              onClick={() => setPopoverOpen(false)}
-              className="text-ink-faint hover:text-ink"
-              aria-label="close"
-            >
-              <X className="size-4" />
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1 col-span-2">
-              <span className="iii-ui-eyebrow">status</span>
-              <ModeToggle<StatusValue>
-                value={statusValue}
-                options={STATUS_OPTIONS}
-                onChange={(next) =>
-                  onFilterChange('status', next === 'all' ? null : next)
-                }
-              />
-            </div>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">time range</span>
-              <select
-                className={selectClass}
-                value={currentTimeRangeIndex(filters)}
-                onChange={(e) =>
-                  handleTimeRangeChange(Number.parseInt(e.target.value, 10))
-                }
-              >
-                {TIME_RANGE_PRESETS.map((preset, i) => (
-                  <option key={preset.label} value={i}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">sort by</span>
-              <div className="flex gap-2">
-                <select
-                  className={cn(selectClass, 'flex-1')}
-                  value={filters.sortBy ?? 'start_time'}
-                  onChange={(e) =>
-                    onFilterChange(
-                      'sortBy',
-                      e.target.value as
-                        | 'start_time'
-                        | 'duration'
-                        | 'service_name',
-                    )
-                  }
-                >
-                  {SORT_BY_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <ModeToggle<'asc' | 'desc'>
-                  value={sortOrderValue}
-                  options={SORT_ORDER_OPTIONS}
-                  onChange={(next) => onFilterChange('sortOrder', next)}
-                />
-              </div>
-            </label>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">worker</span>
-              <input
-                type="text"
-                placeholder="e.g. api-*, backend"
-                value={tempWorkerName}
-                onChange={(e) =>
-                  dispatchTempInputs({
-                    type: 'SET_WORKER_NAME',
-                    payload: e.target.value,
-                  })
-                }
-                onBlur={applyWorker}
-                onKeyDown={(e) => handleEnterApply(e, applyWorker)}
-                className={inputClass}
-              />
-            </label>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">operation</span>
-              <input
-                type="text"
-                placeholder="e.g. get *, post /api/*"
-                value={tempOperationName}
-                onChange={(e) =>
-                  dispatchTempInputs({
-                    type: 'SET_OPERATION_NAME',
-                    payload: e.target.value,
-                  })
-                }
-                onBlur={applyOperation}
-                onKeyDown={(e) => handleEnterApply(e, applyOperation)}
-                className={inputClass}
-              />
-            </label>
-
-            <label className="flex flex-col gap-1 col-span-2">
-              <span className="iii-ui-eyebrow">duration (ms)</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  placeholder="min"
-                  value={tempMinDuration}
-                  onChange={(e) =>
-                    dispatchTempInputs({
-                      type: 'SET_MIN_DURATION',
-                      payload: e.target.value,
-                    })
-                  }
-                  onBlur={applyDuration}
-                  onKeyDown={(e) => handleEnterApply(e, applyDuration)}
-                  className={cn(inputClass, 'flex-1 tabular-nums')}
-                />
-                <span className="text-ink-ghost font-mono text-[11px]">—</span>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  placeholder="max"
-                  value={tempMaxDuration}
-                  onChange={(e) =>
-                    dispatchTempInputs({
-                      type: 'SET_MAX_DURATION',
-                      payload: e.target.value,
-                    })
-                  }
-                  onBlur={applyDuration}
-                  onKeyDown={(e) => handleEnterApply(e, applyDuration)}
-                  className={cn(inputClass, 'flex-1 tabular-nums')}
-                />
-              </div>
-            </label>
-          </div>
-
-          <div className="pt-2 border-t border-rule-2">
-            <div className="iii-ui-eyebrow mb-2">display</div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="iii-ui-eyebrow">label rows by</span>
-                <select
-                  className={selectClass}
-                  value={filters.labelMode ?? 'function'}
-                  onChange={(e) =>
-                    onFilterChange(
-                      'labelMode',
-                      e.target.value as TraceFilterState['labelMode'],
-                    )
-                  }
-                >
-                  {LABEL_MODE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {filters.labelMode === 'attribute' && (
-                <label className="flex flex-col gap-1">
-                  <span className="iii-ui-eyebrow">attribute key</span>
-                  <input
-                    type="text"
-                    placeholder="e.g. iii.tag.message"
-                    value={tempLabelAttribute}
-                    onChange={(e) => setTempLabelAttribute(e.target.value)}
-                    onBlur={applyLabelAttribute}
-                    onKeyDown={(e) => handleEnterApply(e, applyLabelAttribute)}
-                    className={inputClass}
-                  />
-                </label>
-              )}
-            </div>
-          </div>
-
-          <div className="pt-2 border-t border-rule-2">
-            <div className="iii-ui-eyebrow mb-2">
-              attributes
-              {filters.attributes && filters.attributes.length > 0 ? (
-                <span className="ml-1 text-accent tabular-nums normal-case">
-                  ({filters.attributes.length})
-                </span>
-              ) : null}
-            </div>
-            <AttributesFilter
-              value={filters.attributes || []}
-              onChange={(attrs) =>
-                onFilterChange(
-                  'attributes',
-                  attrs.length > 0 ? attrs : undefined,
-                )
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-end pt-2 border-t border-rule-2">
-            <Button variant="ghost" size="sm" onClick={onClear}>
-              clear all filters
-            </Button>
-          </div>
-        </div>
-      </MoreFiltersPopover>
     </div>
   )
 }

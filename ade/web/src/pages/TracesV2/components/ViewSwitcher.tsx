@@ -1,9 +1,6 @@
-import { ModeToggle } from '@/components/ui/ModeToggle'
+import { GitBranch, Rows3 } from 'lucide-react'
+import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
 
-// The detail offers the lane timeline (default — the same visual grammar
-// as the live strip up top) and the waterfall tree. The original Traces
-// surface's flame graph was replaced by the timeline; its map/flow views
-// were retired with it.
 export type ViewType = 'timeline' | 'waterfall'
 
 interface ViewSwitcherProps {
@@ -11,15 +8,23 @@ interface ViewSwitcherProps {
   onViewChange: (next: ViewType) => void
 }
 
+/** Timeline or waterfall, as a segmented pair under the trace's stats. */
 export function ViewSwitcher({ currentView, onViewChange }: ViewSwitcherProps) {
   return (
-    <ModeToggle<ViewType>
+    <Tabs
       value={currentView}
-      onChange={onViewChange}
-      options={[
-        { value: 'timeline', label: 'timeline' },
-        { value: 'waterfall', label: 'waterfall' },
-      ]}
-    />
+      onValueChange={(next) => onViewChange(next as ViewType)}
+    >
+      <TabsList>
+        <TabsTrigger value="timeline">
+          <GitBranch data-icon="inline-start" />
+          Timeline
+        </TabsTrigger>
+        <TabsTrigger value="waterfall">
+          <Rows3 data-icon="inline-start" />
+          Waterfall
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
   )
 }

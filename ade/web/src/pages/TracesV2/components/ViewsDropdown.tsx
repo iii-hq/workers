@@ -9,13 +9,13 @@
 
 import { Check, ChevronDown, Circle, SlidersVertical } from 'lucide-react'
 import { useState } from 'react'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
 import {
   Dialog,
   DialogClose,
   DialogContent,
   DialogTitle,
-} from '@/components/ui/Dialog'
+} from '@/components/shadcn/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,8 +23,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/DropdownMenu'
-import { cn } from '@/lib/utils'
+} from '@/components/shadcn/dropdown-menu'
+import { Input } from '@/components/shadcn/input'
 import type { TracesView } from '../lib/tracesViews'
 
 interface ViewsDropdownProps {
@@ -77,38 +77,36 @@ export function ViewsDropdown({
           the page frozen after the dialog closes (radix-ui/primitives#1836).
           The dialog must stay the only modal layer. */}
       <DropdownMenu modal={false}>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className={cn(
-              'inline-flex h-8 items-center gap-2 rounded-xl px-2.5 text-[13px] transition-colors',
-              activeView
-                ? 'bg-surface-selected text-ink'
-                : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
-            )}
-            aria-label="switch traces view"
-          >
-            <SlidersVertical className="size-4" />
-            <span className="max-w-[160px] truncate">{triggerLabel}</span>
-            {activeModified && (
-              <Circle
-                className="w-1.5 h-1.5 fill-warn text-warn"
-                aria-label="view modified"
-              />
-            )}
-            <ChevronDown className="size-4" />
-          </button>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              type="button"
+              variant={activeView ? 'secondary' : 'outline'}
+              className="rounded-xl"
+              aria-label="switch traces view"
+            />
+          }
+        >
+          <SlidersVertical data-icon="inline-start" />
+          <span className="max-w-[160px] truncate">{triggerLabel}</span>
+          {activeModified && (
+            <Circle
+              className="size-1.5! fill-amber-500 text-amber-500"
+              aria-label="view modified"
+            />
+          )}
+          <ChevronDown data-icon="inline-end" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
           <DropdownMenuLabel>Views</DropdownMenuLabel>
-          <DropdownMenuItem onSelect={() => onSelectView(null)}>
+          <DropdownMenuItem onClick={() => onSelectView(null)}>
             <span className="w-3">
               {!activeView && <Check className="size-4" />}
             </span>
             all traces
           </DropdownMenuItem>
           {views.map((view) => (
-            <DropdownMenuItem key={view.id} onSelect={() => onSelectView(view)}>
+            <DropdownMenuItem key={view.id} onClick={() => onSelectView(view)}>
               <span className="w-3">
                 {view.id === activeViewId && <Check className="size-4" />}
               </span>
@@ -116,21 +114,21 @@ export function ViewsDropdown({
             </DropdownMenuItem>
           ))}
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => openDialog('save')}>
+          <DropdownMenuItem onClick={() => openDialog('save')}>
             save current as view…
           </DropdownMenuItem>
           {activeView && (
             <>
               <DropdownMenuItem
                 disabled={!activeModified}
-                onSelect={onUpdateActive}
+                onClick={onUpdateActive}
               >
                 update “{activeView.name}”
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => openDialog('rename')}>
+              <DropdownMenuItem onClick={() => openDialog('rename')}>
                 rename…
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onDeleteActive}>
+              <DropdownMenuItem onClick={onDeleteActive}>
                 delete view
               </DropdownMenuItem>
             </>
@@ -142,9 +140,9 @@ export function ViewsDropdown({
         open={nameDialog !== null}
         onOpenChange={(open) => !open && setNameDialog(null)}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent>
           <DialogTitle>
-            {nameDialog === 'rename' ? 'rename view' : 'save view'}
+            {nameDialog === 'rename' ? 'Rename view' : 'Save view'}
           </DialogTitle>
           <form
             onSubmit={(e) => {
@@ -153,27 +151,21 @@ export function ViewsDropdown({
             }}
             className="flex flex-col gap-3 mt-3"
           >
-            <input
+            <Input
               autoFocus
               type="text"
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
-              placeholder="view name"
-              className="h-8 rounded-xl bg-surface px-2.5 text-[13px] border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors"
+              placeholder="View name"
             />
             <div className="flex items-center justify-end gap-2">
-              <DialogClose asChild>
-                <Button variant="ghost" size="sm" type="button">
-                  cancel
-                </Button>
-              </DialogClose>
-              <Button
-                variant="primary"
-                size="sm"
-                type="submit"
-                disabled={!nameInput.trim()}
+              <DialogClose
+                render={<Button variant="ghost" size="sm" type="button" />}
               >
-                {nameDialog === 'rename' ? 'rename' : 'save'}
+                Cancel
+              </DialogClose>
+              <Button size="sm" type="submit" disabled={!nameInput.trim()}>
+                {nameDialog === 'rename' ? 'Rename' : 'Save'}
               </Button>
             </div>
           </form>
