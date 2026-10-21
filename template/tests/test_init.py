@@ -13,8 +13,9 @@ from ruamel.yaml import YAML
 
 TEMPLATE = Path(__file__).resolve().parents[1]
 
-# Records each call; `project init` writes $FAKE_COMPOSE like the real CLI writes a
-# template, and fails like it for a template named `missing`.
+# Records each call; `project init` writes $FAKE_COMPOSE (and $FAKE_HTTP_CONFIG, a
+# template-shipped entry) like the real CLI writes a template, and fails like it
+# for a template named `missing`.
 FAKE_III = """#!/usr/bin/env bash
 printf '%s|%s\\n' "$PWD" "$*" >> "$III_LOG"
 if [[ "$1 $2" == "project init" ]]; then
@@ -22,6 +23,10 @@ if [[ "$1 $2" == "project init" ]]; then
   [[ "$name" != missing ]] || { echo "Template 'missing' not found" >&2; exit 1; }
   mkdir -p "$dir"
   printf '%s' "$FAKE_COMPOSE" > "$dir/worker-compose.yaml"
+  if [[ -n "${FAKE_HTTP_CONFIG:-}" ]]; then
+    mkdir -p "$dir/config"
+    printf '%s' "$FAKE_HTTP_CONFIG" > "$dir/config/default-http.yaml"
+  fi
 fi
 """
 
@@ -110,6 +115,10 @@ class InitTests(unittest.TestCase):
             "  queue:\n    worker: package://queue\n"
         )
         self.env["TEMPLATES_REPO"] = "/checkout/templates"
+        self.env["FAKE_HTTP_CONFIG"] = (
+            "id: default-http\nname: HTTP\ndescription: Shipped by the template\n"
+            "value:\n  port: 9999 # moved by init.sh\n  host: 127.0.0.1\n"
+        )
         with bound(3111):
             result = self.run_init("harness")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -125,7 +134,10 @@ class InitTests(unittest.TestCase):
         engine = int(compose["engine"]["url"].rsplit(":", 1)[1])
         # Seeds use the engine store's entry names, so a later compose::add of http is moved too.
         ade = load(destination / "config/default-ade.yaml")["value"]["http_port"]
-        http = load(destination / "config/default-http.yaml")["value"]["port"]
+        shipped = load(destination / "config/default-http.yaml")
+        http = shipped["value"]["port"]
+        # A template's own entry keeps every field except the port.
+        self.assertEqual((shipped["name"], shipped["value"]["host"]), ("HTTP", "127.0.0.1"))
         self.assertGreater(engine, 49334)
         self.assertGreater(ade, 3113)
         self.assertGreater(http, 3111)
@@ -168,6 +180,17 @@ class InitTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not found", result.stderr)
         self.assertTrue((self.launcher / "missing/keep.txt").is_file())
+        self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
+        self.assertNotIn("compose --up", self.log.read_text())
+
+    def test_failed_configuration_keeps_the_previous_folder(self):
+        (self.launcher / "quickstart").mkdir()
+        (self.launcher / "quickstart/keep.txt").write_text("previous run\n")
+        self.env["FAKE_COMPOSE"] = "engine:\n  url: ws://example.com:49134\ncontainers: {}\n"
+        result = self.run_init("quickstart")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing to share the root stack's engine", result.stderr)
+        self.assertTrue((self.launcher / "quickstart/keep.txt").is_file())
         self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
         self.assertNotIn("compose --up", self.log.read_text())
 

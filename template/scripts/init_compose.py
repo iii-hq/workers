@@ -53,16 +53,19 @@ def listening(port):
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-def main(destination):
-    compose = destination / "worker-compose.yaml"
+def main(staged, destination):
+    """Configure the project in `staged`, which init.sh then moves to `destination`."""
+    compose = staged / "worker-compose.yaml"
     if not compose.is_file():
         return
     sandboxes = destination.parent
+    # Local worker paths are relative to the folder the project will run from.
     local = [key for key, _ in configure_local_workers(compose, destination, sandboxes.parent)]
 
     taken = set()
     for sibling in sandboxes.glob("*/worker-compose.yaml"):
-        if sibling != compose:
+        # The folder being replaced claims nothing, so a rerun keeps its ports.
+        if sibling.parent != destination:
             taken |= claimed_ports(sibling.parent)
 
     yaml = YAML()
@@ -85,14 +88,20 @@ def main(destination):
     # Workers install their defaults only into an empty entry, so a seed in the
     # engine's store moves a listener whether it is declared now or added later.
     namespace = document.get("namespace", "default")
-    (destination / "config").mkdir(exist_ok=True)
+    (staged / "config").mkdir(exist_ok=True)
     for name, (field, start) in LISTENERS.items():
         port = free_port(start, taken)
         entry = f"{namespace}-{name}"
-        # The store requires name and description; the worker refreshes both when it registers.
-        (destination / "config" / f"{entry}.yaml").write_text(
-            f"id: {entry}\nname: {name}\ndescription: Port seeded by init.sh\nvalue:\n  {field}: {port}\n"
-        )
+        seed = staged / "config" / f"{entry}.yaml"
+        # A template's own entry keeps everything but the port.
+        stored = yaml.load(seed) if seed.is_file() else None
+        if not isinstance(stored, dict):
+            # The store requires name and description; the worker refreshes both when it registers.
+            stored = {"id": entry, "name": name, "description": "Port seeded by init.sh"}
+        if not isinstance(stored.get("value"), dict):
+            stored["value"] = {}
+        stored["value"][field] = port
+        yaml.dump(stored, seed)
         where = f"http://127.0.0.1:{port}" if name in declared else f"port {port}, used if {name} is added later"
         print(f"  {name:<7} {where}")
     print(f"  {'engine':<7} ws://127.0.0.1:{engine_port}")
@@ -102,4 +111,4 @@ def main(destination):
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    main(Path(sys.argv[1]), Path(sys.argv[2]))

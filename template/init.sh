@@ -76,13 +76,12 @@ if ! output=$("${init[@]}" </dev/null 2>&1); then
   printf '%s\n' "$output" >&2
   exit 1
 fi
+# Configure before the swap, so any failure up to here keeps the previous folder.
+"${python[@]}" "$script_dir/scripts/init_compose.py" "$stage/$name" "$destination"
 rm -rf -- "$destination"
 mv -- "$stage/$name" "$destination"
 rmdir -- "$stage"
 trap - EXIT
-
-# After the move: local worker paths are relative to the final folder.
-"${python[@]}" "$script_dir/scripts/init_compose.py" "$destination"
 
 cd -- "$destination"
 exec iii compose --up
