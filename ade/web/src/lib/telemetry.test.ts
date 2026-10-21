@@ -216,6 +216,97 @@ describe('telemetry', () => {
   })
 })
 
+describe('scrubEvent', () => {
+  it('is the before_send hook', async () => {
+    const t = await load()
+    expect(init.mock.calls[0][1].before_send).toBe(t.scrubEvent)
+  })
+
+  it('drops the query string from every URL property', async () => {
+    const { scrubEvent } = await import('./telemetry')
+    const url = 'http://127.0.0.1:3113/?token=secret&context=%2Fhome%2Fme'
+    const event = scrubEvent({
+      uuid: 'u',
+      event: '$pageview',
+      properties: {
+        $current_url: url,
+        $session_entry_url: url,
+        $referrer: url,
+        $pathname: '/',
+        screens: ['chat'],
+      },
+      $set: { $current_url: url },
+      $set_once: { $initial_current_url: url, $initial_referrer: url },
+    })
+    expect(JSON.stringify(event)).not.toContain('secret')
+    expect(JSON.stringify(event)).not.toContain('context')
+    expect(event?.properties.$current_url).toBe('http://127.0.0.1:3113/')
+    expect(event?.$set_once?.$initial_current_url).toBe(
+      'http://127.0.0.1:3113/',
+    )
+    expect(event?.properties.screens).toEqual(['chat'])
+  })
+
+  it('drops the query string from URLs nested in web vitals', async () => {
+    const { scrubEvent } = await import('./telemetry')
+    const url = 'http://127.0.0.1:3113/?token=secret#/traces'
+    const event = scrubEvent({
+      uuid: 'u',
+      event: '$web_vitals',
+      properties: {
+        $web_vitals_LCP_event: {
+          name: 'LCP',
+          value: 120,
+          navigationURL: url,
+          $current_url: url,
+          attribution: { url },
+        },
+      },
+    })
+    expect(JSON.stringify(event)).not.toContain('secret')
+    expect(JSON.stringify(event)).not.toContain('#/traces')
+    expect(event?.properties.$web_vitals_LCP_event).toMatchObject({
+      name: 'LCP',
+      value: 120,
+      navigationURL: 'http://127.0.0.1:3113/',
+    })
+  })
+
+  it('drops the query string from heatmap URL keys and keeps every point', async () => {
+    const { scrubEvent } = await import('./telemetry')
+    const event = scrubEvent({
+      uuid: 'u',
+      event: '$web_vitals',
+      properties: {
+        $heatmap_data: {
+          'http://127.0.0.1:3113/?token=secret': [{ x: 1, y: 1 }],
+          'http://127.0.0.1:3113/?token=other': [{ x: 2, y: 2 }],
+        },
+      },
+    })
+    expect(JSON.stringify(event)).not.toContain('secret')
+    expect(event?.properties.$heatmap_data).toEqual({
+      'http://127.0.0.1:3113/': [
+        { x: 1, y: 1 },
+        { x: 2, y: 2 },
+      ],
+    })
+  })
+
+  it('still scrubs exceptions', async () => {
+    const { scrubEvent } = await import('./telemetry')
+    const event = scrubEvent({
+      uuid: 'u',
+      event: '$exception',
+      properties: {
+        $current_url: 'http://x/?q=secret',
+        $exception_list: [{ type: 'TypeError', value: 'secret text' }],
+      },
+    })
+    expect(JSON.stringify(event)).not.toContain('secret')
+  })
+})
+
 describe('scrubException', () => {
   it('keeps only the error type of an exception', async () => {
     const { scrubException } = await import('./telemetry')

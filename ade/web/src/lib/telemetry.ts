@@ -18,9 +18,10 @@
  *   happened since the one before; an empty one is not sent.
  *
  * No text a user wrote is sent: command ids that can hold paths or titles are
- * reduced to their kind, chat screens to `chat`, and session replay masks
- * every text node and input and blocks media. An exception keeps only its
- * error type and stack frames: its message can hold what a user typed.
+ * reduced to their kind, chat screens to `chat`, URLs lose their hash and
+ * query string, and session replay masks every text node and input and blocks
+ * media. An exception keeps only its error type and stack frames: its message
+ * can hold what a user typed.
  */
 import posthog, { type CaptureOptions, type CaptureResult } from 'posthog-js'
 import { isChatScreen, type TabScreen } from '@/lib/workspace-tabs'
@@ -96,7 +97,7 @@ export async function initTelemetry(): Promise<void> {
     enable_heatmaps: true,
     capture_performance: { web_vitals: true },
     capture_exceptions: true,
-    before_send: scrubException,
+    before_send: scrubEvent,
     mask_all_text: true,
     mask_all_element_attributes: true,
     session_recording: {
@@ -113,6 +114,42 @@ export async function initTelemetry(): Promise<void> {
   )
   setVisible(document.visibilityState === 'visible')
   startSchedule(VISIT_OFFSETS)
+}
+
+/** The `before_send` hook: no URL keeps its query string or hash, since any
+ * parameter can hold a path or a token (`mask_personal_data_properties` only
+ * masks known ad identifiers), and exceptions keep only their type. URLs are
+ * found at any depth: web vitals nest `$current_url` and `navigationURL`. */
+export function scrubEvent(event: CaptureResult | null): CaptureResult | null {
+  if (!event) return event
+  event.properties = stripUrls(event.properties)
+  if (event.$set) event.$set = stripUrls(event.$set)
+  if (event.$set_once) event.$set_once = stripUrls(event.$set_once)
+  return scrubException(event)
+}
+
+function stripUrl(value: string): string {
+  return /^https?:\/\//.test(value) ? value.split(/[?#]/)[0] : value
+}
+
+/** Strip URLs in values and in keys: `$heatmap_data` is keyed by page URL.
+ * Keys that become the same URL have their lists joined. */
+// biome-ignore lint/suspicious/noExplicitAny: walks arbitrary event JSON
+function stripUrls(value: any): any {
+  if (typeof value === 'string') return stripUrl(value)
+  if (Array.isArray(value)) return value.map(stripUrls)
+  if (!value || typeof value !== 'object') return value
+  // biome-ignore lint/suspicious/noExplicitAny: walks arbitrary event JSON
+  const out: Record<string, any> = {}
+  for (const [k, v] of Object.entries(value)) {
+    const key = stripUrl(k)
+    const next = stripUrls(v)
+    out[key] =
+      Array.isArray(out[key]) && Array.isArray(next)
+        ? [...out[key], ...next]
+        : next
+  }
+  return out
 }
 
 /** Replace each exception message with its error type, and drop the
