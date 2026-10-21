@@ -60,11 +60,11 @@ The `fp` worker runs multi-step work on the worker side. Its pipe chains functio
 result into the next payload over the bus, and its transforms (get, pick, map, filter, sortBy,
 groupBy and the like) reshape a value without a model turn. Run request, process, request, process
 work (fetch a page and keep one field, list items and count them by a key) as ONE pipe instead of
-pulling each intermediate value through this conversation; only the final receipt returns.
-Discover its ids like any other (Step 1) and read the pipe contract before the first use. A pipe
-never carries a trigger-control, approval, session-write, credential, configuration, LLM-routing
-or turn-control call; `shell::*` and `coder::*` ride a pipe only from a session with a working
-directory.
+pulling each intermediate value through this conversation; only a receipt with a short preview
+returns. Discover its ids like any other (Step 1) and read the pipe contract before the first use.
+A pipe never carries a trigger-control, approval, session-write, credential, configuration,
+LLM-routing or turn-control call; `shell::*` and `coder::*` ride a pipe only from a session with a
+working directory.
 
 A call marked `pre-verified` by a Harness runtime block or update, with its exact id and
 payload shape, already satisfies Steps 1 and 2; call it directly without discovery or
