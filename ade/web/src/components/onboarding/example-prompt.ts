@@ -9,7 +9,7 @@ import {
   resolvePromptModel,
 } from '@/lib/onboarding/prompts'
 import { fetchNewChatWorkingDir } from '@/lib/working-dir'
-import { type ModelOption, THINKING_LOWEST, type ThinkingLevel } from '@/types/chat'
+import type { ModelOption, ThinkingLevel } from '@/types/chat'
 
 /** What opening an example prompt needs from the conversations store. */
 export type PromptChatApi = Pick<
@@ -26,13 +26,11 @@ export type PromptChatApi = Pick<
   modelOptions: readonly ModelOption[]
 }
 
-/** The model offers this effort, and it is not only shown as unconfirmed;
- * `lowest` is the harness's to resolve, so any model takes it. */
+/** The model offers this effort, and it is not only shown as unconfirmed. */
 function effortSupported(
   model: ModelOption | undefined,
   effort: ThinkingLevel,
 ): boolean {
-  if (effort === THINKING_LOWEST) return true
   return effortOptionsFor(model).some(
     (option) => option.effort === effort && !option.disabled,
   )
@@ -68,12 +66,13 @@ export function openExamplePrompt(
     prompt.models,
     api.modelOptions.map((option) => option.id),
   )
-  if (pick) api.setModel(id, pick.model)
-  // Without a pick the chat's model is unknown here, so only `lowest`
-  // (resolved by the harness against it) can be taken.
-  const effort = pick?.effort ?? prompt.effort
-  const model = pick ? api.modelOptions.find((option) => option.id === pick.model) : undefined
-  if (effort && effortSupported(model, effort)) api.setThinkingLevel(id, effort)
+  if (pick) {
+    api.setModel(id, pick.model)
+    const model = api.modelOptions.find((option) => option.id === pick.model)
+    if (pick.effort && effortSupported(model, pick.effort)) {
+      api.setThinkingLevel(id, pick.effort)
+    }
+  }
   if (agent && workingDir !== undefined) sendDraftWhenReady(id, prompt.prompt)
   api.openConversation(id)
   return id

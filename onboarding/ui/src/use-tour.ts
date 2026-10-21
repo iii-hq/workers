@@ -5,8 +5,6 @@ import { bindCondition, type Condition, type Fired, reconcileCondition } from '.
 
 /** The state scope the tour's agent steps report into; its chat is kept there too. */
 const STATE_SCOPE = 'learn-iii'
-/** `lowest`: the harness resolves it against whatever model the chat runs on. */
-const TOUR_THINKING_LEVEL = 'lowest'
 const CHAT_SESSION_KEY = 'chat_session'
 
 /**
@@ -223,11 +221,8 @@ export function useTour(host: Host): TourController {
       if (!step.ask) return
       const { text, agent } = step.ask
       if (agent && host.chat?.startChat) {
-        // At the model's lowest effort (the harness picks it), set before
-        // the first turn goes: the tour's prompts are small, and a later
-        // change the operator makes stands.
         void host.chat
-          .startChat({ text, agent, effort: TOUR_THINKING_LEVEL })
+          .startChat({ text, agent })
           .then((id) => {
             chatSession.current = id
             return host.iii.trigger('state::set', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY, value: id })

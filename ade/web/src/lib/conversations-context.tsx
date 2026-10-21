@@ -303,7 +303,6 @@ export function ConversationsProvider({
           agent: request.agent?.trim() || DEFAULT_AGENT_ID,
           prompt: text,
           models: request.models ?? [],
-          ...(request.effort ? { effort: request.effort } : {}),
         })
       },
     }
