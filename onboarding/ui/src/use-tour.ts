@@ -6,6 +6,7 @@ import { bindCondition, type Condition, type Fired, reconcileCondition } from '.
 /** The state scope the tour's agent steps report into; its chat is kept there too. */
 const STATE_SCOPE = 'learn-iii'
 const CHAT_SESSION_KEY = 'chat_session'
+const TURN_COMPLETED = 'harness::turn-completed'
 
 /**
  * Everything the tour knows and does, shared by its two faces: the floating
@@ -273,7 +274,15 @@ export function useTour(host: Host): TourController {
     if (!tour || !waiting) return
     const steps = tour.steps.filter((step) => waiting.split(',').includes(step.id))
     const unbinds = steps.map((step) =>
-      bindCondition(host, `${tour.id}::${step.id}`, step.condition as Condition, (fired) => complete(step.id, fired)),
+      bindCondition(host, `${tour.id}::${step.id}`, step.condition as Condition, (fired) => {
+        if (step.condition?.type !== TURN_COMPLETED) return complete(step.id, fired)
+        // A turn counts only in the tour's own chat: an example built from
+        // setup, or any other chat, finishing a turn says nothing about it.
+        const session = (fired.payload as { session_id?: unknown } | null)?.session_id
+        void tourChat().then((id) => {
+          if (id && session === id) complete(step.id, fired)
+        })
+      }),
     )
     // Bind first, then read what each condition waits on: a write that
     // landed while nothing was listening (a reload, a restart, a console
@@ -288,7 +297,7 @@ export function useTour(host: Host): TourController {
       live = false
       for (const unbind of unbinds) unbind()
     }
-  }, [host, tour, waiting, complete])
+  }, [host, tour, waiting, complete, tourChat])
 
   const openStep = useMemo(() => tour?.steps.find((step) => step.id === open) ?? null, [tour, open])
   const active = tour ? firstIncomplete(tour, records) : undefined
