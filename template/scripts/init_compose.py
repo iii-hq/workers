@@ -21,21 +21,27 @@ FIRST_ENGINE_PORT = 49334
 LISTENERS = {"ade": ("http_port", 3113), "http": ("port", 3111)}
 
 
+def mapping(path, key):
+    """The mapping under `key` in a YAML file; {} when the file or the key is missing or broken."""
+    try:
+        document = YAML(typ="safe").load(path)
+    except (YAMLError, OSError):
+        return {}  # A broken file cannot be started from, so it claims nothing.
+    value = document.get(key) if isinstance(document, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
 def claimed_ports(sandbox):
     """Ports a sibling sandbox holds or will hold once its workers bind them."""
     ports = set()
-    try:
-        document = YAML(typ="safe").load(sandbox / "worker-compose.yaml")
-        match = ENGINE.fullmatch(str(((document or {}).get("engine") or {}).get("url", "")))
-        if match:
-            ports.add(int(match[2]))
-        for name, (field, _) in LISTENERS.items():
-            for config in sandbox.glob(f"config/*-{name}.yaml"):
-                port = ((YAML(typ="safe").load(config) or {}).get("value") or {}).get(field)
-                if isinstance(port, int):
-                    ports.add(port)
-    except (YAMLError, OSError, AttributeError):
-        pass  # A broken sibling cannot start, so it holds nothing.
+    match = ENGINE.fullmatch(str(mapping(sandbox / "worker-compose.yaml", "engine").get("url", "")))
+    if match:
+        ports.add(int(match[2]))
+    for name, (field, _) in LISTENERS.items():
+        for config in sandbox.glob(f"config/*-{name}.yaml"):
+            port = mapping(config, "value").get(field)
+            if isinstance(port, int):
+                ports.add(port)
     return ports
 
 
@@ -56,6 +62,9 @@ def listening(port):
 def main(staged, destination):
     """Configure the project in `staged`, which init.sh then moves to `destination`."""
     compose = staged / "worker-compose.yaml"
+    # Template content is untrusted: never write through a link it ships.
+    if compose.is_symlink() or (staged / "config").is_symlink():
+        raise SystemExit(f"{staged}: refusing to edit a symlinked worker-compose.yaml or config/.")
     if not compose.is_file():
         return
     sandboxes = destination.parent
@@ -76,6 +85,10 @@ def main(staged, destination):
     match = ENGINE.fullmatch(str((engine or {}).get("url", "")))
     if not match:
         raise SystemExit(f"{compose}: engine.url is not ws://127.0.0.1:<port>; refusing to share the root stack's engine.")
+    namespace = str(document.get("namespace") or "default").strip()
+    # Compose's own namespace rule; it also keeps the seed paths below inside config/.
+    if not re.fullmatch(r"[a-z0-9_-]+", namespace):
+        raise SystemExit(f"{compose}: namespace {namespace!r} may hold only a-z, 0-9, '-' and '_'.")
     engine_port = free_port(FIRST_ENGINE_PORT, taken)
     engine["url"] = f"{match[1]}{engine_port}"
     yaml.dump(document, compose)
@@ -87,12 +100,13 @@ def main(staged, destination):
     print(f"\n  {destination.name}: fresh `iii project init` in {folder}")
     # Workers install their defaults only into an empty entry, so a seed in the
     # engine's store moves a listener whether it is declared now or added later.
-    namespace = document.get("namespace", "default")
     (staged / "config").mkdir(exist_ok=True)
     for name, (field, start) in LISTENERS.items():
         port = free_port(start, taken)
         entry = f"{namespace}-{name}"
         seed = staged / "config" / f"{entry}.yaml"
+        if seed.is_symlink():
+            raise SystemExit(f"{seed}: refusing to write through a symlinked configuration entry.")
         # A template's own entry keeps everything but the port.
         stored = yaml.load(seed) if seed.is_file() else None
         if not isinstance(stored, dict):

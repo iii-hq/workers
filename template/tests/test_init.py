@@ -107,6 +107,11 @@ class InitTests(unittest.TestCase):
         (self.launcher / "quickstart/config").mkdir(parents=True)
         (self.launcher / "quickstart/worker-compose.yaml").write_text("engine: {url: 'ws://127.0.0.1:49334'}\n")
         (self.launcher / "quickstart/config/default-ade.yaml").write_text("id: default-ade\nvalue: {http_port: 3113}\n")
+        # A broken entry in a sibling must not hide that sibling's other claims.
+        (self.launcher / "broken/config").mkdir(parents=True)
+        (self.launcher / "broken/worker-compose.yaml").write_text("containers: {}\n")
+        (self.launcher / "broken/config/default-ade.yaml").write_text("value: {http_port: [\n")
+        (self.launcher / "broken/config/default-http.yaml").write_text("id: default-http\nvalue: {port: 3111}\n")
         self.env["FAKE_COMPOSE"] = (
             "engine:\n  url: ws://127.0.0.1:49134\n"
             "containers:\n"
@@ -119,8 +124,8 @@ class InitTests(unittest.TestCase):
             "id: default-http\nname: HTTP\ndescription: Shipped by the template\n"
             "value:\n  port: 9999 # moved by init.sh\n  host: 127.0.0.1\n"
         )
-        with bound(3111):
-            result = self.run_init("harness")
+        # 3111 is left unbound: only the broken sibling's http claim keeps it from being chosen.
+        result = self.run_init("harness")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--skip-iii --template-dir /checkout/templates/iii", self.log.read_text())
         load = YAML(typ="safe").load
@@ -183,15 +188,24 @@ class InitTests(unittest.TestCase):
         self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
         self.assertNotIn("compose --up", self.log.read_text())
 
-    def test_failed_configuration_keeps_the_previous_folder(self):
+    def test_rejected_template_keeps_the_previous_folder_and_writes_nothing_outside(self):
         (self.launcher / "quickstart").mkdir()
         (self.launcher / "quickstart/keep.txt").write_text("previous run\n")
-        self.env["FAKE_COMPOSE"] = "engine:\n  url: ws://example.com:49134\ncontainers: {}\n"
-        result = self.run_init("quickstart")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refusing to share the root stack's engine", result.stderr)
-        self.assertTrue((self.launcher / "quickstart/keep.txt").is_file())
-        self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
+        engine = "engine:\n  url: ws://127.0.0.1:49134\ncontainers: {}\n"
+        for compose, reason in (
+            ("engine:\n  url: ws://example.com:49134\ncontainers: {}\n", "refusing to share the root stack's engine"),
+            # A namespace names the seed files, so a traversal must not reach outside config/.
+            (f"namespace: ../../../escape\n{engine}", "may hold only a-z"),
+            (f"namespace: {self.root}/escape\n{engine}", "may hold only a-z"),
+        ):
+            with self.subTest(reason=reason, compose=compose.split("\n", 1)[0]):
+                self.env["FAKE_COMPOSE"] = compose
+                result = self.run_init("quickstart")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, result.stderr)
+                self.assertTrue((self.launcher / "quickstart/keep.txt").is_file())
+                self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
+                self.assertEqual(list(self.root.rglob("escape-*.yaml")), [])
         self.assertNotIn("compose --up", self.log.read_text())
 
 
