@@ -140,7 +140,7 @@ export const TOURS = [
       agentStep({
         id: "composability",
         ask: {
-          text: "Add a kanban board to this project in the todo-local namespace, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Add the board'). When it runs, open its board page beside this chat and tell me what the board can do.",
+          text: "Add a kanban board to this project in the todo-local namespace. When it runs, open its board page beside this chat and tell me what the board can do.",
           label: "Ask the agent",
         },
         title: "Composability",
@@ -181,7 +181,7 @@ export const TOURS = [
       agentStep({
         id: "discoverability",
         ask: {
-          text: "What can this system do right now? List the workers that are registered and the functions each one exposes. Use one unfiltered functions list for the whole answer, not one call per worker.",
+          text: "What can this system do right now? List the workers that are registered and the functions each one exposes.",
           label: "Ask the agent",
         },
         title: "Discoverability",
@@ -190,7 +190,7 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Build a TODO worker on the todo-local kanban board, the way the onboarding skill says (directory::skills::get { id: \"onboarding\" }, section 'Build the TODO worker'): first set the board to two columns, TODO and Done; then a worker whose console page is a narrow sidebar of controls, not a list: an add form and an edit form with a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card. The board is the list and Done is set on the board; a done item with a repeat goes back to TODO with the next date, the same ticket, never a second card; alarms go through the cron worker; a todo:changed trigger type; and the same controls as a web page leveraging the iii browser sdk. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open the TODO page to the left of the board as a narrow column (pass sizes so it takes the console's smallest column width, 12%), and open the web page for me in the console's browser in a new tab (browser::sessions::start with preview: false, then console::workspace::open { screen: 'browser', placement: 'new-tab', activate: false }), not the preview window, and leave me on the tab with the TODO page and the board: do not switch me to the browser tab.",
+          text: "Build a TODO worker on the todo-local kanban board: first set the board to two columns, TODO and Done; then a worker whose console page is a narrow sidebar of controls, not a list: an add form and an edit form with a due date, a due time, a priority, a repeat and an alarm per item, each shown as a pill on the board card. The board is the list and Done is set on the board; a done item with a repeat goes back to TODO with the next date, the same ticket, never a second card; alarms go through the cron worker; a todo:changed trigger type; and the same controls as a web page leveraging the iii browser sdk. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open the TODO page to the left of the board as a narrow column, and open the web page for me in the console's browser in a new tab, not the preview window, and leave me on the tab with the TODO page and the board: do not switch me to the browser tab.",
           label: "Ask the agent",
         },
         title: "Extensibility",

@@ -161,9 +161,7 @@ narrow sidebar of controls left of it, with a due date, a due time, a
 priority, a repeat and an alarm per item, shown as pills on the cards, and the
 same controls as a web page; the board is the list and Done is a status set
 on it; alarms run through the `cron` worker), **Reactive** (three items, and
-a trigger that fires when the operator moves one to Done). The recipe
-for the two build steps is `skills/SKILL.md`, which lands in the project as
-`skills/onboarding/SKILL.md`; the prompts point the agent at it. The last step, "Stay in
+a trigger that fires when the operator moves one to Done). The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
 links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
 "Clean up" asks the agent to remove this worker, and the card goes with it —
