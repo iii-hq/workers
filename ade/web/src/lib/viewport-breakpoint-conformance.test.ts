@@ -149,6 +149,9 @@ function walk(ext: string): string[] {
     .map((file) => relative(srcRoot, join(srcRoot, file)))
     .filter(
       (file) =>
+        // shadcn registry components are vendored as generated; their
+        // phone-vs-desktop utilities are the registry's, not the console's.
+        !file.startsWith('components/shadcn/') &&
         !file.startsWith('demo/') &&
         !file.endsWith('.stories.tsx') &&
         !file.endsWith('.test.tsx'),
