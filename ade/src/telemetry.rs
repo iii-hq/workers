@@ -2,13 +2,21 @@
 //!
 //! The browser has no process environment, so `GET /runtime` carries what
 //! posthog-js needs: whether it may run at all, and which PostHog person its
-//! events belong to. The opt-out mirrors the engine's own check (see
-//! `engine/src/workers/telemetry/environment.rs`) so the console and the
-//! engine always agree, and the person is the engine's `device_id`, so console
-//! events join the same person as the engine and harness events.
+//! events belong to. The engine decides: `iii-telemetry::settings` returns
+//! the result of its own opt-out check, which also sees the engine config
+//! (`enabled: false` on the telemetry worker), and the engine's `device_id`,
+//! so console events join the same person as the engine and harness events.
+//!
+//! An engine without that function gets the local check below, which mirrors
+//! the engine's environment checks (see
+//! `engine/src/workers/telemetry/environment.rs`) but cannot see its config.
 
+use iii_sdk::{protocol::TriggerRequest, IIIClient};
 use serde_json::{json, Value};
 use std::path::Path;
+
+const SETTINGS_FN: &str = "iii-telemetry::settings";
+const SETTINGS_TIMEOUT_MS: u64 = 2000;
 
 /// The engine's public project key and host, overridable with the same
 /// variables the engine reads.
@@ -31,8 +39,47 @@ const CI_ENV_VARS: &[&str] = &[
     "TEAMCITY_VERSION",
 ];
 
-/// The `telemetry` object of `GET /runtime`, read from this process.
-pub fn runtime() -> Value {
+/// The `telemetry` object of `GET /runtime`: the engine's answer, or the
+/// local check when the engine cannot give one.
+pub async fn runtime(iii: Option<&IIIClient>) -> Value {
+    let answer = match iii {
+        Some(iii) => iii
+            .trigger(
+                TriggerRequest {
+                    function_id: SETTINGS_FN.to_string(),
+                    payload: json!({}),
+                    action: None,
+                    timeout_ms: Some(SETTINGS_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        None => Err("no engine client".to_string()),
+    };
+    from_engine(answer, local)
+}
+
+/// The engine's answer when it has a boolean `enabled`, else `fallback()`.
+/// Only the fields the browser needs are passed on.
+fn from_engine(answer: Result<Value, String>, fallback: impl FnOnce() -> Value) -> Value {
+    let Ok(answer) = answer else {
+        return fallback();
+    };
+    match answer.get("enabled").and_then(Value::as_bool) {
+        Some(false) => json!({ "enabled": false }),
+        Some(true) => json!({
+            "enabled": true,
+            "distinct_id": answer["distinct_id"],
+            "api_key": answer["api_key"],
+            "host": answer["host"],
+        }),
+        None => fallback(),
+    }
+}
+
+/// The local check, read from this process.
+fn local() -> Value {
     let iii_dir = std::env::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".iii");
@@ -90,6 +137,52 @@ mod tests {
                 .iter()
                 .find(|(name, _)| *name == k)
                 .map(|(_, v)| v.to_string())
+        }
+    }
+
+    fn local_on() -> Value {
+        json!({ "enabled": true, "distinct_id": "local", "api_key": "phc_local", "host": "h" })
+    }
+
+    #[test]
+    fn the_engine_answer_wins_when_it_says_off() {
+        let value = from_engine(Ok(json!({ "enabled": false })), local_on);
+        assert_eq!(value, json!({ "enabled": false }));
+    }
+
+    #[test]
+    fn the_engine_answer_wins_when_it_says_on() {
+        let value = from_engine(
+            Ok(json!({
+                "enabled": true,
+                "distinct_id": "dev-1",
+                "api_key": "phc_engine",
+                "host": "https://eu.i.posthog.com",
+                "extra": "dropped",
+            })),
+            local_on,
+        );
+        assert_eq!(
+            value,
+            json!({
+                "enabled": true,
+                "distinct_id": "dev-1",
+                "api_key": "phc_engine",
+                "host": "https://eu.i.posthog.com",
+            })
+        );
+    }
+
+    #[test]
+    fn an_engine_without_the_function_falls_back_to_the_local_check() {
+        let value = from_engine(Err("function not found".into()), local_on);
+        assert_eq!(value, local_on());
+    }
+
+    #[test]
+    fn an_answer_without_enabled_falls_back_to_the_local_check() {
+        for answer in [json!({}), json!(null), json!({ "enabled": "yes" })] {
+            assert_eq!(from_engine(Ok(answer), local_on), local_on());
         }
     }
 

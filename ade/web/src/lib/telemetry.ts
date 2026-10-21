@@ -1,11 +1,10 @@
 /**
  * Product telemetry for the console, sent to PostHog from the browser.
  *
- * The console worker decides whether it may run: `GET /runtime` carries a
- * `telemetry` object that mirrors the engine's opt-out (`III_TELEMETRY_ENABLED`
- * and friends) and names the engine's device id as the PostHog person (see
- * `ade/src/telemetry.rs`). With telemetry off, posthog-js is never started and
- * nothing here sends.
+ * The engine decides whether it may run: `GET /runtime` carries a
+ * `telemetry` object with the engine's own opt-out result and its device id
+ * as the PostHog person (see `ade/src/telemetry.rs`). With telemetry off,
+ * posthog-js is never started and nothing here sends.
  *
  * Events are kept few on purpose (setup wizard steps are reported through
  * the engine instead, see `lib/onboarding/telemetry.ts`):

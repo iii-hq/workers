@@ -172,7 +172,7 @@ async fn not_found() -> (StatusCode, &'static str) {
 async fn runtime_handler(State(state): State<AppState>) -> Response {
     let mut response = Json(serde_json::json!({
         "namespace": state.namespace,
-        "telemetry": crate::telemetry::runtime(),
+        "telemetry": crate::telemetry::runtime(state.iii.as_deref()).await,
     }))
     .into_response();
     response

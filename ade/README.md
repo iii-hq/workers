@@ -347,14 +347,24 @@ and blocks images and other media. An exception is sent with its error type and
 stack frames only, not its message. Autocapture, rage clicks, dead clicks
 and surveys are off. Heatmaps, web vitals and exceptions are on.
 
-The events use the engine's device id from `~/.iii/telemetry.yaml`, so they
-join the same PostHog person as the engine and harness events.
+The engine decides whether the console reports. On each page load the
+console calls the engine function `iii-telemetry::settings`, which returns the
+result of the engine's own opt-out check and the engine's device id, PostHog
+key and host. So the console reports only when the engine reports, and its
+events join the same PostHog person as the engine and harness events.
 
-To stop the reports, set `III_TELEMETRY_ENABLED=false` in the environment of
-the console worker. The console also stops in a CI environment, with
-`III_TELEMETRY_DEV=true`, or when `~/.iii/telemetry_dev_optout` exists, the
-same as the engine. `POSTHOG_PROJECT_API_KEY` (or `POSTHOG_API_KEY`) and
-`POSTHOG_HOST` change the PostHog project and host.
+To stop the reports, turn off the engine's telemetry: set
+`III_TELEMETRY_ENABLED=false` in the engine's environment, or set
+`enabled: false` on the engine's telemetry worker. The engine also stops in a
+CI environment, with `III_TELEMETRY_DEV=true`, or when
+`~/.iii/telemetry_dev_optout` exists.
+
+An engine that does not have `iii-telemetry::settings` gets a local check
+instead: the console reads the same environment variables and files in its
+own process, and its device id from `~/.iii/telemetry.yaml`. This check cannot
+see the engine's config, and `POSTHOG_PROJECT_API_KEY` (or `POSTHOG_API_KEY`)
+and `POSTHOG_HOST` in the console's environment change the PostHog project and
+host.
 
 ## Injectable UI
 
