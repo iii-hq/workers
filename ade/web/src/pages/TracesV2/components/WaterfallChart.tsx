@@ -267,7 +267,7 @@ const WaterfallRow = memo(function WaterfallRow({
         ) : null}
         {span.mergedRouting ? (
           <span
-            className="relative z-10 shrink-0 rounded-md bg-neutral-200/80 px-1 font-mono text-[10px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
+            className="relative z-10 shrink-0 rounded-md bg-neutral-200/80 px-1 font-mono text-[11px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
             title="an engine routing span was folded into this one"
           >
             +1
