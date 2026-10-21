@@ -671,7 +671,8 @@ export function TraceFilters({
             ) : null}
           </PopoverTrigger>
           <PopoverContent
-            align="end"
+            align="start"
+            collisionPadding={8}
             className="w-[min(34rem,calc(100vw-1rem))] gap-0 p-0"
           >
             <div className="flex items-center justify-between px-4 pt-3 pb-2">
