@@ -19,6 +19,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -98,7 +99,9 @@ export function ViewsDropdown({
           <ChevronDown data-icon="inline-end" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          <DropdownMenuLabel>Views</DropdownMenuLabel>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Views</DropdownMenuLabel>
+          </DropdownMenuGroup>
           <DropdownMenuItem onClick={() => onSelectView(null)}>
             <span className="w-3">
               {!activeView && <Check className="size-4" />}

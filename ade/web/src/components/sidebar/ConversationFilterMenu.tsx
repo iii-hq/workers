@@ -3,6 +3,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -182,14 +183,20 @@ export function ConversationFilterMenu({
       >
         {narrow ? (
           <>
-            <DropdownMenuLabel>Type</DropdownMenuLabel>
-            <KindChoices {...choices} />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Type</DropdownMenuLabel>
+              <KindChoices {...choices} />
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel>Group by</DropdownMenuLabel>
-            <GroupingChoices {...choices} />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Group by</DropdownMenuLabel>
+              <GroupingChoices {...choices} />
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel>Sort by</DropdownMenuLabel>
-            <SortChoices {...choices} />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+              <SortChoices {...choices} />
+            </DropdownMenuGroup>
           </>
         ) : (
           <>
