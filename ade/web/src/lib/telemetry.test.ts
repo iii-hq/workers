@@ -293,6 +293,37 @@ describe('scrubEvent', () => {
     })
   })
 
+  it('sends no referrer, initial or current', async () => {
+    const { scrubEvent } = await import('./telemetry')
+    const referrer = 'https://github.com/acme/private-repo/issues/12'
+    const event = scrubEvent({
+      uuid: 'u',
+      event: '$pageview',
+      properties: {
+        $referrer: referrer,
+        $referring_domain: 'github.com',
+        $session_entry_referrer: referrer,
+        $session_entry_referring_domain: 'github.com',
+        screens: ['chat'],
+      },
+      $set: { $referrer: referrer, $referring_domain: 'github.com' },
+      $set_once: {
+        $initial_referrer: referrer,
+        $initial_referring_domain: 'github.com',
+        $initial_current_url: 'http://127.0.0.1:3113/',
+      },
+    })
+    expect(JSON.stringify(event)).not.toContain('github')
+    expect(event?.$set_once).toEqual({
+      $initial_current_url: 'http://127.0.0.1:3113/',
+    })
+  })
+
+  it('stores no campaign parameters', async () => {
+    await load()
+    expect(init.mock.calls[0][1]).toMatchObject({ save_campaign_params: false })
+  })
+
   it('still scrubs exceptions', async () => {
     const { scrubEvent } = await import('./telemetry')
     const event = scrubEvent({

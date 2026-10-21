@@ -84,10 +84,12 @@ export async function initTelemetry(): Promise<void> {
       ? { distinctID: settings.distinct_id, isIdentifiedID: true }
       : undefined,
     // Hash routes can carry worker context (`#/worker/...?context=`), so no
-    // URL field keeps its hash, query values are masked, and no referrer.
+    // URL field keeps its hash or query and no referrer is kept; `scrubEvent`
+    // also cuts both from the URLs these options do not reach.
     disable_capture_url_hashes: true,
     mask_personal_data_properties: true,
     save_referrer: false,
+    save_campaign_params: false,
     autocapture: false,
     rageclick: false,
     capture_dead_clicks: false,
@@ -116,12 +118,21 @@ export async function initTelemetry(): Promise<void> {
   startSchedule(VISIT_OFFSETS)
 }
 
-/** The `before_send` hook: no URL keeps its query string or hash, since any
- * parameter can hold a path or a token (`mask_personal_data_properties` only
- * masks known ad identifiers), and exceptions keep only their type. URLs are
- * found at any depth: web vitals nest `$current_url` and `navigationURL`. */
+/** Referrer properties: `$referrer`, `$referring_domain` and their
+ * `$initial_` and `$session_entry_` forms. `save_referrer: false` does not
+ * cover the initial and session entry ones. */
+const REFERRER_PROPERTY = /referr/
+
+/** The `before_send` hook: no referrer is sent, no URL keeps its query string
+ * or hash, since any parameter can hold a path or a token
+ * (`mask_personal_data_properties` only masks known ad identifiers), and
+ * exceptions keep only their type. URLs are found at any depth: web vitals
+ * nest `$current_url` and `navigationURL`. */
 export function scrubEvent(event: CaptureResult | null): CaptureResult | null {
   if (!event) return event
+  for (const props of [event.properties, event.$set, event.$set_once])
+    for (const key of Object.keys(props ?? {}))
+      if (REFERRER_PROPERTY.test(key)) delete props?.[key]
   event.properties = stripUrls(event.properties)
   if (event.$set) event.$set = stripUrls(event.$set)
   if (event.$set_once) event.$set_once = stripUrls(event.$set_once)
