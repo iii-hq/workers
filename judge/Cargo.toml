@@ -2,7 +2,7 @@
 
 [package]
 name = "judge"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2021"
 publish = false
 license = "Apache-2.0"

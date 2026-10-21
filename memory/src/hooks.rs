@@ -808,12 +808,20 @@ pub(crate) fn ambient_header(bank_name: &str) -> String {
 /// the model.
 fn rule_body(rule: &crate::types::Rule) -> String {
     let redacted = crate::redact::redact(rule.content.trim()).text;
-    redacted
-        .strip_prefix(crate::extract::LEARNED_HEADER)
+    // Trimmed like the content: a learned rule with every line gone is the
+    // header alone.
+    [crate::extract::LEARNED_HEADER, OLD_LEARNED_HEADER]
+        .iter()
+        .find_map(|h| redacted.strip_prefix(h.trim_end()))
         .unwrap_or(&redacted)
         .trim()
         .to_string()
 }
+
+/// The header learned rules were created with before extraction rewrote
+/// lines; existing files keep it.
+const OLD_LEARNED_HEADER: &str = "# Learned\nStanding instructions captured automatically from \
+conversations. Edit or delete lines freely — extraction only ever appends new ones.\n";
 
 /// Opens the per-turn rules reminder.
 pub(crate) const REMINDER_OPEN: &str = "Standing instructions — apply every one to this reply:";
@@ -886,6 +894,14 @@ pub(crate) fn build_rules_section(
             budget -= content.len();
             out.push_str(&format!("\n## {}\n{content}\n", rule.name));
         } else if budget > 200 {
+            // Extraction appends: the learned rule loses its oldest lines,
+            // never what the user said last.
+            let body = if rule.name.split(" (").next() == Some(crate::extract::LEARNED_RULE) {
+                newest_lines(content, budget)
+            } else {
+                body
+            };
+            let content = body.as_str();
             let mut cut = budget.min(content.len());
             while cut > 0 && !content.is_char_boundary(cut) {
                 cut -= 1;
@@ -907,6 +923,19 @@ pub(crate) fn build_rules_section(
         }
     }
     (out, truncated)
+}
+
+/// `body` without its oldest `- ` lines, as few as bring it within
+/// `budget`; other lines stay.
+fn newest_lines(body: &str, budget: usize) -> String {
+    let mut lines: Vec<&str> = body.lines().collect();
+    while lines.join("\n").len() > budget {
+        let Some(oldest) = lines.iter().position(|l| l.starts_with("- ")) else {
+            break;
+        };
+        lines.remove(oldest);
+    }
+    lines.join("\n")
 }
 
 /// Pad thin recall results with the bank's strongest memories, deduped by
@@ -1233,6 +1262,35 @@ Formal."
         // The kept prefix respects the budget.
         assert!(section.contains(&"x".repeat(300)));
         assert!(!section.contains(&"x".repeat(301)));
+    }
+
+    #[test]
+    fn an_over_budget_learned_rule_loses_its_oldest_lines() {
+        let lines: Vec<String> = (1..=20)
+            .map(|n| format!("- Learned line number {n:02}, kept short."))
+            .collect();
+        let learned = format!(
+            "{}intro\n{}\n",
+            crate::extract::LEARNED_HEADER,
+            lines.join("\n")
+        );
+        for name in ["learned", "learned (main)"] {
+            let (section, truncated) = build_rules_section(&[rule(name, &learned)], 400);
+            assert!(truncated);
+            assert!(section.contains("[rule truncated"), "{section}");
+            assert!(section.contains("intro\n"), "{section}");
+            assert!(
+                section.contains("number 20,"),
+                "the newest stays: {section}"
+            );
+            assert!(
+                !section.contains("number 01,"),
+                "the oldest goes: {section}"
+            );
+        }
+        // Any other rule keeps its head, as before.
+        let (section, _) = build_rules_section(&[rule("style", &learned)], 400);
+        assert!(section.contains("number 01,") && !section.contains("number 20,"));
     }
 
     #[test]
@@ -1597,20 +1655,22 @@ Formal."
 
     #[test]
     fn the_learned_rules_boilerplate_is_not_injected() {
-        let learned = format!(
-            "{}- Never use emoji in replies.\n",
-            crate::extract::LEARNED_HEADER
-        );
-        let (section, _) = build_rules_section(&[rule("learned", &learned)], 6_000);
-        assert!(
-            section.contains("## learned\n- Never use emoji in replies."),
-            "{section}"
-        );
-        assert!(
-            !section.contains("Edit or delete lines freely"),
-            "{section}"
-        );
-        assert!(!section.contains("# Learned"), "{section}");
+        // A file created before the header changed keeps the old one.
+        for header in [crate::extract::LEARNED_HEADER, OLD_LEARNED_HEADER] {
+            for lines in ["- Never use emoji in replies.\n", ""] {
+                let learned = format!("{header}{lines}");
+                let (section, _) = build_rules_section(&[rule("learned", &learned)], 6_000);
+                assert!(
+                    section.contains(&format!("## learned\n{}", lines.trim())),
+                    "{section}"
+                );
+                assert!(
+                    !section.contains("Edit or delete lines freely"),
+                    "{section}"
+                );
+                assert!(!section.contains("# Learned"), "{section}");
+            }
+        }
     }
 
     #[test]

@@ -27,7 +27,9 @@
 //! Layer C (`diagnose`): a call the target rejected as malformed gets its
 //! schema violations named by path, unless the target's own error names a
 //! missing field the schema does not flag, which means the target read a
-//! shape its schema does not publish.
+//! shape its schema does not publish. When the model does not have the
+//! target's contract in context, the compacted request schema rides along so
+//! the retry needs no `engine::functions::info` step first.
 //!
 //! Fail-open throughout: no known schema, valid arguments, an unavailable or
 //! failing judge, or a call nothing here can fix dispatch exactly as the
@@ -45,6 +47,7 @@ use crate::config::{CallReconciliation, WorkerConfig};
 use crate::deps::Deps;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
+use crate::types::turn::{ExposeMode, TurnRecord};
 
 /// Validator passes; each pass can unwrap one more nesting level (a parsed
 /// object whose own fields are stringified).
@@ -69,6 +72,9 @@ const NONE_OPTION: &str = "none";
 const MAX_ENUM_OPTIONS: usize = 254;
 /// Largest evaluation sent to the judge (the directory's calibration).
 const MAX_EVALUATION_BYTES: usize = 48 * 1024;
+/// Largest compacted request schema a diagnosis carries; a bigger one is
+/// left to `engine::functions::info`.
+const MAX_ATTACHED_SCHEMA_BYTES: usize = 8 * 1024;
 
 /// One repair applied to the arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -357,8 +363,11 @@ pub fn note_result(
 
 /// Finish the result of a dispatched call: note the repairs applied before
 /// dispatch and, when the target rejected the arguments as malformed, name
-/// the schema violations by path. Every path that appends a target's result
-/// (turn loop, spawn, deferred release) goes through here.
+/// the schema violations by path (with the schema itself unless
+/// `contract_in_context`, see [`contract_in_context`]). Every path that
+/// appends a target's result (turn loop, spawn, deferred release) goes
+/// through here.
+#[allow(clippy::too_many_arguments)]
 pub async fn settle_result(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -367,16 +376,45 @@ pub async fn settle_result(
     changes: Option<&[Change]>,
     function_id: &str,
     arguments: &Value,
+    contract_in_context: bool,
 ) {
     if let Some(changes) = changes {
         note_result(data, annotations, changes, function_id);
     }
     if function_id != FUNCTIONS_INFO_ID && looks_like_argument_error(data) {
         let target_error = ContentBlock::join_text(&data.content);
-        if let Some(diagnosis) = diagnose(deps, cfg, function_id, arguments, &target_error).await {
+        if let Some(diagnosis) = diagnose(
+            deps,
+            cfg,
+            function_id,
+            arguments,
+            &target_error,
+            contract_in_context,
+        )
+        .await
+        {
             data.content.push(ContentBlock::text(diagnosis));
         }
     }
+}
+
+/// Whether the model already holds `function_id`'s request schema: every
+/// tool carries its own under native exposure, and a contract fetched with
+/// `engine::functions::info` (the ledger) or preloaded by a profile or spawn
+/// stays in context. Native mode counts as known even for a dispatch-only
+/// grant called through `agent_trigger`: that call just gets today's pointer.
+pub fn contract_in_context(record: &TurnRecord, function_id: &str) -> bool {
+    record
+        .options
+        .functions
+        .as_ref()
+        .is_some_and(|functions| functions.expose == ExposeMode::Native)
+        || record.function_contract_ledger.contains_key(function_id)
+        || record
+            .options
+            .preloaded_contracts
+            .as_ref()
+            .is_some_and(|preloaded| preloaded.contains_key(function_id))
 }
 
 /// A string that parses as JSON of a non-string type.
@@ -804,17 +842,40 @@ async fn diagnose(
     function_id: &str,
     arguments: &Value,
     target_error: &str,
+    contract_in_context: bool,
 ) -> Option<String> {
     if cfg.call_reconciliation == CallReconciliation::Off {
         return None;
     }
     let schema = schema_for(deps, function_id).await?;
-    diagnosis(
+    let violations = diagnosis(
         &JSONSchema::compile(&schema).ok()?,
         function_id,
         arguments,
         target_error,
-    )
+    )?;
+    Some(conclude(violations, &schema, contract_in_context))
+}
+
+/// End a diagnosis with where the contract is: the compacted request schema
+/// itself when the model does not hold it and it is small enough, else a
+/// pointer to `engine::functions::info`. The attached schema is not recorded
+/// in the contract ledger, so a later info call still sends it in full.
+fn conclude(violations: String, schema: &Value, contract_in_context: bool) -> String {
+    let mut compact = schema.clone();
+    crate::trigger::compact_schema(&mut compact);
+    let compact = compact.to_string();
+    if contract_in_context || compact.len() > MAX_ATTACHED_SCHEMA_BYTES {
+        format!(
+            "{violations} Fix them and call again; engine::functions::info shows the full \
+             contract."
+        )
+    } else {
+        format!(
+            "{violations} Fix them and call again with arguments matching this request \
+             schema (no need to fetch the contract): {compact}"
+        )
+    }
 }
 
 /// The fields a serde error reports missing (`missing field `x``).
@@ -894,8 +955,7 @@ fn diagnosis(
         listed.push(format!("{more} more"));
     }
     Some(format!(
-        "[harness] These arguments do not match {function_id}'s request schema: {}. Fix them and \
-         call again; engine::functions::info shows the full contract.",
+        "[harness] These arguments do not match {function_id}'s request schema: {}.",
         listed.join("; ")
     ))
 }
@@ -1727,5 +1787,65 @@ mod tests {
             None
         );
         assert!(!unresolvable(&schema, &json!({ "b": 1 })));
+    }
+
+    #[test]
+    fn a_contract_is_in_context_when_fetched_preloaded_or_native() {
+        let mut record = crate::types::turn::tests::record();
+        assert!(!contract_in_context(&record, "coder::update-file"));
+
+        record.function_contract_ledger.insert(
+            "coder::update-file".into(),
+            crate::types::turn::FunctionContractLedgerEntry {
+                contract_digest: "d".into(),
+                source_function_call_id: "c".into(),
+                source_content_digest: "s".into(),
+                eligible: true,
+                repeats: 0,
+            },
+        );
+        assert!(contract_in_context(&record, "coder::update-file"));
+        assert!(!contract_in_context(&record, "state::get"));
+
+        record.options.preloaded_contracts = Some(BTreeMap::from([("state::get".into(), None)]));
+        assert!(contract_in_context(&record, "state::get"));
+        assert!(!contract_in_context(&record, "shell::exec"));
+
+        record
+            .options
+            .functions
+            .get_or_insert_with(Default::default)
+            .expose = ExposeMode::Native;
+        assert!(contract_in_context(&record, "shell::exec"));
+    }
+
+    #[test]
+    fn a_diagnosis_carries_the_schema_only_when_the_model_lacks_it() {
+        let schema = corpus_schema("coder::update-file");
+        let violations = diagnosis(
+            &compile(&schema),
+            "coder::update-file",
+            &json!({ "files": [{ "path": "a.rs", "replace": [] }] }),
+            "coder::update-file: invalid `files[0]`: missing field `ops`",
+        )
+        .expect("diagnosed");
+
+        let attached = conclude(violations.clone(), &schema, false);
+        assert!(attached.starts_with(&violations), "{attached}");
+        assert!(!attached.contains("engine::functions::info"), "{attached}");
+        let (_, json) = attached.split_once("contract): ").expect("schema follows");
+        let mut compact = schema.clone();
+        crate::trigger::compact_schema(&mut compact);
+        assert_eq!(serde_json::from_str::<Value>(json).unwrap(), compact);
+
+        let pointed = conclude(violations.clone(), &schema, true);
+        assert!(
+            pointed.ends_with("engine::functions::info shows the full contract."),
+            "{pointed}"
+        );
+
+        let huge =
+            json!({ "type": "object", "description": "x".repeat(MAX_ATTACHED_SCHEMA_BYTES) });
+        assert!(conclude(violations, &huge, false).ends_with("shows the full contract."));
     }
 }
