@@ -37,7 +37,7 @@ trigger type.
 | function | lodash | request |
 |---|---|---|
 | `fp::pipe` | — | `{ through: [{function, payload?, into?}], preview_chars? }` |
-| `fp::batch` | — | `{ calls: [{id?, function, payload?, namespace?, timeout_ms?}], concurrency?, stop_on_error?, timeout_ms?, max_entry_bytes?, max_calls? }` — independent calls, every answer in place (experimental) |
+| `fp::batch` | — | `{ calls: [{id?, function, payload?, timeout_ms?}], concurrency?, stop_on_error?, timeout_ms?, max_entry_bytes?, max_calls? }` — independent calls, every answer in place (experimental) |
 | `fp::get` | `_.get` | `{ value, path }` — JSON pointer; a miss names the available keys |
 | `fp::pick` | `_.pick` | `{ value, paths }` — subset an object by top-level keys |
 | `fp::omit` | `_.omit` | `{ value, paths }` — drop top-level keys |

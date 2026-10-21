@@ -28,7 +28,7 @@ use crate::util;
 pub const BATCH_ID: &str = "fp::batch";
 pub const BATCH_DESC: &str =
     "Run several INDEPENDENT calls in one request and get every answer in place: \
-     { calls: [{ id?, function, payload?, namespace?, timeout_ms? }], concurrency?, \
+     { calls: [{ id?, function, payload?, timeout_ms? }], concurrency?, \
      stop_on_error?, timeout_ms? (default 10000 per call), max_entry_bytes? (default 16384), \
      max_calls? (default 12; more only warns) } → { ok, results: [{ id, function, status: \
      \"ok\", result, chars, truncated? } | { id, function, status: \"error\", code, message }], \
@@ -81,9 +81,6 @@ pub struct BatchCall {
     pub function: String,
     #[serde(default)]
     pub payload: Option<Value>,
-    /// Namespace of the target function (default: this worker's).
-    #[serde(default)]
-    pub namespace: Option<String>,
     /// Budget for this call alone.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -254,6 +251,16 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
         .unwrap_or(DEFAULT_MAX_ENTRY_BYTES);
     let stop_on_error = req.stop_on_error.unwrap_or(false);
     let fs_scope = req.fs_scope.clone();
+    // What a skipped entry reports, taken before the calls are consumed.
+    let labels: Vec<(String, String)> = req
+        .calls
+        .iter()
+        .enumerate()
+        .map(|(i, call)| {
+            let id = call.id.clone().unwrap_or_else(|| i.to_string());
+            (id, call.function.clone())
+        })
+        .collect();
 
     let prepared: Vec<(usize, BatchCall, Result<Value, String>, u64)> = req
         .calls
@@ -306,19 +313,19 @@ pub async fn run(iii: Arc<IIIClient>, req: BatchRequest) -> Result<BatchResponse
         }
     }
 
+    // A skipped entry keeps the caller's id and its function name.
     let results: Vec<BatchResult> = results
         .into_iter()
-        .enumerate()
-        .map(|(i, r)| {
+        .zip(labels)
+        .map(|(r, (id, function))| {
             r.unwrap_or_else(|| BatchResult::Error {
-                id: i.to_string(),
-                function: String::new(),
+                id,
+                function,
                 code: "SKIPPED".into(),
                 message: "not run: an earlier call failed and stop_on_error is set".into(),
             })
         })
         .collect();
-    // A skipped entry keeps its function name for the reader.
     let ok = results.iter().all(|r| matches!(r, BatchResult::Ok { .. }));
     Ok(BatchResponse {
         ok,
@@ -339,6 +346,12 @@ fn invalid(index: usize, call: &BatchCall, message: String) -> BatchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_naming_a_namespace_is_refused_not_ignored() {
+        let call = json!({ "function": "state::get", "namespace": "other" });
+        assert!(serde_json::from_value::<BatchCall>(call).is_err());
+    }
 
     fn parse(v: Value) -> BatchRequest {
         serde_json::from_value(v).unwrap()
