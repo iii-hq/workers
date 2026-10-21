@@ -31,10 +31,12 @@ import { onChatDialogRequest, onChatShownRequest } from '@/lib/chat-requests'
 import { sendDraftWhenReady } from '@/lib/composer-insert'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import {
   getRemovalPreview,
   type RemovalPreview,
 } from '@/lib/sessions/removal-preview'
+import { cn } from '@/lib/utils'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 import { ChatView } from './ChatView'
 import { ConversationLoadNotice } from './ConversationLoadNotice'
@@ -403,7 +405,10 @@ export function ChatPanel({
         surfaceRef.current = node
         rootRef(node)
       }}
-      className="chat-surface flex-1 flex flex-col min-h-0 min-w-0"
+      className={cn(
+        'chat-surface flex min-h-0 min-w-0 flex-1 flex-col font-inter',
+        NEUTRAL_SURFACE,
+      )}
     >
       <ImportConversationsDialog
         open={importOpen}

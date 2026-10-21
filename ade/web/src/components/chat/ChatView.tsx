@@ -3030,7 +3030,7 @@ export function ChatView({
                 system's narrow-container threshold): the context meter —
                 built-in or the harness chip — drops to its `used/usable`
                 counts, the sandbox chip is already `⬚ N`. */}
-                <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+                <div className="flex h-7 items-center gap-3 rounded-xl bg-surface px-2.5">
                   {sessionChips}
                   {hasInjectedContextChip ? null : (
                     <ContextUsage

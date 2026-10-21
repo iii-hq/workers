@@ -212,7 +212,7 @@ function ReadyBody({
     <>
       <Wordmark appearance="inset" />
       <div className="flex w-full max-w-full flex-col items-center gap-2.5">
-        <div className="max-w-full font-sans text-xl font-medium text-ink-faint sm:text-lg">
+        <div className="max-w-full font-inter text-xl font-medium text-ink-faint sm:text-lg">
           What should we build in{' '}
           {onWorkingDirChange ? (
             <DirectoryPicker
@@ -358,9 +358,9 @@ function AgentGallery({
           className="grid grid-cols-1 gap-3 p-1 @lg:grid-cols-2 @3xl:grid-cols-3"
           aria-hidden
         >
-          <div className="h-40 rounded-lg bg-panel-raised shadow-raised" />
-          <div className="h-40 rounded-lg bg-panel-raised shadow-raised" />
-          <div className="h-40 rounded-lg bg-panel-raised shadow-raised" />
+          <div className="h-40 rounded-xl bg-panel-raised shadow-raised" />
+          <div className="h-40 rounded-xl bg-panel-raised shadow-raised" />
+          <div className="h-40 rounded-xl bg-panel-raised shadow-raised" />
         </div>
       ) : error ? (
         <p className="rounded-md bg-panel-raised px-3 py-4 font-sans text-base text-ink-faint shadow-raised sm:text-sm">
@@ -409,7 +409,7 @@ function CreateAgentCard() {
           context: { collection: 'agents', action: 'create' },
         })
       }
-      className="group/create flex h-full w-full cursor-pointer flex-col items-start justify-between gap-6 rounded-lg bg-surface/30 p-4 text-left hover:bg-surface-hover/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent @lg:min-h-40"
+      className="group/create flex h-full w-full cursor-pointer flex-col items-start justify-between gap-6 rounded-xl bg-surface/30 p-4 text-left hover:bg-surface-hover/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent @lg:min-h-40"
     >
       <div className="flex min-w-0 flex-col gap-1">
         <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
@@ -448,7 +448,7 @@ function AgentChoiceCard({
       aria-pressed={selected}
       onClick={onSelect}
       className={cn(
-        'group/agent relative flex h-full w-full cursor-pointer flex-col rounded-lg bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-[var(--motion-duration-control)] hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus @lg:min-h-40',
+        'group/agent relative flex h-full w-full cursor-pointer flex-col rounded-xl bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-[var(--motion-duration-control)] hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus @lg:min-h-40',
         selected && 'bg-surface-selected',
       )}
     >
@@ -460,7 +460,7 @@ function AgentChoiceCard({
       <div className="flex min-w-0 flex-1 flex-col gap-2 @lg:gap-3">
         <div className="flex min-w-0 items-center gap-3 @lg:block">
           <div
-            className="agent-choice-avatar active-subagent-chip flex size-12 shrink-0 items-center justify-center rounded-lg @lg:size-11"
+            className="agent-choice-avatar active-subagent-chip flex size-12 shrink-0 items-center justify-center rounded-xl @lg:size-11"
             data-color={color}
           >
             <Icon aria-hidden className="size-5" strokeWidth={2.25} />

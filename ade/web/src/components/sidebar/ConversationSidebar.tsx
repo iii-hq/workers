@@ -34,6 +34,7 @@ import {
   hoverTitle,
   type KeybindingActionId,
 } from '@/lib/keybindings/registry'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
@@ -97,14 +98,6 @@ function ShortcutHint({ id }: { id: KeybindingActionId }) {
 /** The quiet icon buttons beside the list title and along the bottom row. */
 const QUIET_ACTION =
   'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
-
-/**
- * The sidebar reads the console tokens through the Tailwind neutral ramp:
- * every shared recipe inside it (tree rows, the filter menu trigger, the
- * group headers) keeps its own classes and simply resolves to neutral.
- */
-const NEUTRAL_TOKENS =
-  '[--color-ink:var(--color-neutral-900)] [--color-ink-faint:var(--color-neutral-500)] [--color-ink-ghost:var(--color-neutral-400)] [--color-surface:var(--color-neutral-100)] [--color-surface-hover:var(--color-neutral-200)] [--color-surface-selected:var(--color-neutral-200)] dark:[--color-ink:var(--color-neutral-50)] dark:[--color-ink-faint:var(--color-neutral-400)] dark:[--color-ink-ghost:var(--color-neutral-500)] dark:[--color-surface:var(--color-neutral-900)] dark:[--color-surface-hover:var(--color-neutral-800)] dark:[--color-surface-selected:var(--color-neutral-800)]'
 
 function loadStringSet(storageKey: string): Set<string> {
   if (typeof window === 'undefined') return new Set()
@@ -256,7 +249,7 @@ export function ConversationSidebar({
      heading and the empty copy on one 18px column. */
   return (
     <div
-      className={cn('flex min-h-0 flex-1 flex-col font-inter', NEUTRAL_TOKENS)}
+      className={cn('flex min-h-0 flex-1 flex-col font-inter', NEUTRAL_SURFACE)}
     >
       <nav
         aria-label="Conversation actions"
