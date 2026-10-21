@@ -20,8 +20,8 @@ use crate::board::{
     self, ActivityFilter, BoardContext, CommentFilter, CreateCommentInput, CreateTicketInput,
     TicketBrief, TicketFilter, TicketRow, TicketView, UpdatePatch, row, ticket_view, view_of,
 };
+use crate::config::Column;
 use crate::config::KanbanConfig;
-use crate::config::{CONFIG_ID, Column};
 use crate::events::{
     ChangeEvent, CommentEvent, SubscriberCounts, Subscribers, emit_change, emit_comment,
 };
@@ -30,7 +30,9 @@ use crate::plan::{
     self, Buckets, ConvertInput, ConvertInto, EntityView, ProjectFields, ProjectView,
     ReleaseFields, ReleaseView,
 };
-use crate::store::{Activity, Board, BoardStore, Comment, ConfigCell, Ticket, config_snapshot};
+use crate::store::{
+    Activity, Board, BoardStore, Comment, ConfigCell, Pill, Ticket, config_snapshot,
+};
 
 pub const FUNCTION_IDS: [&str; 28] = [
     "kanban::config::info",
@@ -89,7 +91,7 @@ pub struct BoardGetInput {
     /// At most this many tickets per column, from the top of the column.
     #[serde(default)]
     pub limit: Option<u64>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full summary.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
     /// Only the subtasks of this ticket (uuid or key); empty string = tickets that are not subtasks.
@@ -119,6 +121,9 @@ pub struct TicketCreateInput {
     pub assignee: Option<String>,
     #[serde(default)]
     pub labels: Option<Vec<String>>,
+    /// Badges to show on the card: `[{ "icon": "calendar", "text": "Fri 17:00" }]`; `icon` is a lucide icon name.
+    #[serde(default)]
+    pub pills: Option<Vec<Pill>>,
     /// Make the new ticket a subtask of this ticket (uuid or key). The parent must be live and not a subtask itself.
     #[serde(default)]
     pub parent: Option<String>,
@@ -131,7 +136,7 @@ pub struct TicketCreateInput {
     /// Who is making the change. Defaults to `user`.
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -163,7 +168,7 @@ pub struct TicketListInput {
     pub updated_since: Option<String>,
     #[serde(default)]
     pub limit: Option<u64>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full summary.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full summary.
     #[serde(default)]
     pub compact: bool,
     /// Only the subtasks of this ticket (uuid or key); empty string = tickets that are not subtasks.
@@ -205,6 +210,9 @@ pub struct TicketUpdateInput {
     /// Labels to drop from the current ones (ASCII case ignored). Applied after `labels`, before `add_labels`.
     #[serde(default)]
     pub remove_labels: Option<Vec<String>>,
+    /// Replaces every badge on the card: `[{ "icon": "alarm-clock", "text": "09:00" }]`; `icon` is a lucide icon name. `[]` clears them.
+    #[serde(default)]
+    pub pills: Option<Vec<Pill>>,
     /// Ticket uuid or key to make this ticket a subtask of, or null to detach it. One level only: the parent must be live and not a subtask, and a ticket with subtasks cannot become one.
     #[serde(default, deserialize_with = "double_option")]
     pub parent: Option<Option<String>>,
@@ -216,7 +224,7 @@ pub struct TicketUpdateInput {
     pub release: Option<Option<String>>,
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -232,7 +240,7 @@ pub struct TicketMoveInput {
     pub index: Option<u64>,
     #[serde(default)]
     pub actor: Option<String>,
-    /// Return the compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -257,7 +265,7 @@ pub struct CommentCreateInput {
     /// Agent profile id, or `user`. Defaults to `user`.
     #[serde(default)]
     pub author: Option<String>,
-    /// Return the ticket as its compact row (key, title, status, priority, assignee, comment_count) instead of the full ticket.
+    /// Return the ticket as its compact row (id, key, title, status, priority, assignee, comment_count) instead of the full ticket.
     #[serde(default)]
     pub compact: bool,
 }
@@ -409,6 +417,8 @@ pub struct LabelConvertInput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ConfigInfo {
+    /// The worker name, `kanban`: every function id, trigger type and page id starts with it.
+    pub worker: String,
     pub configuration_id: String,
     /// Configured path, as written.
     pub data_path: String,
@@ -716,7 +726,8 @@ async fn read(ctx: &Ctx) -> Result<Board, Error> {
 async fn config_info(ctx: Arc<Ctx>, _: Empty) -> Result<ConfigInfo, Error> {
     let config = config_snapshot(&ctx.config);
     Ok(ConfigInfo {
-        configuration_id: CONFIG_ID.to_string(),
+        worker: "kanban".to_string(),
+        configuration_id: crate::configuration::config_id().to_string(),
         data_path: config.data_path.clone(),
         data_path_resolved: config.data_path_resolved().display().to_string(),
         board_file: config.board_file().display().to_string(),
@@ -809,6 +820,7 @@ async fn ticket_create(ctx: Arc<Ctx>, input: TicketCreateInput) -> Result<Ticket
         priority: input.priority,
         assignee: input.assignee,
         labels: input.labels,
+        pills: input.pills,
         parent: input.parent,
         project: input.project,
         release: input.release,
@@ -895,6 +907,7 @@ async fn ticket_update(ctx: Arc<Ctx>, input: TicketUpdateInput) -> Result<Ticket
         labels: input.labels,
         add_labels: input.add_labels,
         remove_labels: input.remove_labels,
+        pills: input.pills,
         parent: input.parent,
         project: input.project,
         release: input.release,
@@ -1332,7 +1345,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::create",
-        "Create a ticket on the board and return it; pass compact to get back only its compact row (key, title, status, priority, assignee, comment_count). Optionally make it a subtask (parent), or file it under a project or release (id or name).",
+        "Create a ticket on the board and return it; pass compact to get back only its compact row (id, key, title, status, priority, assignee, comment_count). Optionally make it a subtask (parent), or file it under a project or release (id or name).",
         ticket_create,
     );
     register(
@@ -1344,7 +1357,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::ticket::list",
-        "List tickets, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); compact rows carry only key, title, status, priority, assignee and comment_count.",
+        "List tickets, optionally narrowed to a column, an assignee, an updated_since timestamp, a parent (its subtasks), a project or a release (empty string = none); compact rows carry only id, key, title, status, priority, assignee and comment_count.",
         ticket_list,
     );
     register(
