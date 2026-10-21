@@ -10,7 +10,7 @@
 
 **Spec:** docs/superpowers/specs/2026-10-20-sandbox-worker-design.md, sections 2, 5.4, 5.5, 5.6 (S501-S506), 5.7 (`AdapterInfo` values), 5.8, 7.6, 7.8, 8.1-8.7, 10 (step 1), 11 (error fixture, VM checks), 12. Shared names: docs/superpowers/plans/2026-10-20-sandbox-shared-interfaces.md
 
-**Repo and base:** workers repo, branch `sandbox/p1-builtin` from `origin/main` (`8773952be` plus one harness-only commit; workers citations are at `8773952be`). `iii:` marks iii paths at `a1d08d8b0`. Files that Task 1 copies keep their iii line numbers, so `sandbox-builtin/src/x.rs:N` means `iii:crates/iii-worker/src/x.rs:N`. Prerequisites: none; it does not depend on the iii repo (spec Q5). Tasks 3 and 4 copy P0's two fixtures from `iii:crates/iii-sandbox-contract/tests/fixtures/` (P0's branch until it merges).
+**Repo and base:** workers repo, branch `sandbox/p1-builtin` from `origin/main` (`8773952be` plus one harness-only commit; workers citations are at `8773952be`). `iii:` marks iii paths at `a1d08d8b0`. Files that Task 1 copies keep their iii line numbers, so `sandbox-builtin/src/x.rs:N` means `iii:crates/iii-worker/src/x.rs:N`. Prerequisites: P0 merged. The code does not depend on the iii repo (spec Q5), but Tasks 3 and 4 copy P0's two merged fixtures from iii main (`crates/iii-sandbox-contract/tests/fixtures/`), so this PR merges after P0 and the published 1.0.0 matches the merged contract.
 
 ## Global Constraints
 
@@ -31,7 +31,7 @@
 - `worker::{exec, sync, wait, list, renew}` are reserved and not registered. `prepare` is long-running (Compose gives it 20 minutes); `stop` is idempotent and `grace_ms: 0` kills; `destroy` is refused while the VM is running.
 - Release entry: `kind: rust-binary` on Rust 1.97.1, `publish: true`, first release 1.0.0. Targets are `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, with `windows_exception: "microVMs need KVM or Hypervisor.framework"`, `features: [embed-init, embed-libkrunfw]`, `prebuild: [scripts/build-init.sh]` and `macos_entitlements: entitlements.plist`.
 - The macOS binary is ad-hoc signed at build time with `com.apple.security.hypervisor` and `com.apple.security.cs.disable-library-validation`.
-- `sandbox-builtin-vm-linux` is never `continue-on-error`. Making it a required check that gates every registry release is a branch-protection step the plan index lists (D5).
+- `sandbox-builtin-vm-linux` is never `continue-on-error`. Making it a required check that gates every registry release is a branch-protection step the plan index lists, taken right after this PR merges (D5).
 - Commits use conventional commits, and the PR title carries the MOT ticket. Never add an AI co-author or a "Generated with" line.
 
 ## Review Focus
@@ -58,8 +58,8 @@ Pinned tests:
 - Create: `sandbox-builtin/Cargo.toml`
 - Not copied: `iii:scripts/{build-worker-musl.sh, worker-musl.md}` (D8: no musl in v1).
 - Modify: `.gitattributes:3` (append the firmware rule); the four inner `crates/*/Cargo.toml` that lack `publish = false` (the two `iii-shell-*` crates have it)
-- Modify: `sandbox-builtin/src/{main.rs, lib.rs, cli/mod.rs, cli/app.rs:13-586}`; `src/cli/worker_manager/libkrun.rs:104-135`; `src/cli/local_worker.rs:848-1584`; `build.rs:24-26` (path only); `tests/musl_firmware.rs:10-12`; `tests/vm_integration.rs:354,413`; `tests/sandbox_daemon_exit_integration.rs:36,103,267`; `tests/vm_platform_e2e.rs:98`; `tests/{bundle_vm_command.rs, local_vm_command.rs}` (drop `config_dir` from the `VmOverride` literals, and the config-mount asserts)
-- Delete in the copy: `src/core/`; `src/cli/{gen_docs, init, builtin_defaults, bundle_prepare, sandbox, host_shim, source_watcher, sync, lockfile, spinner, status, stderr_sink}.rs`, and every further module the dead-code sweep in Step 3 reports. Tests `binary_worker_integration`, `common_fixtures_integration`, `config_*_integration` (6 files), `local_add_*_integration` (2), `local_worker_integration`, `sync_drift_adversarial`, `worker_init_e2e`, `worker_integration`, `worker_list_discovery_integration`, `watch_source_exits_when_its_declared_engine_dies` (`sandbox_daemon_exit_integration.rs:351-398`), `tests/README.md`, `tests/fixtures/templates/`, and every `bundle_worker_integration` case except the manifest and resource-cap ones (spec 8.7)
+- Modify: `sandbox-builtin/src/{main.rs, lib.rs, cli/mod.rs, cli/app.rs:13-586}`; `src/cli/worker_manager/libkrun.rs:104-135`; `src/cli/local_worker.rs:848-1584`; `build.rs:24-26` (path only); `tests/musl_firmware.rs:10-12`; `tests/vm_integration.rs:349,354,413` (:349 gains `#[cfg(not(feature = "embed-init"))]` on `vm_boot_subprocess_receives_correct_rootfs_argument`: it expects `__vm-boot` to fail with "No init binary available", which an embedded init skips, so it would boot a real VM on vm-linux); `tests/sandbox_daemon_exit_integration.rs:36,103,267`; `tests/vm_platform_e2e.rs:98`; `tests/{bundle_vm_command.rs, local_vm_command.rs}` (drop `config_dir` from the `VmOverride` literals, and the config-mount asserts)
+- Delete in the copy: `src/core/{add, clear, events, host, list, logs, project, remove, start, stop, update}.rs` (keep `core/{mod.rs, error.rs, types.rs}`, since the kept bundle path's `validate_bundle_manifest` and `parse_bundle_resources` return `core::error::WorkerOpError`; trim `mod.rs` to those three modules and their re-exports); `src/cli/{gen_docs, init, builtin_defaults, bundle_prepare, sandbox, host_shim, sync, lockfile, spinner, status, stderr_sink}.rs` (`source_watcher.rs` stays: `source_sync_host.rs:26` imports it for `__vm-boot`'s source sync), and every further module the dead-code sweep in Step 3 reports. Tests `binary_worker_integration`, `common_fixtures_integration`, `config_*_integration` (6 files), `local_add_*_integration` (2), `local_worker_integration`, `sync_drift_adversarial`, `worker_init_e2e`, `worker_integration`, `worker_list_discovery_integration`, `watch_source_exits_when_its_declared_engine_dies` (`sandbox_daemon_exit_integration.rs:351-398`), `tests/README.md`, `tests/fixtures/templates/`, and every `bundle_worker_integration` case except the manifest and resource-cap ones (spec 8.7)
 
 **Interfaces:**
 - Consumes: nothing from other plans.
@@ -78,10 +78,11 @@ fn vm_boot_program_is_the_running_binary() {
   - Rename the lib: `rg -l 'iii_worker::' | xargs sed -i '' 's/iii_worker::/sandbox_builtin::/g'`. Replace `CARGO_BIN_EXE_iii-worker` and `CARGO_BIN_EXE_iii` with `CARGO_BIN_EXE_sandbox-builtin`, and the `ps` needle at `sandbox_daemon_exit_integration.rs:36` with `sandbox-builtin`. `Cli` is named `sandbox-builtin`. Point `build.rs` and `musl_firmware.rs` at `firmware/`.
   - `vm_boot_program()` returns `std::env::current_exe()`, mapping the error to today's text "cannot locate the running binary: {e}".
   - Each former `eprintln!` plus `VmStart::Exit(1)` in `start_worker_impl` becomes `Err(<the same text>)`.
-  - Find the dead code: make every `cli` module `pub(crate)`, delete everything `cargo clippy --workspace --all-targets -- -D warnings` reports dead, then restore `pub` only for items a kept integration test imports.
+  - Find the dead code: make every `cli` module `pub(crate)`, delete everything `cargo clippy --workspace --all-targets -- -D warnings` reports dead, then restore `pub` only for items a kept integration test imports, including the feature-gated `vm_integration.rs` (`LibkrunAdapter`, `RuntimeAdapter`) and `oci_worker_integration.rs`, which that clippy run does not compile.
   - Run `cargo build` once without `--locked` to trim the copied lock. Fix new 1.97.1 clippy lints in place.
 - [ ] **Step 4: Run the tests to verify they pass.**
   - `cd sandbox-builtin && cargo fmt --all -- --check && cargo clippy --locked --workspace --all-targets -- -D warnings && cargo test --locked --workspace`: all pass.
+  - `cargo clippy --locked --workspace --all-targets --features integration-vm,integration-oci -- -D warnings`: passes (the gated tests still compile).
   - `grep -A1 'name = "msb_krun_devices"' Cargo.lock` prints `version = "0.1.16"`.
   - `rg -n 'scaffolder_core|iii_clap_docs|\.\./engine/' --glob '!Cargo.lock' .` prints nothing.
   - `./target/debug/sandbox-builtin sandbox-daemon --help` succeeds, and `./target/debug/sandbox-builtin sandbox list` fails with `unrecognized subcommand` (both kept commands are hidden).
@@ -132,24 +133,29 @@ include!("../build/firmware_check.rs");
 ### Task 3: S501-S506 and the iii.dev docs base
 
 **Files:**
-- Modify: `sandbox-builtin/src/sandbox_daemon/errors.rs:18-19` (`DOCS_BASE`), `:22-95` (`SandboxErrorCode` gains S501-S506), `:97-238` (variants, `code()`), `:293-367` (`fix_hint`), `tests/sandbox_error_codes_integration.rs:51-84, 135-186`
-- Replace: `tests/fixtures/sandbox_error_codes.json` with P0's copy (`iii:crates/iii-sandbox-contract/tests/fixtures/sandbox_error_codes.json`)
+- Modify: `sandbox-builtin/src/sandbox_daemon/errors.rs:18-19` (`DOCS_BASE`), `:22-95` (`SandboxErrorCode` gains S501-S506), `:97-238` (variants, `code()`), `:293-367` (`fix_hint`), `tests/sandbox_error_codes_integration.rs:31, 51-131, 135-186`
+- Replace: `tests/fixtures/sandbox_error_codes.json` with P0's merged copy (iii main, `crates/iii-sandbox-contract/tests/fixtures/sandbox_error_codes.json`)
 - Delete: `tests/sandbox_docs_anchor_stability.rs` (it reads the README that P2a moves to the router; P0's anchor test covers the iii.dev page)
 
 **Interfaces:**
 - Consumes (P0): the fixture, copied.
 - Produces: `DOCS_BASE = "https://iii.dev/docs/creating-workers/sandboxes#"` (registry §2); `SandboxErrorCode::{S501, S502, S503, S504, S505, S506}` with the `type` and retryable flags of the registry §2 table. New `SandboxError` variants, with the Display text in quotes:
   - `SourceRejected(String)` → S501 "worker source rejected: {0}"
-  - `StateBusy(String)` → S502 "VM state {0} is busy: its VM is running"
+  - `StateBusy { vm_id: String, instance: u64 }` → S502 "VM {vm_id} is busy: instance {instance} is preparing or running"
   - `InstanceMismatch { vm_id: String, expected: u64, found: u64 }` → S503 "VM {vm_id} is on instance {found}, not {expected}"
   - `VmNotFound(String)` → S504 "no VM {0} on this adapter"
   - `Unauthorized` → S505 "worker::* needs the project token this adapter was started with"
   - `PrepareFailed(String)` → S506 "worker prepare failed: {0}"
-- `to_payload()` keeps today's shape (`errors.rs:263-277`); the `RunStepFailed` fix context is unchanged.
+- `to_payload()` keeps today's shape (`errors.rs:263-277`); the `RunStepFailed` fix context is unchanged. S502 and S503 put the live handle in `fix`: `{"vm_id": vm_id, "instance": instance}` for `StateBusy` and `{"vm_id": vm_id, "instance": found}` for `InstanceMismatch`, so Compose can stop that instance and retry once (P2b).
+- The adapter has no S301-S304 variants: they are router codes it never emits.
 
 - [ ] **Step 1: Write the failing test.**
-  - Copy P0's fixture over the local one. It has `docs_base` on iii.dev and rows for S301-S304 (router codes, `"rust_variant": null`) and S501-S506.
-  - In `sandbox_error_codes_integration.rs`, `representative()` gains `"S501" => SandboxError::SourceRejected("x".into())` through `"S506" => SandboxError::PrepareFailed("x".into())`, and `ALL_VARIANTS`/`enforce_exhaustive` (:135-186) gain the six codes.
+  - Copy P0's merged fixture over the local one. It has `docs_base` on iii.dev and rows for S301-S304 (router codes, `"rust_variant": null`) and S501-S506.
+  - In `sandbox_error_codes_integration.rs`:
+    - `CodeFixture.rust_variant` (:31) becomes `Option<String>`, printed with `{:?}` in the panic and assert texts (:95, :102).
+    - Add `const ROUTER_ONLY: &[&str] = &["S301", "S302", "S303", "S304"];`. In `every_fixture_row_matches_rust_to_payload` (:88-131), first assert `representative(&row.code).is_none() == ROUTER_ONLY.contains(&row.code.as_str())`, then `continue` for `ROUTER_ONLY` rows, so S501-S506 are still checked against `to_payload()`.
+    - `fixture_version_is_supported` (:78-85) asserts `docs_base == "https://iii.dev/docs/creating-workers/sandboxes#"`.
+    - `representative()` gains `"S501" => SandboxError::SourceRejected("x".into())` through `"S506" => SandboxError::PrepareFailed("x".into())`, with `StateBusy { vm_id: "x".into(), instance: 1 }`, and `ALL_VARIANTS`/`enforce_exhaustive` (:135-186) gain the six codes.
   - Add:
 ```rust
 #[test] fn docs_url_uses_the_iii_dev_docs_base() {
@@ -157,26 +163,32 @@ include!("../build/firmware_check.rs");
     assert_eq!(p["docs_url"], "https://iii.dev/docs/creating-workers/sandboxes#S505");
     assert_eq!((p["type"].as_str(), p["retryable"].as_bool()), (Some("validation"), Some(false)));
 }
+#[test] fn busy_and_stale_errors_name_the_live_instance_in_fix() {
+    let busy = SandboxError::StateBusy { vm_id: "v".into(), instance: 3 }.to_payload();
+    assert_eq!(busy["fix"], serde_json::json!({"vm_id": "v", "instance": 3}));
+    let stale = SandboxError::InstanceMismatch { vm_id: "v".into(), expected: 1, found: 2 }.to_payload();
+    assert_eq!(stale["fix"], serde_json::json!({"vm_id": "v", "instance": 2}));
+}
 ```
-- [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --test sandbox_error_codes_integration`. Expected: `no variant named SourceRejected`, and the fixture rows fail on `docs_url`.
+- [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --test sandbox_error_codes_integration`. Expected: the compile error `no variant or associated item named SourceRejected found for enum SandboxError`.
 - [ ] **Step 3: Implement.** Set `DOCS_BASE`, add the six codes and the variants above. Fix-note texts:
   - `ImageNotInCatalog`: "set `image` to a listed value or add it to the adapter's custom_images config"
   - S504: "the adapter restarted; start the VM again"
   - S505: "call worker::* through Compose, which passes the token"
   - S506: "transient: retry after a short delay"
-  - S501-S503: none
-- [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --test sandbox_error_codes_integration && cargo test --locked --lib sandbox_daemon::errors`: pass, including `sandbox_error_wire_display_matches_to_payload_json`.
+  - S501-S503: none (S502 and S503 carry `fix` instead)
+- [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --test sandbox_error_codes_integration && cargo test --locked --lib sandbox_daemon::errors`: pass, including `sandbox_error_wire_display_matches_to_payload_json`; the four router rows are skipped and every other row is checked.
 - [ ] **Step 5: Commit.** `git add -A sandbox-builtin/src/sandbox_daemon/errors.rs sandbox-builtin/tests && git commit -m "feat(sandbox-builtin): add S501-S506 and point docs_url at iii.dev"`
 
 ### Task 4: Local copies of the contract's info and worker-VM types
 
 **Files:**
 - Create: `sandbox-builtin/src/wire.rs` (`pub mod wire;` in `src/lib.rs`), `sandbox-builtin/tests/wire_examples.rs`
-- Create: `sandbox-builtin/tests/fixtures/wire_examples.json`, a copy of P0's (`iii:crates/iii-sandbox-contract/tests/fixtures/wire_examples.json`)
+- Create: `sandbox-builtin/tests/fixtures/wire_examples.json`, a copy of P0's merged one (iii main, `crates/iii-sandbox-contract/tests/fixtures/wire_examples.json`)
 
 **Interfaces:**
 - Consumes (P0): the fixture, copied.
-- Produces, in `sandbox_builtin::wire`, with the names, fields and serde attributes of registry §2 (copies, not a dependency, spec Q5): `CONTRACT_MAJOR`, `CONTRACT_MINOR`, `ContractVersion` (`CURRENT`), `AdapterInfoRequest`, `AdapterInfo`, `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerStartRequest`, `WorkerSource`, `Owner`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`, and the six `WORKER_*` suffix constants. `WorkerLogsRequest.channel` is `iii_sdk::channels::StreamChannelRef`, whose JSON P0 pins to the contract's. `RouterInfo` is not copied: only the router answers it.
+- Produces, in `sandbox_builtin::wire`, with the names, fields and serde attributes of registry §2 (copies, not a dependency, spec Q5): `CONTRACT_MAJOR`, `CONTRACT_MINOR`, `ContractVersion` (`CURRENT`), `AdapterInfoRequest`, `AdapterInfo`, `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerStartRequest` (no `owner` or `network`, spec 5.4), `WorkerSource`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`, and the six `WORKER_*` suffix constants. `WorkerLogsRequest.channel` is `iii_sdk::channels::StreamChannelRef`, whose JSON P0 pins to the contract's. `RouterInfo` is not copied: only the router answers it.
 
 - [ ] **Step 1: Write the failing test.**
 ```rust
@@ -188,7 +200,7 @@ include!("../build/firmware_check.rs");
 }
 ```
 - [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --test wire_examples`. Expected: `unresolved import sandbox_builtin::wire`.
-- [ ] **Step 3: Implement `src/wire.rs`** per registry §2, with the derives the daemon's request and response types use today.
+- [ ] **Step 3: Implement `src/wire.rs`** per registry §2; every type derives `Debug, Clone, Serialize, Deserialize, JsonSchema` (registry §2), since the round trip needs both directions.
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --workspace`: pass.
 - [ ] **Step 5: Commit.** `git add sandbox-builtin/src/wire.rs sandbox-builtin/src/lib.rs sandbox-builtin/tests/wire_examples.rs sandbox-builtin/tests/fixtures/wire_examples.json && git commit -m "feat(sandbox-builtin): copy the contract's info and worker-VM types, pinned by its wire fixture"`
 
@@ -236,10 +248,10 @@ include!("../build/firmware_check.rs");
 }
 ```
   `config_fetch_failure_exits_2`: `sandbox_command` and the orphan test's shell line (:264) are rewritten to run the bare binary with `III_URL=ws://127.0.0.1:1`. With `III_ENGINE_PID=<a live sleep>`, the process exits with code 2 within 60 s, and its log contains `aborting (fail-closed)`. The five existing exit-watch tests keep passing: the three 5 s config RPC attempts outlast their 2.5 s survival windows.
-- [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --lib -- registered_ids adapter_info parse_config && cargo test --locked --test sandbox_daemon_exit_integration`. Expected: `cannot find function register_all`.
+- [ ] **Step 2: Run it to verify it fails.** `cargo test --lib -- registered_ids adapter_info parse_config && cargo test --test sandbox_daemon_exit_integration`. No `--locked` here: this run also refreshes Cargo.lock for the new path dependency. Expected: `cannot find function register_all`.
 - [ ] **Step 3: Implement** the signatures above.
   - `iii.worker.yaml` holds `iii: v1`, `name: sandbox-builtin`, `language: rust`, `deploy: binary`, `manifest: Cargo.toml`, `bin: sandbox-builtin`, `license: Elastic-2.0`, a description, `tags: [sandbox, microvm, libkrun, vm]`, and `config:` = the old `src/sandbox_daemon/iii.worker.yaml` config.
-  - `README.md` (the adapter's own; no skill, D8) covers what the adapter serves, its config keys and the four `III_VM_*` env vars, host prerequisites (spec 8.6), the worker-VM family with its two guards (spec 7.8), and a link to the S-codes at `https://iii.dev/docs/creating-workers/sandboxes`.
+  - `README.md` (the adapter's own; no skill, D8) covers what the adapter serves, its config keys and the four `III_VM_*` env vars, host prerequisites (spec 8.6), the worker-VM family with its two guards (spec 7.8), a known limit (the guards assume bus clients are trusted: a client that registers the adapter's ids or worker name first, while the adapter is down, receives `auth` and `env`; spec 12 records the same limit for the router), and a link to the S-codes at `https://iii.dev/docs/creating-workers/sandboxes`.
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo clippy --locked --workspace --all-targets -- -D warnings && cargo test --locked --workspace`: pass.
 - [ ] **Step 5: Commit.** `git add -A sandbox-builtin && git commit -m "feat(sandbox-builtin): serve sandbox-builtin::* and adapter::info with config from the bus"`
 
@@ -290,7 +302,7 @@ pub async fn bundle_vm_command(package: &str, worker_name: &str, install_dir: &P
 - Test: `src/worker_vm.rs`, `tests/worker_vm_e2e.rs`
 
 **Interfaces:**
-- Consumes (Task 4): `WorkerStartRequest`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`, `Owner`, `WORKER_{START, STATUS, STOP, DESTROY}`. From Task 1: `daemon_exit::attach_lifeline(&mut tokio::process::Command) -> io::Result<Lifeline>`.
+- Consumes (Task 4): `WorkerStartRequest`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`, `WORKER_{START, STATUS, STOP, DESTROY}`. From Task 1: `daemon_exit::attach_lifeline(&mut tokio::process::Command) -> io::Result<Lifeline>`.
 - Produces:
 ```rust
 impl WorkerVms {
@@ -302,12 +314,13 @@ impl WorkerVms {
 }
 ```
 - Decisions:
-  - State lives in `<base>/<vm_id>/`, which is also `VmOverride.state_dir`. `state.json` is `{"instance": n}`, rewritten before each spawn with `n` = the stored value + 1 (the first boot is 1).
-  - `start` checks the token and admits the source. `network: false` gives S501, since a worker VM must reach the engine (5.8). It answers S502 when the `vm_id` is present and not exited, and marks the entry `Preparing` before it builds. It calls `bundle_vm_command(package, worker_name, host_path, over)` or `local_vm_command(worker_name, host_path, run_override, over)` with `over = VmOverride { state_dir, engine_url: &req.engine_url, extra_env: req.env }`. A build error is S300. Then `launch`.
-  - `launch` truncates `<state>/console.log`, sets stdin to null and pipes stdout and stderr into a pump. The pump appends one JSON line `{stream, line, ts_ms}` per output line (lossy UTF-8) to `console.log`. The `Lifeline` is held with the child. A waiter task records `exit_code` (`code()`), `signal` (`ExitStatusExt::signal()`) and `ended_at_ms`.
+  - State lives in `<base>/<vm_id>/`. The VM's writable share is `<base>/<vm_id>/root`, which is `VmOverride.state_dir`; the control files `state.json` and `console.log` stay in `<base>/<vm_id>/`, outside the share, so a uid-0 guest cannot replace them with symlinks to host files. Both are opened (read and write) with `O_NOFOLLOW` and mode `0600`, as `src/cli/pidfile.rs:46-56` (`open_pid_file`) does. `state.json` is `{"instance": n}`, rewritten before each spawn with `n` = the stored value + 1 (the first boot is 1).
+  - `start` checks the token and admits the source. It answers S502 when the `vm_id` is present and not exited, and marks the entry `Preparing` before it builds; a `Preparing` entry reports the instance its `launch` will take (the stored value + 1). It calls `bundle_vm_command(package, worker_name, host_path, over)` or `local_vm_command(worker_name, host_path, run_override, over)` with `over = VmOverride { state_dir: <base>/<vm_id>/root, engine_url: &req.engine_url, extra_env: req.env }`. A build error is S300. Then `launch`. On every error after the entry is marked `Preparing`, `start` removes the entry, so the key stays startable.
+  - `launch` truncates `<base>/<vm_id>/console.log`, sets stdin to null and pipes stdout and stderr into a pump. The pump appends one JSON line `{stream, line, ts_ms}` per output line (lossy UTF-8) to `console.log`. Once `console.log` passes `CONSOLE_LOG_CAP` (10 MiB, Compose's own worker-log cap), the pump renames it to `console.log.1`, replacing an older one, and opens a fresh `console.log`. The `Lifeline` is held with the child. A waiter task records `exit_code` (`code()`), `signal` (`ExitStatusExt::signal()`) and `ended_at_ms`.
+  - Every `worker::*` op checks the token first, before any S504 or S503 lookup.
   - `status`: an unknown `vm_id` gives S504 and a different `instance` gives S503. The state is `Running` until exit, then `Stopped` if `stop` caused the exit, else `Exited`.
-  - `stop`: same S504 and S503 checks. An exited VM returns its final status. Otherwise send SIGTERM, wait up to `grace_ms`, then SIGKILL; `grace_ms: 0` sends SIGKILL at once. (`__vm-boot` turns SIGTERM into a clean VMM exit, `vm_boot.rs:1137-1176`.)
-  - `destroy`: S502 while running; otherwise remove `<base>/<vm_id>` and the map entry. `destroyed` is whether the directory existed.
+  - `stop`: same S504 and S503 checks. An exited VM returns its final status. Otherwise send SIGTERM, wait up to `grace_ms`, then SIGKILL; `grace_ms: 0` sends SIGKILL at once. (`__vm-boot` turns SIGTERM into a clean VMM exit, `vm_boot.rs:1137-1176`.) A `Preparing` entry has no process yet, so `stop` answers S502 with the same `fix`; Compose's start then fails and its restart policy retries once the boot is running and stoppable (P2b).
+  - `destroy`: S502 while the entry is `Preparing` or running; otherwise remove `<base>/<vm_id>` and the map entry. `destroyed` is whether the directory existed.
 
 - [ ] **Step 1: Write the failing test.** `launch` takes `sh` commands, so there is no VM.
   - `start_status_stop_destroy_cycle`:
@@ -320,18 +333,22 @@ impl WorkerVms {
   - `a_running_vm_refuses_start_and_destroy`: a second `launch` and a `destroy` both give S502.
   - `unknown_vm_is_s504`.
   - `exit_code_is_recorded`: `sh -c 'exit 7'` reaches `Exited` with `exit_code == Some(7)`.
-  - `start_refuses_network_false`: `start{network: false}` gives S501 before any build.
-  - `tests/worker_vm_e2e.rs::a_local_worker_vm_boots_restarts_and_is_destroyed`. Skip with `[skip]` if `/dev/kvm` is not read-write. Use a local dir with `runtime.base_image: docker.io/iiidev/python:latest` and `run_override: "sh -c 'echo worker-vm-ready; sleep 600'"`. Then:
+  - Extend `worker_ops_answer_s505_without_the_token` to `start`, `status`, `stop` and `destroy`: with `auth: "u"`, an unknown `vm_id` and a stale `instance` still give S505, never S504 or S503.
+  - `a_failed_build_leaves_the_key_startable`: `start` on an empty local dir under the root fails; a second `start` of the same `state_key` fails with the same code, not S502.
+  - `launch_refuses_a_symlinked_console_log`: plant `<base>/<vm_id>/console.log` as a symlink to `t/target`. `launch` fails with S300 and `t/target` is unchanged.
+  - `console_log_rotates_past_the_cap`: launch `sh -c 'yes "$(printf %01000d 0)" | head -n 11000'` and wait for `Exited`. `console.log.1` exists and `console.log` is under 10 MiB.
+  - `tests/worker_vm_e2e.rs::a_local_worker_vm_boots_restarts_and_is_destroyed`. Skip with `[skip]` if `/dev/kvm` is not read-write. Use a local dir with `runtime.base_image: docker.io/iiidev/python:latest` and `run_override: "sh -c 'echo worker-vm-ready; while sleep 1; do cat /workspace/synced.txt 2>/dev/null; done'"`. Then:
     1. `prepare`.
     2. `start` reaches `Running`.
     3. `console.log` contains `worker-vm-ready` within 120 s.
-    4. `stop{grace_ms: 5000}` gives `Stopped`.
-    5. A second `start` gives `instance == 2` and reaches `Running`; stop it.
-    6. `destroy` gives `destroyed == true`.
+    4. Write `synced.txt` (`sync-ok`) into the local dir on the host; `console.log` contains `sync-ok` within 30 s (source sync).
+    5. `stop{grace_ms: 5000}` gives `Stopped`.
+    6. A second `start` gives `instance == 2` and reaches `Running`; stop it.
+    7. `destroy` gives `destroyed == true`.
   - Extend `registered_ids_…` with `WORKER_{START, STATUS, STOP, DESTROY}`.
 - [ ] **Step 2: Run it to verify it fails.** `cargo test --locked --lib worker_vm`. Expected: `no method named launch`.
 - [ ] **Step 3: Implement** the signatures and decisions above.
-- [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --workspace` passes. On a KVM host, run `BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh && cargo test --locked --features embed-init,embed-libkrunfw,integration-vm --test worker_vm_e2e`; it prints `test result: ok. 1 passed`.
+- [ ] **Step 4: Run the tests to verify they pass.** `cargo test --locked --workspace` passes. On a KVM host, run `BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh && cargo test --locked --features embed-init,embed-libkrunfw,integration-vm` (the vm-linux step 6 command); it passes, and `worker_vm_e2e` prints `test result: ok. 1 passed`.
 - [ ] **Step 5: Commit.** `git add sandbox-builtin/src sandbox-builtin/tests/worker_vm_e2e.rs && git commit -m "feat(sandbox-builtin): run worker VMs with worker::start, status, stop and destroy"`
 
 ### Task 8: `worker::logs`
@@ -352,7 +369,7 @@ impl WorkerVms {
 }
 ```
 - Decisions:
-  - `LogRecord.cursor` is the byte offset just past that record, the resume point; `cursor: None` reads from 0.
+  - `LogRecord.cursor` is the byte offset just past that record, the resume point; `cursor: None` reads from 0. `read_records` treats a `from` past the file's length as 0: the file was rotated (Task 7), and records already in `console.log.1` are not read.
   - With `follow`, the pump polls every 200 ms until that instance has exited and the file is drained.
   - `logs` checks the token, gives S504 for an unknown `vm_id`, spawns the pump with a `ChannelWriter::new(iii.address(), &req.channel)` sink (one `send_message(<LogRecord JSON>)` per record), and returns. The pump closes the writer at the end. A sink error ends the pump.
 
@@ -360,6 +377,8 @@ impl WorkerVms {
   - `records_resume_from_a_cursor`: a file of three JSON lines.
     - `read_records(p, 0)` gives 3 records with strictly increasing cursors, and the last cursor equals the file length.
     - `read_records(p, recs[0].cursor)` gives the last 2 records.
+    - `read_records(p, <file length> + 1)` gives all 3 records.
+  - Extend `worker_ops_answer_s505_without_the_token` to `logs`: an unknown `vm_id` with `auth: "u"` gives S505, not S504.
   - `follow_streams_until_the_instance_ends`: launch `sh -c 'echo a; sleep 0.3; echo b >&2'`, then `pump_logs(follow: true)` into a `Vec`. The lines are `["a", "b"]`, the streams are `[Stdout, Stderr]`, and it returns after exit.
   - `follow_on_an_exited_instance_drains_and_returns`: launch `sh -c 'echo a'`, wait for `Exited`. `pump_logs(follow: true)` returns within 2 s with `["a"]`.
   - `registered_ids_…` now expects exactly the 16 ephemeral suffixes, `adapter::info` and the six `WORKER_*` ids.
@@ -403,31 +422,34 @@ III_BIN=$(command -v iii) ADAPTER_BIN=target/debug/sandbox-builtin bash scripts/
 ### Task 10: CI jobs
 
 **Files:**
-- Modify: `.github/workflows/ci.yml:264-279` (rust job), `:986-989` (interface-smoke); add jobs `sandbox-builtin-macos` and `sandbox-builtin-vm-linux` after `iii-directory-minilm-targets` (:303-351)
+- Modify: `.github/workflows/ci.yml:264-279` (rust job), `:986-989, 1044-1098` (interface-smoke); add jobs `sandbox-builtin-macos` and `sandbox-builtin-vm-linux` after `iii-directory-minilm-targets` (:303-351)
 - Test: `.github/scripts/tests/test_rust_ci_workflows.py`
 
 **Interfaces:**
 - Consumes: `scripts/build-init.sh` (Task 2), `tests/worker_vm_e2e.rs` (Task 7), `scripts/sandbox-isolation-e2e.sh` (Task 9).
 - Produces: CI job names `sandbox-builtin-macos` and `sandbox-builtin-vm-linux` (registry). Both run when `contains(needs.discover.outputs.rust, '"sandbox-builtin"')`.
 - Decisions:
-  - rust job: the generic clippy and test steps get `&& matrix.worker != 'sandbox-builtin'`. Add three steps:
+  - rust job: the generic clippy and test steps get `&& matrix.worker != 'sandbox-builtin'`. Add five steps, each `if: matrix.worker == 'sandbox-builtin'`, in this order:
     - `Install libcap-ng (sandbox-builtin)`
+    - `cargo test --locked --lib fails_closed`, with no features: the only CI run of Task 2's fail-closed tests, which the embed features compile out.
+    - `BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh`, so `embed-init` embeds a real init and the copied `embed-init` tests pass. It needs no musl-tools: `.cargo/config.toml` links musl with `rust-lld`.
     - `cargo clippy --locked --workspace --all-targets --features embed-init,embed-libkrunfw -- -D warnings`
     - `cargo test --locked --workspace --features embed-init,embed-libkrunfw`
-  - interface-smoke: the same libcap-ng step before `Build worker binary`.
+  - interface-smoke: the same libcap-ng step before `Build worker binary`. In `Start worker from source`, before `pushd`, `if [[ "$WORKER" == sandbox-builtin ]]; then export III_ENGINE_PID="$(cat iii-engine.pid)"; fi`: the worker starts with `&` in that step, and without an engine pid or a lifeline its `ExitWatch` watches its spawn parent, the step's shell, and exits when the step ends, before `Collect worker interface`.
   - `sandbox-builtin-macos` runs on `macos-latest` with toolchain `1.97.1` (`build-init.sh` adds the musl target). Steps:
     - `BUILD_TARGET=aarch64-apple-darwin scripts/build-init.sh`
-    - the clippy and test lines above without `--workspace`
+    - the rust job's two `--features embed-init,embed-libkrunfw` clippy and test lines, without `--workspace`
     - `cargo test --locked -p iii-filesystem`
   - `sandbox-builtin-vm-linux` runs on `ubuntu-24.04` with `timeout-minutes: 60` and no `continue-on-error`. Steps:
     1. The "Enable KVM" step from `iii:.github/workflows/ci.yml:680-687` (fail if `/dev/kvm` is missing).
-    2. libcap-ng.
-    3. The pinned engine install (as `ci.yml:690-706`).
-    4. `scripts/build-init.sh` with `BUILD_TARGET=x86_64-unknown-linux-gnu`.
-    5. `cargo test --locked --features embed-init,embed-libkrunfw,integration-vm`.
-    6. `cargo build --locked --features embed-init,embed-libkrunfw`.
-    7. The isolation e2e with `III_BIN=$III_ENGINE_BIN ADAPTER_BIN=target/debug/sandbox-builtin WORK=$RUNNER_TEMP/sandbox-isolation`.
-    8. On failure, upload `$RUNNER_TEMP/sandbox-isolation/logs`.
+    2. Contract drift check: for `f` in `sandbox_error_codes.json wire_examples.json`, `curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/crates/iii-sandbox-contract/tests/fixtures/$f | diff -u - tests/fixtures/$f`, run in `sandbox-builtin/` like the other steps. This job gates every release, so a later 1.x whose copies drift from the contract cannot ship.
+    3. libcap-ng.
+    4. The pinned engine install (as `ci.yml:690-706`).
+    5. `scripts/build-init.sh` with `BUILD_TARGET=x86_64-unknown-linux-gnu`.
+    6. `cargo test --locked --features embed-init,embed-libkrunfw,integration-vm`.
+    7. `cargo build --locked --features embed-init,embed-libkrunfw`.
+    8. The isolation e2e with `III_BIN=$III_ENGINE_BIN ADAPTER_BIN=target/debug/sandbox-builtin WORK=$RUNNER_TEMP/sandbox-isolation`.
+    9. On failure, upload `$RUNNER_TEMP/sandbox-isolation/logs`.
   - Every `uses:` is the SHA already pinned in `ci.yml`.
 
 - [ ] **Step 1: Write the failing test.**
@@ -437,11 +459,19 @@ def test_sandbox_builtin_vm_linux_is_a_required_shaped_kvm_job() -> None:
     assert "continue-on-error" not in job and job["runs-on"] == "ubuntu-24.04"
     body = str(job)
     for needle in ("/dev/kvm", "scripts/build-init.sh", "--features embed-init,embed-libkrunfw,integration-vm",
-                   "scripts/sandbox-isolation-e2e.sh", "libcap-ng-dev"):
+                   "scripts/sandbox-isolation-e2e.sh", "libcap-ng-dev",
+                   "iii-sandbox-contract/tests/fixtures", "diff -u"):
         assert needle in body
     assert "sandbox-builtin-macos" in workflow("ci.yml")["jobs"]
+
+def test_sandbox_builtin_rust_steps_build_init_first_and_keep_the_worker_alive() -> None:
+    rust = str(workflow("ci.yml")["jobs"]["rust"]["steps"])
+    assert "cargo test --locked --lib fails_closed" in rust
+    assert rust.index("BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh") < rust.index(
+        "--features embed-init,embed-libkrunfw -- -D warnings")
+    assert "III_ENGINE_PID" in str(workflow("ci.yml")["jobs"]["interface-smoke"])
 ```
-- [ ] **Step 2: Run it to verify it fails.** `pytest .github/scripts/tests/test_rust_ci_workflows.py -q`. Expected: `KeyError: 'sandbox-builtin-vm-linux'`.
+- [ ] **Step 2: Run it to verify it fails.** `pytest .github/scripts/tests/test_rust_ci_workflows.py -q`. Expected: `KeyError: 'sandbox-builtin-vm-linux'`, and an `AssertionError` in the rust-steps test.
 - [ ] **Step 3: Implement** the jobs and steps above.
 - [ ] **Step 4: Run the tests to verify they pass.** `pytest .github/scripts/tests/ -q` passes, and `actionlint -color` reports nothing.
 - [ ] **Step 5: Commit.** `git add .github/workflows/ci.yml .github/scripts/tests/test_rust_ci_workflows.py && git commit -m "ci(sandbox-builtin): lint, test and boot real VMs on every sandbox-builtin change"`
@@ -533,8 +563,10 @@ def test_sandbox_builtin_build_extras_are_validated_and_reach_the_schema():
 
 **Files:** none changed.
 
-- [ ] **Step 1: Run the full checks.** In `sandbox-builtin/`:
+- [ ] **Step 1: Run the full checks.** In `sandbox-builtin/`, in the rust job's order:
   - `cargo fmt --all -- --check`
+  - `cargo test --locked --lib fails_closed`
+  - `BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh` (on Apple Silicon, `BUILD_TARGET=aarch64-apple-darwin`), so the result does not depend on a leftover init build
   - `cargo clippy --locked --workspace --all-targets --features embed-init,embed-libkrunfw -- -D warnings`
   - `cargo test --locked --workspace --features embed-init,embed-libkrunfw`
 
@@ -546,17 +578,17 @@ def test_sandbox_builtin_build_extras_are_validated_and_reach_the_schema():
   All pass with no warnings.
 - [ ] **Step 2: Run the spec 11 checks this slice owns.**
   - The error JSON matches `tests/fixtures/sandbox_error_codes.json` (`--test sandbox_error_codes_integration`).
-  - The local wire types round-trip `tests/fixtures/wire_examples.json` (`--test wire_examples`), and both fixtures equal P0's merged copies (`diff` against `iii:crates/iii-sandbox-contract/tests/fixtures/`).
+  - The local wire types round-trip `tests/fixtures/wire_examples.json` (`--test wire_examples`), and both fixtures equal P0's merged copies (the vm-linux drift check: `diff -u` against iii main's `crates/iii-sandbox-contract/tests/fixtures/`).
   - The registered ids are exactly the 16 ephemeral suffixes, `adapter::info` and the six `WORKER_*` ids under `sandbox-builtin::` (`registered_ids_…`).
   - On a Linux KVM host:
-    - `cargo test --locked --features embed-init,embed-libkrunfw,integration-vm` passes, including `worker_vm_e2e`.
+    - After `BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh`, `cargo test --locked --features embed-init,embed-libkrunfw,integration-vm` (vm-linux step 6, the Task 7 Step 4 command) passes, including `worker_vm_e2e`.
     - The isolation e2e ends with `0 failure(s)`.
   - On Apple Silicon, after `cargo build --release` and the train's `codesign --sign - --entitlements entitlements.plist --force target/release/sandbox-builtin`, `codesign -d --entitlements - target/release/sandbox-builtin` lists `com.apple.security.hypervisor`.
 - [ ] **Step 3: Write the PR-ready note** in the PR body. Do not push or open the PR from this plan.
   - The PR title carries the MOT ticket.
-  - Prerequisites: none (spec Q5). Its two fixtures are copies of P0's; re-copy them if P0 changes them before merging.
+  - Prerequisites: P0 merged. Its two fixtures are copies of P0's merged ones from iii main, and the vm-linux drift check keeps them equal.
   - Operational, outside the diff:
-    - Mark `sandbox-builtin-vm-linux` as a required check (branch protection, D5).
+    - Right after this PR merges, mark `sandbox-builtin-vm-linux` as a required check (branch protection, D5).
     - Add `DOCKERHUB_USERNAME` and `DOCKERHUB_PASSWORD` to the workers repo. Do not dispatch `sandbox-builtin-images.yml` before P3 deletes `iii:.github/workflows/docker-worker-images.yml` (D7).
-    - After merge, Release Control publishes 1.0.0. P3 cannot merge before it is in the registry.
+    - After merge, Release Control publishes 1.0.0. P2a, P2b and P3 merge back to back only once it resolves for the three targets (the P3 Task 7 Step 3 check).
   - Nothing consumes `sandbox-builtin::*` until engine 0.25.0.

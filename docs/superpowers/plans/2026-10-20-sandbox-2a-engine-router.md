@@ -10,7 +10,7 @@
 
 **Spec:** docs/superpowers/specs/2026-10-20-sandbox-worker-design.md, sections 2, 5.2, 5.6, 5.7 (router side), 6.1, 6.2, 6.3 (engine part), 6.4 (`CONFIGURABLE_ENGINE_WORKERS` entry with its Compose fixtures, D9, and the engine `migration_guidance` arm), 6.5 (engine code, tests, publish rows), 7.5, 8.2 (README and skill move, D10), 10 (step 2), 11 (engine tests), 12 (keep `_publish-engine-workers.yml` working). Shared names: docs/superpowers/plans/2026-10-20-sandbox-shared-interfaces.md
 
-**Repo and base:** iii repo. Citations are at `a1d08d8b0`. Branch `sandbox/p2a-router`, cut from main after P0 merges (P0 makes `crates/iii-sandbox-contract` a workspace member). No stable tag is cut from main between its merge and 0.25.0 (registry §1). P2b (Compose) follows this PR. Engine 0.25.0 is not cut until P3 merges and `sandbox-builtin` 1.0.0 is in the registry.
+**Repo and base:** iii repo. Citations are at `a1d08d8b0`. Branch `sandbox/p2a-router`, cut from main after P0 merges (P0 makes `crates/iii-sandbox-contract` a workspace member). It merges once `sandbox-builtin` 1.0.0 resolves for the three targets (the P3 Task 7 Step 3 curl) and P2b is approved, so P2a, P2b and P3 merge back to back. No stable tag is cut from main between its merge and 0.25.0 (registry §1), so that window covers only this run. Engine 0.25.0 is not cut until P3 merges.
 
 ## Global Constraints
 
@@ -208,7 +208,8 @@ git commit -m "feat(engine): add the sandbox router that forwards sandbox::* to 
 - Modify: `crates/iii-compose/src/config.rs:58-64` (drop `"iii-sandbox"`), `crates/iii-compose/tests/config_validation.rs:121-122, 142, 149`, `crates/iii-compose/src/managed_engine.rs:909-910, 949, 953` (drop the `iii-sandbox` fixture, list item and `auto_install` assertion)
 - Modify: `engine/tests/config_reload_e2e.rs:96, 513-573` (stand-in `iii-sandbox` becomes `iii-http-functions`: the const, the store file `iii-http-functions.yaml`, the YAML entry, `register_worker`, the rewrite needle and asserts, the section comment)
 - Modify: `engine/config.yaml:24-34` (delete the commented `iii-sandbox` block; add a commented top-level `sandbox:` / `adapter: sandbox-builtin` / `namespace: default` after line 1)
-- Test: `engine/tests/reload_manager_unit.rs`, `engine/tests/reload_scope_unit.rs`, `engine/src/workers/config.rs`
+- Modify: `engine/src/workers/telemetry/mod.rs:200-219` (`is_iii_builtin_function_id` gains `|| id.starts_with("sandbox::")`), `:2429-2449` (extend `test_is_iii_builtin_function_id`). The router is engine-owned like `state::`; without this, `engine/tests/builtin_functions_e2e.rs:36-79` fails on a bare engine and telemetry counts the 17 router ids as user functions (`telemetry/mod.rs:548-556`).
+- Test: `engine/tests/reload_manager_unit.rs`, `engine/tests/reload_scope_unit.rs`, `engine/src/workers/config.rs`, `engine/src/workers/telemetry/mod.rs`
 
 **Interfaces:**
 - Consumes: Task 2 `SandboxRouter`; Task 1 `EngineConfig.sandbox`.
@@ -243,26 +244,29 @@ git commit -m "feat(engine): add the sandbox router that forwards sandbox::* to 
 // engine/src/workers/config.rs: test_config_file_rejects_all_user_managed_workers_with_migration_guidance
 // gains "  - name: iii-sandbox\n" under modules and
 assert!(message.contains("'iii-sandbox' -> remove it; set sandbox.adapter (Compose: engine.sandbox) and configure the sandbox-builtin worker"), "{message}");
+// engine/src/workers/telemetry/mod.rs: test_is_iii_builtin_function_id gains
+assert!(is_iii_builtin_function_id("sandbox::exec"));
+assert!(is_iii_builtin_function_id("sandbox::adapter::info"));
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cargo test --locked -p iii --all-features --test reload_manager_unit --test reload_scope_unit`
-Expected: `reload_keeps_sandbox_binding` panics `router injected`; `engine_config_binds_the_mandatory_router_on_build` gets `function_not_found`.
+Run: `cargo test --locked -p iii --all-features --test reload_manager_unit --test reload_scope_unit` and `cargo test --locked -p iii --all-features --lib workers::telemetry::tests::test_is_iii_builtin_function_id`
+Expected: `reload_keeps_sandbox_binding` panics `router injected`; `engine_config_binds_the_mandatory_router_on_build` gets `function_not_found`; the telemetry test fails `assertion failed: is_iii_builtin_function_id("sandbox::exec")`.
 
 - [ ] **Step 3: Implement `normalize_worker_entries(config: EngineConfig) -> Vec<WorkerEntry>` in `engine/src/workers/config.rs`**
 
-It concatenates `workers` and `modules`, injects each missing mandatory registration as today's two loops do, and gives the injected `iii-sandbox` entry `config: config.sandbox` as a `serde_json::Value` (`to_value` cannot fail for this struct). It then runs `assign_instance_ids`. `EngineBuilder::build` calls it after setting the grace (it replaces `:710-729`). `ReloadManager::parse_and_normalize` returns `Ok(normalize_worker_entries(cfg))`. Add `register_worker!` and the arm `"iii-sandbox" => "remove it; set sandbox.adapter (Compose: engine.sandbox) and configure the sandbox-builtin worker"`, and remove the list entry. The arm can only fire once the entry is gone (`config.rs:22`, `:160`). Then make the fixture, stand-in and example edits listed above.
+It concatenates `workers` and `modules`, injects each missing mandatory registration as today's two loops do, and gives the injected `iii-sandbox` entry `config: config.sandbox` as a `serde_json::Value` (`to_value` cannot fail for this struct). It then runs `assign_instance_ids`. `EngineBuilder::build` calls it after setting the grace (it replaces `:710-729`). `ReloadManager::parse_and_normalize` returns `Ok(normalize_worker_entries(cfg))`. Add `register_worker!` and the arm `"iii-sandbox" => "remove it; set sandbox.adapter (Compose: engine.sandbox) and configure the sandbox-builtin worker"`, and remove the list entry. The arm can only fire once the entry is gone (`config.rs:22`, `:160`). Add the `sandbox::` prefix to `is_iii_builtin_function_id`. Then make the fixture, stand-in and example edits listed above.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --locked -p iii --all-features` and `cargo test --locked -p iii-compose`
-Expected: both `test result: ok`, with the three new tests and the extended migration test passing. The full engine suite runs here because every engine build now includes the router.
+Expected: both `test result: ok`, with the three new tests, the extended migration and telemetry tests, and `builtin_functions_e2e`'s `all_functions_on_bare_engine_are_iii_builtins` passing. The full engine suite runs here because every engine build now includes the router.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add engine/src/workers/sandbox/mod.rs engine/src/workers/config.rs engine/src/workers/reload.rs crates/iii-compose/src/config.rs crates/iii-compose/tests/config_validation.rs crates/iii-compose/src/managed_engine.rs engine/tests/config_reload_e2e.rs engine/tests/reload_manager_unit.rs engine/tests/reload_scope_unit.rs engine/config.yaml
+git add engine/src/workers/sandbox/mod.rs engine/src/workers/config.rs engine/src/workers/reload.rs engine/src/workers/telemetry/mod.rs crates/iii-compose/src/config.rs crates/iii-compose/tests/config_validation.rs crates/iii-compose/src/managed_engine.rs engine/tests/config_reload_e2e.rs engine/tests/reload_manager_unit.rs engine/tests/reload_scope_unit.rs engine/config.yaml
 git commit -m "feat(engine): register the sandbox router as the mandatory iii-sandbox worker"
 ```
 
@@ -270,6 +274,7 @@ git commit -m "feat(engine): register the sandbox router as the mandatory iii-sa
 
 **Files:**
 - Modify: `engine/src/engine/mod.rs:2289-2325` (guard), `:2294-2296` (the stale comment), `:4217-4221` (test doc)
+- Modify: `.github/workflows/ci.yml:711-727`: delete the `Sandbox isolation end to end (UBI 9 image, real microVMs)` step (`:711-719`) and its log-upload step (`:721-727`) from `sandbox-isolation-linux`; keep the job's build and `cargo test -p iii-worker` steps. After this commit the engine refuses the old daemon's `sandbox::*` registrations in `default`, and the unbound router answers the script's `sandbox list` readiness probe (`scripts/sandbox-isolation-e2e.sh:90`) with S303, so the step can only fail. P1's `sandbox-builtin-vm-linux` runs the moved isolation e2e (D5); P3 Task 4 deletes the rest of the job.
 - Test: `engine/src/engine/mod.rs` tests module (beside `register_function_reserves_non_provider_engine_prefix_outside_default`, `:4222`)
 
 **Interfaces:**
@@ -298,17 +303,17 @@ Expected: assertion failure, `left: None, right: Some("router")` (the WS registr
 
 - [ ] **Step 3: Widen the existing reserved-id guard at `engine/src/engine/mod.rs:2297`**
 
-The condition becomes `existing || (namespace == DEFAULT_NAMESPACE && ENGINE_RESERVED_PREFIXES.iter().any(|p| reg_id.starts_with(p)))`. The `RegistrationRejected` reply stays as it is. The `tracing::warn!` for the new branch uses the spec text. Rewrite the comment at `:2294-2296` and the test doc at `:4220-4221`: in-process builtins have no `function_owners` entry (`:398-399`), so in `default` only the reserved list blocks a shadow.
+The condition becomes `existing || (namespace == DEFAULT_NAMESPACE && ENGINE_RESERVED_PREFIXES.iter().any(|p| reg_id.starts_with(p)))`. The `RegistrationRejected` reply stays as it is. The `tracing::warn!` for the new branch uses the spec text. Rewrite the comment at `:2294-2296` and the test doc at `:4220-4221`: in-process builtins have no `function_owners` entry (`:398-399`), so in `default` only the reserved list blocks a shadow. Delete the two `ci.yml` steps listed above.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cargo test --locked -p iii --all-features --lib engine::tests::register_function_reserves`
-Expected: `2 passed` (the existing `engine::` test and the new one).
+Run: `cargo test --locked -p iii --all-features --lib engine::tests::register_function_reserves`; `rg -n "sandbox-isolation-e2e.sh|sandbox-isolation-linux-logs" .github/workflows/ci.yml`; `python3 -c 'import yaml; yaml.safe_load(open(".github/workflows/ci.yml"))'`
+Expected: `2 passed` (the existing `engine::` test and the new one); `rg` prints nothing; the YAML loads with exit 0.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add engine/src/engine/mod.rs
+git add engine/src/engine/mod.rs .github/workflows/ci.yml
 git commit -m "fix(engine): refuse WebSocket registrations of sandbox::* in the default namespace"
 ```
 
@@ -401,8 +406,8 @@ Expected: exit 1 with `::error::release-iii.yml: missing publishable engine work
 
 - [ ] **Step 4: Verify**
 
-Run: `python3 .github/scripts/validate_release_worker_matrix.py --repo-root .`; `(cd .github/scripts && python -m pytest -q)` (as `test-scripts.yml:44-47`); `actionlint .github/workflows/_publish-engine-workers.yml`
-Expected: `::notice::release worker matrix validation passed`; pytest passes; actionlint prints nothing.
+Run: `python3 .github/scripts/validate_release_worker_matrix.py --repo-root .`; `(cd .github/scripts && python -m pytest -q)` (as `test-scripts.yml:44-47`); `actionlint .github/workflows/_publish-engine-workers.yml`. Then run the reload heredoc once against a real boot listing, from an empty temp dir with `R` set to the repo root: `cargo build -p iii --manifest-path "$R/Cargo.toml"`; `printf 'workers: []\n' > config.yaml`; start `"$R/target/debug/iii" --config config.yaml --no-update-check &`; once it answers, `"$R/target/debug/iii" trigger 'engine::workers::list' --json '{}' > /tmp/iii-workers.json`; `sed -n "/<<'PY'/,/^ *PY\$/p" "$R/.github/workflows/_publish-engine-workers.yml" | sed '1d;$d;s/^ \{10\}//' > reload.py`; `WORKER=iii-sandbox WORKER_DIR="$R/engine/src/workers/sandbox" python3 reload.py`; stop the engine.
+Expected: `::notice::release worker matrix validation passed`; pytest passes; actionlint prints nothing; `/tmp/iii-workers.json` holds an `iii-sandbox` row; `reload.py` exits 0 and `config.yaml` still reads `workers: []`.
 
 - [ ] **Step 5: Commit**
 
@@ -417,7 +422,7 @@ git commit -m "docs(sandbox): move the iii-sandbox manifest, README and skill to
 
 - [ ] **Step 1: Format and lint**
 
-Run: `cargo fmt --all -- --check`; `cargo clippy --locked -p iii --all-targets --all-features 2>&1 | rg -- '--> engine/src/(workers/(sandbox/|config\.rs|reload\.rs)|engine/mod\.rs|cli/project/mod\.rs)'`
+Run: `cargo fmt --all -- --check`; `cargo clippy --locked -p iii --all-targets --all-features 2>&1 | rg -- '--> engine/src/(workers/(sandbox/|config\.rs|reload\.rs|telemetry/mod\.rs)|engine/mod\.rs|cli/project/mod\.rs)'`
 Expected: fmt is clean; `rg` prints nothing (no new warnings in touched files).
 
 - [ ] **Step 2: Full tests for the touched packages** (as `ci.yml:186-187, 363` run them)
@@ -438,8 +443,10 @@ Expected: both `rg` runs print nothing; the validator exits 0.
   - the new `sandbox:` engine-config key;
   - `engine.workers.iii-sandbox` now fails with the migration arm;
   - the engine no longer spawns `iii-worker`;
+  - `sandbox-isolation-linux` loses its end-to-end step and log upload (Task 4): the engine now refuses the old daemon's `sandbox::*` registrations in `default`; P1's `sandbox-builtin-vm-linux` runs the moved isolation e2e, and P3 deletes the rest of the job;
+  - accepted docs break: 0.24.x `docs_url` links (`https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#Sxxx`) stop resolving once this merges, because Task 7 moves that README and drops its anchors; the S-codes live at `https://iii.dev/docs/creating-workers/sandboxes` from the 0.25.0 docs rotation (P3's upgrade guide says the same);
   - the Review Focus list.
-- Merge order: after P0; P2b next; no stable tag from main until 0.25.0, which is cut only after P3 and once `sandbox-builtin` 1.0.0 is in the registry.
+- Merge order: after P0, and only once `sandbox-builtin` 1.0.0 resolves for the three targets (the P3 Task 7 Step 3 curl) and P2b is approved, so P2a, P2b and P3 merge back to back; no stable tag from main from this merge until 0.25.0, which is cut only after P3.
 - Known interim state until P2b merges (same release):
   - Compose writes no `sandbox:` binding yet, so `sandbox::*` on a Compose-managed engine answers S303;
   - the Compose `UnsupportedEngineWorker` text still lists `iii-sandbox` (`crates/iii-compose/src/error.rs:46-50`);

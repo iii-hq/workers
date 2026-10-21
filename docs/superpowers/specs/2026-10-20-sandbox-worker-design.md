@@ -2,7 +2,7 @@
 
 - Status: design, ready for planning. Date: 2026-10-20.
 - Code read: iii repo at `342a7704c`, workers repo at `8773952be`. Nothing was built or run; *inference* marks claims not confirmed by running code.
-- Tags: **[User]** decided by the product owner · **[Designer]** designer's call, accepted, builder may refine · **[Builder]** left to the builder · **[Designer, plan triage]** changed by plan triage decisions D1-D13 (T1 in 13). Settlements S1-S7 (designer's calls) and decisions Q1-Q5 (user) are indexed in 13.
+- Tags: **[User]** decided by the product owner · **[Designer]** designer's call, accepted, builder may refine · **[Builder]** left to the builder · **[Designer, plan triage]** changed by plan triage decisions D1-D13 (T1 in 13) · **[Designer, adversarial review]** changed by the adversarial plan review (A1 in 13). Settlements S1-S7 (designer's calls) and decisions Q1-Q5 (user) are indexed in 13.
 - Paths under `engine/`, `crates/`, `scripts/` are in the iii repo (the installer is `engine/install.sh`); paths under a worker folder or `template/` are in the workers repo.
 
 ## 1. Intent and why
@@ -118,12 +118,10 @@ This serves sandbox consumers (computer, sandbox-code-runner, ide, harness, the 
 struct WorkerStartRequest {
     auth: String,                 // per-project token (7.8)
     state_key: String,            // hash(compose state dir + container key); same key = same persistent upper
-    owner: Owner,                 // { kind: "compose", id: <project ns>, container: <key> }
     worker_name: String,          // container key -> III_WORKER_NAME
     source: WorkerSource,
     env: BTreeMap<String, String>,// complete guest env; body only, never argv or kernel cmdline
     engine_url: String,           // as seen from the host
-    network: bool,
 }
 enum WorkerSource {
     Bundle { package: String /* manifest name, not the container key */,
@@ -136,6 +134,7 @@ struct WorkerStatus { vm_id: String, instance: u64,
     exit_code: Option<i32>, signal: Option<i32>, started_at_ms: u64, ended_at_ms: Option<u64> }
 ```
 No `resources` or `sync` field: the adapter reads resources from the manifest and always syncs local sources, as today. [Designer, plan triage]
+No `owner` or `network` field: nothing reads `owner` in v1 (`worker::list` is cut, 2), and a worker VM always has the network it needs to reach the engine (5.8). A later use adds them with serde defaults. [Designer, adversarial review]
 
 The other operations:
 
@@ -162,6 +161,7 @@ The other operations:
   - S501 SourceRejected (bad manifest, `host_path` outside the allowed roots)
   - S502 StateBusy
   - S503 InstanceMismatch
+  - S502 and S503 payloads carry the live VM as `fix: {vm_id, instance}`, so Compose can stop that instance and retry once [Designer, adversarial review]
   - S504 VmNotFound
   - S505 Unauthorized
   - S506 PrepareFailed (retryable)
@@ -250,7 +250,6 @@ engine:
 
 **Tests**
 - Delete `engine/tests/external_known_sandbox.rs`.
-- Delete the `worker_target_for_host` cases in `engine/tests/install_sh_unit.bats:218-267`.
 - Rename the `iii-sandbox` stand-in in `engine/tests/config_reload_e2e.rs:96, 529-573`.
 
 **Crates and assets**
@@ -262,7 +261,7 @@ engine:
 - `release-iii.yml`: `init-build`, `firmware-upload`, `worker-release` and their `needs` edges (:652, :701, :755, :840-873). `publish-builtin-workers` keeps `iii-sandbox` with `worker_dir: engine/src/workers/sandbox`.
 - `alpha-release.yml`: delete `init-build` (:333-396) and `worker-release` (:415-434). `engine-release` (:398-413) stays. In `publish-builtin-workers` (:436), drop `worker-release` from `needs` and point the `iii-sandbox` row at `engine/src/workers/sandbox`.
 - `_rust-binary.yml:49, 221-237, 295-311`: only the `init_artifacts` input and the musl worker steps; its generic inputs (`features`, `targets`, `system_deps`) stay. [Designer, plan triage]
-- `ci.yml` jobs at :65, :411, :480, :523-762 and the install step at :160-186. The `libcap-ng-dev` installs left in other jobs go once `cargo metadata` lists no `capng`. [Designer, plan triage]
+- `ci.yml` jobs at :65, :411, :480, :523-762 and the install step at :160-186. The `libcap-ng-dev` installs left in other jobs go once `cargo metadata` lists no `capng`. [Designer, plan triage] Step 2 already removed the end-to-end step of `sandbox-isolation-linux` (10). [Designer, adversarial review]
 - `docker-worker-images.yml`.
 - `Makefile`:
   - delete `install-iii-worker` (:50-54) and the VM block (:86-135: `init-build-*`, `sandbox`, `sandbox-debug`);
@@ -270,7 +269,7 @@ engine:
   - edit `engine-test` and `coverage` (:56-67): drop the `install-iii-worker` prerequisite and the `cargo test -p iii-worker …` line;
   - edit `build:` (:191): replace the `sandbox` prerequisite with `cargo build --release -p iii`, and drop the worker echo lines;
   - the SDK, lint, fmt, typecheck and console targets (:137-190) stay.
-- `engine/install.sh:535, 623-674, 700-736, 800-815, 848-865`.
+- `engine/install.sh` keeps its companion download (`worker_target_for_host` and its bats cases stay) but runs it only for the companions the resolved release lists, with no warning or note when they are absent. 0.25+ releases have no such assets, so install.sh skips them, and a pinned 0.24.x install still gets both. [Designer, adversarial review]
 
 ## 7. Compose changes
 
@@ -363,12 +362,13 @@ Adapter readiness means its worker name is registered, which is not proof that i
 - **Worker VMs are per project.** An attached project with a VM need installs `sandbox-builtin` (`DEFAULT_ADAPTER`) in its own namespace and runs its own VMs there. It never queries `sandbox::adapter::info`. [Designer, plan triage]
 
 ### 7.8 Guarding the worker-VM family [Designer]
-`host_path` lets a caller pull host directories into a VM, and `sandbox-builtin::worker::*` is callable by any worker. Two guards:
+`host_path` lets a caller pull host directories into a VM, and `sandbox-builtin::worker::*` is callable by any worker. Two guards, and no payload tracing:
 - **Token.** Compose generates a per-project token, stores it in its 0600 state and passes it to the adapter container as the reserved env `III_SANDBOX_WORKER_TOKEN`. Every `worker::*` request carries it in `auth`; a mismatch gives S505.
 - **Host roots.** The builtin accepts `host_path` only under two roots: the project's compose dir and the Compose package cache. A `path://` VM worker outside them gets S501 naming the roots, and the upgrade guide says so. [Designer, plan triage] [Builder: delivery mechanism]
+- **Traces.** Compose also sets `III_DISABLE_TRACE_PAYLOADS=1` on the adapter container, over any operator value. The SDK then records no handler input (the token, the guest env, channel keys) in the engine's trace store, which any bus client can read. [Designer, adversarial review]
 
 ### 7.9 No migrate command [Designer, ponytail review]
-- `SANDBOX_CONFIG_MOVED` (6.4) prints the replacement YAML: the generated `sandbox-builtin` container (exact marker, version as in 7.2) with the old block copied into `config_override` (the keys are the same).
+- `SANDBOX_CONFIG_MOVED` (6.4) prints the replacement YAML: the `sandbox-builtin` container (version `'^1'`: `validate_engine` runs offline, so it cannot write the exact version 7.2 resolves) with the old block copied into `config_override` (the keys are the same). It carries no marker, so it is operator-declared, as in the template (D13): Compose never removes it, and its `config_override` with it, when the last VM container goes. [Designer, adversarial review]
 - A configuration entry stored under `iii-sandbox` is not moved. The upgrade guide (9) says how to re-enter it under `sandbox-builtin`.
 - The guide lists the old `<compose-dir>/.iii/compose/<ns>/vm/<key>/` directories for deletion.
 
@@ -447,9 +447,9 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
 
 **CI and images**
 - `ci.yml`:
-  - an exception to the root-only `--all-features` run (:265-278) that runs `--workspace --features embed-init,embed-libkrunfw`;
+  - an exception to the root-only `--all-features` run (:265-278) that runs `--workspace --features embed-init,embed-libkrunfw`, after `scripts/build-init.sh` (without the init the embed-init tests see a 1-byte placeholder), plus `cargo test --lib fails_closed` without features, so the fail-closed path (8.3) runs in CI [Designer, adversarial review];
   - a new `sandbox-builtin-macos` job;
-  - a new `sandbox-builtin-vm-linux` job with KVM (model: engine `ci.yml:523-571, 664-727`). It runs the VM tests, the adapter-level worker-VM e2e and the isolation e2e. The section-11 Compose e2e runs in the iii repo (11). [Designer, plan triage]
+  - a new `sandbox-builtin-vm-linux` job with KVM (model: engine `ci.yml:523-571, 664-727`). It runs the VM tests, the adapter-level worker-VM e2e and the isolation e2e. The section-11 Compose e2e runs in the iii repo (11). [Designer, plan triage] It also diffs its two fixture copies against iii main's (12). [Designer, adversarial review]
   - Unlike its model, which is `continue-on-error: true` (`ci.yml:523-526`), `sandbox-builtin-vm-linux` has no `continue-on-error`. Making it a required check that gates every registry release is a branch-protection step the plan index lists. [Designer, plan triage]
 - New `sandbox-builtin-images.yml` (copied from the engine's `docker-worker-images.yml`; needs the Docker Hub secrets). Its only trigger is `workflow_dispatch`, so it never pushes while iii's `docker-worker-images.yml` exists; step 3 deletes that one. [Designer, plan triage]
 - `.gitattributes`: `sandbox-builtin/firmware/** binary`.
@@ -473,7 +473,7 @@ The crate cannot be split by module: from the VM entry points, imports reach 53k
 ## 9. Migration
 
 **User steps**
-1. `iii update` stops installing `iii-worker`/`iii-init` (both `BinarySpec`s go, 6.5) and notes that `~/.local/bin/iii-worker` and `iii-init` can be removed; it deletes nothing. [Designer, plan triage]
+1. `iii update` stops installing `iii-worker`/`iii-init` (both `BinarySpec`s go, 6.5) and notes that `~/.local/bin/iii-worker` and `iii-init` can be removed; it deletes nothing. [Designer, plan triage] The first `iii update` from 0.24 still runs the frozen 0.24 updater: it updates `iii`, then reports "asset not found" for `iii-init` and `iii-worker` and exits 1. The next `iii update` (now 0.25) is clean and prints the note. The upgrade guide and the 0.25.0 release notes say so. [Designer, adversarial review]
 2. `up` on a file with `engine.workers.iii-sandbox` fails with `SANDBOX_CONFIG_MOVED` (6.4). The error prints the replacement YAML (7.9).
 3. The first `up` installs `sandbox-builtin`. VM state moves to adapter-owned directories, so the first boot of each VM reinstalls dependencies. The upgrade guide lists the old directories.
 4. A stray `iii-worker sandbox-daemon` can no longer take over `sandbox::*` (6.2).
@@ -500,7 +500,7 @@ No step for `iii worker`: clap has rejected it since 0.23 (`engine/src/main.rs:6
 - Workers repo [Designer, plan triage: only text that tells users to configure `engine.workers.iii-sandbox` changes; mere name mentions stay]:
   - `template/worker-compose.yaml:6-17`, which declares `sandbox-builtin`; `up` on a host with no adapter build then fails with `UNSUPPORTED_PLATFORM` (accepted; the template README says to remove the container there). `template/sync.sh` exempts `sandbox-builtin`. [Designer, plan triage]
   - `ide/tests/e2e/*` stays standalone: its mocks register `sandbox-mock::*` instead of `sandbox::*`, and its `config.yaml` replaces the `iii-sandbox` entry with `sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`. `EXEC_SANDBOX_CASES`, `III_SANDBOX_FS_NAMESPACE` and the ide S-code table stay unchanged. [Designer, plan triage]
-  - the harness `shell_coder_sandbox` scenario, and `harness/tests/e2e/run-ci.sh:15`, whose companion check requires `iii-init` and `iii-worker` and fails once `engine/install.sh` stops shipping them. Harness launchers that call `iii worker` or `worker::add` are already broken since 0.23 and stay out of scope. [Designer, plan triage]
+  - the harness `shell_coder_sandbox` scenario, and `harness/tests/e2e/run-ci.sh:15`, whose companion check requires `iii-init` and `iii-worker` and fails once its pin moves to 0.25.0, whose release has neither [Designer, adversarial review]. Harness launchers that call `iii worker` or `worker::add` are already broken since 0.23 and stay out of scope. [Designer, plan triage]
   - `computer/README.md`, `computer/images/desktop/Dockerfile` and `computer/ui/src/page/Launcher.tsx` (they configure `engine.workers.iii-sandbox`); `computer/src/config.rs:50-52` and `ade/ui/src/configuration-forms/specs/scalar.ts:149` (they send users to iii-sandbox's own configuration, which now belongs to `sandbox-builtin`)
   - `.github/workflows/_worker-e2e.yml:251-253`
   - `README.md:127` and `ide/{README.md, ARCHITECTURE.md, skills/SKILL.md, config.yaml}` hold only name mentions and stay
@@ -509,14 +509,14 @@ No step for `iii worker`: clap has rejected it since 0.23 (`engine/src/main.rs:6
 
 | Step | Repo | Lands | Why main stays green |
 |---|---|---|---|
-| 0 | iii | `iii-sandbox-contract`, internal (`publish = false`) | No behaviour change; step 1 does not depend on it |
+| 0 | iii | `iii-sandbox-contract`, internal (`publish = false`) | No behaviour change. Step 1 merges after it and copies its two merged fixtures [Designer, adversarial review] |
 | 1 | workers | `sandbox-builtin` (moved code, `sandbox-builtin::*`, `worker::*`) and the 8.5 pipeline. Adapter tests and `sandbox-isolation-e2e.sh` call `sandbox-builtin::*`; the script goes through `iii trigger`, with the id prefix in a variable, and the hidden `sandbox` CLI is deleted. Released to the registry as 1.0.0 once the required `sandbox-builtin-vm-linux` passes | Nothing consumes it yet; a 0.24.x engine has no router, so nothing can call `sandbox::*` on it |
-| 2 | iii | Router, reserved prefix, `engine.sandbox` with its default binding, migration errors, Compose client, auto-install; remove `KNOWN_EXTERNAL` and the prefetch | Router tests use a fake adapter (`fake::*`); the Compose e2e (11) pulls `sandbox-builtin` 1.0.0 |
-| 3 | iii | Delete the VM crates, firmware, jobs, `engine/install.sh` sections and Makefile targets (`.cargo/config.toml` stays); update docs | Nothing references them after step 2 |
+| 2 | iii | Router, reserved prefix, `engine.sandbox` with its default binding, migration errors, Compose client, auto-install; remove `KNOWN_EXTERNAL` and the prefetch | Router tests use a fake adapter (`fake::*`); the Compose e2e (11) pulls `sandbox-builtin` 1.0.0. The reserved prefix would fail the end-to-end step of iii's `sandbox-isolation-linux` (the old daemon can no longer register), so step 2 deletes that step; step 1's `sandbox-builtin-vm-linux` runs the moved script [Designer, adversarial review] |
+| 3 | iii | Delete the VM crates, firmware, jobs and Makefile targets (`.cargo/config.toml` stays); `engine/install.sh` fetches companions only when the release lists them (6.5); update docs | Nothing references them after step 2 |
 | 4 | iii | Release engine 0.25.0 (steps 2 and 3) | The adapter is already in the registry |
 | 5 | workers | The sandbox-code-runner probe, the ide `exit_code` fix, template, the ide e2e mocks renamed to `sandbox-mock::*` with `sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`, harness text and `run-ci.sh`, `III_RELEASE_TAG` pins, `_worker-e2e.yml`, the isolation e2e on `sandbox::*` on the script's own engine with an explicit `sandbox:` binding, not under Compose [Designer, plan triage] | Needs 0.25.0 |
 
-Steps 2 and 3 are separate PRs in one engine release. Never release an engine without `iii-worker` before `sandbox-builtin` is in the registry.
+Steps 2 and 3 are separate PRs in one engine release. Never release an engine without `iii-worker` before `sandbox-builtin` is in the registry. Step 2's router PR merges only once `sandbox-builtin` 1.0.0 resolves for all three targets and its Compose PR is approved, so step 2's two PRs and step 3 land back to back and the window with no stable tag from main stays short. [Designer, adversarial review]
 
 ## 11. Success criteria and verification
 
@@ -550,7 +550,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 **Release check**
 - The 0.25.0 GitHub release has no `iii-worker-*`, `iii-init-*` or `libkrunfw-*` assets.
 - `cargo metadata` for the iii workspace lists no `msb_krun` package.
-- `engine/install.sh` and `iii update` fetch neither `iii-worker` nor `iii-init`.
+- `iii update` fetches neither `iii-worker` nor `iii-init`. `engine/install.sh` fetches them only when the resolved release lists them; 0.25+ releases have no such assets, so install.sh skips them. [Designer, adversarial review]
 
 ## 12. Risks and questions left to the builder
 
@@ -569,7 +569,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | The macOS self re-sign churns the Compose cache | Sign at build time (8.6) |
 | Build drift: the iii repo builds this code on floating `stable` (`dtolnay/rust-toolchain@stable` everywhere, no rust-toolchain file; only `build-worker-musl.sh:14` pins 1.98.1), while the workers repo pins 1.97.1; a fresh lock could pull `msb_krun_devices` 0.1.39 | Compile under 1.97.1 first; seed the lock from iii |
 | Each firmware update adds about 33 MB to the 364 MiB pack | Accepted [User]; never use LFS, and the header/SHA check catches pointer files |
-| `sandbox-builtin`'s copies of the wire types drift from the contract (Q5) | Both sides round-trip the same two fixtures; the Compose e2e runs the real adapter (11) |
+| `sandbox-builtin`'s copies of the wire types drift from the contract (Q5) | Both sides round-trip the same two fixtures. `sandbox-builtin-vm-linux`, which gates every adapter release, diffs its copies against iii main's, so later 1.x releases are checked too; the pinned Compose e2e (11) covers only iii against 1.0.0 [Designer, adversarial review] |
 | A new contract operation needs an engine release (fixed router id table) | Additive fields do not; plan operations with releases |
 | The ide e2e registers mock `sandbox::fs::*` and runs standalone `iii -c` with `iii-sandbox` (`ide/tests/e2e/config.yaml:18`) | The mocks become `sandbox-mock::*` and the config binds `sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`; the suite stays standalone (step 5) |
 | The router forwards through `call_value_with_metadata_ns`, which starts a fresh invocation with no invocation id, session or timeout (`engine/src/engine/mod.rs:2536-2548`). A consumer's timeout or cancellation does not stop adapter-side work: create, long exec, fs streams (*inference*). An adapter disconnect mid-exec surfaces as `invocation_stopped`, and a retry can repeat side effects | Documented; not an S-code. [Builder: router ceiling and cancellation] |
@@ -595,7 +595,7 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | 8 | The router owns `sandbox::*` in `default` and forwards to `<adapter>::*` in any namespace | Designer (a) | No consumer change, no hijacking, project-namespace adapters |
 | 9 | An internal contract crate in the iii repo, with two families, never published (Q5) | Designer (b), User | The engine cannot depend on the workers repo |
 | 10 | `engine.sandbox.adapter`; adapter settings are the adapter's own config, read at startup | Designer (c) | Console-editable; applies on adapter restart |
-| 11 | `iii-worker` and `iii-init` leave the engine release, `engine/install.sh` and `iii update` | Designer (d) | Follows from 1 |
+| 11 | `iii-worker` and `iii-init` leave the engine release and `iii update`; `engine/install.sh` fetches them only when a release lists them (6.5, A1) | Designer (d) | Follows from 1 |
 | 12 | The doc lives at `docs/superpowers/specs/` in the workers repo | Designer (e) | |
 | 13 | Compose calls the worker-VM family directly on its project's adapter | Designer | Per-project VMs; the router needs no caller identity |
 | 14 | Adapter named `sandbox-builtin`; `engine.sandbox.adapter` is its function prefix and manifest name, never a container key | Designer | The router's prefix cannot drift from an operator's container key |
@@ -618,3 +618,4 @@ Consumer code is unchanged, apart from the ide `exit_code` fix and the sandbox-c
 | P1 | The v1 cuts listed in 2 | Designer, ponytail review | Nothing uses them yet; each can return additively |
 | T1 | Plan triage decisions D1-D13: contract trims (D1, D2 and D4 superseded by Q5); where the acceptance e2e runs; builtin stop; image workflow trigger; no musl scripts; P2a/P2b split; router limits; Compose need, removal and host-root rules; P3 and P5 scope | Designer | Listed in the plan index under `docs/superpowers/plans/`; they override the drafts and are marked [Designer, plan triage] in this spec |
 | Q5 | `iii-sandbox-contract` is not published to crates.io; `sandbox-builtin` keeps its own copies of the wire types, pinned by the contract's two fixtures | User | Removes the publish job, the license change and the 0.24.7 release ordering; publish when a second adapter lives outside the iii repo |
+| A1 | Adversarial plan review: 46 findings applied | Designer | listed in the plan index |

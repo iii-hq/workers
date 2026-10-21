@@ -29,8 +29,8 @@
 1. At sandbox-code-runner boot, `sandbox::adapter::info` is denied by RBAC or times out. Expected: "could not verify", never "detected" from the legacy probe, because the router always registers `sandbox::create`. Pinned by Task 2 `probe_falls_back_only_when_the_router_is_absent`.
 2. A sandbox `shell::exec_bg` job's process dies by signal, so `exit_code` is `null`. Expected: the job is `failed`, `exit_code` is `null`, and stdout is kept. Pinned by Task 1 `sandbox_job_null_exit_code_marks_failed`.
 3. An ide call with a sandbox target arrives while no adapter is connected (router S301). Expected: the caller gets S216, and its message still carries the router's `compose::add iii-sandbox` fix. Pinned by Task 1 `remote_s301_keeps_router_fix_text`.
-4. A CI job still requires `iii-worker` or `iii-init`, but a 0.25 install ships only `iii`. Expected: no job requires them, otherwise every run fails. Pinned by Task 3 `test_engine_installs_require_only_iii`.
-5. The template's `sandbox-builtin` sits under the `# added by compose::add` marker. It then belongs to Compose's sandbox step (P2b Task 4): an update or remove whose edit makes `needs(file)` empty deletes it (D11), yet computer needs it for `sandbox::*` and declares no need, so computer loses its sandboxes. Expected: the container is operator-declared, with no marker, which Compose never re-resolves or removes (spec 7.2). Pinned by Task 7 `test_sandbox_adapter_is_operator_declared`.
+4. A CI job still requires `iii-worker` or `iii-init`, but a 0.25 install gets only `iii` (0.25+ releases have no such assets; `install.sh` skips them). Expected: no job requires them, otherwise every run fails. Pinned by Task 3 `test_engine_installs_require_only_iii`.
+5. The template's `sandbox-builtin` sits under the `# added by compose::add` marker. It then belongs to Compose's sandbox step (P2b Task 4): an update or remove whose edit takes `needs(file)` from non-empty to empty deletes it (D11), yet computer needs it for `sandbox::*` and declares no need, so computer loses its sandboxes. Expected: the container is operator-declared, with no marker, which Compose never re-resolves or removes (spec 7.2). Pinned by Task 7 `test_sandbox_adapter_is_operator_declared`.
 
 ---
 
@@ -124,7 +124,7 @@ These changes ship as one commit. `test_other_engine_installers_use_the_atomic_c
 
 **Interfaces:**
 - Consumes from P2a: `EngineConfig.sandbox: Option<SandboxRouterConfig { adapter, namespace = "default" }>`, the router handshake on `<adapter>::adapter::info` (major 1, else S302), and S301 for missing adapter ids.
-- Consumes from P3: `engine/install.sh` ships only `iii`.
+- Consumes from P3 (Task 2): `engine/install.sh` downloads `iii-worker` and `iii-init` only when the resolved release lists them, and stays silent otherwise. 0.25+ releases have no such assets, so a 0.25.0 install gets only `iii`; the 0.24 pin keeps both until this task bumps it.
 - Produces: the `sandbox-mock` test double (registry §7): `sandbox-mock::fs::{ls,stat,mkdir,rm,chmod,mv,grep,sed,write,read}` plus `sandbox-mock::adapter::info` → `{adapter:"sandbox-mock", adapter_version:"0.0.0", contract:{major:1,minor:0}}`, registered once by the harness worker in its namespace `ide-e2e`.
 - Unchanged (D13): `EXEC_SANDBOX_CASES`, `runner.ts`, ide's `III_SANDBOX_FS_NAMESPACE` support (`ide/src/triggers.rs:26-49`) and its S-code table (`ide/src/scode.rs:40-69`). Only `run-tests.sh` stops setting `III_SANDBOX_FS_NAMESPACE=ide-e2e`: after the rename nothing serves `sandbox::fs::*` in `ide-e2e`, and the engine has no fallback to `default` (`iii:engine/src/function.rs:256`), so ide must reach the router in `default`.
 
@@ -191,7 +191,7 @@ def test_engine_installs_require_only_iii() -> None:   # Review Focus 4
 - Modify: `harness/tests/e2e/src/scenarios/shell_coder_sandbox.rs:68, 129, 360` (test at `:828-885`)
 
 **Interfaces:**
-- Consumes from P2b (registry §5): the `compose::add worker=iii-sandbox` reply has `details.container == "sandbox-builtin"`.
+- Consumes from P2b (registry §5): the `compose::add worker=iii-sandbox` reply has `details.container == "sandbox-builtin"`, and `add` keeps that adapter in the file with no VM need (it passes `allow_remove: false`, P2b Task 4).
 - Consumes from P2a: `sandbox::adapter::info` → `RouterInfo` JSON.
 - Produces: `ScenarioSpec.version` 5.
 
@@ -212,7 +212,7 @@ def test_engine_installs_require_only_iii() -> None:   # Review Focus 4
 - Modify: `computer/README.md:36-63` (the replacement snippet is the template block; drop the standalone `iii -c` snippet), `computer/images/desktop/Dockerfile:22-26`, `computer/ui/src/page/Launcher.tsx:198-199`, `computer/src/config.rs:50-52` and `ade/ui/src/configuration-forms/specs/scalar.ts:149` (both say the OCI ref is set in iii-sandbox's own configuration; it is now `sandbox-builtin`'s `custom_images`)
 
 **Interfaces:**
-- Consumes: package `sandbox-builtin` 1.0.0 and its config keys (P1; spec 7.6), the `version: '^1'` form that `SANDBOX_CONFIG_MOVED` prints, `edit::MARKER` (registry §5, P2b), and update/remove deleting a marked adapter when their edit makes `needs(file)` empty (D11).
+- Consumes: package `sandbox-builtin` 1.0.0 and its config keys (P1; spec 7.6), the unmarked, operator-declared `version: '^1'` block that `SANDBOX_CONFIG_MOVED` prints (P2b Task 2, spec 7.9), `edit::MARKER` (registry §5, P2b), and update/remove deleting a marked adapter when their edit takes `needs(file)` from non-empty to empty (D11; `allow_remove`, P2b Task 4).
 - Produces: none.
 
 - [ ] **Step 1: Write the failing tests**

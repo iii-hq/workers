@@ -14,8 +14,8 @@ Reference for the six plans built from `docs/superpowers/specs/2026-10-20-sandbo
 | Plan | Repo | Branch (registry) | Base |
 |---|---|---|---|
 | P0 | iii | `sandbox/p0-contract` | `a1d08d8b0` |
-| P1 | workers | `sandbox/p1-builtin` | `origin/main` (`8773952be` + one harness-only commit); independent of the iii repo (Q5) |
-| P2a / P2b / P3 | iii | `sandbox/p2a-router` / `sandbox/p2b-compose` / `sandbox/p3-engine-cleanup` | main after P0 / P2a / P2b merge. No stable tag from main between P2a's merge and 0.25.0: stable tags come from main (`create-tag.yml:89-92`), and a patch would ship the router before Compose binds it. P3 cannot merge before `sandbox-builtin` 1.0.0 is in the registry |
+| P1 | workers | `sandbox/p1-builtin` | `origin/main` (`8773952be` + one harness-only commit); uses no iii code (Q5), but merges after P0 merges and copies P0's two fixtures from iii main (A1) |
+| P2a / P2b / P3 | iii | `sandbox/p2a-router` / `sandbox/p2b-compose` / `sandbox/p3-engine-cleanup` | main after P0 / P2a / P2b merge (P2b is reviewed on a branch stacked on P2a). P2a merges only once `sandbox-builtin` 1.0.0 resolves for the three targets (the P3 Task 7 Step 3 curl) and P2b is approved, so P2a, P2b and P3 merge back to back (A1). No stable tag from main between P2a's merge and 0.25.0: stable tags come from main (`create-tag.yml:89-92`), and a patch would ship the router before Compose binds it |
 | P5 | workers | `sandbox/p5-consumers` | main after P1 merges and engine 0.25.0 ships |
 
 ## 2. Contract crate API (P0 produces; P2a and P2b consume; P1 keeps copies with these names, Q5)
@@ -78,13 +78,12 @@ pub struct RouterInfo {                                         // (registry nam
 
 pub struct WorkerPrepareRequest { pub auth: String, pub source: WorkerSource }    // (spec fields)
 pub struct WorkerPrepareResponse {}                                               // (registry)
-pub struct WorkerStartRequest { pub auth: String, pub state_key: String, pub owner: Owner,
+pub struct WorkerStartRequest { pub auth: String, pub state_key: String,
     pub worker_name: String, pub source: WorkerSource, pub env: BTreeMap<String, String>,
-    pub engine_url: String, pub network: bool }      // (spec; no resources: the adapter reads the manifest, D3)
+    pub engine_url: String }      // (spec; no resources: the adapter reads the manifest, D3; no owner or network, spec 5.4)
 #[serde(tag = "kind", rename_all = "snake_case")]                                 // (registry)
 pub enum WorkerSource { Bundle { package: String, host_path: String },            // (spec)
     Local { host_path: String, run_override: Option<String> } }  // no sync: local sources always sync (D3)
-pub struct Owner { pub kind: String /* "compose" */, pub id: String, pub container: String } // (spec)
 pub struct WorkerStartResponse { pub vm_id: String, pub instance: u64 }           // (spec)
 pub struct WorkerStatusRequest { pub auth: String, pub vm_id: String, pub instance: u64 } // (spec fields)
 pub struct WorkerStatus { pub vm_id: String, pub instance: u64, pub state: State, pub exit_code: Option<i32>,
@@ -99,7 +98,7 @@ pub struct WorkerStopRequest { pub auth: String, pub vm_id: String, pub instance
 pub struct WorkerDestroyRequest { pub auth: String, pub state_key: String }       // (spec)
 pub struct WorkerDestroyResponse { pub destroyed: bool }                          // (registry)
 ```
-`worker::logs`: Compose creates the channel and passes its writer ref; the adapter writes one `LogRecord` JSON per text frame, returns once the pump starts, and closes the channel at the end (`follow: false`) or when that instance ends (`follow: true`). The cursor is opaque to Compose (registry). Not in v1 (spec 2): `ArchiveRef`, an `Effective` resources reply, `EphemeralCaps`, `WorkerVmCaps`, leases; cut by D3: `Family`, `Resources`, `WorkerStartRequest.resources`, `WorkerSource::Local.sync`.
+`worker::logs`: Compose creates the channel and passes its writer ref; the adapter writes one `LogRecord` JSON per text frame, returns once the pump starts, and closes the channel at the end (`follow: false`) or when that instance ends (`follow: true`). The cursor is opaque to Compose (registry): `LogRecord.cursor` is the resume point, so `worker::logs { cursor: Some(c) }` starts right after the record that carried `c`, and a cursor past the end of the file (after a rotation) reads from the start (P1). Compose keeps the last one in memory only, to re-subscribe when the channel closes while the VM runs (P2b). Not in v1 (spec 2): `ArchiveRef`, an `Effective` resources reply, `EphemeralCaps`, `WorkerVmCaps`, leases; cut by D3: `Family`, `Resources`, `WorkerStartRequest.resources`, `WorkerSource::Local.sync`; cut by A1 (spec 5.4): `Owner`, `WorkerStartRequest.owner`, `WorkerStartRequest.network`.
 
 ```rust
 // errors.rs
@@ -125,6 +124,8 @@ Wire (spec 5.6): `ErrorBody { code: "invocation_failed", message: error_payload(
 | S304 OperationUnsupported | `platform` / false | an adapter lacking an op (the builtin never) |
 | S501 SourceRejected, S502 StateBusy, S503 InstanceMismatch, S504 VmNotFound, S505 Unauthorized | `validation` / false | adapter `worker::*` |
 | S506 PrepareFailed | `transient` / true | adapter `worker::prepare` |
+
+Every S502 and S503 payload carries the live VM as `fix: {"vm_id": "<vm_id>", "instance": <u64>}` (spec 5.6; shape registry), so Compose can stop that instance (§5 Supervision).
 
 ## 3. Function ids
 
@@ -201,15 +202,15 @@ pub const CONFIGURABLE_ENGINE_WORKERS: &[&str] =
     &["configuration", "iii-worker-manager", "iii-http-functions", "iii-stream"];    // (spec 6.4)
 ```
 - `EngineSpec.sandbox == None` means no section. EngineSpec equality already drives `EngineRestartRequired` (`daemon.rs:198-225`). The materialized `engine-config.yaml` (`managed_engine.rs:243-325`) always gets `sandbox: {adapter, namespace}`: the section's values, or `DEFAULT_ADAPTER` and the owner namespace (spec S1). Compose adds no adapter-name check of its own; the engine's `INVALID_SANDBOX_CONFIG` is the gate (registry).
-- Generated container: `edit::upsert_container` writes it, so the marker is `edit::MARKER` = `"# added by compose::add"` (`edit.rs:115`, spec); no new constant. Version range `format!("^{CONTRACT_MAJOR}")` (spec S2). The reason (`sandbox adapter for: <key>`) is printed, never written (spec). `compose::add worker=iii-sandbox` is rewritten to this request in `add_configured_scoped`, before planning; its reply's `details.container` is the adapter key, `sandbox-builtin` by default (D11; P5's harness checks it). Attached projects use `DEFAULT_ADAPTER` for VM needs (D11).
-- Adapter container env, set on that container only and added to `RESERVED_ENV` (`spawn.rs:49-57`): `III_SANDBOX_WORKER_TOKEN` = `DaemonState.sandbox_token` (spec 7.8); `III_SANDBOX_HOST_ROOTS` = `std::env::join_paths([<compose dir>, StateStore::package_cache()])` (registry), only these two roots (D11).
+- Generated container: `edit::upsert_container` writes it, so the marker is `edit::MARKER` = `"# added by compose::add"` (`edit.rs:115`, spec); no new constant. Version range `format!("^{CONTRACT_MAJOR}")` (spec S2). The reason (`sandbox adapter for: <key>`) is printed, never written (spec). `compose::add worker=iii-sandbox` is rewritten to this request in `add_configured_scoped`, before planning; its reply's `details.container` is the adapter key, `sandbox-builtin` by default (D11; P5's harness checks it). Only `update` and `remove` delete a generated adapter: the sandbox step takes `allow_remove = !needs(<file before the edit>).is_empty()` from those two and `false` from `up`, `build` and `add`, so an adapter that `compose::add iii-sandbox` wrote stays with no VM need (D11; P5 relies on it). Attached projects use `DEFAULT_ADAPTER` for VM needs (D11).
+- Adapter container env, set on that container only and added to `RESERVED_ENV` (`spawn.rs:49-57`): `III_SANDBOX_WORKER_TOKEN` = `DaemonState.sandbox_token` (spec 7.8); `III_SANDBOX_HOST_ROOTS` = `std::env::join_paths([<compose dir>, StateStore::package_cache()])` (registry), only these two roots (D11). Also on that container, not reserved but laid over the operator's env so it cannot be undone: `III_DISABLE_TRACE_PAYLOADS=1`, so the SDK keeps `auth`, the guest `env` and channel keys out of the trace store (spec 7.8).
 - CI: `ci.yml` job `compose-sandbox-e2e-linux` runs the spec 11 acceptance e2e and the router `sandbox::exec` smoke, pinning `sandbox-builtin` and the registry bundle `onboarding` at fixed versions (D5); P3 keeps it.
 - Start check: `adapter::info`; major differs -> `SpawnFailed { container: <vm key>, message: <S302 text> }` (registry); name differs -> `SandboxAdapterMismatch`. `function_not_found` retried for 10 s (spec). `worker::prepare` keeps the 20-minute budget (`lifecycle.rs:1281`).
-- Supervision: `worker::status` polled every 1 s; bus error -> `Outcome::Unknown`, which never restarts or cascades; S504 -> an exit with no code (spec 7.4); S503 on stop -> already stopped (registry). A VM exit becomes `ExitStatus::from_raw` (spec).
+- Supervision: `worker::status` polled every 1 s; bus error -> `Outcome::Unknown`, which never restarts or cascades; S504 -> an exit with no code (spec 7.4). S502 from `start`, or S503 from `status` or `stop`: stop the live instance its `fix` names (§2), then retry the call once; an S503 on that retry means the call's own instance is gone, an exit with no code. On `stop`, a bus error (anything that is not a parsed worker reply) is never taken as stopped: `RemoteVm::stop` retries it every 1 s for up to `STOP_RETRY` (60 s), then warns that the VM may still run and returns the no-code status, so `down` cannot hang on an adapter that is gone (registry; P2b Task 6). A VM exit becomes `ExitStatus::from_raw` (spec).
 
 | Variant in `crates/iii-compose/src/error.rs` | `code()` | Text |
 |---|---|---|
-| `SandboxConfigMoved { replacement: String }` (registry) | `SANDBOX_CONFIG_MOVED` (spec) | spec 6.4 text verbatim, a blank line, then `replacement`: the generated container (marker, `worker: package://sandbox-builtin`, `version: '^1'`) with the old block under `config_override`. `'^1'`, not an exact version, because `validate_engine` (`config.rs:473`) is offline (registry) |
+| `SandboxConfigMoved { replacement: String }` (registry) | `SANDBOX_CONFIG_MOVED` (spec) | spec 6.4 text verbatim, a blank line, then `replacement`: the adapter container with no marker, so it is operator-declared as in P5's template (spec 7.9, D13), with `worker: package://sandbox-builtin`, `version: '^1'` and the old block under `config_override`. `'^1'`, not an exact version, because `validate_engine` (`config.rs:473`) is offline (registry) |
 | `SandboxAdapterMismatch { container, expected, found }` (registry) | `SANDBOX_ADAPTER_MISMATCH` (spec) | `container '{container}' is the sandbox adapter '{expected}', but adapter::info names '{found}'. Set engine.sandbox.adapter to '{found}' or install '{expected}'` |
 | `SandboxAdapterNotDeclared { adapter, needed_by }` (registry) | `SANDBOX_ADAPTER_NOT_DECLARED` (spec) | `{needed_by} needs the sandbox adapter '{adapter}', and --frozen does not edit the file. Run up once without --frozen, or: iii trigger compose::add worker=iii-sandbox` |
 | existing `UnsupportedPlatform` (`error.rs:278`) | `UNSUPPORTED_PLATFORM` (spec) | `container` = the adapter key; also the registry's `/resolve` `unsupported_platform` refusal with no fallback (D11) |
@@ -228,12 +229,12 @@ No `compose::migrate` request, response or CLI form (spec 7.9).
 | `sandbox-builtin/iii.worker.yaml` | `language: rust`, `deploy: binary`, `manifest: Cargo.toml`, `bin: sandbox-builtin`; `config:` = today's `sandbox_daemon/iii.worker.yaml` config, with no `worker_vm` keys: resources come from the worker manifest within today's caps (D3). No skill (D8) |
 | SDK identity | `WorkerMetadata.name = "sandbox-builtin"` (today `"iii-sandbox"`, `sandbox_daemon/mod.rs:131`); `III_WORKER_NAME` overrides it (`sdk/packages/rust/iii/src/iii.rs:656`) (registry) |
 | Config | one `iii_config_client::fetch(&iii, <III_CONFIG_NAME, else "sandbox-builtin">)` at startup (`crates/config-client/src/lib.rs:93`); an error exits non-zero, no entry means serde defaults; no hot apply (spec 7.6; fallback registry) |
-| `III_VM_*` tuning | stays the four env vars read at `cli/worker_manager/libkrun.rs:44-65` (registry; spec 7.6 lists them as keys: open question) |
+| `III_VM_*` tuning | stays the four env vars read at `cli/worker_manager/libkrun.rs:44-65` (spec 7.6: env vars, not config keys) |
 | Guards | `III_SANDBOX_WORKER_TOKEN` (spec): absent or mismatched -> every `worker::*` answers S505. `III_SANDBOX_HOST_ROOTS` (registry): `host_path` must canonicalize under one root, else S501 naming the roots (D11) |
 | State | `~/.iii/sandbox/workers/<vm_id>/` (spec), `vm_id` = first 32 hex of SHA-256(`state_key`); P2b's e2e checks it is gone after `compose::remove`. Its contents are P1's (D14). Sandbox and image caches keep today's paths |
 | Guest env, `__vm-boot` | `__vm-boot --env` then the kernel cmdline, as today; no `/opt/iii` env file in v1 (spec 8.3). `__vm-boot` stays hidden with today's `VmBootArgs` (`cli/vm_boot.rs:16-130`), re-executing `current_exe()` |
 | `.deploy/workers.yaml` | under `artifact:`, `features: [embed-init, embed-libkrunfw]`, `prebuild: [scripts/build-init.sh]`, `macos_entitlements: entitlements.plist` (spec), allowed at `.github/scripts/deployment_compiler.py:265` |
-| CI | `ci.yml` jobs `sandbox-builtin-macos` and `sandbox-builtin-vm-linux` (spec); vm-linux runs the VM tests, `tests/worker_vm_e2e.rs` and the isolation e2e; making it required is a branch-protection step the plan index lists (D5). Workflow `sandbox-builtin-images.yml`, with only a `workflow_dispatch` trigger; P3 deletes iii's `docker-worker-images.yml` (D7) |
+| CI | `ci.yml` jobs `sandbox-builtin-macos` and `sandbox-builtin-vm-linux` (spec); vm-linux runs the VM tests, `tests/worker_vm_e2e.rs` and the isolation e2e, and diffs `tests/fixtures/{sandbox_error_codes,wire_examples}.json` against iii main's `crates/iii-sandbox-contract/tests/fixtures/` (A1); making it required right after P1 merges is a branch-protection step the plan index lists (D5). Workflow `sandbox-builtin-images.yml`, with only a `workflow_dispatch` trigger; P3 deletes iii's `docker-worker-images.yml` (D7) |
 | Isolation e2e | `sandbox-builtin/scripts/sandbox-isolation-e2e.sh` through `iii trigger`; env `III_BIN`, `ADAPTER_BIN` (replaces `WORKER_BIN`); prefix in `SANDBOX_ID_PREFIX`, default `sandbox-builtin`, which P5 sets to `sandbox` with an explicit `sandbox:` binding in the script's own engine config, not under Compose (D13) (registry) |
 
 `cli/*` paths are under `crates/iii-worker/src/` in the iii repo and move to `sandbox-builtin/src/cli/`.
@@ -251,10 +252,10 @@ No `compose::migrate` request, response or CLI form (spec 7.9).
 |---|---|---|
 | `CONTRACT_MAJOR/MINOR`, `ContractVersion`, `PUBLIC_PREFIX`, `DEFAULT_ADAPTER`, `adapter_function_id`, `is_valid_adapter_name`, `OPERATIONS`, `WORKER_*` | P0 | P2a, P2b; P1 copies |
 | Ephemeral types, `StreamChannelRef`; worker-VM types, `LogRecord` | P0 | P2a (schemas), P2b; P1 copies the worker-VM types |
-| `SandboxErrorCode`, `error_payload`, `code_of`, `DOCS_BASE`, both fixtures, docs anchors | P0 | P2a, P2b; P3 (keeps the anchors); P1 copies the codes and both fixtures |
+| `SandboxErrorCode`, `error_payload`, `code_of`, `DOCS_BASE`, both fixtures, docs anchors | P0 | P2a, P2b; P3 (keeps the anchors); P1 adds S501-S506 and copies both fixtures |
 | `AdapterInfo`, `AdapterInfoRequest`, `ADAPTER_INFO_SUFFIX` | P0 | P2a, P2b; P1 copies; P5's mock writes the same JSON |
 | `RouterInfo`, `ROUTER_INFO_ID` | P0 | P2a, P5 (code-runner probe checks `info != null`; harness) |
 | `SandboxRouter`, `SandboxRouterConfig`, `EngineConfig.sandbox`, `normalize_worker_entries`, `ENGINE_RESERVED_PREFIXES`, `INVALID_SANDBOX_CONFIG`, dropping `iii-sandbox` from `CONFIGURABLE_ENGINE_WORKERS` | P2a | P2b, P3 (docs), P5 |
 | `sandbox::{needs, Need, wire, state_key, RemoteVm}`, `Child`, `Outcome::Unknown`, `VmRecord`, `ChildRecord.vm`, `sandbox_token`, `SandboxSpec`, Compose errors, adapter env, the `compose::add iii-sandbox` reply, `compose-sandbox-e2e-linux` | P2b | P3 (keeps the job; docs), P5 (behaviour) |
-| `sandbox-builtin` package, ids, config keys, state layout, env names, CI jobs, `SANDBOX_ID_PREFIX`, `ADAPTER_BIN` | P1 | P2b, P3 (docs), P5 |
+| `sandbox-builtin` package, ids, config keys, state layout, env names, CI jobs, `SANDBOX_ID_PREFIX`, `ADAPTER_BIN`, the S502/S503 `fix` payload, `LogRecord.cursor` resume semantics | P1 | P2b, P3 (docs), P5 |
 | Fake adapter / `sandbox-mock` | P2a / P5 | none |

@@ -10,7 +10,7 @@
 
 **Spec:** docs/superpowers/specs/2026-10-20-sandbox-worker-design.md, sections 2, 5.1-5.7, 10 (step 0), 11. Shared names: docs/superpowers/plans/2026-10-20-sandbox-shared-interfaces.md
 
-**Repo and base:** iii repo at `a1d08d8b0`, branch `sandbox/p0-contract`. No prerequisites. Downstream: P2a and P2b use the crate by path; P1 copies its two fixtures.
+**Repo and base:** iii repo at `a1d08d8b0`, branch `sandbox/p0-contract`. No prerequisites. Downstream: P2a and P2b use the crate by path; P1 merges after this PR and copies its two fixtures from iii main.
 
 ## Global Constraints
 
@@ -22,7 +22,7 @@
 - The `exec.workdir` description becomes "`/` when omitted" (5.1).
 - Wire stays `ErrorBody{code: "invocation_failed", message: <SandboxErrorWire JSON>}`. Kept: S001-S004, S100-S102, S200, S210-S219, S300, S400. New: S301 AdapterUnavailable (retryable), S302 ContractMismatch, S303 NoAdapterConfigured, S304 OperationUnsupported, S501 SourceRejected, S502 StateBusy, S503 InstanceMismatch, S504 VmNotFound, S505 Unauthorized, S506 PrepareFailed (retryable); S500 reserved with no variant (5.6).
 - `AdapterInfo{adapter, adapter_version, contract:{major, minor}}`, no capability fields (5.7). `sandbox::adapter::info` returns `{adapter, namespace, contract, info|null}` (5.2).
-- Not in v1 (2): capability negotiation, the JSON Schema bundle, `create.guest_engine_url`, `worker::{wait, list, renew}`, leases, archive or upload worker sources. `worker::{exec, sync, wait, list, renew}` stay reserved (5.2). Cut by D3: no `Family` enum, `Resources`, `WorkerStartRequest.resources` or `WorkerSource::Local.sync`; `OPERATIONS` holds only the 16 ephemeral ids and the six worker-VM suffixes are `WORKER_*` constants (5.1, 5.2).
+- Not in v1 (2): capability negotiation, the JSON Schema bundle, `create.guest_engine_url`, `worker::{wait, list, renew}`, leases, archive or upload worker sources. `worker::{exec, sync, wait, list, renew}` stay reserved (5.2). Cut by D3: no `Family` enum, `Resources`, `WorkerStartRequest.resources` or `WorkerSource::Local.sync`. No `Owner` type and no `WorkerStartRequest.owner` or `.network`: nothing reads them in v1, and a later use adds them with serde defaults (5.4). `OPERATIONS` holds only the 16 ephemeral ids and the six worker-VM suffixes are `WORKER_*` constants (5.1, 5.2).
 - Step 0 has no behaviour change (10): no file under `crates/iii-worker` or `engine/` changes.
 
 ## Review Focus
@@ -97,7 +97,7 @@ iii-sdk = { workspace = true }
   - `pub const DOCS_BASE: &str = "https://iii.dev/docs/creating-workers/sandboxes#";`. Variants, derives and signatures per registry §2. `error_type`/`retryable` keep today's arms (`crates/iii-worker/src/sandbox_daemon/errors.rs:71-93`) plus: S301 `transient`/true; S302, S303 `config`/false; S304 `platform`/false; S501-S505 `validation`/false; S506 `transient`/true.
   - `error_payload` returns the seven keys of `errors.rs:263-277`, with `docs_url = DOCS_BASE + code`. `code_of` parses the message as a JSON object and deserializes its string `code`.
   - Fixture: set `docs_base` to `DOCS_BASE` and append 10 rows (S301-S304, S501-S506) with the types above, `"rust_variant": null` and a summary naming the spec 5.6 meaning.
-  - Docs: append `## Error codes` to `docs/next/creating-workers/sandboxes.mdx` (the source; a release copies `docs/next/` over the Latest pages, `.github/scripts/pin_docs.py:217-221, 268-277`), one line per fixture row: `- <a id="S001"></a>**S001** (validation): <summary>`. Then run `iii-skill-render --write docs/next/creating-workers/sandboxes.mdx`, as `scripts/generate-cli-docs.sh:64-65` does.
+  - Docs: append `## Error codes` to `docs/next/creating-workers/sandboxes.mdx` (the source; a release copies `docs/next/` over the Latest pages, `.github/scripts/pin_docs.py:217-221, 268-277`), one line per fixture row: `- <a id="S001"></a>**S001** (validation): <summary>`. Then run `iii-skill-render --write docs/next/creating-workers/sandboxes.mdx`, as `scripts/generate-cli-docs.sh:64-65` does. The tool comes from the `iii-hq/skills-and-validation` v0.4 release that `.github/workflows/skill-check.yml:32` pins. Without it, commit the `.mdx` alone; the skill-check PR comment then names the stale `sandboxes.mdx.skill.md`, which you render and commit before merging.
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test -p iii-sandbox-contract --test wire_parity` → `test result: ok. 5 passed`.
 - [ ] **Step 5: Commit.** `git add Cargo.toml Cargo.lock Makefile .github/workflows/ci.yml crates/iii-sandbox-contract docs/next/creating-workers/sandboxes.mdx docs/next/creating-workers/sandboxes.mdx.skill.md`; `git commit -m "feat(sandbox): add iii-sandbox-contract crate with S-codes and docs anchors"`
 
@@ -150,7 +150,7 @@ iii-sdk = { workspace = true }
 
 **Interfaces:**
 - Consumes: Task 2 `StreamChannelRef`.
-- Produces (registry §2, verbatim): `CONTRACT_MAJOR`, `CONTRACT_MINOR` (in `info.rs`), `ContractVersion` with `CURRENT`, `AdapterInfoRequest`, `AdapterInfo`, `RouterInfo`; `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerStartRequest`, `WorkerSource`, `Owner`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`; the fixture `wire_examples.json`, `{"<TypeName>": <example>}` with one entry per type above, which P1 copies.
+- Produces (registry §2, verbatim): `CONTRACT_MAJOR`, `CONTRACT_MINOR` (in `info.rs`), `ContractVersion` with `CURRENT`, `AdapterInfoRequest`, `AdapterInfo`, `RouterInfo`; `WorkerPrepareRequest`, `WorkerPrepareResponse`, `WorkerStartRequest`, `WorkerSource`, `WorkerStartResponse`, `WorkerStatusRequest`, `WorkerStatus`, `State`, `WorkerLogsRequest`, `WorkerLogsResponse`, `LogRecord`, `LogStream`, `WorkerStopRequest`, `WorkerDestroyRequest`, `WorkerDestroyResponse`; the fixture `wire_examples.json`, `{"<TypeName>": <example>}` with one entry per type above, which P1 copies.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -164,14 +164,14 @@ iii-sdk = { workspace = true }
     // Local { run_override: None } -> {"kind":"local","host_path":"/p","run_override":null}
 #[test] fn worker_status_and_log_record_json() // WorkerStatus { state: Exited, exit_code: None, signal: Some(9), .. } -> "state":"exited",
     // "exit_code":null,"signal":9; LogRecord { Stderr, "x", 1, 7 } -> {"stream":"stderr","line":"x","ts_ms":1,"cursor":7}
-#[test] fn worker_start_request_round_trips() // a full literal (owner {"kind":"compose","id":"my-proj","container":"my-bundle"},
-    // env {"A":"1"}, no "resources" key) survives to_value(from_value::<WorkerStartRequest>(v)) == v
+#[test] fn worker_start_request_round_trips() // a full literal (auth, state_key, worker_name "my-bundle", a Bundle source,
+    // env {"A":"1"}, engine_url; no "owner", "network" or "resources" key) survives to_value(from_value::<WorkerStartRequest>(v)) == v
 #[test] fn wire_examples_round_trip() // every fixture entry: to_value(from_value::<T>(example)) == example for its type name;
     // the fixture has exactly one key per type in info.rs and worker.rs
 ```
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p iii-sandbox-contract --test wire_parity` → `error[E0432]: unresolved import` for `RouterInfo`, `WorkerSource`, ….
-- [ ] **Step 3: Implement `info.rs` and `worker.rs`** with the fields, derives and serde attributes of registry §2 (spec 5.4, 5.5, 5.7); `CURRENT = ContractVersion { major: CONTRACT_MAJOR, minor: CONTRACT_MINOR }`. No `ArchiveRef`, `Effective`, caps, lease or `Resources` types and no `Local.sync` (D3). `lib.rs` adds both modules and their `pub use`.
+- [ ] **Step 3: Implement `info.rs` and `worker.rs`** with the fields, derives and serde attributes of registry §2 (spec 5.4, 5.5, 5.7); `CURRENT = ContractVersion { major: CONTRACT_MAJOR, minor: CONTRACT_MINOR }`. No `ArchiveRef`, `Effective`, caps, lease or `Resources` types and no `Local.sync` (D3); no `Owner` type and no `owner` or `network` field (5.4). `lib.rs` adds both modules and their `pub use`.
 - [ ] **Step 4: Run the tests to verify they pass.** `cargo test -p iii-sandbox-contract --test wire_parity` → `test result: ok. 20 passed`.
 - [ ] **Step 5: Commit.** `git add crates/iii-sandbox-contract`; `git commit -m "feat(sandbox): add adapter info and worker-VM types to the contract"`
 
@@ -235,4 +235,4 @@ iii-sdk = { workspace = true }
   - `cargo metadata --locked --format-version 1 > /dev/null` → exit 0 (`Cargo.lock` is consistent, as `create-tag.yml` checks).
   - Spec 11 checks owned here: "Error JSON matches `fixtures/sandbox_error_codes.json`" (`wire_parity::fixture_rows_match_error_payload`) and "The contract's `StreamChannelRef` serializes to the same JSON as iii-sdk's" (`stream_channel_ref`), both green above.
   - `git diff --stat a1d08d8b0 -- crates/iii-worker engine` → empty (spec 10, step 0: no behaviour change).
-- [ ] **Step 2: PR-ready note.** Create the MOT ticket first. Title: `feat(sandbox): iii-sandbox-contract crate (MOT-<n>)`. Body: the new internal crate (spec 5), never published (spec Q5); no runtime change; P1 copies its two fixtures. No AI co-author or "Generated with" line.
+- [ ] **Step 2: PR-ready note.** Create the MOT ticket first. Title: `feat(sandbox): iii-sandbox-contract crate (MOT-<n>)`. Body: the new internal crate (spec 5), never published (spec Q5); no runtime change; P1 merges after this PR and copies its two fixtures from iii main. No AI co-author or "Generated with" line.

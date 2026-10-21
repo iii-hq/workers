@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remove every VM crate, firmware blob, script, CI/release job, installer path and `iii update` entry from the iii repo, and document the move to `sandbox-builtin`.
+**Goal:** Remove every VM crate, firmware blob, script, CI/release job and `iii update` entry from the iii repo, make `engine/install.sh` skip the VM companions silently when a release ships none, and document the move to `sandbox-builtin`.
 
-**Architecture:** Mostly deletion. First the users of the VM artifacts stop using them (`iii update`, `engine/install.sh`, release workflows, CI and Makefile); then the seven crates, firmware and scripts leave the workspace, and with them the `libcap-ng-dev` installs; then `docs/next/` and the top-level skills describe `engine.sandbox` and `sandbox-builtin`, with a new upgrade guide. That order keeps main green after every commit.
+**Architecture:** Mostly deletion. First the users of the VM artifacts stop using them (`iii update`, release workflows, CI and Makefile) and `engine/install.sh` stops warning when a release has none; then the seven crates, firmware and scripts leave the workspace, and with them the `libcap-ng-dev` installs; then `docs/next/` and the top-level skills describe `engine.sandbox` and `sandbox-builtin`, with a new upgrade guide. That order keeps main green after every commit.
 
 **Tech Stack:** Rust (engine CLI in `engine/src/cli`), POSIX sh + bats + shellcheck (installer), GitHub Actions YAML (actionlint, `.github/scripts` pytest), GNU Make, Mintlify MDX (`iii-skill-render`).
 
 **Spec:** docs/superpowers/specs/2026-10-20-sandbox-worker-design.md, sections 2 (non-goals the docs state), 6.5 (the parts P2a does not own), 7.8-7.9 (upgrade-guide notes), 8.2 (moved files leave iii), 9 (user step 1, iii-repo docs), 10 (step 3), 11 (release check). Shared names: docs/superpowers/plans/2026-10-20-sandbox-shared-interfaces.md
 
-**Repo and base:** iii repo. Citations are line numbers at `a1d08d8b0`; re-locate any line P0, P2a or P2b moved. Branch `sandbox/p3-engine-cleanup` from main after P2b merges. Prerequisites: P0, P2a and P2b merged. **This PR cannot merge before `sandbox-builtin` 1.0.0 is in the registry (P1); Task 7 holds the gate.**
+**Repo and base:** iii repo. Citations are line numbers at `a1d08d8b0`; re-locate any line P0, P2a or P2b moved. Branch `sandbox/p3-engine-cleanup` from main after P2b merges. Prerequisites: P0, P2a and P2b merged. **This PR cannot merge before `sandbox-builtin` 1.0.0 is in the registry (P1); Task 7 holds the gate.** P2a waits for the same gate, so P2a, P2b and P3 merge back to back (index row 3).
 
 ## Global Constraints
 
@@ -21,7 +21,7 @@
 - "the SDK, lint, fmt, typecheck and console targets (:137-190) stay." (6.5, `Makefile`)
 - Kept on purpose: `.config/nextest.toml` (D12); P2b's `compose-sandbox-e2e-linux` job (D5); `BUNDLE_NEEDS_A_VM` as the Windows guard (D11); P0's `<a id="S...">` anchors in `docs/next/creating-workers/sandboxes.mdx`; `_rust-binary.yml`'s generic inputs `features`, `targets`, `system_deps` (D12).
 - `iii update` notes the leftover binaries and deletes nothing; no `iii worker` pointer, since clap has rejected `iii worker` since 0.23 (`engine/src/main.rs:680-686`) (D12). The `libcap-ng-dev` installs left in `ci.yml` go once `cargo metadata` lists no `capng` (D12).
-- Release check: "The 0.25.0 GitHub release has no `iii-worker-*`, `iii-init-*` or `libkrunfw-*` assets." / "`cargo metadata` for the iii workspace lists no `msb_krun` package." / "`engine/install.sh` and `iii update` fetch neither `iii-worker` nor `iii-init`." (11)
+- Release check: "The 0.25.0 GitHub release has no `iii-worker-*`, `iii-init-*` or `libkrunfw-*` assets." / "`cargo metadata` for the iii workspace lists no `msb_krun` package." / `iii update` fetches neither `iii-worker` nor `iii-init`; 0.25+ releases have no such assets, and `engine/install.sh` skips them. (11)
 - Anti-goal: "The engine depending on a workers-repo artifact at build time." (2)
 - Non-goals the docs must state: "Musl hosts at launch", "Intel Mac and Windows hosts". (2)
 - Docs: author in `docs/next/` only (D12), regenerate each `.skill.md` with `iii-skill-render --write`, no em dashes in prose (repo `AGENTS.md:62-76`).
@@ -29,9 +29,9 @@
 
 ## Review Focus
 
-1. A 0.24 user with `~/.local/bin/iii-worker` runs `iii update`: the file is not updated or downloaded, and one note names it for deletion. Pin: `cli::update::tests::retired_binaries_lists_leftover_vm_binaries` (Task 1).
+1. A user with a leftover `~/.local/bin/iii-worker` runs the 0.25 `iii update` (after a 0.24 upgrade this is the second run; the first still runs 0.24 code, which Task 6's guide covers): the file is not updated or downloaded, and one note names it for deletion. Pin: `cli::update::tests::retired_binaries_lists_leftover_vm_binaries` (Task 1).
 2. `iii update iii-worker` (or `worker`, `iii-init`): non-zero exit with the existing unknown-command error and `--list-targets` hint, never a download. Pin: `cli::registry::tests::vm_binaries_are_no_longer_managed` (Task 1).
-3. Installing on Alpine or an Intel Mac: `iii` installs, exit 0, and no `iii-worker`/`iii-init` download, warning or note appears. Pin: bats `install.sh downloads no VM companion binaries` (Task 2).
+3. Installing 0.25 (no companion assets) on any host, Alpine and Intel Mac included: `iii` installs, exit 0, and no `iii-worker`/`iii-init` download, warning or note appears; a pinned 0.24.x install still gets the companions its release ships. Pin: bats `install.sh skips VM companions a release does not ship, silently` (Task 2).
 4. A 0.25 error's `docs_url` (`DOCS_BASE` + code) after the 0.25.0 rotation promotes `docs/next/` to Latest: the anchor still exists in the rewritten page. Pin: P0's `every_code_has_a_docs_anchor`, run in Task 6 Step 4.
 5. A release run after the jobs go: `notify-complete` must not turn red from an empty `*_RESULT` of a deleted job, and no `needs:` names a deleted job. Pin: the `rg` + `actionlint` check in Task 3 Step 4.
 
@@ -90,31 +90,35 @@ Delete both `BinarySpec`s and the libc choice; every `binary_target(x)` caller b
 `git add engine/src/cli/registry.rs engine/src/cli/platform.rs engine/src/cli/update.rs engine/src/cli/mod.rs`
 `git commit -m "feat(cli): stop installing iii-worker and iii-init from iii update"`
 
-### Task 2: `engine/install.sh` stops downloading the VM companions
+### Task 2: `engine/install.sh` skips the VM companions a release does not ship, silently
 
 **Files:**
-- Modify: `engine/install.sh:11-12` (two `*_install_failed` vars), `:168-222` (`resolve_companion_url`, `install_companion_from_tarball`, `worker_target_for_host`: all dead afterwards), `:535` (comment: "exclude .sha256 and other binaries' assets"), `:622-652` and `:654-677` (keep `main_tarball=` at `:653`), `:679-682` (comment becomes "Download the main binary."), `:686-687`, `:700-725`, `:726` (comment becomes "Validate: the main binary is critical."; keep `:727-729`), `:730-739`, `:798-815`, `:842-864` (keep the `fi` at `:865`)
-- Modify: `engine/tests/install_sh_unit.bats:217-264` (delete the seven `worker_target_for_host` cases), `engine/tests/install_sh_integration.sh:6`
+- Modify: `engine/install.sh:661-663` and `:673-675` (delete each `else` branch that warns "not found in release" and sets `*_install_failed`), `:846-851` (delete the macOS Intel "iii-worker is not available" note and the blank line after it). The companion download keyed off the release's asset list (`resolve_companion_url`, `worker_target_for_host`, `:700-739`, `:798-815`) and the download-failure notes at `:852-864` stay, so a pinned 0.24.x install still gets the companions its release ships and a 0.25 install fetches and prints nothing (spec 11).
+- Modify: `engine/tests/install_sh_unit.bats` (one test after the `worker_target_for_host` cases, which stay, `:264`)
 - Test: `engine/tests/install_sh_unit.bats`
 
 **Interfaces:**
 - Consumes: none. Produces: none.
 
-- [ ] **Step 1: Write the failing test** (in place of the deleted cases)
+- [ ] **Step 1: Write the failing test**
 ```bash
-@test "install.sh downloads no VM companion binaries" {
-  run grep -nE 'iii-worker|iii-init|libkrunfw|worker_target_for_host' "$INSTALL_SH"
+@test "install.sh skips VM companions a release does not ship, silently" {
+  run resolve_companion_url iii-worker x86_64-unknown-linux-gnu \
+    '{"assets":[{"name":"iii-x86_64-unknown-linux-gnu.tar.gz","browser_download_url":"https://example.invalid/iii.tar.gz"}]}'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run grep -nE 'not found in release|not available on macOS Intel' "$INSTALL_SH"
   [ "$status" -eq 1 ]
 }
 ```
 - [ ] **Step 2: Run it to verify it fails**
-`bats engine/tests/install_sh_unit.bats` → `not ok ... install.sh downloads no VM companion binaries`.
-- [ ] **Step 3: Delete the listed lines** (the main-binary download, validation, extract, install, telemetry and PATH guidance stay byte-for-byte)
+`bats engine/tests/install_sh_unit.bats` → `not ok ... install.sh skips VM companions a release does not ship, silently` (the `grep` finds `:662`, `:674`, `:848`).
+- [ ] **Step 3: Delete the listed lines** (everything else stays byte-for-byte)
 - [ ] **Step 4: Run the tests to verify they pass**
 `bats engine/tests/install_sh_unit.bats` → all `ok`. `shellcheck -s sh engine/install.sh` → no output. `sh -n engine/install.sh` → exit 0.
 - [ ] **Step 5: Commit**
-`git add engine/install.sh engine/tests/install_sh_unit.bats engine/tests/install_sh_integration.sh`
-`git commit -m "feat(install): stop downloading iii-worker and iii-init"`
+`git add engine/install.sh engine/tests/install_sh_unit.bats`
+`git commit -m "feat(install): stay silent when a release ships no VM companions"`
 
 ### Task 3: Release workflows stop building `iii-init`, `iii-worker` and firmware
 
@@ -141,7 +145,7 @@ The Step 1 `rg` → no output. `actionlint .github/workflows/release-iii.yml .gi
 ### Task 4: CI and Makefile stop building and testing the VM crates
 
 **Files:**
-- Modify: `.github/workflows/ci.yml:65-87` (`worker-musl`; the Engine Build header at `:61-63` stays), `:163-169` (iii-worker install step), `:180-182` (drop the VM-crate sentence) and `:186` (`cargo test ... -p iii-worker ...` line; P0's `-p iii -p iii-sandbox-contract` line after it stays), `:351-357` (compose libcap step "through iii-worker"; `iii-compose` never links cap-ng), `:407-759` (`worker-build-matrix`, `worker-test-matrix`, `worker-test-{vm,oci}-{linux,macos}`, `sandbox-isolation-{linux,macos}` with their headers). P2b's `compose-sandbox-e2e-linux` stays (D5).
+- Modify: `.github/workflows/ci.yml:65-87` (`worker-musl`; the Engine Build header at `:61-63` stays), `:163-169` (iii-worker install step), `:180-182` (drop the VM-crate sentence) and `:186` (`cargo test ... -p iii-worker ...` line; P0's `-p iii -p iii-sandbox-contract` line after it stays), `:351-357` (compose libcap step "through iii-worker"; `iii-compose` never links cap-ng), `:407-759` (`worker-build-matrix`, `worker-test-matrix`, `worker-test-{vm,oci}-{linux,macos}`, `sandbox-isolation-{linux,macos}` with their headers; P2a Task 4 already deleted `sandbox-isolation-linux`'s "Sandbox isolation end to end" and log-upload steps and P2b inserts a job at `:363`, so locate this block by text, from the comment rule above `# Worker Build Matrix` up to, not including, the rule above `# SDK Node`). P2b's `compose-sandbox-e2e-linux` stays (D5).
 - Delete: `.github/workflows/docker-worker-images.yml` (D7)
 - Modify: `Makefile:12` (`LOCAL_BIN`, now unused), `:16-20` (`.PHONY`), `:50-54` (delete `install-iii-worker`), `:56-67` (`engine-test`/`coverage` lose the prerequisite and the `cargo test -p iii-worker ...` line and keep P0's `-p iii -p iii-sandbox-contract`; comment says it mirrors Engine Coverage), `:86-134` (delete), `:191-199` (`build: build-console` running `cargo build --release -p iii`; drop the worker echo lines; PATH line is `$(CURDIR)/target/release` only)
 
@@ -173,6 +177,7 @@ The `rg` → no output. `rg -c '^  compose-sandbox-e2e-linux:' .github/workflows
 
 - [ ] **Step 1: Write the failing checks**
 Precondition: `rg -n '"iii-worker"|iii-worker\{|find_existing_binary\("iii-worker' engine/src crates/iii-compose/src -g '!**/observability/**'` → no output (observability keeps `"iii-worker"` as a test scope name) (else stop: P2a/P2b are not on main).
+Precondition: `git log --oneline a1d08d8b0..HEAD -- crates/iii-worker crates/iii-init crates/iii-network crates/iii-filesystem crates/iii-supervisor crates/iii-shell-proto crates/iii-shell-client engine/firmware engine/tests/vm_platform_e2e.rs scripts/sandbox-isolation-e2e.sh` → only P0, P2a and P2b commits (else stop: port each other commit to `sandbox-builtin` and release it as 1.0.x first, since P1 copied these paths at `a1d08d8b0`).
 Check: `cargo metadata --format-version 1 | jq -e '[.packages[].name | select(test("^(capng|msb_krun|iii-(worker|init|network|filesystem|supervisor|shell-proto|shell-client))$"))] | length == 0'`
 - [ ] **Step 2: Run it to verify it fails** → `false`.
 - [ ] **Step 3: Delete** with `git rm -r`, edit the members and the comment, run `cargo metadata --format-version 1 >/dev/null` to prune `Cargo.lock`, then delete the `ci.yml` installs listed above.
@@ -191,7 +196,7 @@ Step 1 check with `--locked` → `true`. `git diff Cargo.lock | grep '^+version'
 - Modify: `skills/iii-engine-config/SKILL.md:36-37`, `:60`; `skills/iii-core-primitives/SKILL.md:50`
 
 **Interfaces:**
-- Consumes: P0's `<a id="Sxxx"></a>` anchors in `docs/next/creating-workers/sandboxes.mdx` and its test `every_code_has_a_docs_anchor`; P2a `SandboxRouterConfig { adapter, namespace }` (top-level `sandbox:` in an engine config) and the S303 text; P2b `SandboxConfigMoved` replacement YAML, `SANDBOX_ADAPTER_NOT_DECLARED`, `UNSUPPORTED_PLATFORM`, the kept `BundleNeedsAVm`, `engine.sandbox`, the two host roots (registry 5); P1 targets `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (spec 8.5) and config keys (registry 6).
+- Consumes: P0's `<a id="Sxxx"></a>` anchors in `docs/next/creating-workers/sandboxes.mdx`, its test `every_code_has_a_docs_anchor` and `DOCS_BASE` `https://iii.dev/docs/creating-workers/sandboxes#`; P2b's `destroy_vm` warning (names the container, the adapter and the `vm_id`) and the VM state path `~/.iii/sandbox/workers/<vm_id>/` (registry 6); P2a `SandboxRouterConfig { adapter, namespace }` (top-level `sandbox:` in an engine config) and the S303 text; P2b `SandboxConfigMoved` replacement YAML, `SANDBOX_ADAPTER_NOT_DECLARED`, `UNSUPPORTED_PLATFORM`, the kept `BundleNeedsAVm`, `engine.sandbox`, the two host roots (registry 5); P1 targets `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (spec 8.5) and config keys (registry 6).
 - Produces: the page behind `https://iii.dev/docs/upgrading/sandbox-worker` once 0.25.0 rotates `docs/next/` to Latest.
 
 - [ ] **Step 1: Write the failing checks**
@@ -203,10 +208,12 @@ Step 1 check with `--locked` → `true`. `git diff Cargo.lock | grep '^+version'
   - `engine.mdx`, `compose.mdx:674`, `workers.mdx:114`, `workers-to-compose.mdx:30,35,71,80,103`, `skills/iii-engine-config`: `iii-sandbox` leaves the `engine.workers` lists (four workers remain); an engine no Compose file manages sets top-level `sandbox: {adapter, namespace}` or its calls get S303.
   - `skills/iii-core-primitives/SKILL.md:50`: `iii-sandbox` stays engine-owned; the `sandbox-builtin` adapter is a registry worker that Compose installs.
   - `compose.mdx:733-739`: bundle and `runtime.base_image` VMs run in `sandbox-builtin`, built for the three P1 targets only; the Linux user needs read/write on `/dev/kvm` and `libcap-ng0`; musl and Intel Mac hosts fail with `UNSUPPORTED_PLATFORM`.
-  - `sandbox-worker.mdx` sections: what moved; replace `engine.workers.iii-sandbox` with the YAML `SANDBOX_CONFIG_MOVED` prints; re-enter a stored entry with `iii trigger configuration::get --json '{"id": "iii-sandbox", "raw": true}'`, then `configuration::set` with `id: <namespace>-sandbox-builtin` (Compose's `<namespace>-<key>` config name); External-mode engines set `sandbox:`; `--frozen` refuses with `SANDBOX_ADAPTER_NOT_DECLARED` (run `up` once without it); a `path://` VM worker must live under the compose dir or the package cache, else S501 names the roots (7.8); delete the old VM state `<state dir>/vm/<key>/` (`<compose-dir>/.iii/compose/<ns>/`, or under `$III_COMPOSE_STATE_DIR`; first boot reinstalls dependencies); delete `~/.local/bin/iii-worker` and `~/.local/bin/iii-init`; supported hosts as above, with musl, Intel Mac and Windows hosts unsupported (2).
-  Then `iii-skill-render --write docs/next/<page>.mdx` for each edited or created page.
+  - `sandbox-worker.mdx` sections: what moved; replace `engine.workers.iii-sandbox` with the YAML `SANDBOX_CONFIG_MOVED` prints; re-enter a stored entry with `iii trigger configuration::get --json '{"id": "iii-sandbox", "raw": true}'`, then `configuration::set` with `id: <namespace>-sandbox-builtin` (Compose's `<namespace>-<key>` config name); External-mode engines set `sandbox:`; `--frozen` refuses with `SANDBOX_ADAPTER_NOT_DECLARED` (run `up` once without it); a `path://` VM worker must live under the compose dir or the package cache, else S501 names the roots (7.8); supported hosts as above, with musl, Intel Mac and Windows hosts unsupported (2).
+  - `sandbox-worker.mdx`, upgrading the binary: the first `iii update` from 0.24 still runs 0.24 code, so it updates `iii`, then prints `Release asset not found for platform <target>: iii-init` (and the same for `iii-worker`) and exits 1; a second `iii update` (now 0.25) is clean and prints the leftover-binaries note; delete `~/.local/bin/iii-worker` and `~/.local/bin/iii-init`; 0.24.x error `docs_url` links (to `crates/iii-worker/src/sandbox_daemon/README.md` on GitHub) no longer resolve, and the S-codes now live at `https://iii.dev/docs/creating-workers/sandboxes`.
+  - `sandbox-worker.mdx`, cleaning up VM state: delete the old VM state `<state dir>/vm/<key>/` (`<compose-dir>/.iii/compose/<ns>/`, or under `$III_COMPOSE_STATE_DIR`; first boot reinstalls dependencies); the state now lives in `~/.iii/sandbox/workers/<vm_id>/`, and two cases leave it behind for you to delete by hand: removing a VM container while the adapter is down (after `iii compose down`; the warning names the container, adapter and `vm_id`), and moving or renaming the project dir or changing `III_COMPOSE_STATE_DIR` (every VM then starts from fresh state).
+  Then `iii-skill-render --write docs/next/<page>.mdx` for each edited or created page. The tool comes from the `iii-hq/skills-and-validation` release that `.github/workflows/skill-check.yml` pins (v0.4). Without it, commit the `.mdx` edits, let the skill-check PR comment list the stale `.skill.md` files, and render them before merging.
 - [ ] **Step 4: Run the checks to verify they pass**
-Step 1 `rg` → no output; file exists. `cargo test --locked -p iii-sandbox-contract --test wire_parity every_code_has_a_docs_anchor` → `1 passed`. `python3 .github/scripts/pin_docs.py validate --docs-dir docs` → `pin_docs: Next docs ready`. `git status --porcelain docs/next | grep -c '\.skill\.md'` → `7` (six edited pages and the new one).
+Step 1 `rg` → no output; file exists. `cargo test --locked -p iii-sandbox-contract --test wire_parity every_code_has_a_docs_anchor` → `1 passed`. `python3 .github/scripts/pin_docs.py validate --docs-dir docs` → `pin_docs: Next docs ready`. With `iii-skill-render` installed: `git status --porcelain docs/next | grep -c '\.skill\.md'` → `7` (six edited pages and the new one); without it, the skill-check PR comment lists these seven before merge.
 - [ ] **Step 5: Commit**
 `git add docs/docs.json docs/next skills/iii-engine-config/SKILL.md skills/iii-core-primitives/SKILL.md`
 `git commit -m "docs(sandbox): document engine.sandbox, sandbox-builtin and the 0.25 upgrade"`
@@ -225,7 +232,7 @@ Step 1 `rg` → no output; file exists. `cargo test --locked -p iii-sandbox-cont
 `./scripts/generate-cli-docs.sh && git diff --exit-code docs/next/cli-reference` → exit 0 (Task 1 changed no clap text).
 - [ ] **Step 2: Spec 11 release check, pre-merge form**
 `cargo metadata --locked --format-version 1 | jq -e '[.packages[].name | select(startswith("msb_krun"))] | length == 0'` → `true`.
-`rg -n 'iii-worker([^-s]|$)|iii-init|libkrunfw' .github/workflows/release-iii.yml .github/workflows/alpha-release.yml .github/workflows/_rust-binary.yml engine/install.sh engine/src/cli/registry.rs` → no output.
+`rg -n 'iii-worker([^-s]|$)|iii-init|libkrunfw' .github/workflows/release-iii.yml .github/workflows/alpha-release.yml .github/workflows/_rust-binary.yml engine/src/cli/registry.rs` → no output (`engine/install.sh` keeps its asset-keyed companion download on purpose, Task 2).
 `cargo test -p iii --bin iii -- cli::registry::tests::vm_binaries_are_no_longer_managed` → ok.
 - [ ] **Step 3: Merge gate (must pass before merge)**
 ```bash
@@ -235,8 +242,8 @@ for t in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
   | jq -e '.graph[] | select(.name == "sandbox-builtin") | .version | startswith("1.")'
 done
 ```
-Expected: `true` three times. Any failure blocks the merge.
+Expected: `true` three times. Any failure blocks the merge. P2a's merge gate runs the same command (index row 3).
 - [ ] **Step 4: Post-release check (rollout step 4; listed here, run by the release owner)**
 `gh release view iii/v0.25.0 --repo iii-hq/iii --json assets --jq '.assets[].name' | grep -E '^(iii-worker|iii-init|libkrunfw)-'` → no output.
 - [ ] **Step 5: PR note** (do not push or open the PR from this plan)
-Title: `refactor(sandbox): remove the VM substrate from the iii repo (MOT-<n>)`. Body: depends on P2a and P2b; merge only after Step 3 passes (paste its output), right before the 0.25.0 tag, because `https://install.iii.dev/iii/main/install.sh` serves main's installer, so any install (a pinned 0.24.x one too) gets no `iii-worker` once this merges; ships with step 2 in engine 0.25.0; never release an engine without `iii-worker` before `sandbox-builtin` is in the registry; `.cargo/config.toml` and `.config/nextest.toml` intentionally kept. No AI co-author or "Generated with" line.
+Title: `refactor(sandbox): remove the VM substrate from the iii repo (MOT-<n>)`. Body: depends on P2a and P2b; merge only after Step 3 passes (paste its output), right after P2b and before the 0.25.0 tag (P2a, P2b and P3 merge back to back); `engine/install.sh` still installs the companions a pinned 0.24.x release ships and skips them silently for 0.25+, which ships none; ships with step 2 in engine 0.25.0; never release an engine without `iii-worker` before `sandbox-builtin` is in the registry; `.cargo/config.toml` and `.config/nextest.toml` intentionally kept. No AI co-author or "Generated with" line.
