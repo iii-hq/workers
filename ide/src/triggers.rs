@@ -23,17 +23,44 @@ impl IiiTriggerFwd {
     }
 }
 
+/// iii-sandbox is engine-owned: its `sandbox::*` functions exist only in
+/// `default`, whatever namespace this worker runs in (a Compose project's,
+/// say). A suite that stands in for its file operations (`sandbox::fs::*`)
+/// names its own namespace through `III_SANDBOX_FS_NAMESPACE`; create, exec
+/// and stop always reach the real daemon.
+static SANDBOX_FS_NAMESPACE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    std::env::var("III_SANDBOX_FS_NAMESPACE")
+        .ok()
+        .map(|namespace| namespace.trim().to_string())
+        .filter(|namespace| !namespace.is_empty())
+        .unwrap_or_else(|| "default".to_string())
+});
+
+/// `sandbox::fs::*` goes to `fs_namespace`, the rest of `sandbox::*` to
+/// `default`; everything else (`compose::*` included) keeps the SDK's routing.
+fn forward_namespace<'a>(function_id: &str, fs_namespace: &'a str) -> Option<&'a str> {
+    if function_id.starts_with("sandbox::fs::") {
+        Some(fs_namespace)
+    } else if function_id.starts_with("sandbox::") {
+        Some("default")
+    } else {
+        None
+    }
+}
+
 #[async_trait]
 impl TriggerFwd for IiiTriggerFwd {
     async fn trigger(&self, function_id: &str, payload: Value) -> Result<Value, Error> {
-        self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: None,
-            })
-            .await
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: None,
+        };
+        match forward_namespace(function_id, &SANDBOX_FS_NAMESPACE) {
+            Some(namespace) => self.iii.trigger(request.namespace(namespace)).await,
+            None => self.iii.trigger(request).await,
+        }
     }
 }
 
@@ -42,6 +69,36 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn sandbox_calls_reach_default_and_only_fs_follows_the_override() {
+        for function_id in ["sandbox::create", "sandbox::exec", "sandbox::stop"] {
+            assert_eq!(
+                forward_namespace(function_id, "ide-e2e"),
+                Some("default"),
+                "{function_id}"
+            );
+        }
+        assert_eq!(
+            forward_namespace("sandbox::fs::ls", "default"),
+            Some("default")
+        );
+        assert_eq!(
+            forward_namespace("sandbox::fs::ls", "ide-e2e"),
+            Some("ide-e2e")
+        );
+        for function_id in [
+            "compose::add",
+            "compose::status",
+            "sandbox-code-runner::run",
+        ] {
+            assert_eq!(
+                forward_namespace(function_id, "default"),
+                None,
+                "{function_id}"
+            );
+        }
+    }
 
     struct CountingFwd {
         count: Mutex<usize>,

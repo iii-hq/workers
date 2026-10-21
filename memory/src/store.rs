@@ -375,6 +375,19 @@ impl Store {
         Ok(dest.display().to_string())
     }
 
+    /// Remove the bank folder outright, skipping `.trash`. Only for a
+    /// scratch bank its caller created and nothing else wrote to.
+    pub async fn destroy_bank(&self, name: &str) -> Result<(), MemoryError> {
+        validate_name(name)?;
+        let mut banks = self.banks.write().await;
+        if !banks.contains_key(name) {
+            return Err(MemoryError::BankNotFound(name.to_string()));
+        }
+        std::fs::remove_dir_all(self.root.join(name))?;
+        banks.remove(name);
+        Ok(())
+    }
+
     /// Deleted: no live folder, but a `.trash/<name>-<ms>` one. A path that
     /// picks the bank implicitly (a session's bank, extraction) must not
     /// bring it back; an explicit `bank` may.
