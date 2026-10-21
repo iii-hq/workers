@@ -140,11 +140,11 @@ export const TOURS = [
       agentStep({
         id: "composability",
         ask: {
-          text: "Add a kanban board to this project in the todo-local namespace. When it runs, open its board page beside this chat and tell me what the board can do.",
+          text: "Add the database worker to this project and tell me what it can do.",
           label: "Ask the agent",
         },
         title: "Composability",
-        body: "iii is composable like Node or Python, add libraries and other parts of your application can use them. Except when you add to iii you add a fully working service.\n\nWe call these services 'workers'. When one is added every other worker immediately has access to its functions and triggers.\n\nThis means, for example, that your agent will be able to use the kanban worker without skills, or a long discovery and research process. Now ask the agent to add a kanban board.",
+        body: "iii is composable like Node or Python, add libraries and other parts of your application can use them. Except when you add to iii you add a fully working service.\n\nWe call these services 'workers'. When one is added every other worker immediately has access to its functions and triggers.\n\nThis means, for example, that your agent will be able to use the database worker without skills, or a long discovery and research process. Now ask the agent to add it.",
       }),
       {
         id: "stay-in-touch",
@@ -190,11 +190,11 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Add a context-viewer worker: a console page that shows a raw view of the current chat's context, in collapsible sections, with a search box. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open its page beside this chat.",
+          text: "Add a context-viewer worker: a console page that shows a raw view of the current chat's context, in collapsible sections, with a search box, and keeps a searchable history of past contexts in the database worker. Verify through functions, not screenshots, and do not navigate me away from this workspace. When it is done, open its page beside this chat.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Let's extend this application with a new worker: a context viewer. It shows the raw context of this chat, the way the agent sees it, in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer only reads it and draws it. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
+        body: "Let's extend this application with a new worker: a context viewer. It shows the raw context of this chat, the way the agent sees it, in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer reads it, draws it, and keeps a history in the database worker you just added. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },
@@ -202,11 +202,11 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Add 3 tickets to the kanban board and set a Trigger that fires when each one is moved to Done on the board by the user, not you the agent.",
+          text: "Make the context viewer live: react to this chat's context as it changes, append each new entry at the bottom as it arrives, and keep the view scrolled to the newest one. Then tell me it is live.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 tickets to the board, and to set triggers that fire when you move each one to Done yourself. Watch the agent react as you change the card's status.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
+        body: "Now ask the agent to make the viewer react. Then type anything in this chat and watch your message, the agent's reply and every call arrive in the viewer as they happen.\n\nLike mentioned earlier this isn't frontend, backend, or data reactivity, this is universal reactivity. Everything is both immediately reactive and immediately able to react to anything that happens in a iii system.",
       }),
       {
         id: "clean-up",

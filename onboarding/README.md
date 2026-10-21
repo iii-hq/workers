@@ -152,14 +152,13 @@ build older than a component it would otherwise import.
 ## The steps
 
 The tour says that this is an engine with workers, not a chat app with
-plugins, and the steps together cover CODER: **Composable** (the agent adds a
-kanban board in the `todo-local` namespace, so it sits apart
-from any board the operator runs), **Observable** (the traces
+plugins, and the steps together cover CODER: **Composable** (the agent adds the
+`database` worker), **Observable** (the traces
 step, anchored on the console's traces screen), **Discoverable** (one engine,
 one palette), **Extensible** (the agent adds a context-viewer worker: a console page
 with a raw view of the current chat's context, in collapsible sections, with
-a search box), **Reactive** (three tickets on the board, and a trigger that
-fires when the operator moves one to Done). The last step, "Stay in
+a search box, and a history kept in the database worker), **Reactive** (the
+viewer follows the chat's context as it changes, newest entry at the bottom). The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
 links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
 "Clean up" asks the agent to remove this worker, and the card goes with it —
