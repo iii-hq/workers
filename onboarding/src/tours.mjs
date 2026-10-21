@@ -188,11 +188,11 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Add a context-viewer worker: a console page with a structured view of this chat's context in collapsible sections, a search box, and a history kept in the database worker. Skip verification. Open its page beside this chat when done.",
+          text: "Add a context-history-viewer worker: a console page that shows this chat's raw context history in a structured view, every message, tool call and tool result in order, one collapsible section per entry, with a search box. Mirror the entries into the database worker. Skip verification. Open its page beside this chat when done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Let's extend this application with a new worker: a context viewer. It shows the context of this chat, the way the agent sees it, structured in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer reads it, draws it, and keeps a history in the database worker you just added. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
+        body: "Let's extend this application with a new worker: a context history viewer. It shows this chat's raw context history, every message, tool call and result the way the agent sees it, structured in collapsible sections with a search box.\n\nThe data is already there in the existing workers; the viewer reads it, draws it, and mirrors it into the database worker you just added. That is iii's composability at work: a new worker calls the others directly, without a REST API in between.\n\nWe won't add it now but any worker can also be gated with role based access control so untrusted clients like websites can only do what they're allowed to.",
         // The step closes when the agent reports done; the panel goes as the
         // step opens, so the new page has room.
         to_close: { screen: "traces" },
@@ -200,7 +200,7 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Make the context viewer live: append new context entries at the bottom as they arrive and keep it scrolled to the newest. Skip verification.",
+          text: "Make the context history viewer live: append new history entries at the bottom as they arrive and keep it scrolled to the newest. Skip verification.",
           label: "Ask the agent",
         },
         title: "Reactivity",
