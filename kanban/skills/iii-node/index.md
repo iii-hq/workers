@@ -213,30 +213,6 @@ If passing `undefined` as the address is incompatible with the installed SDK typ
 
 Import only actual top-level SDK exports such as `registerWorker` and, when needed, `TriggerAction` or documented types. Do not import or destructure `registerFunction`, `registerTrigger`, or other client methods as top-level exports. Call `iii.registerFunction(...)`, `iii.registerTrigger(...)`, and `iii.registerTriggerType(...)`. The `IIIClient` type comes from `iii-sdk`; `TriggerConfig`/`TriggerHandler` come from `iii-sdk/trigger`.
 
-### SDK shapes (`iii-sdk` 0.24, `dist/*.d.mts`)
-
-```ts
-registerWorker: (address?: string, options?: InitOptions) => IIIClient
-IIIClient.registerFunction: (functionId: string, handler: RemoteFunctionHandler | HttpInvocationConfig, options?: RegisterFunctionOptions) => FunctionRef
-RemoteFunctionHandler<TInput = any, TOutput = any>: (data: TInput, metadata?: JsonValue) => Promise<TOutput>  // two arguments; metadata is never inside the payload
-RegisterFunctionOptions: { description?: string; request_format?: RegisterFunctionFormat; response_format?: RegisterFunctionFormat; metadata?: Record<string, unknown>; invocation?: HttpInvocationConfig }
-RegisterFunctionFormat: { name?: string; description?: string; type?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map' | 'integer'; properties?: Record<string, unknown>; items?: unknown; required?: string[]; [key: string]: unknown }
-FunctionRef: { id: string; unregister: () => void }
-IIIClient.registerTrigger: (trigger: RegisterTriggerInput) => Trigger
-RegisterTriggerInput: { type: string; function_id: string; config: unknown; metadata?: Record<string, unknown>; namespace?: string; trigger_namespace?: string }
-Trigger: { unregister(): void }  // no id
-IIIClient.registerTriggerType: <TConfig>(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>) => TriggerTypeRef<TConfig>
-RegisterTriggerTypeInput: { id: string; description: string; namespace?: string }
-TriggerHandler<TConfig>: { registerTrigger(config: TriggerConfig<TConfig>): Promise<void>; unregisterTrigger(config: TriggerConfig<TConfig>): Promise<void> }
-TriggerConfig<TConfig>: { id: string; function_id: string; config: TConfig; metadata?: Record<string, unknown>; namespace?: string }
-TriggerTypeRef<TConfig>: { id: string; registerTrigger(functionId: string, config: TConfig, metadata?: Record<string, unknown>): Trigger; registerFunction(functionId: string, handler: RemoteFunctionHandler, config: TConfig, metadata?: Record<string, unknown>): FunctionRef; unregister(): void }
-IIIClient.unregisterTriggerType: (triggerType: RegisterTriggerTypeInput) => void
-IIIClient.trigger: <TInput = unknown, TOutput = any>(request: TriggerRequest<TInput>) => Promise<TOutput>
-TriggerRequest<TInput>: { function_id: string; payload: TInput; action?: TriggerAction; timeoutMs?: number; metadata?: unknown; namespace?: string }
-TriggerAction: { type: 'enqueue'; queue: string } | { type: 'void' }  // `TriggerAction.Void()`
-IIIClient.shutdown: () => Promise<void>
-```
-
 ### Namespaces
 
 A Compose project usually runs its workers in a project namespace (`III_NAMESPACE` is set by Compose); the engine-hosted workers (`configuration`, `state`, `engine::*`) live in `default`. Consequences:
