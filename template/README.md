@@ -122,6 +122,7 @@ tracked files.
 ```bash
 cd template
 ./init.sh --help        # examples, behavior and environment variables
+./init.sh --list        # every template, with its description
 ./init.sh quickstart
 ./init.sh harness
 ```
@@ -141,17 +142,26 @@ Before Compose takes over the terminal, the run prints a summary like this:
 It replaces `template/<name>/` with a new `iii project init -t <name>`, so each
 start is a first run: `data/`, `.iii/`, `.env` and any Compose edits are lost. If
 that folder's stack is still running, it changes nothing and asks you to stop it
-first. Init runs in a staging folder, so a failed fetch or an unknown template
-keeps the previous folder.
+first. An unknown name lists the templates (and suggests the closest one)
+before anything runs, and init runs in a staging folder, so a failed fetch or
+init keeps the previous folder.
 
 Templates come from [`iii-hq/templates`](https://github.com/iii-hq/templates)
-`main`, just as a user gets them; no local checkout is needed. The CLI's
+`main`, just as a user gets them; no local checkout is needed. `init.sh` clones
+them once, the way the CLI does, and hands the CLI that copy. The CLI's own
 `III_TEMPLATE_URL_BRANCH` (and `III_TEMPLATE_URL`) pick another branch or
 repository. To try uncommitted template changes, point `TEMPLATES_REPO` at a
 local templates checkout:
 
 ```bash
 TEMPLATES_REPO=../../templates ./init.sh harness
+```
+
+`engine=` runs init and the whole stack on another `iii` binary, such as a local
+build; the default is `iii` from `PATH`:
+
+```bash
+./init.sh harness engine=../../iii/target/debug/iii
 ```
 
 Like sync, it rewrites `package://` workers found in this checkout to `path://`.
