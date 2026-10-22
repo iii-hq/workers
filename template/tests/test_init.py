@@ -324,6 +324,27 @@ class InitTests(unittest.TestCase):
         self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
         self.assertNotIn("compose --up", self.log.read_text())
 
+    def test_pnpm_installs_the_checkout_once_before_init_and_a_failure_keeps_the_folder(self):
+        # Every local worker's build.rs runs pnpm install; started together they race on node_modules.
+        (self.root / "pnpm-workspace.yaml").write_text("packages: ['*/ui']\n")
+        (self.root / "bin/pnpm").write_text(
+            '#!/usr/bin/env bash\nprintf \'pnpm|%s\\n\' "$*" >> "$III_LOG"\n[[ -z "${FAKE_PNPM_FAIL:-}" ]]\n'
+        )
+        (self.root / "bin/pnpm").chmod(0o755)
+        result = self.run_init("quickstart")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.log.read_text().splitlines()
+        self.assertEqual(calls[0], f"pnpm|--dir {self.root} install")
+        self.assertIn("|project init -t quickstart", calls[1])
+        self.assertEqual(calls[2], f"{self.launcher / 'quickstart'}|compose --up")
+        self.log.unlink()
+        self.env["FAKE_PNPM_FAIL"] = "1"
+        failed = self.run_init("quickstart")
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("template/quickstart was left unchanged.", failed.stderr)
+        self.assertTrue((self.launcher / "quickstart/worker-compose.yaml").is_file())
+        self.assertEqual(self.log.read_text().splitlines(), [f"pnpm|--dir {self.root} install"])
+
     def test_rejected_template_keeps_the_previous_folder_and_writes_nothing_outside(self):
         (self.launcher / "quickstart").mkdir()
         (self.launcher / "quickstart/keep.txt").write_text("previous run\n")
