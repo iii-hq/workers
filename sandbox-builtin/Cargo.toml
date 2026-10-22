@@ -71,6 +71,9 @@ schemars = "0.8"
 # sandbox::exec shlex-splits a shell-style `cmd` into argv.
 shlex = "1"
 
+[build-dependencies]
+sha2 = "0.10"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"

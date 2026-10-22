@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 
+include!("build/firmware_check.rs");
+
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(has_libkrunfw)");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/firmware_check.rs");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -20,17 +23,19 @@ fn main() {
             ("linux", "so")
         };
 
-        let fw_path = crate_dir
-            .join("firmware")
-            .join(format!("libkrunfw-{target_os}-{arch}.{ext}"));
+        let file_name = format!("libkrunfw-{target_os}-{arch}.{ext}");
+        let fw_path = crate_dir.join("firmware").join(&file_name);
+        let sums_path = crate_dir.join("firmware").join("SHA256SUMS");
+        println!("cargo:rerun-if-changed={}", fw_path.display());
+        println!("cargo:rerun-if-changed={}", sums_path.display());
 
-        if fw_path.is_file() {
-            std::fs::copy(&fw_path, &libkrunfw_dest)
-                .expect("failed to copy libkrunfw from firmware/");
-            println!("cargo:rerun-if-changed={}", fw_path.display());
-        } else {
-            std::fs::write(&libkrunfw_dest, [0u8]).expect("failed to write libkrunfw placeholder");
-        }
+        // Fail closed: a missing, LFS-pointer or tampered firmware must never ship as a 1-byte stub.
+        let bytes = std::fs::read(&fw_path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", fw_path.display()));
+        let sums = std::fs::read_to_string(&sums_path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", sums_path.display()));
+        check_firmware(&file_name, &bytes, &sums).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(&libkrunfw_dest, &bytes).expect("failed to write libkrunfw to OUT_DIR");
     } else {
         std::fs::write(&libkrunfw_dest, [0u8]).expect("failed to write libkrunfw placeholder");
     }
