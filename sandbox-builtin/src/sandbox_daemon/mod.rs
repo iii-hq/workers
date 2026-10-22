@@ -639,14 +639,17 @@ mod registration_tests {
     #[test]
     fn adapter_info_names_the_package_and_the_contract() {
         let i = adapter_info();
+        // The version tracks Cargo.toml, which sync-manifest-versions rewrites
+        // after each release; its major must stay the contract's (spec S2).
         assert_eq!(
             (
                 i.adapter.as_str(),
                 i.adapter_version.as_str(),
                 i.contract.major
             ),
-            ("sandbox-builtin", "1.0.0", CONTRACT_MAJOR)
+            ("sandbox-builtin", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
+        assert_eq!(env!("CARGO_PKG_VERSION_MAJOR"), CONTRACT_MAJOR.to_string());
     }
 }
 
