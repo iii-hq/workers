@@ -67,6 +67,7 @@ function controller(
     activity: [],
     running: null,
     run: async () => true,
+    signInNeeded: new Set(),
     skipStep: () => undefined,
     judgeInstalled: false,
     checkChromium: async () => null,
