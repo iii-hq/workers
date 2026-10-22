@@ -2086,6 +2086,32 @@ workers:
       - tsconfig.json
       - iii.worker.yaml
     publish: false
+  sandbox-builtin:
+    source:
+      path: sandbox-builtin
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: sandbox-builtin
+      # Keep Intel macOS excluded: Hypervisor.framework microVMs are Apple Silicon only.
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      windows_exception: microVMs need KVM or Hypervisor.framework
+      # The guest init and the libkrunfw blobs are embedded in the binary; the
+      # init is built for the target's arch before cargo runs.
+      features:
+      - embed-init
+      - embed-libkrunfw
+      prebuild:
+      - scripts/build-init.sh
+      # Ad-hoc signed at build time so the runtime self-sign never re-signs the cached binary.
+      macos_entitlements: entitlements.plist
+    publish: true
   sandbox-code-runner:
     source:
       path: sandbox-code-runner
