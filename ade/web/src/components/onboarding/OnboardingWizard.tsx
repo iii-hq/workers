@@ -9,7 +9,6 @@ import {
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -402,17 +401,6 @@ export function OnboardingWizardHost() {
     }
   }, [open, step, live])
 
-  const agentNames = useMemo(
-    () =>
-      new Map(
-        (agents ?? []).map((entry) => [
-          entry.id,
-          entry.name.trim() || entry.id,
-        ]),
-      ),
-    [agents],
-  )
-
   // One example per visit: a second click while the dialog animates out
   // would start (and send) a second chat.
   const starting = useRef(false)
@@ -580,6 +568,7 @@ export function OnboardingWizardHost() {
                     onboarding={onboarding}
                     judges={judges}
                     onNext={() => go('explore')}
+                    onBack={() => go('judge')}
                     kits={kits}
                     onRetryKit={(kit) => void retryOnboardingKit(kit)}
                     onReviewKit={reviewKit}
@@ -592,7 +581,6 @@ export function OnboardingWizardHost() {
                       ).length > 0
                     }
                     prompts={prompts}
-                    agentNames={agentNames}
                     onPrompt={(prompt) => void startPrompt(prompt)}
                     tour={tour}
                     onTour={() => void startTour()}
