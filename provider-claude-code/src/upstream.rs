@@ -1,7 +1,7 @@
 //! POST /v1/messages (stream:true) → SSE → mpsc<AssistantMessageEvent>.
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
-use crate::errors::classify;
+use crate::errors::{classify, SIGN_IN_REJECTED};
 use crate::sse::{
     build_partial, handle_sse_event, synthetic_error_event, synthetic_error_event_from_state,
     PartialState,
@@ -43,6 +43,19 @@ pub fn spawn_upstream(
         }
     });
     rx
+}
+
+/// An auth refusal says what to run; Anthropic's own reason, when it gave
+/// one, follows in parentheses.
+fn sign_in_refused(body: &str) -> String {
+    let reason = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.pointer("/error/message")?.as_str().map(str::to_owned))
+        .filter(|reason| !reason.is_empty());
+    match reason {
+        Some(reason) => format!("{SIGN_IN_REJECTED} ({reason})"),
+        None => SIGN_IN_REJECTED.to_string(),
+    }
 }
 
 /// Drain complete `\n\n`-delimited SSE blocks from `text`, decoding each
@@ -87,7 +100,9 @@ async fn run_upstream(
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         let kind = classify(Some(status.as_u16()), &text);
-        let msg = if text.is_empty() {
+        let msg = if kind == ErrorKind::AuthExpired {
+            sign_in_refused(&text)
+        } else if text.is_empty() {
             format!("claude-code http {status}")
         } else {
             text
@@ -313,9 +328,22 @@ mod tests {
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
                 assert_eq!(error.error_kind, Some(ErrorKind::AuthExpired));
+                assert_eq!(
+                    error.error_message.as_deref(),
+                    Some(
+                        "Claude Code rejected the current sign-in. Run `claude` and /login, \
+                         then try again. (invalid x-api-key)"
+                    )
+                );
             }
             other => panic!("want error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_refusal_without_a_reason_still_says_what_to_run() {
+        assert_eq!(sign_in_refused(""), SIGN_IN_REJECTED);
+        assert_eq!(sign_in_refused("{\"error\":{}}"), SIGN_IN_REJECTED);
     }
 
     #[tokio::test(flavor = "multi_thread")]
