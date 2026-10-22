@@ -12,6 +12,7 @@ import {
   listAgents,
   listKitUpdates,
 } from '@/lib/backend/directory-prompts'
+import { serialRefresh } from '@/lib/backend/serial-refresh'
 import { getIiiClient } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { normalizeErrorMessage } from '@/lib/providers'
@@ -374,21 +375,19 @@ function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
     void getIiiClient()
       .then((client) => {
         if (cancelled) return
-        const read = () =>
-          listKitUpdates(client)
-            .then((next) => {
-              if (!cancelled) setLoaded(next)
-            })
-            // A Directory without kits support has nothing to offer.
-            .catch(() => {})
+        // One read in flight, so an older list never lands after a newer one.
+        // A failed read (no kits support in this Directory) changes nothing.
+        const { refresh: read, reset } = serialRefresh(
+          () => listKitUpdates(client),
+          setLoaded,
+        )
+        offs.push(reset)
         // Per-mount id: the route chat and the dock can both show this screen.
         const fnId = `console::kit-updates::${instanceId}`
         try {
           offs.push(
             client.on<{ op?: unknown }>(fnId, (change) => {
-              if (change?.op === 'apply' || change?.op === 'updates') {
-                void read()
-              }
+              if (change?.op === 'apply' || change?.op === 'updates') read()
             }),
           )
           offs.push(
@@ -401,7 +400,7 @@ function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
         } catch {
           // No kit events from this Directory: the first read stands.
         }
-        void read()
+        read()
       })
       .catch(() => {})
     return () => {
