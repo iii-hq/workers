@@ -10,7 +10,7 @@
 //! instead of duplicate copies.
 
 pub mod cli;
-pub mod core;
+pub(crate) mod core;
 pub mod daemon_exit;
 pub mod sandbox_daemon;
 

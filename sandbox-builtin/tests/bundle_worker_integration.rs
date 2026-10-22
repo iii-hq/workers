@@ -14,9 +14,9 @@
 use std::path::Path;
 
 use sandbox_builtin::cli::bundle_download::{
-    MAX_BUNDLE_MANIFEST_BYTES, ResourceCaps, parse_bundle_resources, validate_bundle_manifest,
+    MAX_BUNDLE_MANIFEST_BYTES, ResourceCaps, WorkerOpError, parse_bundle_resources,
+    validate_bundle_manifest,
 };
-use sandbox_builtin::core::error::WorkerOpError;
 
 fn write_manifest(dir: &Path, body: &str) {
     std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();

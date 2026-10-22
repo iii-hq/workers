@@ -9,7 +9,7 @@
 //! before every boot. A bundle is publisher-controlled and its install dir
 //! sits on the host filesystem, so each check runs again at start.
 
-use crate::core::error::WorkerOpError;
+pub use crate::core::error::WorkerOpError;
 
 /// Maximum size of the `iii.worker.yaml` manifest (64 KiB).
 ///
