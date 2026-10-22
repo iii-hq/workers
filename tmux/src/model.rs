@@ -128,6 +128,28 @@ pub struct AgentStatus {
     /// tmux's default title (the host name) or nothing.
     #[serde(default)]
     pub title: Option<String>,
+    /// Sub-agents working right now, oldest first. Their work keeps `state`
+    /// at `working` after the agent's own turn ended. Claude Code and Codex
+    /// report them; other agents always list none.
+    #[serde(default)]
+    pub subagents: Vec<SubagentStatus>,
+}
+
+/// A sub-agent at work under an agent CLI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SubagentStatus {
+    /// Stable within the agent's session: Claude Code's agent id, Codex's thread id.
+    pub id: String,
+    /// What it was asked to do: Claude Code's task description, Codex's task
+    /// path under the main agent (`review/tests`).
+    pub description: String,
+    /// Claude Code's agent type (`general-purpose`, `Explore`, `fork`) or
+    /// Codex's agent role; null when the agent names none.
+    pub kind: Option<String>,
+    /// 1 for a sub-agent of the main agent, 2 for one of its sub-agents, ….
+    pub depth: u32,
+    /// When it started its current task.
+    pub since_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

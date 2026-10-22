@@ -95,6 +95,21 @@
     color: var(--color-warn-strong);
     font-size: 11px;
   }
+  /* Sub-agents an agent has at work: a count on its badge, a row each under
+     the window. */
+  .tmux-agent-subagents {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    color: var(--color-ink-faint);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .tmux-agent-subagents .tmux-meta-icon {
+    width: 12px;
+    height: 12px;
+  }
+  .tmux-subagent .iii-ui-tree-item__label { color: var(--color-muted-foreground); }
   .tmux-chip { font-size: 11px; }
   .tmux-bell { color: var(--color-warn); }
 

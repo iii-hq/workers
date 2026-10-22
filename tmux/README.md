@@ -52,7 +52,23 @@ A pane running an agent and a pane running `iii compose` look like this in
 ```
 
 Agent state comes from the pane's last lines: a permission or choice prompt is
-`waiting`, Claude Code's `esc to interrupt` line is `working`. The agent's
+`waiting`, Claude Code's `esc to interrupt` line is `working`. Claude Code and
+Codex also count as `working` while their sub-agents run after the main turn
+ended, which their screen does not show; the worker reads what they record on
+disk (Claude Code's `~/.claude/sessions/<pid>.json` and each sub-agent's meta
+file and transcript, the `rollout-*.jsonl` files Codex holds open) and lists
+those sub-agents in `subagents`:
+
+```json
+{ "id": "%9", "command": "codex",
+  "agent": { "id": "codex", "label": "Codex", "state": "working", "since_ms": 1792698537000,
+             "title": null,
+             "subagents": [ { "id": "01a16528-d646", "description": "review/tests", "kind": null,
+                              "depth": 1, "since_ms": 1792698537000 } ] } }
+```
+
+The Console page shows the count on the agent's badge and a row per sub-agent
+under its window. The agent's
 `title` is the session title it put on its pane (Claude Code's conversation
 topic) without the ✳ or spinner in front; it is null while the pane shows
 tmux's default title, the host name. Selecting a window

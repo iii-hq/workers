@@ -28,6 +28,24 @@ export interface AgentStatus {
   since_ms: number
   /** The agent's session title (the pane title without its status glyph); null when it set none. */
   title?: string | null
+  /**
+   * Sub-agents at work, oldest first; they keep `state` at `working` after
+   * the agent's own turn ended. Absent from workers that predate them.
+   */
+  subagents?: SubagentStatus[]
+}
+
+export interface SubagentStatus {
+  /** Stable within the agent's session: Claude Code's agent id, Codex's thread id. */
+  id: string
+  /** What it was asked to do. */
+  description: string
+  /** Claude Code's agent type (`general-purpose`, `Explore`) or Codex's role; null when none. */
+  kind: string | null
+  /** 1 under the main agent, 2 under one of its sub-agents, … */
+  depth: number
+  /** When it started its current task. */
+  since_ms: number
 }
 
 export interface ComposeRef {

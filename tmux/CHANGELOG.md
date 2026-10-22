@@ -23,6 +23,14 @@
   their running clock shows (`✻ Harmonizing… (16m 46s`, `Working (93s`), since a narrow
   pane cuts the `esc to interrupt` tail off the status line (for example when a phone is
   attached to the session). Stored configurations keep the patterns they were saved with.
+- **Sub-agents.** Claude Code and Codex stay `working` while sub-agents run after the
+  main turn ended (their screen shows no `esc to interrupt` then), and each agent lists
+  the sub-agents at work in `subagents` (`id`, `description`, `kind`, `depth`,
+  `since_ms`). Claude Code's state comes from its session file
+  (`~/.claude/sessions/<pid>.json`, or under `CLAUDE_CONFIG_DIR`) and its sub-agents'
+  meta files and transcripts; Codex's from the rollouts its process holds open. A
+  sub-agent leaves the list once it finishes or is stopped. The Console page shows the count on the agent's badge and a row per sub-agent under its
+  window. A prompt on screen still makes the agent `waiting`.
 - **Agent session titles.** An agent's `title` is the pane title it set (Claude Code's
   conversation topic) without the status glyph in front, or null when the pane still
   shows tmux's default title, the host name.
