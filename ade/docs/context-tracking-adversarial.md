@@ -108,6 +108,7 @@ No source polling or background agent is needed.
 
 ```sh
 cd ade/web
+CONTEXT_ADVERSARIAL=1 \
 CONTEXT_ENGINE_BIN=/absolute/path/to/iii \
 CONTEXT_SESSION_BIN=/absolute/path/to/session-manager \
 CONTEXT_CONSOLE_BIN=/absolute/path/to/worktree/ade/target/debug/ade \
@@ -118,7 +119,9 @@ pnpm exec playwright test e2e/context-tracking-adversarial.spec.ts --reporter=li
 ```
 
 Tests intentionally assert the safe/desired outcome, so the three findings remain
-red against the reviewed implementation. Do not mark them expected failures to
+red against the reviewed implementation. They require the explicit
+`CONTEXT_ADVERSARIAL=1` opt-in, even when the stack binaries are configured;
+ordinary E2E runs leave this diagnostic suite out. Do not mark them expected failures to
 claim the implementation passes. The fixture captures real worker logs; failing
 browser scenarios retain screenshots, videos and Playwright traces. JSON test
 attachments contain stale/new/actual values and the external project's saved

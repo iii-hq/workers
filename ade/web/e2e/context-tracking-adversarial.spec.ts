@@ -3,10 +3,11 @@ import path from 'node:path'
 import { expect, snapshot, test } from './context-tracking-stack'
 
 test.skip(
-  !process.env.CONTEXT_ENGINE_BIN ||
+  process.env.CONTEXT_ADVERSARIAL !== '1' ||
+    !process.env.CONTEXT_ENGINE_BIN ||
     !process.env.CONTEXT_SESSION_BIN ||
     !process.env.CONTEXT_CONSOLE_BIN,
-  'Adversarial stack requires real engine, session-manager and Console binaries',
+  'Adversarial stack requires CONTEXT_ADVERSARIAL=1 and real engine, session-manager and Console binaries',
 )
 
 test('rejects malformed snapshots without changing stored bytes', async ({

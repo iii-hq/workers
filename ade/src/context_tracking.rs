@@ -289,16 +289,34 @@ struct Generation {
 struct Tool {
     name: String,
 }
-fn guidance(base: &str, enabled: bool, items: &[Tracking]) -> Value {
+#[derive(Debug, Serialize, JsonSchema)]
+struct GuidanceResponse {
+    mutations: GuidanceMutations,
+}
+#[derive(Debug, Default, Serialize, JsonSchema)]
+struct GuidanceMutations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_prompt: Option<String>,
+}
+fn guidance(base: &str, enabled: bool, items: &[Tracking]) -> GuidanceResponse {
     if base.is_empty() || !enabled {
-        return json!({"mutations":{}});
+        return GuidanceResponse {
+            mutations: GuidanceMutations::default(),
+        };
     }
     // Bounded, structured data only. Never inject user prose as system instructions.
     let identities: Vec<_> = items
         .iter()
         .map(|i| json!({"id":i.id,"scope":i.scope,"updated_at":i.updated_at}))
         .collect();
-    json!({"mutations":{"system_prompt": format!("{base}\n\n{GUIDANCE}\nExisting tracking ids (use list for content): {}", serde_json::to_string(&identities).unwrap_or_default())}})
+    GuidanceResponse {
+        mutations: GuidanceMutations {
+            system_prompt: Some(format!(
+                "{base}\n\n{GUIDANCE}\nExisting tracking ids (use list for content): {}",
+                serde_json::to_string(&identities).unwrap_or_default()
+            )),
+        },
+    }
 }
 
 pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
@@ -487,10 +505,27 @@ mod tests {
         assert_eq!(list(&store, &a).await.unwrap().items.len(), 2);
     }
     #[test]
+    fn guidance_response_publishes_a_typed_schema() {
+        let schema = serde_json::to_value(schemars::schema_for!(GuidanceResponse)).unwrap();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["mutations"].is_object());
+        assert_eq!(
+            schema["definitions"]["GuidanceMutations"]["properties"]["system_prompt"]["type"],
+            json!(["string", "null"])
+        );
+    }
+    #[test]
     fn guidance_honors_tool_exposure_and_does_not_promote_snapshot_content() {
-        assert_eq!(guidance("base", false, &[]), json!({"mutations":{}}));
+        assert_eq!(
+            serde_json::to_value(guidance("base", false, &[])).unwrap(),
+            json!({"mutations":{}})
+        );
+        assert_eq!(
+            serde_json::to_value(guidance("", true, &[])).unwrap(),
+            json!({"mutations":{}})
+        );
         let value = guidance("base", true, &[]);
-        let prompt = value["mutations"]["system_prompt"].as_str().unwrap();
+        let prompt = value.mutations.system_prompt.unwrap();
         assert!(prompt.contains("console::context::save"));
         assert!(prompt.contains("No automatic monitoring"));
     }

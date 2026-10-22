@@ -9,6 +9,10 @@ import { type ISdk, registerWorker } from 'iii-browser-sdk'
 import type { ContextTrackingItem } from '../src/components/chat/ContextTracking'
 
 type Results = {
+  'engine::functions::info': {
+    request_schema: Record<string, unknown>
+    response_schema: Record<string, unknown>
+  }
   'console::status': unknown
   'session::list': unknown
   'session::create': { session_id: string }
