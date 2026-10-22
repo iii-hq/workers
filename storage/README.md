@@ -324,6 +324,16 @@ when a file happens to fit below that cap—prefer direct transfer endpoints:
   `storage::presignUrl` with `method: "PUT"`;
 - download: `storage::presignUrl` with `method: "GET"`.
 
+### Object keys
+
+Every call that takes a `key` (`putObject`, `getObject`, `headObject`,
+`deleteObject`, `presignUrl`, `presignPost`) refuses a key with a `.` or `..`
+segment between slashes (`../escape`, `a/./b`, `a/..`) and returns
+`INVALID_KEY`. Providers carry the key in a URL path, and URL parsers, proxies
+and servers resolve those segments (also written `%2e%2e`), so the request
+would target another path or bucket. Dots inside a name (`a.b`, `..a`, `...`)
+are fine. `listObjects` is unaffected: `prefix` is a query parameter.
+
 ### `storage::presignPost` — multipart upload
 
 Returns `{ url, fields, expires_at }`. Add every returned field to a
