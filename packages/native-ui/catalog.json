@@ -1,0 +1,514 @@
+{
+  "catalogVersion": 1,
+  "doc": "The canonical schema of the worker native UI (the iii app's catalogue and wire protocol). Tags, codes and enum indexes are append-only: never renumber, never reuse. The ide repo keeps a byte-identical copy at native/catalog/catalog.json, checked by a unit test. Design: ide/projects/worker-native-ui/design.md sections 5 and 6.",
+  "encoding": {"current": "bin-v1", "reserved": [], "text": "json-v0", "doc": "The schema: every message is one array of entries, each entry an array whose first element is its integer code. VM to host: the SDK calls __host_send(entries) with the array itself; on a device the VM encodes it in C as bin-v1 (design §5.8: a generic tagged JSON-value encoding with a per-message string table, header byte 0xB1). json-v0 is the text form of the same schema (UTF-8 JSON, no BOM, no trailing newline): the test harness, the conformance files and debugging use it. Host to VM: json-v0 text through __vm_receive(string)."},
+  "features": ["ops.json.v0", "list.splice.v1", "text.handshake.v1", "remote-screen.v1"],
+  "limits": {
+    "maxBundleBytes": 1048576,
+    "bundleWarnBytes": 131072,
+    "bundleFailBytes": 262144,
+    "maxImageBytes": 524288,
+    "maxListItems": 100000,
+    "maxNodeId": 2147483647,
+    "maxStorageKeyChars": 128,
+    "maxStorageValueBytes": 65536,
+    "maxStorageBytesPerWorker": 262144,
+    "maxPendingHostEntries": 2000,
+    "callTimeoutMsDefault": 30000,
+    "callTimeoutMsMax": 120000,
+    "heapBytesDefault": 67108864,
+    "loadBudgetMs": 2000,
+    "stepBudgetMs": 250,
+    "maxMessageBytes": 8388608
+  },
+  "valueTypes": {
+    "bool": "JSON true or false.",
+    "int": "JSON integer (32-bit signed).",
+    "float": "JSON number.",
+    "dp": "JSON number, density-independent pixels. For the common width and height props, -1 means fill the parent.",
+    "string": "JSON string.",
+    "icon": "JSON string: a Lucide icon name in kebab-case (globe, refresh-cw). An unknown name draws a neutral square and logs once.",
+    "strings": "JSON array of strings.",
+    "json": "Any JSON value.",
+    "padding": "JSON number (all sides) | [vertical, horizontal] | [top, end, bottom, start], in dp.",
+    "textWrite": "[text: string, eventCount: int]: a script write into an uncontrolled text field. The host applies it only when eventCount equals its own count of user edits (and never during IME composition); otherwise it drops it.",
+    "enum": "JSON integer: the index into the named list of enums. An out-of-range index reads as the prop's default."
+  },
+  "binding": {
+    "doc": "Inside a List template subtree (List slots 1 to 4), any prop value may be the object {\"$item\": \"field.path\"}: the host reads that dotted path of the item the template is drawn for. A missing field reads as the prop's default. Bindings are not allowed outside a template (the host treats them as the default and logs once).",
+    "key": "$item"
+  },
+  "enums": {
+    "crossAlign": ["start", "center", "end", "stretch"],
+    "mainArrange": ["start", "center", "end", "spaceBetween", "spaceAround"],
+    "boxAlign": ["topStart", "topCenter", "topEnd", "centerStart", "center", "centerEnd", "bottomStart", "bottomCenter", "bottomEnd"],
+    "axis": ["vertical", "horizontal"],
+    "textRole": ["body", "strong", "large", "small", "smallStrong", "micro", "heading", "title", "display", "code", "codeSmall", "id", "idSmall"],
+    "tone": ["default", "secondary", "muted", "faint", "dim", "success", "warning", "danger", "accent", "attention"],
+    "textAlign": ["start", "center", "end"],
+    "overflow": ["end", "middle", "clip"],
+    "badgeVariant": ["default", "ok", "warn", "alert", "accent"],
+    "dotTone": ["ink", "ok", "warn", "alert", "accent"],
+    "statusVariant": ["info", "success", "warn", "alert"],
+    "buttonKind": ["secondary", "primary", "outline", "ghost", "destructive", "soft"],
+    "keyboardType": ["text", "url", "search", "email", "number", "password"],
+    "imeAction": ["default", "go", "search", "send", "done", "next"],
+    "chipTone": ["neutral", "accent", "success", "warning", "danger"],
+    "imageFit": ["contain", "cover"],
+    "remoteMode": ["interact", "view"],
+    "toastKind": ["info", "success", "error"]
+  },
+  "events": [
+    { "tag": 1, "name": "press", "args": [], "doc": "A tap (or click, or Enter on a focused control)." },
+    { "tag": 2, "name": "longPress", "args": [], "argsByType": {"RemoteScreen": ["x", "y"]}, "doc": "A long press, right-click or control-click. RemoteScreen sends [x, y] in page coordinates." },
+    { "tag": 3, "name": "change", "args": ["value"], "doc": "Switch: [checked]. TextField: its edits arrive as text entries (host-to-VM code 4), not as events; subscribing to change turns them on." },
+    { "tag": 4, "name": "submit", "args": ["text"], "doc": "TextField: the IME action or Enter, with the text at that moment." },
+    { "tag": 5, "name": "select", "args": ["index"], "doc": "Segmented: the option chosen." },
+    { "tag": 6, "name": "focus", "args": ["focused"], "doc": "TextField gained (true) or lost (false) the focus." },
+    { "tag": 7, "name": "dismiss", "args": [], "doc": "Sheet closed by the person; ListDetail detail closed on compact (Back, the chevron, the side swipe)." },
+    { "tag": 8, "name": "refresh", "args": [], "doc": "Pull to refresh (Scroll, List)." },
+    { "tag": 9, "name": "endReached", "args": [], "doc": "List: the last 5 items came into view (fires once per item count)." },
+    { "tag": 10, "name": "frame", "args": ["width", "height"], "doc": "RemoteScreen: the page size of the frames changed (not sent per frame)." },
+    { "tag": 11, "name": "error", "args": ["message"], "doc": "RemoteScreen: the live view could not start, or stopped with an error." },
+    { "tag": 12, "name": "keyboard", "args": ["open"], "doc": "RemoteScreen: the keyboard bar opened or closed by the person." },
+    { "tag": 13, "name": "ready", "args": [], "doc": "RemoteScreen: the first frame of the current session is on screen." }
+  ],
+  "commonProps": [
+    { "tag": 1, "name": "visible", "type": "bool", "default": true, "doc": "False: the node takes no space and is not drawn." },
+    { "tag": 2, "name": "events", "type": "int", "default": 0, "doc": "Bitmask of subscribed events, bit (1 << event tag). The host only sends subscribed events and only enables the gestures behind them (no long-press haptic without longPress)." },
+    { "tag": 3, "name": "testTag", "type": "string", "default": null, "doc": "Compose testTag / SwiftUI accessibilityIdentifier." },
+    { "tag": 4, "name": "a11yLabel", "type": "string", "default": null, "doc": "Overrides what a screen reader says for the node." },
+    { "tag": 5, "name": "weight", "type": "float", "default": 0, "doc": "In a Row or Column: share of the remaining space; 0 = none." },
+    { "tag": 6, "name": "width", "type": "dp", "default": null, "doc": "null = the node's own size; -1 = fill the parent." },
+    { "tag": 7, "name": "height", "type": "dp", "default": null, "doc": "null = the node's own size; -1 = fill the parent." },
+    { "tag": 8, "name": "padding", "type": "padding", "default": 0 },
+    { "tag": 9, "name": "alignSelf", "type": "enum", "enum": "crossAlign", "default": null, "doc": "Overrides the parent's cross-axis alignment for this child; null = the parent's." }
+  ],
+  "reservedCommonPropTags": [10, 11, 12, 13, 14, 15],
+  "firstTypePropTag": 16,
+  "types": [
+    {
+      "tag": 1, "name": "Column", "group": "layout", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "gap", "type": "dp", "default": 0 },
+        { "tag": 17, "name": "align", "type": "enum", "enum": "crossAlign", "default": 3 },
+        { "tag": 18, "name": "justify", "type": "enum", "enum": "mainArrange", "default": 0 }
+      ],
+      "events": [],
+      "slots": [{ "slot": 0, "name": "children", "many": true }]
+    },
+    {
+      "tag": 2, "name": "Row", "group": "layout", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "gap", "type": "dp", "default": 0 },
+        { "tag": 17, "name": "align", "type": "enum", "enum": "crossAlign", "default": 1 },
+        { "tag": 18, "name": "justify", "type": "enum", "enum": "mainArrange", "default": 0 },
+        { "tag": 19, "name": "wrap", "type": "bool", "default": false }
+      ],
+      "events": [],
+      "slots": [{ "slot": 0, "name": "children", "many": true }]
+    },
+    {
+      "tag": 3, "name": "Box", "group": "layout", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "contentAlign", "type": "enum", "enum": "boxAlign", "default": 0 }
+      ],
+      "events": [],
+      "slots": [{ "slot": 0, "name": "children", "many": true }]
+    },
+    {
+      "tag": 4, "name": "Scroll", "group": "layout", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "gap", "type": "dp", "default": 0 },
+        { "tag": 17, "name": "axis", "type": "enum", "enum": "axis", "default": 0 },
+        { "tag": 18, "name": "refreshing", "type": "bool", "default": false }
+      ],
+      "events": ["refresh"],
+      "slots": [{ "slot": 0, "name": "children", "many": true }]
+    },
+    {
+      "tag": 5, "name": "Spacer", "group": "layout", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "size", "type": "dp", "default": 0 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 6, "name": "Divider", "group": "layout", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "vertical", "type": "bool", "default": false },
+        { "tag": 17, "name": "inset", "type": "dp", "default": 0 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 10, "name": "Text", "group": "content", "consoleUi": "Eyebrow (role micro)",
+      "props": [
+        { "tag": 16, "name": "text", "type": "string", "default": "" },
+        { "tag": 17, "name": "role", "type": "enum", "enum": "textRole", "default": 0 },
+        { "tag": 18, "name": "tone", "type": "enum", "enum": "tone", "default": 0 },
+        { "tag": 19, "name": "maxLines", "type": "int", "default": 0, "doc": "0 = unlimited." },
+        { "tag": 20, "name": "align", "type": "enum", "enum": "textAlign", "default": 0 },
+        { "tag": 21, "name": "selectable", "type": "bool", "default": false },
+        { "tag": 22, "name": "overflow", "type": "enum", "enum": "overflow", "default": 0 }
+      ],
+      "events": ["press", "longPress"],
+      "slots": []
+    },
+    {
+      "tag": 11, "name": "Icon", "group": "content", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "name", "type": "icon", "default": "" },
+        { "tag": 17, "name": "size", "type": "dp", "default": 16 },
+        { "tag": 18, "name": "tone", "type": "enum", "enum": "tone", "default": 2 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 12, "name": "Badge", "group": "content", "consoleUi": "Badge",
+      "props": [
+        { "tag": 16, "name": "text", "type": "string", "default": "" },
+        { "tag": 17, "name": "variant", "type": "enum", "enum": "badgeVariant", "default": 0 },
+        { "tag": 18, "name": "icon", "type": "icon", "default": null }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 13, "name": "StatusDot", "group": "content", "consoleUi": "StatusDot",
+      "props": [
+        { "tag": 16, "name": "tone", "type": "enum", "enum": "dotTone", "default": 0 },
+        { "tag": 17, "name": "pulse", "type": "bool", "default": false },
+        { "tag": 18, "name": "size", "type": "dp", "default": 8 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 14, "name": "Spinner", "group": "content", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "size", "type": "dp", "default": 16 },
+        { "tag": 17, "name": "tone", "type": "enum", "enum": "tone", "default": 0 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 15, "name": "Progress", "group": "content", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "value", "type": "float", "default": null, "doc": "0..1; null = indeterminate." },
+        { "tag": 17, "name": "tone", "type": "enum", "enum": "tone", "default": 0 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 16, "name": "EmptyState", "group": "content", "consoleUi": "EmptyState",
+      "props": [
+        { "tag": 16, "name": "icon", "type": "icon", "default": "info" },
+        { "tag": 17, "name": "title", "type": "string", "default": "" },
+        { "tag": 18, "name": "description", "type": "string", "default": null }
+      ],
+      "events": [],
+      "slots": [{ "slot": 0, "name": "actions", "many": true }]
+    },
+    {
+      "tag": 17, "name": "Image", "group": "content", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "src", "type": "string", "default": "", "doc": "A data URI (data:image/png|jpeg|webp;base64,...), at most limits.maxImageBytes decoded. Nothing else: no URLs." },
+        { "tag": 17, "name": "fit", "type": "enum", "enum": "imageFit", "default": 0 },
+        { "tag": 18, "name": "radius", "type": "dp", "default": 0 }
+      ],
+      "events": [],
+      "slots": []
+    },
+    {
+      "tag": 18, "name": "StatusPanel", "group": "content", "consoleUi": "StatusPanel",
+      "props": [
+        { "tag": 16, "name": "variant", "type": "enum", "enum": "statusVariant", "default": 0 },
+        { "tag": 17, "name": "headline", "type": "string", "default": "" },
+        { "tag": 18, "name": "detail", "type": "string", "default": null },
+        { "tag": 19, "name": "icon", "type": "icon", "default": null }
+      ],
+      "events": [],
+      "slots": [{ "slot": 0, "name": "action", "many": true }]
+    },
+    {
+      "tag": 20, "name": "Button", "group": "input", "consoleUi": "Button",
+      "props": [
+        { "tag": 16, "name": "text", "type": "string", "default": null },
+        { "tag": 17, "name": "kind", "type": "enum", "enum": "buttonKind", "default": 0 },
+        { "tag": 18, "name": "icon", "type": "icon", "default": null },
+        { "tag": 19, "name": "trailingIcon", "type": "icon", "default": null },
+        { "tag": 20, "name": "small", "type": "bool", "default": false },
+        { "tag": 21, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 22, "name": "loading", "type": "bool", "default": false }
+      ],
+      "events": ["press", "longPress"],
+      "slots": []
+    },
+    {
+      "tag": 21, "name": "IconButton", "group": "input", "consoleUi": "IconButton",
+      "props": [
+        { "tag": 16, "name": "icon", "type": "icon", "default": "" },
+        { "tag": 17, "name": "label", "type": "string", "default": "", "doc": "Required: what the button does, for screen readers and tests." },
+        { "tag": 18, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 19, "name": "active", "type": "bool", "default": false },
+        { "tag": 20, "name": "tone", "type": "enum", "enum": "tone", "default": 2 },
+        { "tag": 21, "name": "size", "type": "dp", "default": 36 }
+      ],
+      "events": ["press", "longPress"],
+      "slots": []
+    },
+    {
+      "tag": 22, "name": "TextField", "group": "input", "consoleUi": "Input / SearchField",
+      "props": [
+        { "tag": 16, "name": "value", "type": "textWrite", "default": ["", 0] },
+        { "tag": 17, "name": "placeholder", "type": "string", "default": null },
+        { "tag": 18, "name": "label", "type": "string", "default": null },
+        { "tag": 19, "name": "hint", "type": "string", "default": null },
+        { "tag": 20, "name": "error", "type": "string", "default": null },
+        { "tag": 21, "name": "keyboard", "type": "enum", "enum": "keyboardType", "default": 0 },
+        { "tag": 22, "name": "imeAction", "type": "enum", "enum": "imeAction", "default": 0 },
+        { "tag": 23, "name": "mono", "type": "bool", "default": false },
+        { "tag": 24, "name": "lines", "type": "int", "default": 1, "doc": "1 = single line; more = multi-line with that many lines at least." },
+        { "tag": 25, "name": "leadingIcon", "type": "icon", "default": null },
+        { "tag": 26, "name": "clearable", "type": "bool", "default": false },
+        { "tag": 27, "name": "autofocus", "type": "bool", "default": false },
+        { "tag": 28, "name": "selectAllOnFocus", "type": "bool", "default": false },
+        { "tag": 29, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 30, "name": "autocorrect", "type": "bool", "default": true, "doc": "Forced off for url, email and password keyboards." }
+      ],
+      "events": ["change", "submit", "focus"],
+      "slots": []
+    },
+    {
+      "tag": 23, "name": "Switch", "group": "input", "consoleUi": "Switch",
+      "props": [
+        { "tag": 16, "name": "checked", "type": "bool", "default": false },
+        { "tag": 17, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 18, "name": "label", "type": "string", "default": null }
+      ],
+      "events": ["change"],
+      "slots": []
+    },
+    {
+      "tag": 24, "name": "Segmented", "group": "input", "consoleUi": "SegmentedControl",
+      "props": [
+        { "tag": 16, "name": "options", "type": "strings", "default": [] },
+        { "tag": 17, "name": "selected", "type": "int", "default": 0 },
+        { "tag": 18, "name": "icons", "type": "strings", "default": null },
+        { "tag": 19, "name": "compact", "type": "bool", "default": false }
+      ],
+      "events": ["select"],
+      "slots": []
+    },
+    {
+      "tag": 25, "name": "Chip", "group": "input", "consoleUi": "Chip",
+      "props": [
+        { "tag": 16, "name": "text", "type": "string", "default": "" },
+        { "tag": 17, "name": "icon", "type": "icon", "default": null },
+        { "tag": 18, "name": "selected", "type": "bool", "default": false },
+        { "tag": 19, "name": "tone", "type": "enum", "enum": "chipTone", "default": 0 },
+        { "tag": 20, "name": "enabled", "type": "bool", "default": true }
+      ],
+      "events": ["press", "longPress"],
+      "slots": []
+    },
+    {
+      "tag": 30, "name": "List", "group": "collection", "consoleUi": "List",
+      "props": [
+        { "tag": 16, "name": "keyField", "type": "string", "default": "key" },
+        { "tag": 17, "name": "kindField", "type": "string", "default": null, "doc": "Item field holding 0..3: which template slot (1 + kind) draws the item; null = always template 0." },
+        { "tag": 18, "name": "gap", "type": "dp", "default": 0 },
+        { "tag": 19, "name": "dividers", "type": "bool", "default": false },
+        { "tag": 20, "name": "refreshing", "type": "bool", "default": false },
+        { "tag": 21, "name": "contentPadding", "type": "padding", "default": 0 }
+      ],
+      "events": ["refresh", "endReached"],
+      "slots": [
+        { "slot": 0, "name": "header", "many": true },
+        { "slot": 1, "name": "template0", "many": false, "template": true },
+        { "slot": 2, "name": "template1", "many": false, "template": true },
+        { "slot": 3, "name": "template2", "many": false, "template": true },
+        { "slot": 4, "name": "template3", "many": false, "template": true },
+        { "slot": 5, "name": "empty", "many": true },
+        { "slot": 6, "name": "footer", "many": true }
+      ],
+      "data": "listSplice"
+    },
+    {
+      "tag": 31, "name": "ListRow", "group": "collection", "consoleUi": "ListItem",
+      "props": [
+        { "tag": 16, "name": "title", "type": "string", "default": "" },
+        { "tag": 17, "name": "subtitle", "type": "string", "default": null },
+        { "tag": 18, "name": "icon", "type": "icon", "default": null },
+        { "tag": 19, "name": "selected", "type": "bool", "default": false },
+        { "tag": 20, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 21, "name": "subtitleMono", "type": "bool", "default": false },
+        { "tag": 22, "name": "chevron", "type": "bool", "default": false },
+        { "tag": 23, "name": "tone", "type": "enum", "enum": "tone", "default": 0 }
+      ],
+      "events": ["press", "longPress"],
+      "slots": [
+        { "slot": 1, "name": "leading", "many": true },
+        { "slot": 2, "name": "trailing", "many": true }
+      ]
+    },
+    {
+      "tag": 32, "name": "Card", "group": "collection", "consoleUi": "Card",
+      "props": [
+        { "tag": 16, "name": "selected", "type": "bool", "default": false },
+        { "tag": 17, "name": "gap", "type": "dp", "default": 8 }
+      ],
+      "events": ["press", "longPress"],
+      "slots": [{ "slot": 0, "name": "children", "many": true }]
+    },
+    {
+      "tag": 40, "name": "Page", "group": "chrome", "consoleUi": "PageShell / PageHeader",
+      "props": [
+        { "tag": 16, "name": "title", "type": "string", "default": "" },
+        { "tag": 17, "name": "subtitle", "type": "string", "default": null },
+        { "tag": 18, "name": "subtitleMono", "type": "bool", "default": false },
+        { "tag": 19, "name": "topBar", "type": "bool", "default": true }
+      ],
+      "events": [],
+      "slots": [
+        { "slot": 0, "name": "body", "many": true },
+        { "slot": 1, "name": "actions", "many": true },
+        { "slot": 2, "name": "top", "many": true },
+        { "slot": 3, "name": "bottom", "many": true },
+        { "slot": 4, "name": "leading", "many": true }
+      ]
+    },
+    {
+      "tag": 41, "name": "ListDetail", "group": "chrome", "consoleUi": "PageBody / PageSidebar / PageMain",
+      "props": [
+        { "tag": 16, "name": "listTitle", "type": "string", "default": "" },
+        { "tag": 17, "name": "showDetail", "type": "bool", "default": false },
+        { "tag": 18, "name": "detailFullHeight", "type": "bool", "default": false }
+      ],
+      "events": ["dismiss"],
+      "slots": [
+        { "slot": 1, "name": "list", "many": true },
+        { "slot": 2, "name": "detail", "many": false },
+        { "slot": 3, "name": "emptyDetail", "many": true }
+      ]
+    },
+    {
+      "tag": 50, "name": "Sheet", "group": "overlay", "consoleUi": "BottomSheet",
+      "props": [
+        { "tag": 16, "name": "open", "type": "bool", "default": false },
+        { "tag": 17, "name": "title", "type": "string", "default": null }
+      ],
+      "events": ["dismiss"],
+      "slots": [{ "slot": 0, "name": "content", "many": true }]
+    },
+    {
+      "tag": 64, "name": "RemoteScreen", "group": "highLevel", "consoleUi": null,
+      "props": [
+        { "tag": 16, "name": "session", "type": "string", "default": "" },
+        { "tag": 17, "name": "wire", "type": "json", "default": null },
+        { "tag": 18, "name": "enabled", "type": "bool", "default": true },
+        { "tag": 19, "name": "mode", "type": "enum", "enum": "remoteMode", "default": 0 },
+        { "tag": 20, "name": "mobile", "type": "bool", "default": true },
+        { "tag": 21, "name": "keyboard", "type": "bool", "default": false },
+        { "tag": 22, "name": "placeholder", "type": "string", "default": null },
+        { "tag": 23, "name": "maxScale", "type": "float", "default": 3 }
+      ],
+      "events": ["longPress", "frame", "error", "keyboard", "ready"],
+      "slots": []
+    }
+  ],
+  "remoteScreen": {
+    "doc": "The wire prop: function ids and argument templates. Every fn and trigger must be in the app's own namespace. In args, a string value equal to a placeholder is replaced by the typed value; any other value is copied as is; a placeholder whose value is absent drops its key.",
+    "wireKeys": ["frames", "seed", "start", "stop", "resize", "input"],
+    "placeholders": {
+      "$session": "string: the session prop",
+      "$viewer": "string: a viewer id, new on every activation: <connection browserId>-<node id>-<n> (the browserId starts with android-)",
+      "$scale": "float: min(screen density, maxScale, 3), 2 decimals",
+      "$w": "int: the view width in dp (page CSS px)",
+      "$h": "int: the view height in dp",
+      "$dpr": "float: the screen density",
+      "$mobile": "bool: the mobile prop",
+      "$seq": "int: the last frame_seq painted (absent before the first)",
+      "$x": "float: page x (CSS px) of the gesture",
+      "$y": "float: page y (CSS px) of the gesture",
+      "$count": "int: click count (1, or 2 for the second tap of a double tap)",
+      "$dx": "float: horizontal scroll in CSS px (positive scrolls right)",
+      "$dy": "float: vertical scroll in CSS px (positive scrolls down)",
+      "$text": "string: committed text to type",
+      "$key": "string: Enter, Tab, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown"
+    },
+    "framePayload": {
+      "frame": "string: base64 JPEG, PNG or WebP (sniffed by magic bytes)",
+      "width": "int: page width the frame maps to (the input coordinate space)",
+      "height": "int: page height",
+      "frame_seq": "int: increases per frame of a session; a frame at or below the last painted is dropped",
+      "session_id": "string, optional: when present it must equal $session"
+    }
+  },
+  "protocol": {
+    "vmToHost": [
+      { "code": 1, "name": "create", "fields": [["id", "int"], ["type", "int"]] },
+      { "code": 2, "name": "set", "fields": [["id", "int"], ["prop", "int"], ["value", "json"]], "doc": "value null resets the prop to its default." },
+      { "code": 3, "name": "insert", "fields": [["parent", "int"], ["slot", "int"], ["index", "int"], ["child", "int"]], "doc": "child must be detached; index 0..count of that slot." },
+      { "code": 4, "name": "move", "fields": [["parent", "int"], ["slot", "int"], ["from", "int"], ["to", "int"]], "doc": "Moves one child within a slot; to is the index after removal." },
+      { "code": 5, "name": "remove", "fields": [["parent", "int"], ["slot", "int"], ["index", "int"]], "doc": "Detaches the child at index; it stays alive until destroy or a new insert." },
+      { "code": 6, "name": "destroy", "fields": [["id", "int"]], "doc": "Frees the node and every node still attached under it." },
+      { "code": 7, "name": "root", "fields": [["page", "int"], ["id", "int"]], "doc": "The root node of a mounted page instance; id 0 clears it." },
+      { "code": 8, "name": "listSplice", "fields": [["list", "int"], ["start", "int"], ["deleteCount", "int"], ["items", "json"]], "doc": "items: an array of JSON objects, each with its key field." },
+      { "code": 20, "name": "request", "fields": [["reqId", "int"], ["method", "int"], ["args", "json"]] },
+      { "code": 23, "name": "ready", "fields": [["info", "json"]], "doc": "Once, when the bundle called defineApp: {sdk, catalog, features, pages: [{name, modal, fullScreen}]}." }
+    ],
+    "hostToVm": [
+      { "code": 1, "name": "init", "fields": [["info", "json"]], "doc": "{catalog, features, host, engine, app: {key, ns}, env: Env}." },
+      { "code": 2, "name": "event", "fields": [["node", "int"], ["event", "int"], ["args", "json"]] },
+      { "code": 3, "name": "itemEvent", "fields": [["list", "int"], ["key", "json"], ["node", "int"], ["event", "int"], ["args", "json"]], "doc": "An event of a template node, for the item with that key." },
+      { "code": 4, "name": "text", "fields": [["node", "int"], ["count", "int"], ["text", "string"]], "doc": "TextField edit; count = the host's edits so far for that node. Only the last per node is kept within one message." },
+      { "code": 5, "name": "env", "fields": [["changes", "json"]], "doc": "Only the Env keys that changed." },
+      { "code": 6, "name": "mount", "fields": [["page", "int"], ["name", "string"], ["params", "json"]], "doc": "page: a host-allocated page instance id, stable across VM restarts." },
+      { "code": 7, "name": "unmount", "fields": [["page", "int"]] },
+      { "code": 8, "name": "response", "fields": [["reqId", "int"], ["ok", "int"], ["value", "json"]], "doc": "ok 1: value is the result; ok 0: value is {code, message}." },
+      { "code": 9, "name": "trigger", "fields": [["sub", "int"], ["payload", "json"]] }
+    ],
+    "requests": [
+      { "method": 1, "name": "call", "args": { "fn": "string", "payload": "json?", "timeoutMs": "int?" }, "result": "json (the function's result)" },
+      { "method": 2, "name": "on", "args": { "sub": "int", "trigger": "string", "config": "json" }, "result": "null once bound" },
+      { "method": 3, "name": "off", "args": { "sub": "int" }, "result": "null" },
+      { "method": 10, "name": "navPush", "args": { "page": "string", "params": "json?" }, "result": "{result: json|null} when the pushed card leaves" },
+      { "method": 11, "name": "navPop", "args": { "page": "int", "result": "json?" }, "result": "null" },
+      { "method": 12, "name": "navReplace", "args": { "page": "int", "name": "string", "params": "json?" }, "result": "null" },
+      { "method": 13, "name": "navPopToRoot", "args": {}, "result": "null" },
+      { "method": 20, "name": "toast", "args": { "text": "string", "kind": "enum toastKind?" }, "result": "null" },
+      { "method": 21, "name": "actionMenu", "args": { "anchor": "int?", "title": "string?", "subtitle": "string?", "actions": "[{label, icon?, destructive?, hint?, checked?}]" }, "result": "{index: int} (-1 when dismissed)" },
+      { "method": 22, "name": "confirm", "args": { "title": "string", "message": "string?", "confirm": "string", "destructive": "bool?" }, "result": "{ok: bool}" },
+      { "method": 23, "name": "prompt", "args": { "title": "string", "message": "string?", "initial": "string?", "placeholder": "string?", "confirm": "string", "keyboard": "enum keyboardType?", "mono": "bool?" }, "result": "{text: string|null}" },
+      { "method": 24, "name": "focus", "args": { "node": "int", "focused": "bool" }, "result": "null" },
+      { "method": 30, "name": "clipboardWrite", "args": { "text": "string" }, "result": "null" },
+      { "method": 31, "name": "openUrl", "args": { "url": "string" }, "result": "{opened: bool}" },
+      { "method": 32, "name": "share", "args": { "text": "string?", "title": "string?", "data": "string? (base64)", "mime": "string?", "filename": "string?" }, "result": "null" },
+      { "method": 33, "name": "saveFile", "args": { "data": "string (base64)", "mime": "string", "filename": "string" }, "result": "{path: string}" },
+      { "method": 40, "name": "storageGet", "args": { "key": "string" }, "result": "{value: json|null}" },
+      { "method": 41, "name": "storageSet", "args": { "key": "string", "value": "json" }, "result": "null" },
+      { "method": 42, "name": "storageRemove", "args": { "key": "string" }, "result": "null" },
+      { "method": 43, "name": "storageKeys", "args": {}, "result": "{keys: string[]}" },
+      { "method": 50, "name": "reportError", "args": { "message": "string", "stack": "string?", "fatal": "bool?" }, "result": "null" }
+    ],
+    "errorCodes": ["forbidden", "invalid", "unsupported", "quota", "not_connected", "connection_lost", "timeout", "function_not_found", "cancelled"],
+    "errorDoc": "A failed request answers [8, reqId, 0, {code, message}]. Engine errors keep the engine's own code; the codes above are the host's.",
+    "env": {
+      "windowClass": ["compact", "wide"],
+      "posture": ["flat", "tabletop", "book"],
+      "platform": ["android", "ios", "ipados", "macos"],
+      "visible": "bool",
+      "theme": ["dark", "light"],
+      "locale": "string (BCP 47)",
+      "online": "bool"
+    },
+    "rootPage": "root"
+  }
+}
