@@ -276,7 +276,12 @@ pub fn register_all(
             WORKER_DESTROY,
             "Remove the state of `state_key`'s worker VM. Needs the project token; \
              S502 while that VM is preparing or running.",
-            |vms, req| async move { vms.destroy(req) },
+            // Off the runtime: removing a legacy rootfs clone takes seconds.
+            |vms, req| async move {
+                tokio::task::spawn_blocking(move || vms.destroy(req))
+                    .await
+                    .map_err(|e| SandboxError::FsIo(e.to_string()))?
+            },
         ),
     ]);
     refs.push(

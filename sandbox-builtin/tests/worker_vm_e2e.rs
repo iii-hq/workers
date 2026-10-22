@@ -93,7 +93,8 @@ async fn cycle() {
     assert!(matches!(status(&first.vm_id, 1).state, State::Running));
     let console = t.join("workers").join(&first.vm_id).join("console.log");
     wait_for(&console, "worker-vm-ready", 120).await;
-    std::fs::write(src.join("synced.txt"), "sync-ok").unwrap();
+    // The newline ends the line: the console pump writes a record per line.
+    std::fs::write(src.join("synced.txt"), "sync-ok\n").unwrap();
     wait_for(&console, "sync-ok", 30).await;
     let stopped = stop(&first.vm_id, 1).await.unwrap();
     assert!(matches!(stopped.state, State::Stopped), "{stopped:?}");

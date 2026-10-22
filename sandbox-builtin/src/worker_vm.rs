@@ -61,6 +61,8 @@ enum Slot {
     /// `start` is building the VM that will boot as this instance.
     Preparing(u64),
     Booted(Arc<Vm>),
+    /// `destroy` is removing the state of what was this instance.
+    Destroying(u64),
 }
 
 struct Vm {
@@ -242,7 +244,7 @@ impl WorkerVms {
         self.authorize(&req.auth)?;
         let vm = match self.lookup(&req.vm_id, req.instance)? {
             // No process yet: Compose retries once the boot is stoppable.
-            Slot::Preparing(instance) => {
+            Slot::Preparing(instance) | Slot::Destroying(instance) => {
                 return Err(SandboxError::StateBusy {
                     vm_id: req.vm_id,
                     instance,
@@ -268,38 +270,52 @@ impl WorkerVms {
         Ok(Slot::Booted(vm).status(&req.vm_id))
     }
 
-    /// Remove `state_key`'s VM state. S502 while it is preparing or running.
+    /// Remove `state_key`'s VM state. S502 while it is preparing, running or
+    /// being destroyed. It blocks for the removal: call it off the async runtime.
     pub fn destroy(
         &self,
         req: WorkerDestroyRequest,
     ) -> Result<WorkerDestroyResponse, SandboxError> {
         self.authorize(&req.auth)?;
         let id = vm_id(&req.state_key);
-        // Held through the removal, so a `start` cannot boot into a half-removed dir.
-        let mut slots = self.slots();
-        refuse_busy(&id, slots.get(&id))?;
+        // The marker, not the lock, keeps a `start` out of a half-removed dir:
+        // a legacy rootfs clone takes seconds to remove.
+        let prev = {
+            let mut slots = self.slots();
+            refuse_busy(&id, slots.get(&id))?;
+            let instance = slots.get(&id).map_or(0, Slot::instance);
+            slots.insert(id.clone(), Slot::Destroying(instance))
+        };
         let dir = self.base.join(&id);
-        let destroyed = match std::fs::remove_dir_all(&dir) {
+        let removed = std::fs::remove_dir_all(&dir);
+        let mut slots = self.slots();
+        slots.remove(&id);
+        let destroyed = match removed {
             Ok(()) => true,
             Err(e) if e.kind() == io::ErrorKind::NotFound => false,
             Err(e) => {
+                // Its state is still there, so keep reporting it.
+                if let Some(prev) = prev {
+                    slots.insert(id, prev);
+                }
                 return Err(SandboxError::FsIo(format!(
                     "cannot remove {}: {e}",
                     dir.display()
                 )));
             }
         };
-        slots.remove(&id);
         Ok(WorkerDestroyResponse { destroyed })
     }
 
     /// `vm_id`'s entry: S504 when there is none, S503 when it is on another instance.
     fn lookup(&self, vm_id: &str, instance: u64) -> Result<Slot, SandboxError> {
-        let slot = self
-            .slots()
-            .get(vm_id)
-            .cloned()
-            .ok_or_else(|| SandboxError::VmNotFound(vm_id.to_string()))?;
+        let slot = match self.slots().get(vm_id) {
+            // Being destroyed reads as already destroyed.
+            None | Some(Slot::Destroying(_)) => {
+                return Err(SandboxError::VmNotFound(vm_id.to_string()));
+            }
+            Some(slot) => slot.clone(),
+        };
         if slot.instance() != instance {
             return Err(SandboxError::InstanceMismatch {
                 vm_id: vm_id.to_string(),
@@ -396,22 +412,22 @@ impl Drop for Unreserve<'_> {
 impl Slot {
     fn instance(&self) -> u64 {
         match self {
-            Slot::Preparing(instance) => *instance,
+            Slot::Preparing(instance) | Slot::Destroying(instance) => *instance,
             Slot::Booted(vm) => vm.instance,
         }
     }
 
     fn busy(&self) -> bool {
         match self {
-            Slot::Preparing(_) => true,
+            Slot::Preparing(_) | Slot::Destroying(_) => true,
             Slot::Booted(vm) => vm.ended.borrow().is_none(),
         }
     }
 
     fn status(&self, vm_id: &str) -> WorkerStatus {
         let (state, ended, started_at_ms) = match self {
-            // Nothing has started yet.
-            Slot::Preparing(_) => (State::Preparing, None, 0),
+            // Nothing has started yet. `lookup` never hands out `Destroying`.
+            Slot::Preparing(_) | Slot::Destroying(_) => (State::Preparing, None, 0),
             Slot::Booted(vm) => {
                 let ended = *vm.ended.borrow();
                 let state = match ended {
@@ -731,6 +747,38 @@ mod tests {
         assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
 
         vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_vm_being_destroyed_is_busy_to_start_and_gone_to_status() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let id = vm_id("k");
+        vms.slots().insert(id.clone(), Slot::Destroying(1));
+
+        assert_eq!(code(vms.launch("k", sh("exit 0"))), "S502");
+        assert_eq!(code(vms.start(start_req("t", "k", local(t))).await), "S502");
+        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
+        assert_eq!(code(vms.status(status_req("t", &id, 1))), "S504");
+        assert_eq!(code(vms.stop(stop_req("t", &id, 1, 0)).await), "S504");
+    }
+
+    #[tokio::test]
+    async fn a_failed_destroy_keeps_the_exited_vm() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![]);
+        let id = vms.launch("k", sh("exit 7")).unwrap().vm_id;
+        wait_ended(&vms, &id, 1).await;
+        // A file where the base dir was: ENOTDIR, which root cannot bypass.
+        let base = t.join("workers");
+        std::fs::rename(&base, t.join("moved")).unwrap();
+        std::fs::write(&base, "").unwrap();
+
+        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S216");
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert_eq!(status.exit_code, Some(7), "{status:?}");
     }
 
     #[tokio::test]
