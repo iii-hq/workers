@@ -23,6 +23,18 @@ fn prepared_marker_matches_current_workspace(marker: &Path) -> bool {
     std::fs::read_to_string(marker).is_ok_and(|contents| contents.trim() == PREPARED_MARKER_VERSION)
 }
 
+/// Write `dev-run.sh` (mode 0755) into the share and return its dir:
+/// `runtime/` (mounted at guest /opt/iii) under overlay, `opt/iii` in the
+/// legacy clone. Both are guest-writable, so neither the dir chain nor the
+/// script is followed through a symlink the guest planted there.
+fn write_run_script(managed_dir: &Path, overlay: bool, script: &str) -> std::io::Result<PathBuf> {
+    use super::worker_manager::oci;
+    let rel = if overlay { "runtime" } else { "opt/iii" };
+    let dir = oci::ensure_rootfs_dir_no_follow(managed_dir, rel)?;
+    oci::write_rootfs_file_no_follow(&dir.join("dev-run.sh"), script.as_bytes(), Some(0o755))?;
+    Ok(dir)
+}
+
 /// Ensure the terminal is in cooked (canonical) mode with proper input and
 /// output processing.  Restores both output flags (NL→CRNL) and input flags
 /// (canonical buffering, echo, CR→NL translation) so that interactive prompts
@@ -634,11 +646,12 @@ pub(crate) async fn start_worker_impl(
     //    legacy and overlay modes, so the host repo is never written.
     //    Pre-create the managed-dir mountpoint so the legacy clone (which IS
     //    the guest root) has /workspace to mount onto; harmless under overlay.
-    let workspace_dir = managed_dir.join("workspace");
-    if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
+    if let Err(e) =
+        super::worker_manager::oci::ensure_rootfs_dir_no_follow(&managed_dir, "workspace")
+    {
         return Err(format!(
             "Failed to create workspace dir {}: {}",
-            workspace_dir.display(),
+            managed_dir.join("workspace").display(),
             e
         ));
     }
@@ -705,23 +718,8 @@ pub(crate) async fn start_worker_impl(
     // and a multi-KB inlined script overflows CMDLINE_MAX_SIZE and panics the
     // VM builder. Keeping III_WORKER_CMD tiny (`exec bash /opt/iii/dev-run.sh`)
     // keeps the env within the cmdline budget for both modes.
-    let script_dir = if overlay {
-        managed_dir.join("runtime")
-    } else {
-        managed_dir.join("opt").join("iii")
-    };
-    if let Err(e) = std::fs::create_dir_all(&script_dir) {
-        return Err(format!("Failed to create run-script dir: {}", e));
-    }
-    let script_path = script_dir.join("dev-run.sh");
-    if let Err(e) = std::fs::write(&script_path, &script) {
-        return Err(format!("Failed to write run script: {}", e));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
-    }
+    let script_dir = write_run_script(&managed_dir, overlay, &script)
+        .map_err(|e| format!("Failed to write run script: {}", e))?;
     // Overlay: clear the prior boot's host-visible readiness marker so status
     // reports Preparing until THIS boot's guest re-touches /opt/iii/.iii-ready
     // after provisioning. It persists in managed_dir/runtime across boots, so
@@ -748,14 +746,12 @@ pub(crate) async fn start_worker_impl(
     };
 
     if !iii_filesystem::init::has_init() {
+        // The share is guest-writable, so init.krun may be a planted symlink: never copy through it.
         let dest = managed_dir.join("init.krun");
-        if let Err(e) = std::fs::copy(&init_path, &dest) {
+        if let Err(e) = std::fs::read(&init_path).and_then(|bytes| {
+            super::worker_manager::oci::write_rootfs_file_no_follow(&dest, &bytes, Some(0o755))
+        }) {
             return Err(format!("Failed to copy iii-init to rootfs: {}", e));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
         }
     }
 
@@ -880,6 +876,43 @@ pub(crate) async fn start_worker_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A guest that ran `ln -sf ~/.bashrc /opt/iii/dev-run.sh` (or symlinked
+    /// `opt` itself) must not get the host file overwritten on the next start.
+    #[test]
+    fn write_run_script_never_writes_through_a_guest_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let t = tempfile::tempdir().unwrap();
+        let victim = t.path().join("bashrc");
+        std::fs::write(&victim, "host").unwrap();
+        for overlay in [true, false] {
+            let share = t.path().join(format!("share-{overlay}"));
+            let dir = share.join(if overlay { "runtime" } else { "opt/iii" });
+            std::fs::create_dir_all(&dir).unwrap();
+            symlink(&victim, dir.join("dev-run.sh")).unwrap();
+
+            let got = write_run_script(&share, overlay, "echo boot").unwrap();
+
+            assert_eq!(got, dir);
+            let script = std::fs::symlink_metadata(dir.join("dev-run.sh")).unwrap();
+            assert!(script.is_file());
+            assert_eq!(script.permissions().mode() & 0o777, 0o755);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("dev-run.sh")).unwrap(),
+                "echo boot"
+            );
+        }
+        // Legacy: a symlinked `opt` is replaced, not followed.
+        let share = t.path().join("share-opt");
+        std::fs::create_dir_all(&share).unwrap();
+        std::fs::create_dir_all(t.path().join("host/iii")).unwrap();
+        symlink(t.path().join("host"), share.join("opt")).unwrap();
+        write_run_script(&share, false, "echo boot").unwrap();
+        assert!(!t.path().join("host/iii/dev-run.sh").exists());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "host");
+        let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode();
+        assert_eq!(victim_mode & 0o111, 0, "the host file was chmodded");
+    }
 
     #[test]
     fn build_local_mounts_maps_project_to_workspace() {

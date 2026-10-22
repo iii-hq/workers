@@ -90,7 +90,13 @@ pub fn read_layout(managed_dir: &Path) -> Option<String> {
 /// Stamp the worker's layout marker.
 pub fn write_layout(managed_dir: &Path, layout: &str) {
     let _ = std::fs::create_dir_all(managed_dir);
-    if let Err(e) = std::fs::write(marker_path(managed_dir), layout) {
+    // The dir is a guest-writable share: never write through a planted symlink.
+    let marker = marker_path(managed_dir);
+    if let Err(e) = crate::cli::worker_manager::oci::write_rootfs_file_no_follow(
+        &marker,
+        layout.as_bytes(),
+        None,
+    ) {
         tracing::debug!("write layout marker for {}: {e}", managed_dir.display());
     }
 }
@@ -108,14 +114,20 @@ pub fn migrate_to_overlay(managed_dir: &Path) {
     if read_layout(managed_dir).as_deref() == Some(LAYOUT_OVERLAY) {
         return;
     }
-    let deps = managed_dir.join("var/iii/deps");
-    if deps.is_dir() {
+    // A legacy guest could make `var` or `var/iii` a symlink to a host dir:
+    // delete only through real directories.
+    let real = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    let var = managed_dir.join("var");
+    let deps = var.join("iii/deps");
+    if real(&var) && real(&var.join("iii")) && real(&deps) {
         match std::fs::remove_dir_all(&deps) {
             Ok(()) => eprintln!("iii: reclaimed orphaned legacy dep cache (overlay migration)"),
             Err(e) => tracing::debug!("gc legacy deps {}: {e}", deps.display()),
         }
     }
-    let _ = std::fs::remove_file(managed_dir.join("var/.iii-prepared"));
+    if real(&var) {
+        let _ = std::fs::remove_file(var.join(".iii-prepared"));
+    }
     write_layout(managed_dir, LAYOUT_OVERLAY);
 }
 
@@ -167,6 +179,36 @@ mod tests {
         migrate_to_overlay(&d);
         assert_eq!(read_layout(&d).as_deref(), Some(LAYOUT_OVERLAY));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn migrate_never_writes_or_deletes_through_guest_symlinks() {
+        let d = tmp("migrate-symlinks");
+        let host = tmp("migrate-symlinks-host");
+        std::fs::create_dir_all(host.join("iii/deps")).unwrap();
+        std::fs::write(host.join(".iii-prepared"), b"keep").unwrap();
+        std::fs::write(host.join("bashrc"), b"keep").unwrap();
+        std::os::unix::fs::symlink(&host, d.join("var")).unwrap();
+        std::os::unix::fs::symlink(host.join("bashrc"), d.join(LAYOUT_MARKER)).unwrap();
+
+        migrate_to_overlay(&d);
+
+        assert!(
+            host.join("iii/deps").is_dir(),
+            "deleted through var symlink"
+        );
+        assert!(
+            host.join(".iii-prepared").exists(),
+            "deleted through var symlink"
+        );
+        assert_eq!(std::fs::read(host.join("bashrc")).unwrap(), b"keep");
+        assert!(
+            std::fs::symlink_metadata(d.join(LAYOUT_MARKER))
+                .unwrap()
+                .is_file()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&host);
     }
 
     #[test]

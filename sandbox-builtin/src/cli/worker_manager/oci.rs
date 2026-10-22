@@ -62,6 +62,30 @@ pub(crate) fn write_rootfs_file_no_follow(
     Ok(())
 }
 
+/// Make `<root>/<rel>` a real directory without following a symlink at any
+/// component below `root`, and return it. `root` is a guest-writable share, so
+/// any component may be a guest-planted symlink to a host path: it (or any
+/// other non-directory) is unlinked and replaced by an empty directory.
+/// shortcut: checks then creates, so it assumes the guest is not running; a
+/// live guest racing the walk needs openat-based traversal instead.
+pub(crate) fn ensure_rootfs_dir_no_follow(
+    root: &std::path::Path,
+    rel: &str,
+) -> std::io::Result<PathBuf> {
+    let mut dir = root.to_path_buf();
+    for part in std::path::Path::new(rel).components() {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => continue,
+            Ok(_) => std::fs::remove_file(&dir)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        std::fs::create_dir(&dir)?;
+    }
+    Ok(dir)
+}
+
 /// Read `<rootfs>/<rel>` without following a symlink anywhere below
 /// `rootfs`: every ancestor must be a real directory and the final entry a
 /// regular file. The rootfs comes from the image (and, without overlay, keeps
@@ -1753,6 +1777,30 @@ mod tests {
         let meta = std::fs::symlink_metadata(&link).unwrap();
         assert!(meta.file_type().is_file());
         assert_eq!(std::fs::read(&link).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn ensure_rootfs_dir_no_follow_replaces_a_symlinked_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let host = dir.path().join("host");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(host.join("iii")).unwrap();
+        std::fs::write(host.join("iii/keep"), b"host").unwrap();
+        std::os::unix::fs::symlink(&host, root.join("opt")).unwrap();
+
+        let made = ensure_rootfs_dir_no_follow(&root, "opt/iii").unwrap();
+
+        assert_eq!(made, root.join("opt/iii"));
+        assert!(
+            std::fs::symlink_metadata(root.join("opt"))
+                .unwrap()
+                .is_dir()
+        );
+        assert!(std::fs::read_dir(&made).unwrap().next().is_none());
+        assert_eq!(std::fs::read(host.join("iii/keep")).unwrap(), b"host");
+        // Idempotent on a real tree.
+        assert_eq!(ensure_rootfs_dir_no_follow(&root, "opt/iii").unwrap(), made);
     }
 
     #[test]
