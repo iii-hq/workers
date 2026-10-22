@@ -25,10 +25,11 @@ use crate::{
 // Constants
 //--------------------------------------------------------------------------------------------------
 
-/// d_off cookie of the synthetic init.krun entry. It sorts after every real entry, so
-/// whichever offset a client resumes from (a truncated page or a re-read) it sees init.krun
-/// exactly once, and resuming from the cookie itself returns an empty page.
-const INIT_DIR_OFFSET: u64 = i64::MAX as u64;
+/// d_off cookie of the synthetic init.krun entry. Real d_off values stay below it, so a resume
+/// from any real offset sees init.krun exactly once and a resume from the cookie itself returns an
+/// empty page. It is i64::MAX - 1, not i64::MAX: ext4 reports i64::MAX as the end-of-directory
+/// cookie of the last real entry, and a resume from that cookie must still list init.krun.
+const INIT_DIR_OFFSET: u64 = i64::MAX as u64 - 1;
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -70,7 +71,7 @@ pub(crate) fn do_readdir(
 ) -> io::Result<Vec<DirEntry<'static>>> {
     let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?;
     // Resuming from init.krun's cookie means the listing is finished.
-    if ino == 1 && init_binary::has_init() && offset >= INIT_DIR_OFFSET {
+    if ino == 1 && init_binary::has_init() && offset == INIT_DIR_OFFSET {
         return Ok(Vec::new());
     }
     // Write lock: lseek in read_dir_entries modifies fd seek position.

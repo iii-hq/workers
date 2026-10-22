@@ -585,6 +585,12 @@ fn readdir_lists_virtual_init_once_from_every_offset() {
         assert_eq!(inits, expected, "init.krun count after offset {}", e.offset);
     }
 
+    // ext4 reports i64::MAX as the end-of-directory cookie of the last real entry.
+    let tail =
+        h.fs.readdir(ctx, ROOT_ID, dh, 64 * 1024, i64::MAX as u64)
+            .unwrap();
+    assert_eq!(tail.iter().filter(|t| t.name == b"init.krun").count(), 1);
+
     h.fs.releasedir(ctx, ROOT_ID, 0, dh).unwrap();
 }
 
