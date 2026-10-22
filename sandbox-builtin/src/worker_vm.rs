@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::future::Future;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use iii_sdk::IIIClient;
+use iii_sdk::channels::ChannelWriter;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
@@ -30,9 +33,9 @@ use crate::cli::worker_manager::oci;
 use crate::daemon_exit::Lifeline;
 use crate::sandbox_daemon::SandboxError;
 use crate::wire::{
-    LogStream, State, WorkerDestroyRequest, WorkerDestroyResponse, WorkerPrepareRequest,
-    WorkerPrepareResponse, WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus,
-    WorkerStatusRequest, WorkerStopRequest,
+    LogRecord, LogStream, State, WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest,
+    WorkerLogsResponse, WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource,
+    WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest,
 };
 
 /// Compose's own worker-log cap: past it `console.log` rotates to `console.log.1`.
@@ -42,6 +45,8 @@ const MAX_LINE: u64 = 64 * 1024;
 /// How long the waiter lets the pumps drain after the VM exits: a grandchild
 /// that inherited the pipes could hold them open forever.
 const DRAIN_GRACE: Duration = Duration::from_secs(1);
+/// How often a following `worker::logs` looks for new records.
+const FOLLOW_POLL: Duration = Duration::from_millis(200);
 const CONSOLE_LOG: &str = "console.log";
 const STATE_FILE: &str = "state.json";
 
@@ -242,16 +247,7 @@ impl WorkerVms {
     /// Returns the final status; an exited VM returns it as is.
     pub async fn stop(&self, req: WorkerStopRequest) -> Result<WorkerStatus, SandboxError> {
         self.authorize(&req.auth)?;
-        let vm = match self.lookup(&req.vm_id, req.instance)? {
-            // No process yet: Compose retries once the boot is stoppable.
-            Slot::Preparing(instance) | Slot::Destroying(instance) => {
-                return Err(SandboxError::StateBusy {
-                    vm_id: req.vm_id,
-                    instance,
-                });
-            }
-            Slot::Booted(vm) => vm,
-        };
+        let vm = booted(&req.vm_id, self.lookup(&req.vm_id, req.instance)?)?;
         if vm.ended.borrow().is_none() {
             vm.stopping.store(true, Ordering::SeqCst);
             let mut ended = vm.ended.subscribe();
@@ -268,6 +264,80 @@ impl WorkerVms {
             }
         }
         Ok(Slot::Booted(vm).status(&req.vm_id))
+    }
+
+    /// Stream the VM's `console.log` into `req.channel` and return; a task
+    /// pumps the records and closes the channel. S504 for an unknown `vm_id`.
+    pub async fn logs(
+        self: &Arc<Self>,
+        iii: &IIIClient,
+        req: WorkerLogsRequest,
+    ) -> Result<WorkerLogsResponse, SandboxError> {
+        self.authorize(&req.auth)?;
+        // Checked here: an error inside the task would reach no caller.
+        booted(&req.vm_id, self.slot(&req.vm_id)?)?;
+        let writer = ChannelWriter::new(iii.address(), &req.channel);
+        let vms = self.clone();
+        tokio::spawn(async move {
+            let channel = &writer;
+            let pumped = vms
+                .pump_logs(&req, |record| async move {
+                    let frame = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+                    channel
+                        .send_message(&frame)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+            if let Err(e) = pumped {
+                tracing::info!(error = %e, vm_id = %req.vm_id, "worker log stream ended early");
+            }
+            // Connects even if nothing was sent, so the reader still sees the close.
+            let _ = writer.write(&[]).await;
+            let _ = writer.close().await;
+        });
+        Ok(WorkerLogsResponse {})
+    }
+
+    /// Feed `sink` the instance's records from `req.cursor`. With `follow` it
+    /// polls until the instance has exited and its log is drained; a sink error
+    /// ends it too (S218).
+    pub(crate) async fn pump_logs<F, Fut>(
+        &self,
+        req: &WorkerLogsRequest,
+        mut sink: F,
+    ) -> Result<(), SandboxError>
+    where
+        F: FnMut(LogRecord) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+        // Looked up before the join: only ids `vm_id()` made are in `slots`.
+        let vm = booted(&req.vm_id, self.slot(&req.vm_id)?)?;
+        let path = self.base.join(&req.vm_id).join(CONSOLE_LOG);
+        let mut ended = vm.ended.subscribe();
+        let mut cursor = req.cursor.unwrap_or(0);
+        loop {
+            // Sampled before the read: the waiter records the exit after the
+            // log is complete, so a read that follows it is the last one.
+            let exited = ended.borrow().is_some();
+            // shortcut: a blocking read, bounded by `CONSOLE_LOG_CAP`; move it
+            // to `spawn_blocking` if the cap grows.
+            match read_records(&path, cursor) {
+                Ok((records, next)) => {
+                    cursor = next;
+                    for record in records {
+                        sink(record).await.map_err(SandboxError::FsChannelAborted)?;
+                    }
+                }
+                // `destroy` removed the dir of an exited VM: nothing left to read.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(SandboxError::FsIo(format!("{}: {e}", path.display()))),
+            }
+            if exited || !req.follow {
+                return Ok(());
+            }
+            let _ = tokio::time::timeout(FOLLOW_POLL, ended.wait_for(Option::is_some)).await;
+        }
     }
 
     /// Remove `state_key`'s VM state. S502 while it is preparing, running or
@@ -309,13 +379,7 @@ impl WorkerVms {
 
     /// `vm_id`'s entry: S504 when there is none, S503 when it is on another instance.
     fn lookup(&self, vm_id: &str, instance: u64) -> Result<Slot, SandboxError> {
-        let slot = match self.slots().get(vm_id) {
-            // Being destroyed reads as already destroyed.
-            None | Some(Slot::Destroying(_)) => {
-                return Err(SandboxError::VmNotFound(vm_id.to_string()));
-            }
-            Some(slot) => slot.clone(),
-        };
+        let slot = self.slot(vm_id)?;
         if slot.instance() != instance {
             return Err(SandboxError::InstanceMismatch {
                 vm_id: vm_id.to_string(),
@@ -324,6 +388,15 @@ impl WorkerVms {
             });
         }
         Ok(slot)
+    }
+
+    /// `vm_id`'s entry, whatever its instance: S504 when there is none.
+    fn slot(&self, vm_id: &str) -> Result<Slot, SandboxError> {
+        match self.slots().get(vm_id) {
+            // Being destroyed reads as already destroyed.
+            None | Some(Slot::Destroying(_)) => Err(SandboxError::VmNotFound(vm_id.to_string())),
+            Some(slot) => Ok(slot.clone()),
+        }
     }
 
     fn slots(&self) -> MutexGuard<'_, HashMap<String, Slot>> {
@@ -382,6 +455,17 @@ fn source_parts(source: &WorkerSource) -> (Option<&str>, &str, Option<&str>) {
             host_path,
             run_override,
         } => (None, host_path, run_override.as_deref()),
+    }
+}
+
+/// The VM of `slot`; S502 while there is no process yet, and Compose retries.
+fn booted(vm_id: &str, slot: Slot) -> Result<Arc<Vm>, SandboxError> {
+    match slot {
+        Slot::Booted(vm) => Ok(vm),
+        Slot::Preparing(instance) | Slot::Destroying(instance) => Err(SandboxError::StateBusy {
+            vm_id: vm_id.to_string(),
+            instance,
+        }),
     }
 }
 
@@ -552,6 +636,53 @@ async fn pump(out: impl AsyncRead + Unpin, stream: LogStream, console: Arc<Mutex
     }
 }
 
+/// What `Console::append` writes, minus the cursor.
+#[derive(Deserialize)]
+struct Entry {
+    stream: LogStream,
+    line: String,
+    ts_ms: u64,
+}
+
+/// The records of `path` from byte offset `from`, and the offset after the last
+/// whole line read. A cursor past the end means the file rotated, so it reads
+/// from 0. A partial last line waits for its newline; a line that does not parse
+/// (a cursor into the middle of one) is skipped, not an error.
+pub(crate) fn read_records(path: &Path, from: u64) -> io::Result<(Vec<LogRecord>, u64)> {
+    let mut file = open_private(path, false)?;
+    let from = if from > file.metadata()?.len() {
+        0
+    } else {
+        from
+    };
+    file.seek(SeekFrom::Start(from))?;
+    // Bounded: `Console` rotates the file past `CONSOLE_LOG_CAP`.
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let mut records = Vec::new();
+    let mut end = from;
+    for raw in bytes.split_inclusive(|&b| b == b'\n') {
+        if !raw.ends_with(b"\n") {
+            break;
+        }
+        end += raw.len() as u64;
+        if let Ok(Entry {
+            stream,
+            line,
+            ts_ms,
+        }) = serde_json::from_slice(raw)
+        {
+            records.push(LogRecord {
+                stream,
+                line,
+                ts_ms,
+                cursor: end,
+            });
+        }
+    }
+    Ok((records, end))
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -561,6 +692,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_sdk::channels::{ChannelDirection, StreamChannelRef};
 
     fn vms(t: &Path, token: Option<&str>, roots: Vec<PathBuf>) -> WorkerVms {
         WorkerVms::new(t.join("workers"), token.map(str::to_string), roots)
@@ -620,6 +752,36 @@ mod tests {
         }
     }
 
+    fn logs_req(auth: &str, vm_id: &str, follow: bool) -> WorkerLogsRequest {
+        WorkerLogsRequest {
+            auth: auth.to_string(),
+            vm_id: vm_id.to_string(),
+            cursor: None,
+            follow,
+            channel: StreamChannelRef {
+                channel_id: "c".to_string(),
+                access_key: "k".to_string(),
+                direction: ChannelDirection::Write,
+            },
+        }
+    }
+
+    /// What `pump_logs` sends for `req`.
+    async fn pumped(vms: &WorkerVms, req: &WorkerLogsRequest) -> Vec<LogRecord> {
+        let sent = std::cell::RefCell::new(Vec::new());
+        vms.pump_logs(req, |record| {
+            sent.borrow_mut().push(record);
+            async { Ok(()) }
+        })
+        .await
+        .unwrap();
+        sent.into_inner()
+    }
+
+    fn lines(records: &[LogRecord]) -> Vec<&str> {
+        records.iter().map(|r| r.line.as_str()).collect()
+    }
+
     fn destroy_req(auth: &str, state_key: &str) -> WorkerDestroyRequest {
         WorkerDestroyRequest {
             auth: auth.to_string(),
@@ -658,8 +820,9 @@ mod tests {
     async fn worker_ops_answer_s505_without_the_token() {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
+        let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
         for token in [None, Some("t")] {
-            let vms = vms(t, token, vec![t.into()]);
+            let vms = Arc::new(vms(t, token, vec![t.into()]));
             let err = prepare_err(&vms, "u", local(t)).await;
             assert_eq!(err.code().as_str(), "S505", "{err}");
 
@@ -669,6 +832,10 @@ mod tests {
             for vm_id in ["unknown", known.as_str()] {
                 assert_eq!(code(vms.status(status_req("u", vm_id, 9))), "S505");
                 assert_eq!(code(vms.stop(stop_req("u", vm_id, 9, 0)).await), "S505");
+                assert_eq!(
+                    code(vms.logs(&iii, logs_req("u", vm_id, true)).await),
+                    "S505"
+                );
             }
             assert_eq!(code(vms.destroy(destroy_req("u", "k"))), "S505");
         }
@@ -784,9 +951,14 @@ mod tests {
     #[tokio::test]
     async fn unknown_vm_is_s504() {
         let t = tempfile::tempdir().unwrap();
-        let vms = vms(t.path(), Some("t"), vec![]);
+        let vms = Arc::new(vms(t.path(), Some("t"), vec![]));
+        let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
         assert_eq!(code(vms.status(status_req("t", "nope", 1))), "S504");
         assert_eq!(code(vms.stop(stop_req("t", "nope", 1, 0)).await), "S504");
+        assert_eq!(
+            code(vms.logs(&iii, logs_req("t", "nope", false)).await),
+            "S504"
+        );
     }
 
     #[tokio::test]
@@ -907,6 +1079,117 @@ mod tests {
         let err = prepare_err(&vms(t, Some("t"), vec![t.into()]), "t", source).await;
         assert_eq!(err.code().as_str(), "S501", "{err}");
         assert!(err.to_string().contains("\"probe\""), "{err}");
+    }
+
+    #[test]
+    fn records_resume_from_a_cursor() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join(CONSOLE_LOG);
+        let text = concat!(
+            r#"{"stream":"stdout","line":"a","ts_ms":1}"#,
+            "\n",
+            r#"{"stream":"stderr","line":"b","ts_ms":2}"#,
+            "\n",
+            r#"{"stream":"stdout","line":"c","ts_ms":3}"#,
+            "\n",
+        );
+        std::fs::write(&path, text).unwrap();
+        let len = text.len() as u64;
+
+        let (all, end) = read_records(&path, 0).unwrap();
+        assert_eq!(lines(&all), ["a", "b", "c"]);
+        assert_eq!(all[1].ts_ms, 2);
+        assert!(matches!(all[1].stream, LogStream::Stderr));
+        assert!(all.windows(2).all(|w| w[0].cursor < w[1].cursor));
+        assert_eq!((all[2].cursor, end), (len, len));
+
+        let (rest, _) = read_records(&path, all[0].cursor).unwrap();
+        assert_eq!(lines(&rest), ["b", "c"]);
+        assert!(read_records(&path, len).unwrap().0.is_empty());
+
+        // A cursor past the end means the file rotated: read the new file from its start.
+        let (rotated, _) = read_records(&path, len + 1).unwrap();
+        assert_eq!(lines(&rotated), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_partial_last_line_is_left_for_the_next_read() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join(CONSOLE_LOG);
+        let whole = r#"{"stream":"stdout","line":"a","ts_ms":1}"#;
+        std::fs::write(&path, format!("{whole}\n{{\"stream\":\"std")).unwrap();
+
+        let (recs, end) = read_records(&path, 0).unwrap();
+        assert_eq!(lines(&recs), ["a"]);
+        assert_eq!(end, whole.len() as u64 + 1);
+    }
+
+    #[tokio::test]
+    async fn follow_streams_until_the_instance_ends() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh("echo a; sleep 0.3; echo b >&2"))
+            .unwrap()
+            .vm_id;
+
+        let recs = pumped(&vms, &logs_req("t", &id, true)).await;
+        assert_eq!(lines(&recs), ["a", "b"]);
+        let streams: Vec<_> = recs.iter().map(|r| format!("{:?}", r.stream)).collect();
+        assert_eq!(streams, ["Stdout", "Stderr"]);
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(status.ended_at_ms.is_some(), "{status:?}");
+    }
+
+    #[tokio::test]
+    async fn follow_on_an_exited_instance_drains_and_returns() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms.launch("k", sh("echo a")).unwrap().vm_id;
+        let status = wait_ended(&vms, &id, 1).await;
+        assert!(matches!(status.state, State::Exited), "{status:?}");
+
+        let req = logs_req("t", &id, true);
+        let recs = tokio::time::timeout(Duration::from_secs(2), pumped(&vms, &req))
+            .await
+            .expect("follow on an exited instance must return");
+        assert_eq!(lines(&recs), ["a"]);
+    }
+
+    #[tokio::test]
+    async fn a_pump_resumes_after_the_cursor_and_ends_without_follow() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh("echo a; echo b; sleep 30"))
+            .unwrap()
+            .vm_id;
+        wait_record(&t.path().join("workers").join(&id), "b").await;
+
+        let all = pumped(&vms, &logs_req("t", &id, false)).await;
+        assert_eq!(lines(&all), ["a", "b"]);
+        let mut req = logs_req("t", &id, false);
+        req.cursor = Some(all[0].cursor);
+        assert_eq!(lines(&pumped(&vms, &req).await), ["b"]);
+
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sink_error_ends_the_pump() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms.launch("k", sh("echo a; sleep 30")).unwrap().vm_id;
+        wait_record(&t.path().join("workers").join(&id), "a").await;
+
+        let ended = vms
+            .pump_logs(&logs_req("t", &id, true), |_| async {
+                Err("channel closed".to_string())
+            })
+            .await;
+        assert_eq!(code(ended), "S218");
+
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
     }
 
     #[test]

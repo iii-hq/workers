@@ -110,8 +110,8 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
 use crate::sandbox_daemon::errors::SandboxErrorWire;
 use crate::wire::{
-    AdapterInfo, AdapterInfoRequest, ContractVersion, WORKER_DESTROY, WORKER_PREPARE, WORKER_START,
-    WORKER_STATUS, WORKER_STOP,
+    AdapterInfo, AdapterInfoRequest, ContractVersion, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE,
+    WORKER_START, WORKER_STATUS, WORKER_STOP,
 };
 use crate::worker_vm::WorkerVms;
 
@@ -261,6 +261,21 @@ pub fn register_all(
             WORKER_STATUS,
             "State of one worker VM instance. Needs the project token.",
             |vms, req| async move { vms.status(req) },
+        ),
+        register_worker_op(
+            iii,
+            vms.clone(),
+            WORKER_LOGS,
+            "Stream a worker VM's console log into `channel`, one `LogRecord` JSON per text \
+             frame, from `cursor` on; with `follow`, until the instance exits. Needs the \
+             project token.",
+            {
+                let iii = iii.clone();
+                move |vms, req| {
+                    let iii = iii.clone();
+                    async move { vms.logs(&iii, req).await }
+                }
+            },
         ),
         register_worker_op(
             iii,
@@ -611,6 +626,7 @@ mod registration_tests {
             "worker::prepare",
             WORKER_START,
             WORKER_STATUS,
+            WORKER_LOGS,
             WORKER_STOP,
             WORKER_DESTROY,
         ]
