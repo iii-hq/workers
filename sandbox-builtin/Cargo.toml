@@ -1,0 +1,84 @@
+[workspace]
+members = ["crates/*"]
+
+[package]
+name = "sandbox-builtin"
+# Major tracks the sandbox contract's CONTRACT_MAJOR.
+version = "1.0.0"
+edition = "2024"
+license = "Elastic-2.0"
+publish = false
+description = "Builtin sandbox adapter: microVM sandboxes and worker VMs on libkrun"
+
+[lib]
+name = "sandbox_builtin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sandbox-builtin"
+path = "src/main.rs"
+
+[features]
+default = []
+embed-libkrunfw = []
+embed-init = ["iii-filesystem/embed-init"]
+# Test-only features — gate heavy integration tests (never in default)
+integration-vm = []
+integration-oci = []
+
+[dependencies]
+iii-filesystem = { path = "crates/iii-filesystem" }
+iii-network = { path = "crates/iii-network" }
+iii-sdk = "=0.24.6"
+iii-helpers = "=0.24.6"
+iii-shell-client = { path = "crates/iii-shell-client" }
+iii-shell-proto = { path = "crates/iii-shell-proto" }
+iii-supervisor = { path = "crates/iii-supervisor" }
+# Pinned: msb_krun_devices 0.1.39 uses libc::statx, which libc does not define for musl.
+msb_krun = { version = "=0.1.16", features = ["net", "blk"] }
+oci-client = "0.16"
+oci-spec = "0.9"
+tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
+clap = { version = "4", features = ["derive", "env"] }
+colored = "3.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1.0.100"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+async-trait = "0.1.89"
+nix = { version = "0.30.1", features = ["fs", "signal", "process", "term"] }
+dirs = "6"
+sha2 = "0.10"
+hex = "0.4"
+flate2 = "1"
+tar = "0.4"
+# Updates a cached bundle archive's mtime on hit so LRU eviction reflects recency.
+filetime = "0.2"
+# Cross-process advisory file lock (sync API; callers use spawn_blocking).
+fslock = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+futures = "0.3"
+bytes = "1"
+indicatif = "0.18"
+notify = "8.2.0"
+base64 = "0.22"
+libc = "0.2"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+schemars = "0.8"
+# sandbox::exec shlex-splits a shell-style `cmd` into argv.
+shlex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+tempfile = "3"
+iii-shell-proto = { path = "crates/iii-shell-proto" }
+serial_test = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = 2
