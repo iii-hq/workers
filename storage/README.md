@@ -332,12 +332,18 @@ segment and returns `INVALID_KEY`. Segments are read the way a URL parser reads
 them: `%2e` (any case) is a dot, a backslash separates segments like a slash,
 and a tab, CR or LF is ignored, so `../escape`, `a/./b`, `%2e%2e/x` and
 `a\..\x` are all refused. A path-style S3 endpoint and the presigned URLs of
-S3, R2 and GCS carry the key in a URL path, where such a segment would be
-resolved to another path or bucket. Dots inside a name (`a.b`, `..a`, `...`)
-are fine. `listObjects` is unaffected: `prefix` is a query parameter.
+S3, R2 and GCS carry the key in a URL path, where a literal `.` or `..` segment
+would be resolved to another path or bucket; the GCS presigner also reads `%2e`,
+a backslash and tab/CR/LF that way. One rule for every backend keeps a key that
+works on one from failing on another, at the cost of refusing keys such as
+`C:\dir\..\file` that the S3 SDK (which encodes `%` and `\`) and the local
+backend (which hashes keys) would have stored safely. Dots inside a name
+(`a.b`, `..a`, `...`) are fine. `listObjects` is unaffected: `prefix` is a
+query parameter.
 
 An object written before this rule with such a key (possible with the local
-backend, GCS, and S3 virtual-hosted endpoints) still shows in `listObjects`,
+backend, GCS, S3 virtual-hosted endpoints, and S3 path-style endpoints for keys
+like `%2e%2e/x` or `a\..\b`, which the SDK encoded) still shows in `listObjects`,
 but this worker can no longer read or delete it: remove it with the
 provider's own tools. An empty key keeps its earlier code (`CONFIG_ERROR`, and
 `INVALID_PRESIGN_PARAMS` from `presignPost`).
