@@ -59,8 +59,8 @@ def listening(port):
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-def main(staged, destination):
-    """Configure the project in `staged`, which init.sh then moves to `destination`."""
+def main(staged, destination, cli):
+    """Configure the project in `staged`, which init.sh then moves to `destination`; `cli` runs it."""
     compose = staged / "worker-compose.yaml"
     # Template content is untrusted: never write through a link it ships.
     if compose.is_symlink() or (staged / "config").is_symlink():
@@ -121,8 +121,8 @@ def main(staged, destination):
     print(f"  {'engine':<7} ws://127.0.0.1:{engine_port}")
     if local:
         print(f"  {'local':<7} {len(local)} workers from this checkout: {', '.join(local)}")
-    print(f"\n  Run `iii trigger ...` from {folder}. Ctrl+C stops the stack.\n")
+    print(f"\n  Run `{cli} trigger ...` from {folder}. Ctrl+C stops the stack.\n")
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]))
+    main(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])
