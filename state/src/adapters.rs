@@ -694,8 +694,11 @@ pub struct RedisAdapter {
 
 /// A connection the server dropped (a restart, an idle timeout), the one case
 /// a command is sent again (see `retry_once!`). Not a refused connection: the
-/// manager answers that only after its whole reconnect backoff failed, and a
-/// second round would double the wait while every caller queues on the lock.
+/// manager returns it when its reconnect backoff failed, and a second round
+/// would double the wait while every caller queues on the lock. Ceiling: after
+/// an outage longer than that backoff (about 6 to 12 s), the manager hands the
+/// next call its cached refusal, so the first call after Redis is back fails
+/// once; retrying refusals too would fix that at the cost of the double wait.
 fn dropped(error: &RedisError) -> bool {
     error.is_connection_dropped() && !error.is_connection_refusal()
 }
@@ -712,7 +715,7 @@ async fn ready(conn: &mut ConnectionManager) -> anyhow::Result<()> {
         redis::cmd("PING").query_async::<()>(&mut *conn).await
     ) {
         Err(error) if error.is_io_error() => Err(anyhow::anyhow!(
-            "Redis is unreachable, nothing was written: {error}"
+            "Redis did not answer, nothing was written: {error}"
         )),
         _ => Ok(()),
     }
