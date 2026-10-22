@@ -60,6 +60,7 @@ import {
 } from '@/lib/onboarding/telemetry'
 import { openTour, prepareTour } from '@/lib/onboarding/tour'
 import { requestPanelOpen } from '@/lib/panel-context'
+import { setupCompleted } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
 import { BrowserStep } from './BrowserStep'
 import { ExploreStep, type TourState } from './ExploreStep'
@@ -347,6 +348,7 @@ export function OnboardingWizardHost() {
       const chromiumInstalled = onboarding.activity.some(
         (entry) => entry.group === 'browser' && entry.status === 'done',
       )
+      setupCompleted()
       record('completed', {
         providers,
         judge: judgeChoices[0]?.id ?? null,

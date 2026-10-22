@@ -13,6 +13,7 @@ pub mod onboarding;
 pub mod probe;
 pub mod proxy;
 pub mod server;
+pub mod telemetry;
 pub mod ui;
 pub mod ui_assets;
 pub mod ui_files;
