@@ -166,6 +166,8 @@ function usePickGroup<K extends string>(
   enabled: (key: K) => boolean,
   picked: K | null,
   onPick: (key: K) => void,
+  /** The rows are on screen; when they come back, they arrive again. */
+  active = true,
 ) {
   const buttons = useRef(new Map<K, HTMLButtonElement>())
   const register = useCallback(
@@ -208,6 +210,10 @@ function usePickGroup<K extends string>(
   // has moved on is not pulled back.
   const arrived = useRef(false)
   useEffect(() => {
+    if (!active) {
+      arrived.current = false
+      return
+    }
     // On arrival the picked row, else the first open one; after that only
     // the first row, when it opens late and the focus is still in here.
     const key = arrived.current
@@ -233,7 +239,7 @@ function usePickGroup<K extends string>(
       cancelAnimationFrame(outer)
       cancelAnimationFrame(inner)
     }
-  }, [picked, first])
+  }, [picked, first, active])
   return { register, onKeyDown, tabbable }
 }
 
@@ -380,7 +386,13 @@ export function ExploreStep({
   // A pick that has since gone out of reach (the model left, the examples
   // emptied) counts as no pick: the button goes back to Finish.
   const choice = picked !== null && can[picked] ? picked : null
-  const group = usePickGroup(CHOICES, (id) => can[id], choice, setPicked)
+  const group = usePickGroup(
+    CHOICES,
+    (id) => can[id],
+    choice,
+    setPicked,
+    !examples,
+  )
 
   if (examples) {
     const chosen = prompt !== null ? prompts?.[prompt] : undefined
