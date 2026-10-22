@@ -92,9 +92,11 @@ describe('setup telemetry', () => {
 
   it('lets a substep title the step, under the same step id', () => {
     const message = setupStepMessage('finish', 6, finishStep({ kind: 'own' }))
-    expect(message.step_id).toBe('finish')
-    expect(message.step_title).toBe('Explore on my own')
-    expect(message.substep_id).toBe('own')
-    expect(message.step_number).toBe(6)
+    expect(message).toMatchObject({
+      step_id: 'finish',
+      step_title: 'Explore on my own',
+      substep_id: 'own',
+      step_number: 6,
+    })
   })
 })
