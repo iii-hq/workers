@@ -331,12 +331,10 @@ pub async fn local_vm_command(
     run_override: Option<&str>,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    validate_compose_base_image(worker_dir)?;
-
     start_worker_impl(
         worker_name,
         &worker_dir.to_string_lossy(),
-        /*is_bundle=*/ false,
+        /*package=*/ None,
         over,
         run_override,
     )
@@ -384,22 +382,19 @@ fn validate_compose_base_image(worker_dir: &Path) -> Result<(), String> {
 ///
 /// The returned command is not spawned, so the caller decides how its output is
 /// captured and when it dies.
+///
+/// `package` is the name the bundle's manifest must declare; `worker_name` is
+/// the container key, which may differ.
 pub async fn bundle_vm_command(
+    package: &str,
     worker_name: &str,
     install_dir: &Path,
     over: VmOverride<'_>,
 ) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    if super::bundle_download::bundle_workers_disabled() {
-        return Err(format!(
-            "bundle workers are disabled via {}=1; refusing to start '{worker_name}'",
-            super::bundle_download::ENV_BUNDLE_WORKERS_DISABLED,
-        ));
-    }
-
     start_worker_impl(
         worker_name,
         &install_dir.to_string_lossy(),
-        /*is_bundle=*/ true,
+        Some(package),
         over,
         None,
     )
@@ -422,30 +417,31 @@ pub struct VmOverride<'a> {
     pub extra_env: HashMap<String, String>,
 }
 
-/// Shared body for `local_vm_command` and `bundle_vm_command`: validates the
-/// manifest, prepares the rootfs and boot script, and builds the `__vm-boot`
-/// command without spawning it.
+/// The checks a worker source must pass before anything is pulled or booted:
+/// the bundle kill switch, the manifest gates, project detection and, for a
+/// local worker, the compose base image. Returns the project and its kind.
 ///
-/// `is_bundle` changes resource and workspace handling: when true, resources
-/// are parsed and clamped via `bundle_download::parse_bundle_resources`
-/// (saturating + capped) rather than the permissive `parse_manifest_resources`,
-/// and the install dir is mounted live instead of copied in.
-pub(crate) async fn start_worker_impl(
-    worker_name: &str,
-    worker_path: &str,
-    is_bundle: bool,
-    over: VmOverride<'_>,
+/// `package` is `Some` for a bundle, and names what its manifest must declare.
+pub(crate) fn validate_source(
+    worker_dir: &Path,
+    package: Option<&str>,
     run_override: Option<&str>,
-) -> Result<super::worker_manager::libkrun::VmCommand, String> {
-    #[cfg(unix)]
-    restore_terminal_cooked_mode();
+) -> Result<(ProjectInfo, String), String> {
+    let project_path = worker_dir;
+    if let Some(package) = package
+        && super::bundle_download::bundle_workers_disabled()
+    {
+        return Err(format!(
+            "bundle workers are disabled via {}=1; refusing to start '{package}'",
+            super::bundle_download::ENV_BUNDLE_WORKERS_DISABLED,
+        ));
+    }
 
     // 1. Validate worker_path directory exists
-    let project_path = Path::new(worker_path);
     if !project_path.is_dir() {
         return Err(format!(
             "Worker path '{}' does not exist or is not a directory",
-            worker_path
+            project_path.display()
         ));
     }
 
@@ -460,8 +456,8 @@ pub(crate) async fn start_worker_impl(
     // load_project_info path below would honor those fields. The
     // strict validator also enforces the 64 KiB manifest cap, which
     // defuses billion-laughs YAML expansion before serde_yaml sees it.
-    if is_bundle
-        && let Err(e) = super::bundle_download::validate_bundle_manifest(project_path, worker_name)
+    if let Some(package) = package
+        && let Err(e) = super::bundle_download::validate_bundle_manifest(project_path, package)
     {
         return Err(format!(
             "bundle manifest re-validation failed at start: {}",
@@ -475,7 +471,7 @@ pub(crate) async fn start_worker_impl(
     // load_project_info path below. Deprecation warnings are intentionally NOT
     // re-emitted here — they fired at add time; repeating them on every engine
     // boot would be noise.
-    if !is_bundle {
+    if package.is_none() {
         let manifest_path = project_path.join(WORKER_MANIFEST);
         match super::project::read_manifest_doc(&manifest_path) {
             Ok(Some(doc)) => {
@@ -496,7 +492,7 @@ pub(crate) async fn start_worker_impl(
         None => {
             return Err(format!(
                 "Could not detect project type in '{}'",
-                worker_path
+                project_path.display()
             ));
         }
     };
@@ -519,7 +515,38 @@ pub(crate) async fn start_worker_impl(
         .as_deref()
         .map(str::trim)
         .filter(|k| !k.is_empty())
-        .unwrap_or("typescript");
+        .unwrap_or("typescript")
+        .to_string();
+
+    if package.is_none() {
+        validate_compose_base_image(project_path)?;
+    }
+    Ok((project, kind))
+}
+
+/// Shared body for `local_vm_command` and `bundle_vm_command`: validates the
+/// source, prepares the rootfs and boot script, and builds the `__vm-boot`
+/// command without spawning it.
+///
+/// `package` is `Some` for a bundle, which changes resource and workspace
+/// handling: resources are parsed and clamped via
+/// `bundle_download::parse_bundle_resources` (saturating + capped) rather than
+/// the permissive `parse_manifest_resources`, and the install dir is mounted
+/// live instead of copied in.
+pub(crate) async fn start_worker_impl(
+    worker_name: &str,
+    worker_path: &str,
+    package: Option<&str>,
+    over: VmOverride<'_>,
+    run_override: Option<&str>,
+) -> Result<super::worker_manager::libkrun::VmCommand, String> {
+    #[cfg(unix)]
+    restore_terminal_cooked_mode();
+
+    let project_path = Path::new(worker_path);
+    let (project, kind) = validate_source(project_path, package, run_override)?;
+    let kind = kind.as_str();
+    let is_bundle = package.is_some();
 
     // 3. Ensure libkrunfw available
     if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
@@ -1142,7 +1169,7 @@ resources:
         let err = start_worker_impl(
             "iii-cov-test-start-unknown-key",
             dir.path().to_str().unwrap(),
-            /*is_bundle=*/ false,
+            /*package=*/ None,
             test_override(state.path()),
             None,
         )
@@ -1166,7 +1193,7 @@ resources:
         let err = start_worker_impl(
             "iii-cov-test-start-oversize",
             dir.path().to_str().unwrap(),
-            /*is_bundle=*/ false,
+            /*package=*/ None,
             test_override(state.path()),
             None,
         )
@@ -1187,7 +1214,7 @@ resources:
         let err = start_worker_impl(
             "iii-cov-test-start-no-manifest",
             dir.path().to_str().unwrap(),
-            /*is_bundle=*/ false,
+            /*package=*/ None,
             test_override(state.path()),
             None,
         )
@@ -1212,7 +1239,7 @@ resources:
         let err = start_worker_impl(
             "iii-cov-test-start-bad-kind",
             dir.path().to_str().unwrap(),
-            /*is_bundle=*/ false,
+            /*package=*/ None,
             test_override(state.path()),
             None,
         )
@@ -1225,9 +1252,10 @@ resources:
 
     #[tokio::test]
     async fn bundle_start_skips_local_validation_then_rejects_unrecognized_kind() {
-        // is_bundle=true takes validate_bundle_manifest (which allows the
+        // A package takes validate_bundle_manifest (which allows the
         // deprecated runtime.kind) and skips the local strict-validation
-        // block; the run then fails pre-boot at ProjectInfo::validate.
+        // block; the run then fails pre-boot at ProjectInfo::validate. The
+        // manifest name matches the package, not the container key.
         let dir = tempfile::tempdir().unwrap();
         let yaml = "name: iii-cov-test-bundle-kind\nruntime:\n  kind: cobol\n\
                     scripts:\n  start: \"node bundle.js\"\n";
@@ -1235,9 +1263,9 @@ resources:
 
         let state = tempfile::tempdir().unwrap();
         let err = start_worker_impl(
-            "iii-cov-test-bundle-kind",
+            "compose-key",
             dir.path().to_str().unwrap(),
-            /*is_bundle=*/ true,
+            Some("iii-cov-test-bundle-kind"),
             test_override(state.path()),
             None,
         )

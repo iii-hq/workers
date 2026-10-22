@@ -233,6 +233,10 @@ pub fn register_all(
         ),
     ];
     refs.extend(fs::register_all(iii, registry, fs_runner));
+    refs.push(register_worker_prepare(
+        iii,
+        Arc::new(crate::worker_vm::WorkerVms::from_env()),
+    ));
     refs.push(
         iii.register_function(
             "sandbox-builtin::adapter::info",
@@ -255,6 +259,30 @@ pub fn adapter_info() -> AdapterInfo {
         adapter_version: env!("CARGO_PKG_VERSION").to_string(),
         contract: ContractVersion::CURRENT,
     }
+}
+
+fn register_worker_prepare(iii: &IIIClient, vms: Arc<crate::worker_vm::WorkerVms>) -> FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::worker::prepare",
+        RegisterFunction::new_async(move |req: crate::wire::WorkerPrepareRequest| {
+            let vms = vms.clone();
+            async move {
+                let start = std::time::Instant::now();
+                let result = vms.prepare(req).await;
+                log_handler_result(
+                    "sandbox-builtin::worker::prepare",
+                    None,
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                result.map_err(|e| SandboxErrorWire(e).into())
+            }
+        })
+        .description(
+            "Validate a worker VM's source and pull its base image; idempotent. \
+             Needs the project token in `auth`, and `host_path` under the host roots.",
+        ),
+    )
 }
 
 fn register_sandbox_create(
@@ -526,6 +554,7 @@ mod registration_tests {
             "fs::write",
             "fs::read",
             "adapter::info",
+            "worker::prepare",
         ]
         .iter()
         .map(|s| format!("sandbox-builtin::{s}"))

