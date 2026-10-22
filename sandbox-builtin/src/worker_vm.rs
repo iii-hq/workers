@@ -144,7 +144,8 @@ impl WorkerVms {
     }
 
     /// Build the VM for `state_key` and boot it. S502 while that VM is
-    /// preparing or running; a build error is S300.
+    /// preparing or running; a source `prepare` would reject is S501, as there;
+    /// any other build error is S300.
     pub async fn start(
         &self,
         req: WorkerStartRequest,
@@ -160,6 +161,7 @@ impl WorkerVms {
             slots.insert(id.clone(), Slot::Preparing(next));
         }
         let _unreserve = Unreserve(self, &id);
+        validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
         let over = VmOverride {
             state_dir: self.base.join(&id).join("root"),
             engine_url: &req.engine_url,
@@ -821,23 +823,28 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
-        for token in [None, Some("t")] {
+        // An adapter started without a token (or with an empty one) must refuse
+        // an empty `auth` too, which the length and byte checks alone would pass.
+        for (token, auth) in [(None, "u"), (Some("t"), "u"), (None, ""), (Some(""), "")] {
             let vms = Arc::new(vms(t, token, vec![t.into()]));
-            let err = prepare_err(&vms, "u", local(t)).await;
+            let err = prepare_err(&vms, auth, local(t)).await;
             assert_eq!(err.code().as_str(), "S505", "{err}");
 
             // A known VM: without the token, a stale instance is S505, not S503.
             let known = vms.launch("k", sh("exit 0")).unwrap().vm_id;
-            assert_eq!(code(vms.start(start_req("u", "k", local(t))).await), "S505");
+            assert_eq!(
+                code(vms.start(start_req(auth, "k", local(t))).await),
+                "S505"
+            );
             for vm_id in ["unknown", known.as_str()] {
-                assert_eq!(code(vms.status(status_req("u", vm_id, 9))), "S505");
-                assert_eq!(code(vms.stop(stop_req("u", vm_id, 9, 0)).await), "S505");
+                assert_eq!(code(vms.status(status_req(auth, vm_id, 9))), "S505");
+                assert_eq!(code(vms.stop(stop_req(auth, vm_id, 9, 0)).await), "S505");
                 assert_eq!(
-                    code(vms.logs(&iii, logs_req("u", vm_id, true)).await),
+                    code(vms.logs(&iii, logs_req(auth, vm_id, true)).await),
                     "S505"
                 );
             }
-            assert_eq!(code(vms.destroy(destroy_req("u", "k"))), "S505");
+            assert_eq!(code(vms.destroy(destroy_req(auth, "k"))), "S505");
         }
     }
 
@@ -972,7 +979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_build_leaves_the_key_startable() {
+    async fn a_rejected_source_is_s501_and_leaves_the_key_startable() {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         let empty = t.join("empty");
@@ -981,7 +988,7 @@ mod tests {
         for _ in 0..2 {
             assert_eq!(
                 code(vms.start(start_req("t", "k", local(&empty))).await),
-                "S300"
+                "S501"
             );
         }
     }
