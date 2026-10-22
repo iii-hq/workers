@@ -52,6 +52,8 @@ import {
   fetchExamplePrompts,
 } from '@/lib/onboarding/prompts'
 import {
+  type FinishChoice,
+  finishStep,
   reportSetupStep,
   type SetupStepId,
   type SetupStepProperties,
@@ -367,8 +369,8 @@ export function OnboardingWizardHost() {
   )
 
   const start = useCallback(
-    (outcome = 'start_building') => {
-      report('finish', { outcome })
+    (choice: FinishChoice) => {
+      report('finish', finishStep(choice))
       setOpen(false)
       window.requestAnimationFrame(requestComposerFocus)
     },
@@ -413,7 +415,10 @@ export function OnboardingWizardHost() {
     async (prompt: ExamplePrompt) => {
       if (starting.current) return
       starting.current = true
-      reportRef.current('finish', { outcome: 'example_prompt' })
+      reportRef.current(
+        'finish',
+        finishStep({ kind: 'example', title: prompt.title }),
+      )
       setOpen(false)
       const api = ctxRef.current
       if (!api) return
@@ -432,7 +437,7 @@ export function OnboardingWizardHost() {
       return
     }
     setTour({ kind: 'idle' })
-    reportRef.current('finish', { outcome: 'tour' })
+    reportRef.current('finish', finishStep({ kind: 'tour' }))
     setOpen(false)
     openTour()
   }, [])
@@ -584,8 +589,8 @@ export function OnboardingWizardHost() {
                     onPrompt={(prompt) => void startPrompt(prompt)}
                     tour={tour}
                     onTour={() => void startTour()}
-                    onOwn={() => start()}
-                    onFinish={() => start('finished')}
+                    onOwn={() => start({ kind: 'own' })}
+                    onFinish={() => start({ kind: 'finish' })}
                     onBack={() => go('ready')}
                   />
                 )}
