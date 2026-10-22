@@ -13,6 +13,7 @@ pub mod cli;
 pub(crate) mod core;
 pub mod daemon_exit;
 pub mod sandbox_daemon;
+pub mod wire;
 
 pub use cli::app::{Cli, Commands, SandboxDaemonArgs};
 pub use cli::vm_boot::VmBootArgs;
