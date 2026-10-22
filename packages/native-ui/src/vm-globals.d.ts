@@ -26,3 +26,12 @@ declare function clearTimeout(id: number | undefined): void
 declare function setInterval(handler: (...args: any[]) => void, timeout?: number, ...args: any[]): number
 declare function clearInterval(id: number | undefined): void
 declare function queueMicrotask(callback: () => void): void
+
+/**
+ * What Solid's `JSX.Element` calls a `Node`. The VM has no DOM, and without
+ * this declaration that type would be `any` (so `<Show>` render callbacks
+ * would get untyped parameters). Only the SDK's components make one.
+ */
+interface Node {
+  readonly __nativeUiNode: true
+}

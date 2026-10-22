@@ -6,33 +6,50 @@
  * hooks and the page table.
  */
 
-// The Solid primitives an app needs, from the bundle's one copy of solid-js.
-// Solid's own <Switch> (control flow) is not re-exported: `Switch` here is
-// the toggle; import it from solid-js under another name when needed.
+// The Solid primitives and types an app needs, from the bundle's one copy of
+// solid-js. Solid's own <Switch> (control flow) is not re-exported: `Switch`
+// here is the toggle; import it from solid-js under another name when needed.
 export {
+  type Accessor,
   batch,
+  type Component,
+  catchError,
   children,
+  createComputed,
   createContext,
   createEffect,
   createMemo,
   createRenderEffect,
   createResource,
   createRoot,
+  createSelector,
   createSignal,
   ErrorBoundary,
+  type FlowComponent,
   For,
+  getOwner,
   Index,
+  indexArray,
   type JSX,
   Match,
+  mapArray,
   mergeProps,
   on,
   onCleanup,
   onMount,
+  type ParentComponent,
+  type ParentProps,
+  type Resource,
+  runWithOwner,
+  type Setter,
   Show,
+  type Signal,
   splitProps,
   untrack,
   useContext,
+  type VoidComponent,
 } from 'solid-js'
+export { createStore, produce, reconcile, type SetStoreFunction, type Store, unwrap } from 'solid-js/store'
 export { type AppDefinition, defineApp, type PageComponent, type PageOptions, type PageRef } from './app'
 export * from './components'
 export type {

@@ -8,6 +8,7 @@ describe('the VM sandbox', () => {
     const h = await mounted('sandbox')
     expect(JSON.parse(String(h.prop('report', 'text')))).toEqual({
       hostSend: 'undefined',
+      rawRequest: 'undefined',
       vmReceive: 'function',
       eval: 'EvalError',
       newFunction: 'EvalError',

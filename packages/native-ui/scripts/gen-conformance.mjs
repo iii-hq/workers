@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildNativeUi } from '../src/build.mjs'
-import { createDecoder, createTestHost, HostError } from '../src/testing/index.mjs'
+import { createDecoder, createTestHost } from '../src/testing/index.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -172,20 +172,17 @@ export const FLOWS = [
     name: 'requests',
     app: 'requests',
     description:
-      "Design §5.7, a call, a subscription, an error (namespace browser; ids seeded to request 7 and subscription 3): a press sends a call and an on in one message; the host answers the on at once and the call after; the trigger arrives; a second press gets the host's forbidden error.",
-    host: { ns: 'browser', ...DESIGN_HOST, ids: { req: 7, sub: 3 } },
+      "Design §5.7, a call, a subscription, an error (namespace browser; ids seeded to request 7 and subscription 3): a press sends a call and an on in one message; the host answers the on at once and the call after; the trigger arrives; a second press calls engine::functions::list, outside the namespace, and the host's policy answers forbidden. iii.call refuses that call before the wire, so the app sends it raw (the harness's test-only rawRequests).",
+    host: { ns: 'browser', ...DESIGN_HOST, ids: { req: 7, sub: 3 }, rawRequests: true },
     calls: {
       'browser::sessions::list': () => ({ sessions: [] }),
-      'browser::sessions::stop': () => {
-        throw new HostError('forbidden', 'browser may only call browser::… functions')
-      },
     },
     designExamples: ['requests.send', 'requests.responses', 'requests.trigger', 'requests.error'],
     async run(h) {
       await h.mount('root')
       await h.press({ type: 'Button', text: 'Load' })
       await h.emitTrigger('browser::session-started', STARTED)
-      await h.press({ type: 'Button', text: 'Stop' })
+      await h.press({ type: 'Button', text: 'Engine' })
     },
   },
   {

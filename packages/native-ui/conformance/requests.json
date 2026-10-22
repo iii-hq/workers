@@ -1,6 +1,6 @@
 {
   "name": "requests",
-  "description": "Design §5.7, a call, a subscription, an error (namespace browser; ids seeded to request 7 and subscription 3): a press sends a call and an on in one message; the host answers the on at once and the call after; the trigger arrives; a second press gets the host's forbidden error.",
+  "description": "Design §5.7, a call, a subscription, an error (namespace browser; ids seeded to request 7 and subscription 3): a press sends a call and an on in one message; the host answers the on at once and the call after; the trigger arrives; a second press calls engine::functions::list, outside the namespace, and the host's policy answers forbidden. iii.call refuses that call before the wire, so the app sends it raw (the harness's test-only rawRequests).",
   "catalog": 1,
   "encoding": "json-v0",
   "app": "conformance/apps/requests.tsx",
@@ -15,11 +15,11 @@
   ],
   "fromVm": [
     "[[23,{\"sdk\":\"0.1.0\",\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
-    "[[1,1,40],[2,1,16,\"Browser\"],[1,2,1],[2,2,16,8],[1,3,10],[2,3,16,\"Not loaded\"],[3,2,0,0,3],[1,4,20],[2,4,16,\"Load\"],[2,4,2,2],[3,2,0,1,4],[1,5,20],[2,5,16,\"Stop\"],[2,5,17,4],[2,5,2,2],[3,2,0,2,5],[3,1,0,0,2],[7,1,1]]",
+    "[[1,1,40],[2,1,16,\"Browser\"],[1,2,1],[2,2,16,8],[1,3,10],[2,3,16,\"Not loaded\"],[3,2,0,0,3],[1,4,20],[2,4,16,\"Load\"],[2,4,2,2],[3,2,0,1,4],[1,5,20],[2,5,16,\"Engine\"],[2,5,17,4],[2,5,2,2],[3,2,0,2,5],[3,1,0,0,2],[7,1,1]]",
     "[[20,7,1,{\"fn\":\"browser::sessions::list\",\"payload\":{}}],[20,8,2,{\"sub\":3,\"trigger\":\"browser::session-started\",\"config\":{}}]]",
     "[[2,3,16,\"0 tabs\"]]",
     "[[2,3,16,\"Started s1\"]]",
-    "[[20,9,1,{\"fn\":\"browser::sessions::stop\",\"payload\":{\"session_id\":\"s1\"}}]]",
+    "[[20,9,1,{\"fn\":\"engine::functions::list\",\"payload\":{}}]]",
     "[[2,3,16,\"browser may only call browser::… functions\"]]"
   ],
   "order": [
@@ -74,7 +74,7 @@
                   "id": 5,
                   "props": {
                     "events": ["press"],
-                    "text": "Stop",
+                    "text": "Engine",
                     "kind": "destructive"
                   }
                 }

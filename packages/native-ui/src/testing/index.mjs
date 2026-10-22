@@ -150,6 +150,9 @@ class TestHost {
     this.nextTimerFn = ctx.getProp(hooks, 'nextTimer')
     hooks.dispose()
 
+    if (this.options.rawRequests) {
+      ctx.setProp(ctx.global, '__IIIUI_TEST_RAW__', ctx.true)
+    }
     if (this.options.ids) {
       const seed = this._unwrap(
         ctx.evalCode(`(${JSON.stringify(this.options.ids)})`, 'seed.js', { type: 'global' }),

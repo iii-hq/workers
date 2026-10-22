@@ -6,6 +6,7 @@ import {
   defineApp,
   iii,
   Page,
+  Show,
   Switch,
   Text,
   useCall,
@@ -36,6 +37,7 @@ function Root() {
     <Page title="Hooks">
       <Column>
         <Text testTag="result">{result()?.echo ?? 'loading'}</Text>
+        <Show when={result()}>{(r) => <Text testTag="echo">{`echo ${r().echo}`}</Text>}</Show>
         <Text testTag="events">{String(events())}</Text>
         <Text testTag="visible">{env.visible ? 'visible' : 'hidden'}</Text>
         <Text testTag="env-log">{envLog().join(' | ')}</Text>

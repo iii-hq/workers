@@ -203,7 +203,7 @@ function genEvents(catalog) {
 function genProps(catalog) {
   const out = [HEADER]
   out.push("import type { JSX } from 'solid-js'")
-  out.push("import type { IconName, JsonValue, NodeRef, Padding, Prop } from '../types'")
+  out.push("import type { Binding, IconName, JsonValue, NodeRef, Padding, Prop } from '../types'")
   const used = new Set(
     [...catalog.commonProps, ...catalog.types.flatMap((t) => t.props)].map((p) => p.enum).filter(Boolean),
   )
@@ -252,9 +252,10 @@ function genProps(catalog) {
       out.push(`  ${s.name}?: JSX.Element`)
     }
     const hasChildrenSlot = t.slots.some((s) => s.slot === 0)
-    if (TEXT_CHILDREN.has(t.name))
-      out.push('  /** Text children become the `text` prop. */', '  children?: JSX.Element')
-    else if (hasChildrenSlot && !t.slots.some((s) => s.name === 'children')) {
+    if (TEXT_CHILDREN.has(t.name)) {
+      out.push('  /** Text children become the `text` prop (in a List template, one bound field may be the text). */')
+      out.push('  children?: JSX.Element | Binding')
+    } else if (hasChildrenSlot && !t.slots.some((s) => s.name === 'children')) {
       const name = t.slots.find((s) => s.slot === 0).name
       out.push(`  /** Slot 0 (\`${name}\`). */`, '  children?: JSX.Element')
     }

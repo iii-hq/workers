@@ -41,6 +41,17 @@ delete g.__IIIUI_TEST_IDS__
 /** Next node, request and subscription ids (design §5.2): from 1, never reused while the VM lives. */
 export const ids = { node: seed.node ?? 1, req: seed.req ?? 1, sub: seed.sub ?? 1 }
 
+/**
+ * Test-only: with `createTestHost({ rawRequests: true })` the harness sets
+ * this flag before the bundle loads, and the SDK exposes
+ * `__iiiui_request(method, args)`, which sends a request without the SDK's
+ * own checks (a conformance flow uses it to show the host refusing a call
+ * outside the namespace, which `iii.call` refuses before the wire). The
+ * host's policy is what protects the engine; production never sets it.
+ */
+const rawRequests = g.__IIIUI_TEST_RAW__ === true
+delete g.__IIIUI_TEST_RAW__
+
 let out: Entry[] = []
 let scheduled = false
 let flushing = false
@@ -190,6 +201,8 @@ export function request(method: number, args: JsonObject): Promise<JsonValue> {
 export function notify(method: number, args: JsonObject): void {
   request(method, args).catch((err) => console.warn(`native-ui: request ${method} failed`, describe(err)))
 }
+
+if (rawRequests) g.__iiiui_request = (method: number, args: JsonObject) => request(method, args)
 
 onEntry(IN.response, ([, reqId, ok, value]) => {
   const p = pending.get(reqId as number)

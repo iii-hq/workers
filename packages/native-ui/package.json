@@ -22,7 +22,8 @@
       "default": "./src/testing/index.mjs"
     },
     "./catalog.json": "./catalog.json",
-    "./tsconfig.app.json": "./tsconfig.app.json"
+    "./tsconfig.app.json": "./tsconfig.app.json",
+    "./tsconfig.test.json": "./tsconfig.test.json"
   },
   "files": [
     "catalog.json",
@@ -30,6 +31,7 @@
     "scripts",
     "conformance",
     "tsconfig.app.json",
+    "tsconfig.test.json",
     "README.md"
   ],
   "scripts": {

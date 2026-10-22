@@ -75,6 +75,12 @@ export interface TestHostOptions {
   storage?: Record<string, Json>
   /** The fake clock's start in ms (default 0). */
   now?: number
+  /**
+   * Exposes `globalThis.__iiiui_request(method, args)` in the VM: a request
+   * without the SDK's own checks, to show what the host answers to a call
+   * the SDK would refuse (test-only).
+   */
+  rawRequests?: boolean
   /** Seeds the SDK's id counters, to reproduce exact ids. */
   ids?: { node?: number; req?: number; sub?: number }
   /** Throw on protocol violations and uncaught VM errors (default true). */

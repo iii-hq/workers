@@ -26,7 +26,9 @@ only call the worker's own functions and bind its own trigger types.
 ```
 <worker>/native-ui/
   package.json
-  tsconfig.json
+  tsconfig.json          the app (VM code: no DOM, no Node)
+  tsconfig.test.json     the tests (Node)
+  vitest.config.mjs
   build.mjs
   src/app.tsx
   test/*.test.ts
@@ -40,16 +42,37 @@ only call the worker's own functions and bind its own trigger types.
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
     "watch": "node build.mjs --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": { "@iii-dev/native-ui": "workspace:*" },
-  "devDependencies": { "typescript": "catalog:", "vitest": "catalog:" }
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "solid-js": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
 }
 ```
 
-```json
-{ "extends": "@iii-dev/native-ui/tsconfig.app.json", "include": ["src", "test"] }
+`solid-js` is a dev dependency for the types only: TypeScript resolves the
+JSX types (`solid-js/jsx-runtime`) from the app's own directory, and under
+pnpm's strict layout an app that does not list it fails with TS2875. The
+bundle still holds the SDK's one copy (the same catalog version).
+
+```jsonc
+// tsconfig.json: the app, with exactly the VM's globals
+{ "extends": "@iii-dev/native-ui/tsconfig.app.json", "include": ["src"] }
 ```
+
+```jsonc
+// tsconfig.test.json: the tests run in Node (ES2023, Node types)
+{ "extends": "@iii-dev/native-ui/tsconfig.test.json", "include": ["test", "vitest.config.mjs"] }
+```
+
+Keep the two apart: the app's config has no Node types (`process`, `fs`
+must not compile in a bundle), and the tests need them. `build` checks the
+app; `typecheck` checks both.
 
 ```js
 // build.mjs
@@ -87,6 +110,10 @@ first line:
 - Long lists are `List` with `createList` (items on the host, templates
   bound to item fields), never a `For` of a thousand rows.
 - Compute the strings a row shows into the item: the host formats nothing.
+- JSX is typed for the VM: a component returns `JSX.Element`, a plain
+  object is not one, and `<Show when={tab()}>{(t) => …}</Show>` types `t`.
+  `Accessor`, `Setter`, `Component`, `ParentProps` and the other Solid types,
+  and `createStore` from `solid-js/store`, come from `@iii-dev/native-ui`.
 - Stop what costs only while visible when `iii.env.visible` turns false
   (`useTrigger` takes `enabled`).
 - Frames, video and anything streaming never go through the script: a
@@ -211,8 +238,9 @@ broken file. `<NS>` is the namespace upper-cased, `-` as `_`
 
 ## Checklist
 
-- `<worker>/native-ui/` builds clean (`pnpm build`: types, size, smoke run)
-  and is listed in `pnpm-workspace.yaml`.
+- `<worker>/native-ui/` builds clean (`pnpm build`: types, size, smoke run),
+  `pnpm typecheck` passes for the app and the tests, and it is listed in
+  `pnpm-workspace.yaml`.
 - The app's tests run in the harness with `calls` for every function it uses.
 - `Cargo.toml` links `iii-native-ui` by path; `build.rs` builds
   `native-ui/` and honours `SKIP_UI_BUILD`.

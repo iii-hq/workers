@@ -25,17 +25,23 @@ byte-identical copy. How a worker ships an app end to end:
 | `@iii-dev/native-ui/build` | `buildNativeUi`: TSX → one IIFE bundle, with size limits, a smoke run and `--watch` |
 | `@iii-dev/native-ui/testing` | `createTestHost`: the bundle in `quickjs-emscripten` with the device VM's globals, driven like the app drives it |
 | `@iii-dev/native-ui/catalog.json` | The canonical schema |
-| `@iii-dev/native-ui/tsconfig.app.json` | The compiler options an app extends (no DOM, JSX for Solid) |
+| `@iii-dev/native-ui/tsconfig.app.json` | The compiler options an app extends (no DOM, no Node, JSX for Solid) |
+| `@iii-dev/native-ui/tsconfig.test.json` | The same for the app's tests, which run in Node (ES2023, Node types) |
 
 ## An app
 
 ```
 <worker>/native-ui/
-  package.json     "@iii-dev/native-ui": "workspace:*", "build": "node build.mjs", "test": "vitest run"
-  tsconfig.json    { "extends": "@iii-dev/native-ui/tsconfig.app.json", "include": ["src"] }
-  build.mjs        buildNativeUi({ entry: 'src/app.tsx', outfile: 'dist/native.js', ns: '<ns>' })
-  src/app.tsx      defineApp({ pages: { root: … } })
+  package.json        dependencies: "@iii-dev/native-ui": "workspace:*"
+                      devDependencies: "solid-js": "catalog:" (the JSX types), "@types/node", "typescript", "vitest"
+  tsconfig.json       { "extends": "@iii-dev/native-ui/tsconfig.app.json", "include": ["src"] }
+  tsconfig.test.json  { "extends": "@iii-dev/native-ui/tsconfig.test.json", "include": ["test", "vitest.config.mjs"] }
+  build.mjs           buildNativeUi({ entry: 'src/app.tsx', outfile: 'dist/native.js', ns: '<ns>' })
+  src/app.tsx         defineApp({ pages: { root: … } })
 ```
+
+The full template, and why `solid-js` must be listed under pnpm, is in the
+SOP.
 
 ```tsx
 import { Button, Column, createSignal, defineApp, iii, Page, Text } from '@iii-dev/native-ui'
@@ -184,9 +190,17 @@ A failed request rejects with `IiiError` (`code` is one of the catalogue's
 - `useEnv()`, `useNav()`, `usePage()`.
 
 The usual Solid primitives (`createSignal`, `createMemo`, `createEffect`,
-`Show`, `For`, `Index`, `Match`, `onMount`, `onCleanup`, …) are re-exported,
-so an app needs no direct `solid-js` dependency. `Switch` is the toggle
-component; Solid's control-flow `Switch` comes from `solid-js`.
+`createSelector`, `Show`, `For`, `Index`, `Match`, `onMount`, `onCleanup`,
+…), its types (`Accessor`, `Setter`, `Signal`, `Component`,
+`ParentComponent`, `ParentProps`, `Resource`, `JSX`, …) and the store
+(`createStore`, `produce`, `reconcile`) are re-exported from the bundle's one
+copy of solid-js. `Switch` is the toggle component; Solid's control-flow
+`Switch` comes from `solid-js`.
+
+JSX is typed for the VM: the package declares the `Node` that Solid's
+`JSX.Element` refers to (without the DOM it would be `any`), so a plain
+object is not an element and `<Show when={tab()}>{(t) => …}</Show>` gets a
+typed `t`.
 
 ### What the VM has
 
@@ -250,7 +264,9 @@ protocol on every message: creates before use, inserts of detached nodes,
 indexes in range, no node left detached at the end of a batch, bindings only
 in templates, prop values of their catalogue type, messages within
 `limits.maxMessageBytes`. Any violation or uncaught VM error fails the
-action (`strict: false` to only record them).
+action (`strict: false` to only record them). `rawRequests: true` exposes a
+test-only `__iiiui_request(method, args)` in the VM that skips the SDK's own
+checks, to show what the host answers to a request the SDK would refuse.
 
 API: `mount`, `unmount`, `back`, `tick`, `settle`, `deliver`, `respond`,
 `fail`, `env`, `emitTrigger`, `press`, `longPress`, `emit`, `type`,
@@ -279,7 +295,7 @@ of design §5.7 comes out of a flow byte for byte;
 | `list-splice.json` | Two templates by `kind`, header/empty/footer slots, four `set` diffs, item presses |
 | `text.json` | §5.7: two edits in one turn, the script's normalized write |
 | `text-handshake.json` | A write with an old edit count dropped by the host, the person's text winning |
-| `requests.json` | §5.7: a call and a binding, their answers, a trigger, a forbidden error |
+| `requests.json` | §5.7: a call and a binding, their answers, a trigger, a call outside the namespace refused by the host |
 | `nav-back.json` | §5.7: push, mount, Back with `{result: null}` |
 | `nav-result.json` | A page popping itself with a result |
 | `env.json` | §5.7: the window passing 720 dp |

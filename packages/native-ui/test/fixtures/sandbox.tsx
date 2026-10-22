@@ -14,6 +14,7 @@ function attempt(fn: () => unknown): string {
 
 const report = {
   hostSend: typeof g.__host_send,
+  rawRequest: typeof g.__iiiui_request,
   vmReceive: typeof g.__vm_receive,
   // biome-ignore lint/complexity/noCommaOperator: an indirect eval, on purpose
   // biome-ignore lint/security/noGlobalEval: the test checks that eval throws

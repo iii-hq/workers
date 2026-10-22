@@ -147,6 +147,7 @@ describe('hooks', () => {
   it('useCall follows its payload and stops when it is undefined', async () => {
     const h = await mounted('hooks', { calls: { 'demo::echo': (p: unknown) => ({ echo: (p as { q: string }).q }) } })
     expect(h.prop('result', 'text')).toBe('one')
+    expect(h.prop('echo', 'text')).toBe('echo one')
     await h.press('two')
     expect(h.prop('result', 'text')).toBe('two')
     const calls = h.requests.filter((r) => r.method === 'call').length
