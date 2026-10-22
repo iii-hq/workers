@@ -109,7 +109,11 @@ use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env
 
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
 use crate::sandbox_daemon::errors::SandboxErrorWire;
-use crate::wire::{AdapterInfo, AdapterInfoRequest, ContractVersion};
+use crate::wire::{
+    AdapterInfo, AdapterInfoRequest, ContractVersion, WORKER_DESTROY, WORKER_PREPARE, WORKER_START,
+    WORKER_STATUS, WORKER_STOP,
+};
+use crate::worker_vm::WorkerVms;
 
 /// This adapter's worker name, function prefix and default configuration entry.
 const ADAPTER_NAME: &str = env!("CARGO_PKG_NAME");
@@ -233,10 +237,48 @@ pub fn register_all(
         ),
     ];
     refs.extend(fs::register_all(iii, registry, fs_runner));
-    refs.push(register_worker_prepare(
-        iii,
-        Arc::new(crate::worker_vm::WorkerVms::from_env()),
-    ));
+    let vms = Arc::new(WorkerVms::from_env());
+    refs.extend([
+        register_worker_op(
+            iii,
+            vms.clone(),
+            WORKER_PREPARE,
+            "Validate a worker VM's source and pull its base image; idempotent. \
+             Needs the project token in `auth`, and `host_path` under the host roots.",
+            |vms, req| async move { vms.prepare(req).await },
+        ),
+        register_worker_op(
+            iii,
+            vms.clone(),
+            WORKER_START,
+            "Boot the worker VM of `state_key` as its next instance. Needs the project \
+             token; S502 while that VM is preparing or running.",
+            |vms, req| async move { vms.start(req).await },
+        ),
+        register_worker_op(
+            iii,
+            vms.clone(),
+            WORKER_STATUS,
+            "State of one worker VM instance. Needs the project token.",
+            |vms, req| async move { vms.status(req) },
+        ),
+        register_worker_op(
+            iii,
+            vms.clone(),
+            WORKER_STOP,
+            "SIGTERM a worker VM instance, then SIGKILL after `grace_ms` (0 kills at once); \
+             returns its final status. Needs the project token.",
+            |vms, req| async move { vms.stop(req).await },
+        ),
+        register_worker_op(
+            iii,
+            vms,
+            WORKER_DESTROY,
+            "Remove the state of `state_key`'s worker VM. Needs the project token; \
+             S502 while that VM is preparing or running.",
+            |vms, req| async move { vms.destroy(req) },
+        ),
+    ]);
     refs.push(
         iii.register_function(
             "sandbox-builtin::adapter::info",
@@ -261,27 +303,34 @@ pub fn adapter_info() -> AdapterInfo {
     }
 }
 
-fn register_worker_prepare(iii: &IIIClient, vms: Arc<crate::worker_vm::WorkerVms>) -> FunctionRef {
+/// Register `<adapter>::<suffix>` as `op` on the shared worker VMs.
+fn register_worker_op<Req, Resp, F, Fut>(
+    iii: &IIIClient,
+    vms: Arc<WorkerVms>,
+    suffix: &str,
+    description: &str,
+    op: F,
+) -> FunctionRef
+where
+    Req: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
+    Resp: serde::Serialize + schemars::JsonSchema + Send + 'static,
+    F: Fn(Arc<WorkerVms>, Req) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<Resp, SandboxError>> + Send + 'static,
+{
+    let id = format!("{ADAPTER_NAME}::{suffix}");
     iii.register_function(
-        "sandbox-builtin::worker::prepare",
-        RegisterFunction::new_async(move |req: crate::wire::WorkerPrepareRequest| {
-            let vms = vms.clone();
+        id.clone(),
+        RegisterFunction::new_async(move |req: Req| {
+            let call = op(vms.clone(), req);
+            let id = id.clone();
             async move {
                 let start = std::time::Instant::now();
-                let result = vms.prepare(req).await;
-                log_handler_result(
-                    "sandbox-builtin::worker::prepare",
-                    None,
-                    &result,
-                    start.elapsed().as_millis() as u64,
-                );
+                let result = call.await;
+                log_handler_result(&id, None, &result, start.elapsed().as_millis() as u64);
                 result.map_err(|e| SandboxErrorWire(e).into())
             }
         })
-        .description(
-            "Validate a worker VM's source and pull its base image; idempotent. \
-             Needs the project token in `auth`, and `host_path` under the host roots.",
-        ),
+        .description(description),
     )
 }
 
@@ -486,7 +535,7 @@ fn register_sandbox_catalog_list(
 /// "tracing instrumentation" follow-up surfaced by the post-implementation
 /// devex review.
 pub(crate) fn log_handler_result<T>(
-    function_id: &'static str,
+    function_id: &str,
     sandbox_id: Option<&str>,
     result: &Result<T, crate::sandbox_daemon::errors::SandboxError>,
     duration_ms: u64,
@@ -555,6 +604,10 @@ mod registration_tests {
             "fs::read",
             "adapter::info",
             "worker::prepare",
+            WORKER_START,
+            WORKER_STATUS,
+            WORKER_STOP,
+            WORKER_DESTROY,
         ]
         .iter()
         .map(|s| format!("sandbox-builtin::{s}"))

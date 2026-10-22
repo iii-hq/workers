@@ -6,27 +6,95 @@
 
 //! `sandbox-builtin::worker::*`: worker VMs that Compose supervises.
 
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use nix::sys::signal::{Signal, kill};
+use nix::unistd::Pid;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::sync::watch;
 
-use crate::cli::local_worker::validate_source;
+use crate::cli::local_worker::{VmOverride, bundle_vm_command, local_vm_command, validate_source};
 use crate::cli::worker_manager::oci;
+use crate::daemon_exit::Lifeline;
 use crate::sandbox_daemon::SandboxError;
-use crate::wire::{WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource};
+use crate::wire::{
+    LogStream, State, WorkerDestroyRequest, WorkerDestroyResponse, WorkerPrepareRequest,
+    WorkerPrepareResponse, WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus,
+    WorkerStatusRequest, WorkerStopRequest,
+};
+
+/// Compose's own worker-log cap: past it `console.log` rotates to `console.log.1`.
+const CONSOLE_LOG_CAP: u64 = 10 * 1024 * 1024;
+/// Longer output without a newline is split, so a guest cannot grow the adapter's memory.
+const MAX_LINE: u64 = 64 * 1024;
+/// How long the waiter lets the pumps drain after the VM exits: a grandchild
+/// that inherited the pipes could hold them open forever.
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
+const CONSOLE_LOG: &str = "console.log";
+const STATE_FILE: &str = "state.json";
 
 /// The worker VMs of one project, behind its token and host roots.
 pub struct WorkerVms {
-    /// Per-VM state lives in `<base>/<vm_id>/`.
-    #[expect(dead_code, reason = "worker::start reads it (Task 7)")]
+    /// Per-VM state lives in `<base>/<vm_id>/`: the control files, and the VM's
+    /// writable share `root/`, which a uid-0 guest controls.
     base: PathBuf,
     token: Option<String>,
     roots: Vec<PathBuf>,
+    /// Keyed by `vm_id`. An exited VM stays, so `status` can report it.
+    slots: Mutex<HashMap<String, Slot>>,
+}
+
+#[derive(Clone)]
+enum Slot {
+    /// `start` is building the VM that will boot as this instance.
+    Preparing(u64),
+    Booted(Arc<Vm>),
+}
+
+struct Vm {
+    instance: u64,
+    pid: Pid,
+    started_at_ms: u64,
+    /// Set by `stop` before it signals, so the exit reads as `Stopped`.
+    stopping: AtomicBool,
+    /// Set once the waiter reaps the process: its pid may then be reused.
+    reaped: AtomicBool,
+    /// `None` until the waiter records the exit, after the pumps drain.
+    ended: watch::Sender<Option<Ended>>,
+}
+
+#[derive(Clone, Copy)]
+struct Ended {
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+    at_ms: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StateFile {
+    instance: u64,
 }
 
 impl WorkerVms {
     pub fn new(base: PathBuf, token: Option<String>, roots: Vec<PathBuf>) -> Self {
-        Self { base, token, roots }
+        Self {
+            base,
+            token,
+            roots,
+            slots: Mutex::default(),
+        }
     }
 
     /// Compose sets the token and the roots on this container only.
@@ -52,15 +120,7 @@ impl WorkerVms {
         req: WorkerPrepareRequest,
     ) -> Result<WorkerPrepareResponse, SandboxError> {
         self.authorize(&req.auth)?;
-        let (package, host_path, run_override) = match &req.source {
-            WorkerSource::Bundle { package, host_path } => {
-                (Some(package.as_str()), host_path, None)
-            }
-            WorkerSource::Local {
-                host_path,
-                run_override,
-            } => (None, host_path, run_override.as_deref()),
-        };
+        let (package, host_path, run_override) = source_parts(&req.source);
         let dir = self.admit(host_path)?;
         let (project, kind) =
             validate_source(&dir, package, run_override).map_err(SandboxError::SourceRejected)?;
@@ -74,6 +134,185 @@ impl WorkerVms {
                 .map_err(SandboxError::PrepareFailed)?;
         }
         Ok(WorkerPrepareResponse {})
+    }
+
+    /// Build the VM for `state_key` and boot it. S502 while that VM is
+    /// preparing or running; a build error is S300.
+    pub async fn start(
+        &self,
+        req: WorkerStartRequest,
+    ) -> Result<WorkerStartResponse, SandboxError> {
+        self.authorize(&req.auth)?;
+        let (package, host_path, run_override) = source_parts(&req.source);
+        let dir = self.admit(host_path)?;
+        let id = vm_id(&req.state_key);
+        {
+            let mut slots = self.slots();
+            refuse_busy(&id, slots.get(&id))?;
+            let next = stored_instance(&self.base.join(&id))? + 1;
+            slots.insert(id.clone(), Slot::Preparing(next));
+        }
+        let _unreserve = Unreserve(self, &id);
+        let over = VmOverride {
+            state_dir: self.base.join(&id).join("root"),
+            engine_url: &req.engine_url,
+            extra_env: req.env.into_iter().collect(),
+        };
+        let built = match package {
+            Some(package) => bundle_vm_command(package, &req.worker_name, &dir, over).await,
+            None => local_vm_command(&req.worker_name, &dir, run_override, over).await,
+        }
+        .map_err(SandboxError::BootFailed)?;
+        self.launch(&req.state_key, built.command)
+    }
+
+    /// Spawn `cmd` as the next instance of `state_key`'s VM, its output pumped
+    /// into `console.log`.
+    pub(crate) fn launch(
+        &self,
+        state_key: &str,
+        cmd: Command,
+    ) -> Result<WorkerStartResponse, SandboxError> {
+        let id = vm_id(state_key);
+        let dir = self.base.join(&id);
+        // Held to the insert, so two launches of one key cannot both spawn.
+        let mut slots = self.slots();
+        // A `Preparing` entry is the reservation of the `start` calling this.
+        if !matches!(slots.get(&id), Some(Slot::Preparing(_))) {
+            refuse_busy(&id, slots.get(&id))?;
+        }
+        let instance = stored_instance(&dir)? + 1;
+        let (console, lifeline, mut child) = spawn(&dir, instance, cmd).map_err(|e| {
+            SandboxError::BootFailed(format!("cannot launch VM in {}: {e}", dir.display()))
+        })?;
+        let vm = Arc::new(Vm {
+            instance,
+            pid: Pid::from_raw(child.id().expect("a just-spawned child has a pid") as i32),
+            started_at_ms: now_ms(),
+            stopping: AtomicBool::new(false),
+            reaped: AtomicBool::new(false),
+            ended: watch::Sender::new(None),
+        });
+        let console = Arc::new(Mutex::new(Console {
+            dir,
+            file: console,
+            len: 0,
+        }));
+        let pumps = [
+            tokio::spawn(pump(
+                child.stdout.take().expect("stdout is piped"),
+                LogStream::Stdout,
+                console.clone(),
+            )),
+            tokio::spawn(pump(
+                child.stderr.take().expect("stderr is piped"),
+                LogStream::Stderr,
+                console,
+            )),
+        ];
+        let waited = vm.clone();
+        tokio::spawn(async move {
+            let status = child.wait().await.ok();
+            waited.reaped.store(true, Ordering::SeqCst);
+            drop(lifeline);
+            // So an exited VM's log is complete.
+            let _ = tokio::time::timeout(DRAIN_GRACE, futures::future::join_all(pumps)).await;
+            waited.ended.send_replace(Some(Ended {
+                exit_code: status.and_then(|s| s.code()),
+                signal: status.and_then(|s| s.signal()),
+                at_ms: now_ms(),
+            }));
+        });
+        slots.insert(id.clone(), Slot::Booted(vm));
+        Ok(WorkerStartResponse {
+            vm_id: id,
+            instance,
+        })
+    }
+
+    /// S504 for an unknown `vm_id`, S503 for another instance.
+    pub fn status(&self, req: WorkerStatusRequest) -> Result<WorkerStatus, SandboxError> {
+        self.authorize(&req.auth)?;
+        Ok(self.lookup(&req.vm_id, req.instance)?.status(&req.vm_id))
+    }
+
+    /// SIGTERM, then SIGKILL after `grace_ms`; `grace_ms: 0` kills at once.
+    /// Returns the final status; an exited VM returns it as is.
+    pub async fn stop(&self, req: WorkerStopRequest) -> Result<WorkerStatus, SandboxError> {
+        self.authorize(&req.auth)?;
+        let vm = match self.lookup(&req.vm_id, req.instance)? {
+            // No process yet: Compose retries once the boot is stoppable.
+            Slot::Preparing(instance) => {
+                return Err(SandboxError::StateBusy {
+                    vm_id: req.vm_id,
+                    instance,
+                });
+            }
+            Slot::Booted(vm) => vm,
+        };
+        if vm.ended.borrow().is_none() {
+            vm.stopping.store(true, Ordering::SeqCst);
+            let mut ended = vm.ended.subscribe();
+            let gone = req.grace_ms > 0 && {
+                vm.signal(Signal::SIGTERM);
+                let grace = Duration::from_millis(req.grace_ms);
+                tokio::time::timeout(grace, ended.wait_for(Option::is_some))
+                    .await
+                    .is_ok()
+            };
+            if !gone {
+                vm.signal(Signal::SIGKILL);
+                let _ = ended.wait_for(Option::is_some).await;
+            }
+        }
+        Ok(Slot::Booted(vm).status(&req.vm_id))
+    }
+
+    /// Remove `state_key`'s VM state. S502 while it is preparing or running.
+    pub fn destroy(
+        &self,
+        req: WorkerDestroyRequest,
+    ) -> Result<WorkerDestroyResponse, SandboxError> {
+        self.authorize(&req.auth)?;
+        let id = vm_id(&req.state_key);
+        // Held through the removal, so a `start` cannot boot into a half-removed dir.
+        let mut slots = self.slots();
+        refuse_busy(&id, slots.get(&id))?;
+        let dir = self.base.join(&id);
+        let destroyed = match std::fs::remove_dir_all(&dir) {
+            Ok(()) => true,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => {
+                return Err(SandboxError::FsIo(format!(
+                    "cannot remove {}: {e}",
+                    dir.display()
+                )));
+            }
+        };
+        slots.remove(&id);
+        Ok(WorkerDestroyResponse { destroyed })
+    }
+
+    /// `vm_id`'s entry: S504 when there is none, S503 when it is on another instance.
+    fn lookup(&self, vm_id: &str, instance: u64) -> Result<Slot, SandboxError> {
+        let slot = self
+            .slots()
+            .get(vm_id)
+            .cloned()
+            .ok_or_else(|| SandboxError::VmNotFound(vm_id.to_string()))?;
+        if slot.instance() != instance {
+            return Err(SandboxError::InstanceMismatch {
+                vm_id: vm_id.to_string(),
+                expected: instance,
+                found: slot.instance(),
+            });
+        }
+        Ok(slot)
+    }
+
+    fn slots(&self) -> MutexGuard<'_, HashMap<String, Slot>> {
+        // Every write under the lock is one insert or remove, so a poisoned map is consistent.
+        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Constant-time token check; no token (or an empty one) refuses every call.
@@ -119,6 +358,190 @@ pub fn vm_id(state_key: &str) -> String {
     hex::encode(Sha256::digest(state_key))[..32].to_string()
 }
 
+/// `(package, host_path, run_override)`; `package` is `Some` for a bundle.
+fn source_parts(source: &WorkerSource) -> (Option<&str>, &str, Option<&str>) {
+    match source {
+        WorkerSource::Bundle { package, host_path } => (Some(package), host_path, None),
+        WorkerSource::Local {
+            host_path,
+            run_override,
+        } => (None, host_path, run_override.as_deref()),
+    }
+}
+
+/// S502 while `slot` is preparing or running.
+fn refuse_busy(vm_id: &str, slot: Option<&Slot>) -> Result<(), SandboxError> {
+    match slot {
+        Some(slot) if slot.busy() => Err(SandboxError::StateBusy {
+            vm_id: vm_id.to_string(),
+            instance: slot.instance(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Drops `start`'s `Preparing` entry if it never launched (an error, or the
+/// call was dropped), so the key stays startable.
+struct Unreserve<'a>(&'a WorkerVms, &'a str);
+
+impl Drop for Unreserve<'_> {
+    fn drop(&mut self) {
+        let mut slots = self.0.slots();
+        if matches!(slots.get(self.1), Some(Slot::Preparing(_))) {
+            slots.remove(self.1);
+        }
+    }
+}
+
+impl Slot {
+    fn instance(&self) -> u64 {
+        match self {
+            Slot::Preparing(instance) => *instance,
+            Slot::Booted(vm) => vm.instance,
+        }
+    }
+
+    fn busy(&self) -> bool {
+        match self {
+            Slot::Preparing(_) => true,
+            Slot::Booted(vm) => vm.ended.borrow().is_none(),
+        }
+    }
+
+    fn status(&self, vm_id: &str) -> WorkerStatus {
+        let (state, ended, started_at_ms) = match self {
+            // Nothing has started yet.
+            Slot::Preparing(_) => (State::Preparing, None, 0),
+            Slot::Booted(vm) => {
+                let ended = *vm.ended.borrow();
+                let state = match ended {
+                    None => State::Running,
+                    Some(_) if vm.stopping.load(Ordering::SeqCst) => State::Stopped,
+                    Some(_) => State::Exited,
+                };
+                (state, ended, vm.started_at_ms)
+            }
+        };
+        WorkerStatus {
+            vm_id: vm_id.to_string(),
+            instance: self.instance(),
+            state,
+            exit_code: ended.and_then(|e| e.exit_code),
+            signal: ended.and_then(|e| e.signal),
+            started_at_ms,
+            ended_at_ms: ended.map(|e| e.at_ms),
+        }
+    }
+}
+
+impl Vm {
+    /// Signal the VM unless it was reaped already, since its pid may name another process by then.
+    fn signal(&self, signal: Signal) {
+        if !self.reaped.load(Ordering::SeqCst) {
+            let _ = kill(self.pid, signal);
+        }
+    }
+}
+
+/// Opens a control file with `O_NOFOLLOW`, as `cli::pidfile` does: a planted
+/// symlink fails the open instead of redirecting it. A write truncates, mode 0600.
+fn open_private(path: &Path, write: bool) -> io::Result<File> {
+    let mut opts = OpenOptions::new();
+    if write {
+        opts.write(true).create(true).truncate(true).mode(0o600);
+    } else {
+        opts.read(true);
+    }
+    opts.custom_flags(libc::O_NOFOLLOW).open(path)
+}
+
+/// The instance `<dir>/state.json` records: 0 before the first boot.
+fn stored_instance(dir: &Path) -> Result<u64, SandboxError> {
+    let path = dir.join(STATE_FILE);
+    let read = match open_private(&path, false) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        file => file.and_then(|f| Ok(serde_json::from_reader::<_, StateFile>(f)?.instance)),
+    };
+    read.map_err(|e| SandboxError::BootFailed(format!("{}: {e}", path.display())))
+}
+
+/// Record `instance` in `state.json`, truncate `console.log` and spawn `cmd`
+/// with null stdin, piped output and a lifeline.
+fn spawn(dir: &Path, instance: u64, mut cmd: Command) -> io::Result<(File, Lifeline, Child)> {
+    std::fs::create_dir_all(dir)?;
+    let console = open_private(&dir.join(CONSOLE_LOG), true)?;
+    serde_json::to_writer(
+        open_private(&dir.join(STATE_FILE), true)?,
+        &StateFile { instance },
+    )?;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let lifeline = crate::daemon_exit::attach_lifeline(&mut cmd)?;
+    Ok((console, lifeline, cmd.spawn()?))
+}
+
+/// A VM's `console.log`, rotated to `console.log.1` past `CONSOLE_LOG_CAP`.
+struct Console {
+    dir: PathBuf,
+    file: File,
+    len: u64,
+}
+
+impl Console {
+    /// Append one `{stream, line, ts_ms}` JSON line.
+    fn append(&mut self, stream: &LogStream, line: &[u8]) -> io::Result<()> {
+        let mut record = serde_json::to_vec(&serde_json::json!({
+            "stream": stream,
+            "line": String::from_utf8_lossy(line),
+            "ts_ms": now_ms(),
+        }))?;
+        record.push(b'\n');
+        self.file.write_all(&record)?;
+        self.len += record.len() as u64;
+        if self.len > CONSOLE_LOG_CAP {
+            let path = self.dir.join(CONSOLE_LOG);
+            std::fs::rename(&path, self.dir.join("console.log.1"))?;
+            self.file = open_private(&path, true)?;
+            self.len = 0;
+        }
+        Ok(())
+    }
+}
+
+/// Copy one output stream into `console.log`, a record per line. It keeps
+/// reading after a write error, so a full disk cannot stall the VM on a full pipe.
+async fn pump(out: impl AsyncRead + Unpin, stream: LogStream, console: Arc<Mutex<Console>>) {
+    let mut out = BufReader::new(out);
+    let mut line = Vec::new();
+    let mut warned = false;
+    loop {
+        line.clear();
+        match (&mut out).take(MAX_LINE).read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let text = line.strip_suffix(b"\n").unwrap_or(&line);
+        let text = text.strip_suffix(b"\r").unwrap_or(text);
+        let written = console
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .append(&stream, text);
+        if let Err(e) = written
+            && !warned
+        {
+            warned = true;
+            tracing::warn!(error = %e, "cannot write the worker VM's console.log; dropping its output");
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,14 +566,235 @@ mod tests {
         .expect_err("prepare must be refused")
     }
 
+    fn sh(script: &str) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    fn code<T: std::fmt::Debug>(result: Result<T, SandboxError>) -> &'static str {
+        result.expect_err("must be refused").code().as_str()
+    }
+
+    fn start_req(auth: &str, state_key: &str, source: WorkerSource) -> WorkerStartRequest {
+        WorkerStartRequest {
+            auth: auth.to_string(),
+            state_key: state_key.to_string(),
+            worker_name: "w".to_string(),
+            source,
+            env: Default::default(),
+            engine_url: "ws://127.0.0.1:49134".to_string(),
+        }
+    }
+
+    fn status_req(auth: &str, vm_id: &str, instance: u64) -> WorkerStatusRequest {
+        WorkerStatusRequest {
+            auth: auth.to_string(),
+            vm_id: vm_id.to_string(),
+            instance,
+        }
+    }
+
+    fn stop_req(auth: &str, vm_id: &str, instance: u64, grace_ms: u64) -> WorkerStopRequest {
+        WorkerStopRequest {
+            auth: auth.to_string(),
+            vm_id: vm_id.to_string(),
+            instance,
+            grace_ms,
+        }
+    }
+
+    fn destroy_req(auth: &str, state_key: &str) -> WorkerDestroyRequest {
+        WorkerDestroyRequest {
+            auth: auth.to_string(),
+            state_key: state_key.to_string(),
+        }
+    }
+
+    async fn wait_ended(vms: &WorkerVms, vm_id: &str, instance: u64) -> WorkerStatus {
+        for _ in 0..200 {
+            let status = vms.status(status_req("t", vm_id, instance)).unwrap();
+            if status.ended_at_ms.is_some() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("VM {vm_id} did not exit within 10 s");
+    }
+
+    /// The first `console.log` record whose line is `line`.
+    async fn wait_record(dir: &Path, line: &str) -> serde_json::Value {
+        for _ in 0..200 {
+            let text = std::fs::read_to_string(dir.join("console.log")).unwrap_or_default();
+            if let Some(record) = text
+                .lines()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+                .find(|r| r["line"] == line)
+            {
+                return record;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("no {line:?} record in {}", dir.display());
+    }
+
     #[tokio::test]
     async fn worker_ops_answer_s505_without_the_token() {
         let t = tempfile::tempdir().unwrap();
         let t = t.path();
         for token in [None, Some("t")] {
-            let err = prepare_err(&vms(t, token, vec![t.into()]), "u", local(t)).await;
+            let vms = vms(t, token, vec![t.into()]);
+            let err = prepare_err(&vms, "u", local(t)).await;
             assert_eq!(err.code().as_str(), "S505", "{err}");
+
+            // A known VM: without the token, a stale instance is S505, not S503.
+            let known = vms.launch("k", sh("exit 0")).unwrap().vm_id;
+            assert_eq!(code(vms.start(start_req("u", "k", local(t))).await), "S505");
+            for vm_id in ["unknown", known.as_str()] {
+                assert_eq!(code(vms.status(status_req("u", vm_id, 9))), "S505");
+                assert_eq!(code(vms.stop(stop_req("u", vm_id, 9, 0)).await), "S505");
+            }
+            assert_eq!(code(vms.destroy(destroy_req("u", "k"))), "S505");
         }
+    }
+
+    #[tokio::test]
+    async fn start_status_stop_destroy_cycle() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![]);
+        let started = vms.launch("k", sh("echo hi; sleep 30")).unwrap();
+        let id = started.vm_id;
+        assert_eq!((id.as_str(), started.instance), (vm_id("k").as_str(), 1));
+
+        let status = vms.status(status_req("t", &id, 1)).unwrap();
+        assert!(matches!(status.state, State::Running), "{status:?}");
+        assert_eq!(status.instance, 1);
+        let dir = t.join("workers").join(&id);
+        assert_eq!(wait_record(&dir, "hi").await["stream"], "stdout");
+
+        let status = vms.stop(stop_req("t", &id, 1, 2000)).await.unwrap();
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+        assert_eq!(status.signal, Some(15), "{status:?}");
+
+        assert!(vms.destroy(destroy_req("t", "k")).unwrap().destroyed);
+        assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn instance_survives_an_adapter_restart() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let first = vms(t, Some("t"), vec![]);
+        let id = first.launch("k", sh("sleep 30")).unwrap().vm_id;
+        first.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+        drop(first);
+
+        let vms = vms(t, Some("t"), vec![]);
+        assert_eq!(vms.launch("k", sh("exit 0")).unwrap().instance, 2);
+        assert_eq!(code(vms.status(status_req("t", &id, 1))), "S503");
+    }
+
+    #[tokio::test]
+    async fn stop_escalates_to_sigkill_after_grace() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh("trap '' TERM; echo ready; sleep 30"))
+            .unwrap()
+            .vm_id;
+        // The trap is set once `ready` is out.
+        wait_record(&t.join("workers").join(&id), "ready").await;
+
+        let begun = std::time::Instant::now();
+        let status = vms.stop(stop_req("t", &id, 1, 300)).await.unwrap();
+        assert!(begun.elapsed() < Duration::from_secs(5));
+        assert!(matches!(status.state, State::Stopped), "{status:?}");
+        assert_eq!(status.signal, Some(9), "{status:?}");
+    }
+
+    #[tokio::test]
+    async fn a_running_vm_refuses_start_and_destroy() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        let id = vms.launch("k", sh("sleep 30")).unwrap().vm_id;
+
+        let busy = vms.launch("k", sh("exit 0")).unwrap_err();
+        assert_eq!(busy.code().as_str(), "S502");
+        assert_eq!(
+            busy.to_payload()["fix"],
+            serde_json::json!({"vm_id": id, "instance": 1})
+        );
+        assert_eq!(code(vms.start(start_req("t", "k", local(t))).await), "S502");
+        assert_eq!(code(vms.destroy(destroy_req("t", "k"))), "S502");
+
+        vms.stop(stop_req("t", &id, 1, 0)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_vm_is_s504() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        assert_eq!(code(vms.status(status_req("t", "nope", 1))), "S504");
+        assert_eq!(code(vms.stop(stop_req("t", "nope", 1, 0)).await), "S504");
+    }
+
+    #[tokio::test]
+    async fn exit_code_is_recorded() {
+        let t = tempfile::tempdir().unwrap();
+        let vms = vms(t.path(), Some("t"), vec![]);
+        let id = vms.launch("k", sh("exit 7")).unwrap().vm_id;
+        let status = wait_ended(&vms, &id, 1).await;
+        assert!(matches!(status.state, State::Exited), "{status:?}");
+        assert_eq!((status.exit_code, status.signal), (Some(7), None));
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_leaves_the_key_startable() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let empty = t.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let vms = vms(t, Some("t"), vec![t.into()]);
+        for _ in 0..2 {
+            assert_eq!(
+                code(vms.start(start_req("t", "k", local(&empty))).await),
+                "S300"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn launch_refuses_a_symlinked_console_log() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let dir = t.join("workers").join(vm_id("k"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(t.join("target"), "keep").unwrap();
+        std::os::unix::fs::symlink(t.join("target"), dir.join("console.log")).unwrap();
+
+        let vms = vms(t, Some("t"), vec![]);
+        assert_eq!(code(vms.launch("k", sh("echo pwned"))), "S300");
+        assert_eq!(std::fs::read_to_string(t.join("target")).unwrap(), "keep");
+    }
+
+    #[tokio::test]
+    async fn console_log_rotates_past_the_cap() {
+        let t = tempfile::tempdir().unwrap();
+        let t = t.path();
+        let vms = vms(t, Some("t"), vec![]);
+        let id = vms
+            .launch("k", sh(r#"yes "$(printf %01000d 0)" | head -n 11000"#))
+            .unwrap()
+            .vm_id;
+        wait_ended(&vms, &id, 1).await;
+
+        let dir = t.join("workers").join(&id);
+        assert!(dir.join("console.log.1").exists());
+        let len = std::fs::metadata(dir.join("console.log")).unwrap().len();
+        assert!(len < CONSOLE_LOG_CAP, "{len}");
     }
 
     #[tokio::test]

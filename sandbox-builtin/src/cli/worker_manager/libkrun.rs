@@ -101,6 +101,12 @@ pub struct VmCommand {
 /// init and firmware come from one build. Searching `PATH` would let a stray
 /// older copy boot the VM.
 fn vm_boot_program() -> Result<PathBuf, String> {
+    // Test-only: an integration test that drives `WorkerVms` in process runs
+    // in a test binary, which cannot answer `__vm-boot`.
+    #[cfg(feature = "integration-vm")]
+    if let Some(bin) = std::env::var_os("III_TEST_VM_BOOT_BIN") {
+        return Ok(bin.into());
+    }
     std::env::current_exe().map_err(|e| format!("cannot locate the running binary: {e}"))
 }
 
