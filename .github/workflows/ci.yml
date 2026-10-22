@@ -187,7 +187,9 @@ jobs:
 
           bundles=()
           for root in "${roots[@]}"; do
-            for directory in web ui; do
+            # native-ui/: a worker's native app for the iii app (its build.rs
+            # embeds native-ui/dist/native.js, docs/sops/native-ui.md).
+            for directory in web ui native-ui; do
               if [[ -f "$root/$directory/package.json" ]]; then
                 bundles+=("$root/$directory")
               fi
@@ -217,7 +219,7 @@ jobs:
           # pnpm-lock.yaml); the glob also covers standalone web/ locks.
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build frontend bundle (web/ and/or ui/)
+      - name: Pre-build frontend bundle (web/, ui/ and/or native-ui/)
         if: steps.frontends.outputs.found == 'true'
         run: |
           set -euo pipefail
@@ -946,12 +948,12 @@ jobs:
       # short-circuits it — mirrors the `rust` job above. provider-opencode-go
       # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
-        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker), format('{0}/native-ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         # Version comes from the repo-root package.json packageManager field.
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node (workers with bundled web/)
-        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker), format('{0}/native-ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
@@ -960,11 +962,11 @@ jobs:
           # pnpm-lock.yaml); the glob also covers standalone web/ locks.
           cache-dependency-path: '**/pnpm-lock.yaml'
 
-      - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
+      - name: Pre-build frontend bundle (web/, ui/ and/or native-ui/)
+        if: steps.optout.outputs.kind == 'rust-binary' && (hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker), format('{0}/native-ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go')
         run: |
           set -euo pipefail
-          for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
+          for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui" "${{ matrix.worker }}/native-ui"; do
             if [[ -f "$d/package.json" ]]; then
               (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
             fi

@@ -19,6 +19,7 @@ packages:
   - ade/ui
   - context-manager/ui
   - browser/ui
+  - browser/native-ui
   - web/ui
   - a2ui/ui
   - canvas/ui
