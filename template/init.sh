@@ -116,7 +116,8 @@ case "$name" in
   agents|config|data|scripts|skills|tests|upstream)
     usage_error "Reserved template name '$name': template/$name/ holds the root stack's files, so init.sh never replaces it." ;;
 esac
-if ! command -v -- "$engine" >/dev/null; then
+# A builtin or function (engine=echo) has no path, so it is refused like a missing binary.
+if ! path=$(command -v -- "$engine") || [[ "$path" != */* ]]; then
   if [[ "$engine" == iii ]]; then
     echo 'iii is not on PATH. Install the iii CLI, or pass engine=<iii binary>.' >&2
   else
@@ -124,8 +125,10 @@ if ! command -v -- "$engine" >/dev/null; then
   fi
   exit 1
 fi
-# Absolute, because compose runs from the project folder.
-[[ "$engine" != */* ]] || engine=$(cd -- "$(dirname -- "$engine")" && pwd -P)/$(basename -- "$engine")
+# Absolute, because compose runs from the project folder; a bare name found
+# through an absolute PATH entry stays as typed.
+[[ "$path" == /* && "$engine" != */* ]] ||
+  engine=$(cd -- "$(dirname -- "$path")" && pwd -P)/$(basename -- "$path")
 
 destination=$script_dir/$name
 # Compose keeps its PID in engine.lock while it runs and empties it on exit.
@@ -149,6 +152,8 @@ if ! output=$("${init[@]}" </dev/null 2>&1); then
   printf '%s\n' "$output" >&2
   exit 1
 fi
+# Never swap in an empty result: the old folder is deleted before the move.
+[[ -d "$stage/$name" ]] || { echo "$engine project init exited 0 but created no project; is engine= an iii binary?" >&2; exit 1; }
 "${python[@]}" "$script_dir/scripts/init_compose.py" "$stage/$name" "$destination" "$engine"
 trap 'rm -rf -- "$stage"' EXIT
 rm -rf -- "$destination"

@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -15,12 +16,13 @@ TEMPLATE = Path(__file__).resolve().parents[1]
 
 # Records each call; `project init` writes $FAKE_COMPOSE (and $FAKE_HTTP_CONFIG, a
 # template-shipped entry) like the real CLI writes a template, and fails like it
-# for a template named `broken`.
+# for a template named `broken`. $FAKE_SKIP_INIT makes init succeed without a project.
 FAKE_III = """#!/usr/bin/env bash
 printf '%s|%s\\n' "$PWD" "$*" >> "$III_LOG"
 if [[ "$1 $2" == "project init" ]]; then
   while (($#)); do [[ "$1" == -d ]] && dir=$2; [[ "$1" == -t ]] && name=$2; shift; done
   [[ "$name" != broken ]] || { echo "error: template scaffold failed" >&2; exit 1; }
+  [[ -z "${FAKE_SKIP_INIT:-}" ]] || exit 0
   mkdir -p "$dir"
   printf '%s' "$FAKE_COMPOSE" > "$dir/worker-compose.yaml"
   if [[ -n "${FAKE_HTTP_CONFIG:-}" ]]; then
@@ -174,20 +176,48 @@ class InitTests(unittest.TestCase):
         self.assertIn("local   2 workers from this checkout: ade, web", result.stdout)
         self.assertIn("# the ADE web UI", (destination / "worker-compose.yaml").read_text())
 
+    def iii_dev(self, folder):
+        """A second iii binary that logs its own name, then behaves like the fake."""
+        folder.mkdir()
+        (folder / "iii-dev").write_text(f'#!/usr/bin/env bash\necho iii-dev >> "$III_LOG"\nexec "{self.root}/bin/iii" "$@"\n')
+        (folder / "iii-dev").chmod(0o755)
+
     def test_engine_runs_init_and_compose_on_another_iii_binary(self):
-        build = self.root / "build"
-        build.mkdir()
-        (build / "iii-dev").write_text(f'#!/usr/bin/env bash\necho iii-dev >> "$III_LOG"\nexec "{self.root}/bin/iii" "$@"\n')
-        (build / "iii-dev").chmod(0o755)
+        build = self.root / "build dir"
+        self.iii_dev(build)
         # Relative to where init.sh is called, although compose runs from the project folder.
-        result = self.run_init("quickstart", "engine=../build/iii-dev", cwd=self.launcher)
+        result = self.run_init("quickstart", "engine=../build dir/iii-dev", cwd=self.launcher)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"with {build}/iii-dev...", result.stdout)
-        self.assertIn(f"Run `{build}/iii-dev trigger ...` from", result.stdout)
+        # The printed command must survive a copy-paste into a shell.
+        self.assertIn(f"Run `{shlex.quote(f'{build}/iii-dev')} trigger ...` from", result.stdout)
         calls = self.log.read_text().splitlines()
         self.assertEqual(calls[0::2], ["iii-dev", "iii-dev"])
         self.assertIn("|project init -t quickstart", calls[1])
         self.assertEqual(calls[3], f"{self.launcher / 'quickstart'}|compose --up")
+
+    def test_engine_found_through_a_relative_path_entry_still_runs_compose(self):
+        self.iii_dev(self.root / "relative-bin")
+        self.env["PATH"] = f"relative-bin{os.pathsep}{self.env['PATH']}"
+        result = self.run_init("quickstart", "engine=iii-dev", cwd=self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.log.read_text().splitlines()[3], f"{self.launcher / 'quickstart'}|compose --up")
+
+    def test_engine_that_creates_no_project_never_replaces_the_folder(self):
+        (self.launcher / "quickstart").mkdir()
+        (self.launcher / "quickstart/keep.txt").write_text("previous run\n")
+        # A shell builtin is no iii binary, and an iii that exits 0 without a project changes nothing.
+        echo = self.run_init("quickstart", "engine=echo")
+        self.assertEqual(echo.returncode, 1)
+        self.assertIn("engine=echo is not an executable", echo.stderr)
+        self.env["FAKE_SKIP_INIT"] = "1"
+        empty = self.run_init("quickstart")
+        self.assertEqual(empty.returncode, 1)
+        self.assertIn("exited 0 but created no project", empty.stderr)
+        self.assertIn("template/quickstart was left unchanged.", empty.stderr)
+        self.assertTrue((self.launcher / "quickstart/keep.txt").is_file())
+        self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
+        self.assertNotIn("compose --up", self.log.read_text())
 
     def test_running_project_is_not_deleted(self):
         destination = self.launcher / "quickstart"
@@ -246,6 +276,16 @@ class InitTests(unittest.TestCase):
         self.assertEqual(list(self.launcher.glob(".init-stage-*")), [])
         self.assertFalse(self.log.exists())
         self.assertEqual(self.run_init("--list", "quickstart").returncode, 2)
+
+    def test_list_survives_a_template_name_wider_than_the_terminal(self):
+        long_name = "a" * 90
+        (self.templates / "iii/template.yaml").write_text(f"templates: [{long_name}]\n")
+        (self.templates / f"iii/{long_name}").mkdir()
+        (self.templates / f"iii/{long_name}/template.yaml").write_text("description: A very long description of it\n")
+        self.env["TEMPLATES_REPO"] = str(self.templates)
+        result = self.run_init("--list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"  {long_name}  A very long", result.stdout)
 
     def test_unknown_template_lists_the_templates_before_init_runs(self):
         (self.launcher / "nope").mkdir()

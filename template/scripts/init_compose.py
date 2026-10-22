@@ -7,6 +7,7 @@
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import socket
 import sys
 
@@ -121,7 +122,7 @@ def main(staged, destination, cli):
     print(f"  {'engine':<7} ws://127.0.0.1:{engine_port}")
     if local:
         print(f"  {'local':<7} {len(local)} workers from this checkout: {', '.join(local)}")
-    print(f"\n  Run `{cli} trigger ...` from {folder}. Ctrl+C stops the stack.\n")
+    print(f"\n  Run `{shlex.quote(cli)} trigger ...` from {folder}. Ctrl+C stops the stack.\n")
 
 
 if __name__ == "__main__":

@@ -43,7 +43,7 @@ def show(templates, out):
     width = max(map(len, templates))
     for name, description in templates.items():
         # One line per template keeps the list scannable in an 80-column terminal.
-        text = textwrap.shorten(description, 80 - width - 4, placeholder="...") if description else ""
+        text = textwrap.shorten(description, max(80 - width - 4, 20), placeholder="...") if description else ""
         print(f"  {name:<{width}}  {text}", file=out)
     print("\nStart one with ./init.sh <template>, for example ./init.sh quickstart", file=out)
 
