@@ -159,7 +159,8 @@ async fn redis_commands_survive_a_dropped_connection() {
         .expect("update after drop");
     assert_eq!(updated.new_value, json!({"n": 1, "m": 2}));
 
-    // Not repeatable: it must still work after a drop, and apply once.
+    // Not repeatable, so never sent twice: it still works after a drop (the
+    // PING before it takes the dead socket). A lost reply is not covered here.
     drop_connections().await;
     let counted = adapter
         .update(&scope, "c", vec![UpdateOp::increment("n", 1)])
