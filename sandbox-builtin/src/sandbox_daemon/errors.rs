@@ -6,17 +6,10 @@
 use serde_json::json;
 use thiserror::Error;
 
-/// Where `error.docs_url` points to. Today this resolves to anchor
-/// headings in the in-repo sandbox README on GitHub, which is the only
-/// canonical documentation that exists for the S-code surface. The
-/// canonical iii.dev/docs/errors/sandbox/{code} pages are tracked as a
-/// follow-up TODO (plan T13); flip this constant when those pages ship.
-///
-/// `R2 — README anchor stability` (test in `sandbox_docs_anchor_stability.rs`)
-/// asserts every `SandboxErrorCode::as_str()` value matches an anchor
-/// here, failing CI if a new S-code lands without a README entry.
-const DOCS_BASE: &str =
-    "https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#";
+/// Where `error.docs_url` points to: one anchor per S-code on the iii.dev
+/// sandboxes page. The anchor test for that page lives in
+/// `iii-sandbox-contract`.
+const DOCS_BASE: &str = "https://iii.dev/docs/creating-workers/sandboxes#";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxErrorCode {
@@ -40,6 +33,12 @@ pub enum SandboxErrorCode {
     S219,
     S300,
     S400,
+    S501,
+    S502,
+    S503,
+    S504,
+    S505,
+    S506,
 }
 
 impl SandboxErrorCode {
@@ -65,15 +64,29 @@ impl SandboxErrorCode {
             Self::S219 => "S219",
             Self::S300 => "S300",
             Self::S400 => "S400",
+            Self::S501 => "S501",
+            Self::S502 => "S502",
+            Self::S503 => "S503",
+            Self::S504 => "S504",
+            Self::S505 => "S505",
+            Self::S506 => "S506",
         }
     }
 
     pub fn error_type(&self) -> &'static str {
         match self {
-            Self::S001 | Self::S002 | Self::S003 | Self::S004 => "validation",
+            Self::S001
+            | Self::S002
+            | Self::S003
+            | Self::S004
+            | Self::S501
+            | Self::S502
+            | Self::S503
+            | Self::S504
+            | Self::S505 => "validation",
             Self::S100 | Self::S400 => "config",
             Self::S101 => "internal",
-            Self::S102 | Self::S218 => "transient",
+            Self::S102 | Self::S218 | Self::S506 => "transient",
             Self::S200 => "execution",
             Self::S210
             | Self::S211
@@ -89,7 +102,7 @@ impl SandboxErrorCode {
     }
 
     pub fn retryable(&self) -> bool {
-        matches!(self, Self::S102 | Self::S218)
+        matches!(self, Self::S102 | Self::S218 | Self::S506)
     }
 }
 
@@ -134,6 +147,28 @@ pub enum SandboxError {
 
     #[error("resource limit exceeded: {0}")]
     ResourceLimit(String),
+
+    #[error("worker source rejected: {0}")]
+    SourceRejected(String),
+
+    #[error("VM {vm_id} is busy: instance {instance} is preparing or running")]
+    StateBusy { vm_id: String, instance: u64 },
+
+    #[error("VM {vm_id} is on instance {found}, not {expected}")]
+    InstanceMismatch {
+        vm_id: String,
+        expected: u64,
+        found: u64,
+    },
+
+    #[error("no VM {0} on this adapter")]
+    VmNotFound(String),
+
+    #[error("worker::* needs the project token this adapter was started with")]
+    Unauthorized,
+
+    #[error("worker prepare failed: {0}")]
+    PrepareFailed(String),
 
     // FS variants. Display impls now carry a kind prefix so a consumer
     // that surfaces only the raw string (logs, debug output, an agent
@@ -230,6 +265,12 @@ impl SandboxError {
             Self::FsUnsupported => SandboxErrorCode::S219,
             Self::BootFailed(_) => SandboxErrorCode::S300,
             Self::ResourceLimit(_) => SandboxErrorCode::S400,
+            Self::SourceRejected(_) => SandboxErrorCode::S501,
+            Self::StateBusy { .. } => SandboxErrorCode::S502,
+            Self::InstanceMismatch { .. } => SandboxErrorCode::S503,
+            Self::VmNotFound(_) => SandboxErrorCode::S504,
+            Self::Unauthorized => SandboxErrorCode::S505,
+            Self::PrepareFailed(_) => SandboxErrorCode::S506,
             // RunStepFailed transparently carries the inner code so the
             // wire-level type/code identify the actual failure category;
             // step + sandbox_id attribution lives in fix.context.
@@ -302,7 +343,7 @@ impl SandboxError {
             Self::ImageNotInCatalog { .. } => (
                 None,
                 Some(
-                    "set `image` to a listed value or add it under engine.workers.iii-sandbox.custom_images",
+                    "set `image` to a listed value or add it to the adapter's custom_images config",
                 ),
             ),
             Self::RootfsMissing { .. } => (
@@ -337,6 +378,21 @@ impl SandboxError {
             Self::BootFailed(_) | Self::ResourceLimit(_) => {
                 (None, Some("platform-level failure; not auto-recoverable"))
             }
+            // S502/S503 carry the live VM so Compose can stop that instance
+            // and retry once.
+            Self::StateBusy { vm_id, instance } => {
+                (Some(json!({ "vm_id": vm_id, "instance": instance })), None)
+            }
+            Self::InstanceMismatch { vm_id, found, .. } => {
+                (Some(json!({ "vm_id": vm_id, "instance": found })), None)
+            }
+            Self::SourceRejected(_) => (None, None),
+            Self::VmNotFound(_) => (None, Some("the adapter restarted; start the VM again")),
+            Self::Unauthorized => (
+                None,
+                Some("call worker::* through Compose, which passes the token"),
+            ),
+            Self::PrepareFailed(_) => (None, Some("transient: retry after a short delay")),
             // Parent directory missing on a write/mkdir: the fix is a
             // single boolean. Emit a structured `fix` payload the agent
             // can merge into the original request and resubmit verbatim,
@@ -666,6 +722,54 @@ mod tests {
                 *expected,
                 "variant {err:?} expected to serialize with code {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn adapter_worker_errors_keep_their_message_and_fix_note() {
+        let cases: &[(SandboxError, &str, Option<&str>)] = &[
+            (
+                SandboxError::SourceRejected("x".into()),
+                "worker source rejected: x",
+                None,
+            ),
+            (
+                SandboxError::StateBusy {
+                    vm_id: "v".into(),
+                    instance: 3,
+                },
+                "VM v is busy: instance 3 is preparing or running",
+                None,
+            ),
+            (
+                SandboxError::InstanceMismatch {
+                    vm_id: "v".into(),
+                    expected: 1,
+                    found: 2,
+                },
+                "VM v is on instance 2, not 1",
+                None,
+            ),
+            (
+                SandboxError::VmNotFound("v".into()),
+                "no VM v on this adapter",
+                Some("the adapter restarted; start the VM again"),
+            ),
+            (
+                SandboxError::Unauthorized,
+                "worker::* needs the project token this adapter was started with",
+                Some("call worker::* through Compose, which passes the token"),
+            ),
+            (
+                SandboxError::PrepareFailed("x".into()),
+                "worker prepare failed: x",
+                Some("transient: retry after a short delay"),
+            ),
+        ];
+        for (err, message, note) in cases {
+            let p = err.to_payload();
+            assert_eq!(p["message"], *message, "{err:?}");
+            assert_eq!(p["fix_note"].as_str(), *note, "{err:?}");
         }
     }
 

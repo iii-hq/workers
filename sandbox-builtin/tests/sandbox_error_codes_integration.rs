@@ -22,13 +22,16 @@ use sandbox_builtin::sandbox_daemon::errors::{SandboxError, SandboxErrorCode};
 
 const FIXTURE_PATH: &str = "tests/fixtures/sandbox_error_codes.json";
 
+/// Router codes the adapter never emits; their fixture rows have no Rust variant.
+const ROUTER_ONLY: &[&str] = &["S301", "S302", "S303", "S304"];
+
 #[derive(Debug, serde::Deserialize)]
 struct CodeFixture {
     code: String,
     #[serde(rename = "type")]
     error_type: String,
     retryable: bool,
-    rust_variant: String,
+    rust_variant: Option<String>,
     summary: String,
 }
 
@@ -70,6 +73,19 @@ fn representative(code_str: &str) -> Option<SandboxError> {
         "S219" => SandboxError::FsUnsupported,
         "S300" => SandboxError::BootFailed("x".into()),
         "S400" => SandboxError::ResourceLimit("x".into()),
+        "S501" => SandboxError::SourceRejected("x".into()),
+        "S502" => SandboxError::StateBusy {
+            vm_id: "x".into(),
+            instance: 1,
+        },
+        "S503" => SandboxError::InstanceMismatch {
+            vm_id: "x".into(),
+            expected: 1,
+            found: 2,
+        },
+        "S504" => SandboxError::VmNotFound("x".into()),
+        "S505" => SandboxError::Unauthorized,
+        "S506" => SandboxError::PrepareFailed("x".into()),
         _ => return None,
     })
 }
@@ -80,7 +96,7 @@ fn fixture_version_is_supported() {
     assert_eq!(f.version, 1, "test asserts against fixture version 1");
     assert_eq!(
         f.docs_base,
-        "https://github.com/iii-hq/iii/blob/main/crates/iii-worker/src/sandbox_daemon/README.md#"
+        "https://iii.dev/docs/creating-workers/sandboxes#"
     );
 }
 
@@ -88,9 +104,18 @@ fn fixture_version_is_supported() {
 fn every_fixture_row_matches_rust_to_payload() {
     let f = load_fixture();
     for row in &f.codes {
+        assert_eq!(
+            representative(&row.code).is_none(),
+            ROUTER_ONLY.contains(&row.code.as_str()),
+            "{} must have a representative SandboxError unless it is a router-only code",
+            row.code
+        );
+        if ROUTER_ONLY.contains(&row.code.as_str()) {
+            continue;
+        }
         let err = representative(&row.code).unwrap_or_else(|| {
             panic!(
-                "fixture has code {} ({}) with no representative SandboxError; \
+                "fixture has code {} ({:?}) with no representative SandboxError; \
                  add one in `representative()` if a new variant landed",
                 row.code, row.rust_variant
             )
@@ -98,7 +123,7 @@ fn every_fixture_row_matches_rust_to_payload() {
         assert_eq!(
             err.code().as_str(),
             row.code,
-            "fixture says variant {} -> {} but Rust emits {} for {:?}",
+            "fixture says variant {:?} -> {} but Rust emits {} for {:?}",
             row.rust_variant,
             row.code,
             err.code().as_str(),
@@ -158,7 +183,13 @@ fn enforce_exhaustive(c: SandboxErrorCode) -> SandboxErrorCode {
         | SandboxErrorCode::S218
         | SandboxErrorCode::S219
         | SandboxErrorCode::S300
-        | SandboxErrorCode::S400 => c,
+        | SandboxErrorCode::S400
+        | SandboxErrorCode::S501
+        | SandboxErrorCode::S502
+        | SandboxErrorCode::S503
+        | SandboxErrorCode::S504
+        | SandboxErrorCode::S505
+        | SandboxErrorCode::S506 => c,
     }
 }
 
@@ -183,6 +214,12 @@ const ALL_VARIANTS: &[SandboxErrorCode] = &[
     SandboxErrorCode::S219,
     SandboxErrorCode::S300,
     SandboxErrorCode::S400,
+    SandboxErrorCode::S501,
+    SandboxErrorCode::S502,
+    SandboxErrorCode::S503,
+    SandboxErrorCode::S504,
+    SandboxErrorCode::S505,
+    SandboxErrorCode::S506,
 ];
 
 #[test]
@@ -202,4 +239,40 @@ fn every_rust_code_has_a_fixture_row() {
             code.as_str()
         );
     }
+}
+
+#[test]
+fn docs_url_uses_the_iii_dev_docs_base() {
+    let p = SandboxError::Unauthorized.to_payload();
+    assert_eq!(
+        p["docs_url"],
+        "https://iii.dev/docs/creating-workers/sandboxes#S505"
+    );
+    assert_eq!(
+        (p["type"].as_str(), p["retryable"].as_bool()),
+        (Some("validation"), Some(false))
+    );
+}
+
+#[test]
+fn busy_and_stale_errors_name_the_live_instance_in_fix() {
+    let busy = SandboxError::StateBusy {
+        vm_id: "v".into(),
+        instance: 3,
+    }
+    .to_payload();
+    assert_eq!(
+        busy["fix"],
+        serde_json::json!({"vm_id": "v", "instance": 3})
+    );
+    let stale = SandboxError::InstanceMismatch {
+        vm_id: "v".into(),
+        expected: 1,
+        found: 2,
+    }
+    .to_payload();
+    assert_eq!(
+        stale["fix"],
+        serde_json::json!({"vm_id": "v", "instance": 2})
+    );
 }
