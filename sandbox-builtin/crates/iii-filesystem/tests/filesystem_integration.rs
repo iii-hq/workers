@@ -493,8 +493,6 @@ fn open_read_existing_file() {
 /// beyond that offset. This exercises the macOS `read_dir_entries` fix where
 /// `lseek(fd, 0, SEEK_SET)` rewinds the directory fd before `dup`/`fdopendir`,
 /// and sequential 1-based indices replace unreliable `telldir` cookies.
-// With a real init embedded the root listing gains a virtual init.krun entry.
-#[cfg(not(has_init_binary))]
 #[test]
 fn readdir_pagination_with_nonzero_offset() {
     let h = setup_fs();
@@ -563,6 +561,31 @@ fn readdir_pagination_with_nonzero_offset() {
     );
 
     h.fs.releasedir(ctx, ROOT_ID, 0, dir_handle).unwrap();
+}
+
+/// A client resuming from any offset (a truncated page, a re-read) sees the virtual
+/// init.krun exactly once: from every real entry's offset, and not again from its own.
+#[cfg(has_init_binary)]
+#[test]
+fn readdir_lists_virtual_init_once_from_every_offset() {
+    let h = setup_fs();
+    let ctx = test_ctx();
+    for i in 0..5 {
+        std::fs::write(h._dir.path().join(format!("f{i}")), b"x").unwrap();
+    }
+    let (dh, _) = h.fs.opendir(ctx, ROOT_ID, libc::O_RDONLY as u32).unwrap();
+    let dh = dh.expect("opendir should return a handle");
+
+    let all = h.fs.readdir(ctx, ROOT_ID, dh, 64 * 1024, 0).unwrap();
+    assert_eq!(all.iter().filter(|e| e.name == b"init.krun").count(), 1);
+    for e in &all {
+        let tail = h.fs.readdir(ctx, ROOT_ID, dh, 64 * 1024, e.offset).unwrap();
+        let inits = tail.iter().filter(|t| t.name == b"init.krun").count();
+        let expected = usize::from(e.name != b"init.krun");
+        assert_eq!(inits, expected, "init.krun count after offset {}", e.offset);
+    }
+
+    h.fs.releasedir(ctx, ROOT_ID, 0, dh).unwrap();
 }
 
 /// Mimics Python's `encodings/` directory layout to verify that nested lookups,

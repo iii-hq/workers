@@ -22,6 +22,15 @@ use crate::{
 };
 
 //--------------------------------------------------------------------------------------------------
+// Constants
+//--------------------------------------------------------------------------------------------------
+
+/// d_off cookie of the synthetic init.krun entry. It sorts after every real entry, so
+/// whichever offset a client resumes from (a truncated page or a re-read) it sees init.krun
+/// exactly once, and resuming from the cookie itself returns an empty page.
+const INIT_DIR_OFFSET: u64 = i64::MAX as u64;
+
+//--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
 
@@ -60,6 +69,10 @@ pub(crate) fn do_readdir(
     offset: u64,
 ) -> io::Result<Vec<DirEntry<'static>>> {
     let data = fs.handles.get(&handle).ok_or_else(platform::ebadf)?;
+    // Resuming from init.krun's cookie means the listing is finished.
+    if ino == 1 && init_binary::has_init() && offset >= INIT_DIR_OFFSET {
+        return Ok(Vec::new());
+    }
     // Write lock: lseek in read_dir_entries modifies fd seek position.
     #[allow(clippy::readonly_write_lock)]
     let f = data.file.write().unwrap();
@@ -151,11 +164,10 @@ fn inject_init_entry(entries: &mut Vec<DirEntry<'static>>) {
     let already_present = entries.iter().any(|e| e.name == init_binary::INIT_FILENAME);
 
     if !already_present {
-        let next_offset = entries.last().map(|e| e.offset + 1).unwrap_or(1);
         let name: &'static [u8] = init_binary::INIT_FILENAME;
         entries.push(DirEntry {
             ino: init_binary::INIT_INODE,
-            offset: next_offset,
+            offset: INIT_DIR_OFFSET,
             type_: platform::DIRENT_REG,
             name,
         });
