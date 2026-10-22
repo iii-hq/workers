@@ -164,6 +164,12 @@ impl Store {
             "context::assemble" => {
                 Err("intentional boundary stop after observing LLM input".into())
             }
+            // A context strategy that gives the step it ingested back as maintenance.
+            "context-clm::assemble" if data["options"]["session_id"] == "clm_grant" => Ok(json!({
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "go"}], "timestamp": 1}],
+                "token_count": 10, "usable": 100, "effective_max_output_tokens": 10,
+                "applied": {"maintenance_step": true}
+            })),
             // A context strategy that ends the run: over budget, with a stop.
             "context-clm::assemble" => Ok(json!({
                 "token_count": 200, "usable": 100, "effective_max_output_tokens": 10,
@@ -2018,6 +2024,44 @@ async fn a_strategy_step_past_max_turns_ends_there_when_its_assembly_gives_nothi
             "the guard waited for the assembly"
         );
     }
+}
+
+/// The same step, when its assembly gives the last step back as maintenance,
+/// keeps the turn going past max_turns and records the grant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_strategy_step_past_max_turns_generates_on_a_maintenance_grant() {
+    let stack = Stack::new("completed").await;
+    stack.session("clm_grant", None, "running");
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut row = store.state("harness_turn", "clm_grant");
+        row["step"] = json!(16);
+        row["turn_count"] = json!(16);
+        row["options"]["context_strategy"] =
+            json!({"name": "clm", "budget_tokens": null, "effective": true});
+        store.put("harness_turn", "clm_grant", row);
+    }
+    let payload = serde_json::from_value(
+        json!({"session_id":"clm_grant","turn_id":"t_clm_grant","step":16,"depth":0}),
+    )
+    .unwrap();
+    // The mock has no model stream: reaching it is the proof the step generates.
+    let outcome = harness::turn_loop::run_step(&stack.deps, payload).await;
+    assert!(
+        format!("{outcome:?}").contains("engine::channels::create"),
+        "{outcome:?}"
+    );
+    let row = turn(&stack, "clm_grant");
+    assert_eq!(
+        (&row["status"], &row["stop_reason"]),
+        (&json!("running"), &Value::Null),
+        "{row}"
+    );
+    assert_eq!(
+        (&row["maintenance_steps"], &row["maintenance_step_at"]),
+        (&json!(1), &json!(16)),
+        "{row}"
+    );
 }
 
 /// A finished turn's record keeps only what a finished turn is read for
