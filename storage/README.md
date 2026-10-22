@@ -328,11 +328,19 @@ when a file happens to fit below that cap—prefer direct transfer endpoints:
 
 Every call that takes a `key` (`putObject`, `getObject`, `headObject`,
 `deleteObject`, `presignUrl`, `presignPost`) refuses a key with a `.` or `..`
-segment between slashes (`../escape`, `a/./b`, `a/..`) and returns
-`INVALID_KEY`. Providers carry the key in a URL path, and URL parsers, proxies
-and servers resolve those segments (also written `%2e%2e`), so the request
-would target another path or bucket. Dots inside a name (`a.b`, `..a`, `...`)
+segment and returns `INVALID_KEY`. Segments are read the way a URL parser reads
+them: `%2e` (any case) is a dot, a backslash separates segments like a slash,
+and a tab, CR or LF is ignored, so `../escape`, `a/./b`, `%2e%2e/x` and
+`a\..\x` are all refused. A path-style S3 endpoint and the presigned URLs of
+S3, R2 and GCS carry the key in a URL path, where such a segment would be
+resolved to another path or bucket. Dots inside a name (`a.b`, `..a`, `...`)
 are fine. `listObjects` is unaffected: `prefix` is a query parameter.
+
+An object written before this rule with such a key (possible with the local
+backend, GCS, and S3 virtual-hosted endpoints) still shows in `listObjects`,
+but this worker can no longer read or delete it: remove it with the
+provider's own tools. An empty key keeps its earlier code (`CONFIG_ERROR`, and
+`INVALID_PRESIGN_PARAMS` from `presignPost`).
 
 ### `storage::presignPost` — multipart upload
 

@@ -64,26 +64,34 @@ pub fn err_to_str(e: StorageError) -> String {
 /// The one rule every handler that takes an object `key` applies before the
 /// request reaches a backend.
 ///
-/// S3 and R2 carry the key in the request path (`/bucket/key`), GCS in a URL,
-/// and a presigned URL ends up in a browser. URL parsers, proxies and servers
-/// resolve `.` and `..` segments, also written `%2e%2e`, so `/scratch/../escape`
-/// is served as `/escape`: another bucket, or a signature over a path that is
-/// not the one that arrives. Percent-encoding the dots can't prevent that, so
-/// such keys are refused.
+/// Some requests carry the key in a URL path: a path-style S3 endpoint, and the
+/// presigned URLs of S3, R2 and GCS, which a browser then opens. URL parsers
+/// resolve `.` and `..` segments the way the WHATWG URL standard does, where
+/// `%2e` (any case) is a dot, a backslash is a slash, and a tab, CR or LF is
+/// dropped. So `%2e%2e/other/x` in bucket `scratch` can be signed or served as
+/// `/other/x`, another bucket. Percent-encoding the dots can't prevent that, so
+/// a key with such a segment, read the way those parsers read it, is refused.
 pub fn validate_key(key: &str) -> Result<(), StorageError> {
     if key.is_empty() {
         return Err(StorageError::ConfigError {
             message: "key must not be empty".into(),
         });
     }
-    match key.split('/').find(|segment| matches!(*segment, "." | "..")) {
-        Some(segment) => Err(StorageError::InvalidKey {
-            reason: format!(
-                "an object key can't have a '.' or '..' segment; rename the '{segment}' segment in {key:?}"
-            ),
-        }),
-        None => Ok(()),
+    let as_url: String = key
+        .chars()
+        .filter(|c| !matches!(*c, '\t' | '\r' | '\n'))
+        .collect::<String>()
+        .to_ascii_lowercase()
+        .replace("%2e", ".");
+    if as_url
+        .split(['/', '\\'])
+        .any(|segment| matches!(segment, "." | ".."))
+    {
+        return Err(StorageError::InvalidKey {
+            reason: "an object key with a '.' or '..' segment is not supported (a dot may also be written %2e, and a backslash counts as a slash)".into(),
+        });
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -144,7 +152,24 @@ mod tests {
 
     #[tokio::test]
     async fn every_handler_refuses_a_key_with_a_dot_segment() {
-        for key in ["..", ".", "../escape", "a/../b", "a/./b", "a/b/..", "./a"] {
+        for key in [
+            "..",
+            ".",
+            "../escape",
+            "a/../b",
+            "a/./b",
+            "a/b/..",
+            "./a",
+            // As a URL parser reads them: %2e is a dot, a backslash a slash,
+            // and a tab, CR or LF is dropped.
+            "%2e%2e/other/x",
+            ".%2E/other/x",
+            "%2e./x",
+            "a/%2E/b",
+            "a\\..\\..\\other\\x",
+            ".\t./other/x",
+            "..\r\n/x",
+        ] {
             let (state, mock) = state();
             for result in every_key_handler(&state, key).await {
                 let err = result.expect_err(key);
@@ -168,6 +193,9 @@ mod tests {
             ".hidden",
             "a/.b/c..d",
             "dir/my file&+%.txt",
+            "a%2eb",
+            "%2e%2e%2e",
+            "back\\slash.txt",
         ] {
             let (state, mock) = state();
             for result in every_key_handler(&state, key).await {
