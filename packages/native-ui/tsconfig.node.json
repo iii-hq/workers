@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "checkJs": false
+  },
+  "include": ["test/*.ts", "scripts/*.mjs", "src/runtime/diff.ts", "src/url.ts"]
+}
