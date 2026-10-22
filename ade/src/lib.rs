@@ -5,6 +5,7 @@ pub mod assets;
 pub mod compose;
 pub mod config;
 pub mod configuration;
+pub mod context_tracking;
 pub mod conversations;
 pub mod functions;
 pub mod manifest;
