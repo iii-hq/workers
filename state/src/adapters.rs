@@ -672,7 +672,10 @@ const JSON_UPDATE_SCRIPT: &str = r#"
 /// dead socket: it starts reconnecting but still fails that command with an
 /// I/O error ("broken pipe"). The second attempt waits for the new connection.
 /// The failed attempt may still have run on the server, so `$retry_on` is
-/// `is_io_error` only for calls that give the same result when run twice.
+/// `is_connection_dropped` only for calls that give the same result when run
+/// twice. Never `is_io_error`: it also takes a response timeout, after which
+/// the command was sent and the server runs it, and the connection was not
+/// dropped, so a retry would run it again on the same connection.
 macro_rules! retry_once {
     ($retry_on:expr, $call:expr) => {
         match $call {
@@ -730,7 +733,7 @@ impl StateAdapter for RedisAdapter {
             let mut conn = self.publisher.lock().await;
             // WATCH lives on the connection, so a retry must WATCH again.
             let read: RedisResult<Option<String>> = retry_once!(
-                RedisError::is_io_error,
+                RedisError::is_connection_dropped,
                 async {
                     redis::cmd("WATCH")
                         .arg(&scope_key)
@@ -822,7 +825,7 @@ impl StateAdapter for RedisAdapter {
         );
 
         let old_value_str: Option<String> = retry_once!(
-            RedisError::is_io_error,
+            RedisError::is_connection_dropped,
             script
                 .key(&scope_key)
                 .arg(key)
@@ -845,7 +848,7 @@ impl StateAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
 
         match retry_once!(
-            RedisError::is_io_error,
+            RedisError::is_connection_dropped,
             conn.hget::<_, _, Option<String>>(&scope_key, &key).await
         ) {
             Ok(Some(s)) => serde_json::from_str::<Value>(&s)
@@ -873,7 +876,7 @@ impl StateAdapter for RedisAdapter {
         let script = redis::Script::new(JSON_UPDATE_SCRIPT);
 
         // Increment, decrement and append change the value again when re-run,
-        // and an I/O error does not say whether the first run happened. Those
+        // and a dropped connection does not say whether the first run happened. Those
         // are re-sent only when the connection was refused: nothing was sent.
         let repeatable = ops.iter().all(|op| {
             matches!(
@@ -882,7 +885,7 @@ impl StateAdapter for RedisAdapter {
             )
         });
         let retry_on: fn(&RedisError) -> bool = if repeatable {
-            RedisError::is_io_error
+            RedisError::is_connection_dropped
         } else {
             RedisError::is_connection_refusal
         };
@@ -950,7 +953,7 @@ impl StateAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
 
         retry_once!(
-            RedisError::is_io_error,
+            RedisError::is_connection_dropped,
             conn.hdel::<_, _, ()>(&scope_key, key).await
         )
         .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
@@ -962,7 +965,7 @@ impl StateAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
 
         let values = retry_once!(
-            RedisError::is_io_error,
+            RedisError::is_connection_dropped,
             conn.hgetall::<_, HashMap<String, String>>(&scope_key).await
         )
         .map_err(|e| anyhow::anyhow!("Failed to get group from Redis: {}", e))?;
@@ -982,7 +985,7 @@ impl StateAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
 
         retry_once!(
-            RedisError::is_io_error,
+            RedisError::is_connection_dropped,
             conn.hkeys::<_, Vec<String>>(&scope_key).await
         )
         .map_err(|e| anyhow::anyhow!("Failed to list keys from Redis: {}", e))
@@ -992,7 +995,7 @@ impl StateAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
         // A retry restarts the scan from cursor 0.
         let groups: RedisResult<Vec<String>> = retry_once!(
-            RedisError::is_io_error,
+            RedisError::is_connection_dropped,
             async {
                 let mut cursor = 0u64;
                 let mut groups = Vec::new();
