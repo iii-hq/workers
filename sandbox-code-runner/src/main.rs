@@ -5,8 +5,7 @@ use clap::Parser;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
-use sandbox_code_runner::engine::{Engine as _, IIIEngine};
-use sandbox_code_runner::error::{classify_probe_error, ProbeOutcome};
+use sandbox_code_runner::engine::{probe_sandbox, IIIEngine, SandboxProbe};
 use sandbox_code_runner::manager::RuntimeManager;
 use sandbox_code_runner::{config, configuration, events, functions, manifest};
 
@@ -121,37 +120,18 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Startup probe: is the iii-sandbox daemon serving? Fail OPEN — the
+    // Startup probe: is a sandbox adapter connected? Fail OPEN — the
     // operator may add it later, and every call meanwhile errors with the
-    // daemon's own message — but say it loudly once, at boot, instead of
+    // router's own message — but say it loudly once, at boot, instead of
     // letting the first caller discover it cryptically.
-    {
-        let probe = engine
-            .call(
-                "engine::functions::info".to_string(),
-                serde_json::json!({ "function_id": "sandbox::create" }),
-                5_000,
-            )
-            .await;
-        match probe {
-            Ok(_) => tracing::info!("iii-sandbox detected: sandbox::create is registered"),
-            Err(raw) => {
-                // Same disambiguation as the register-time probe (see
-                // `classify_probe_error`'s doc): a "not found" naming
-                // `engine::functions::info` itself means THIS engine can't
-                // dispatch the probe, not that `sandbox::create` is absent.
-                // Only mis-words a log line here (this path always fails
-                // open — sandbox-code-runner keeps serving either way), but
-                // should still say the honest thing.
-                if classify_probe_error(&raw, "sandbox::create") == ProbeOutcome::Free {
-                    tracing::warn!(
-                        "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
-                         call will fail until an operator runs `iii trigger compose::add worker=iii-sandbox`"
-                    );
-                } else {
-                    tracing::warn!(error = %raw, "could not verify iii-sandbox presence");
-                }
-            }
+    match probe_sandbox(engine.as_ref()).await {
+        SandboxProbe::Ready => tracing::info!("sandbox adapter detected"),
+        SandboxProbe::Missing => tracing::warn!(
+            "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
+             call will fail until an operator runs `iii trigger compose::add worker=iii-sandbox`"
+        ),
+        SandboxProbe::Unverified(raw) => {
+            tracing::warn!(error = %raw, "could not verify iii-sandbox presence");
         }
     }
 
