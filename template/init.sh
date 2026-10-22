@@ -31,6 +31,8 @@ Workers and ports:
   - package:// workers found in this checkout run from source (cargo run); after
     a code change, rebuild one with
     iii trigger compose::restart --json '{"container":"<name>"}'
+  - pnpm install runs once in this checkout first, so the workers' UI builds
+    find node_modules ready instead of installing it all at once
   - ADE and http keep their default ports 3113 and 3111 when free, else take the
     next free one; the engine always gets a free port from 49334, so the root
     stack and other sandboxes keep running
@@ -145,6 +147,13 @@ fetch_templates
 "${python[@]}" "$script_dir/scripts/init_templates.py" "$templates" "$name"
 # Until the swap below, any failure or Ctrl+C keeps the previous folder.
 trap 'rm -rf -- "$stage"; echo "template/$name was left unchanged." >&2' EXIT
+# Each local worker's build.rs runs `pnpm install` in this workspace; compose starts
+# them together and they race on node_modules (ERR_PNPM_ENOTEMPTY), so install once first.
+workspace=${script_dir%/*}
+if [[ -f "$workspace/pnpm-workspace.yaml" ]] && command -v pnpm >/dev/null; then
+  echo "Installing the checkout's UI dependencies (pnpm install)..."
+  pnpm --dir "$workspace" install
+fi
 init=("$engine" project init -t "$name" -d "$stage/$name" --skip-iii --template-dir "$templates")
 echo "Creating template/$name with $engine..."
 # The CLI's own next steps point at the staging folder; show its output only on failure.
