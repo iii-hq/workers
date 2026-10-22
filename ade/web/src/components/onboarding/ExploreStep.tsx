@@ -221,7 +221,11 @@ function usePickGroup<K extends string>(
         ? first
         : null
       : (picked ?? first)
-    if (key === null) return
+    if (key === null) {
+      // No row to arrive on: rows that open later are late, not arrival.
+      arrived.current = true
+      return
+    }
     const target = buttons.current.get(key)
     if (!target) return
     const take = () => {

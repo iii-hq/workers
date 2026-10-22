@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ExamplePrompt } from '@/lib/onboarding/prompts'
-import { ExploreStep } from './ExploreStep'
+import { ExampleList, ExploreStep } from './ExploreStep'
 
 const PROMPTS: ExamplePrompt[] = [
   'Build a link shortener',
@@ -69,5 +69,21 @@ describe('ExploreStep focus', () => {
     act(() => button(/^Back$/).click())
     await frames()
     expect(document.activeElement).toBe(button(/Build an example project/))
+  })
+
+  it('leaves the focus where it is when the prompts load late', async () => {
+    const noop = () => undefined
+    const list = (prompts: readonly ExamplePrompt[] | null) => (
+      <>
+        <button type="button">Back</button>
+        <ExampleList prompts={prompts} picked={null} onPick={noop} />
+      </>
+    )
+    act(() => root.render(list(null)))
+    await frames()
+    act(() => button(/^Back$/).focus())
+    act(() => root.render(list(PROMPTS)))
+    await frames()
+    expect(document.activeElement).toBe(button(/^Back$/))
   })
 })
