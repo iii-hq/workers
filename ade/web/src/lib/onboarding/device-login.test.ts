@@ -1,5 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createLoginPoller, type DevicePollStatus } from './device-login'
+import { DEVICE_PROVIDERS, SUBSCRIPTION_PROVIDERS } from './catalog'
+import {
+  createLoginPoller,
+  type DevicePollStatus,
+  pollDeviceLogin,
+  startDeviceLogin,
+} from './device-login'
+
+const trigger = vi.fn()
+
+vi.mock('@/lib/iii-client', () => ({
+  getIiiClient: async () => ({ trigger }),
+}))
+
+vi.mock('./api', () => ({
+  installedWorkerNames: async () =>
+    new Set(['provider-openai-codex', 'provider-github-copilot']),
+  addWorkersWithProgress: vi.fn(),
+}))
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -69,7 +87,7 @@ describe('createLoginPoller', () => {
   })
 
   it('stops on success, an expired code or a denial', async () => {
-    for (const terminal of ['ok', 'expired', 'denied'] as const) {
+    for (const terminal of ['ok', 'expired', 'denied', 'failed'] as const) {
       const { poll, results, handle } = poller(['pending', terminal])
       handle.begin()
       await vi.advanceTimersByTimeAsync(13_000)
@@ -114,5 +132,67 @@ describe('createLoginPoller', () => {
     handle.restart()
     await vi.advanceTimersByTimeAsync(200_000)
     expect(poll).toHaveBeenCalledTimes(0)
+  })
+})
+
+const codex = SUBSCRIPTION_PROVIDERS.find(
+  (provider) => provider.toolId === 'codex',
+)?.deviceLogin
+const copilot = DEVICE_PROVIDERS[0]
+
+describe('device login', () => {
+  beforeEach(() => {
+    trigger.mockReset()
+  })
+
+  it('follows the login id Codex hands out, until its deadline', async () => {
+    if (!codex) throw new Error('Codex signs in from the ADE')
+    trigger.mockResolvedValue({
+      login_id: 'login-1',
+      user_code: 'ABCD-1234',
+      verification_uri: 'https://auth.openai.com/codex/device',
+      expires_at: Math.floor(Date.now() / 1_000) + 900,
+      interval: 5,
+    })
+    const code = await startDeviceLogin(codex, () => undefined)
+    expect(trigger).toHaveBeenCalledWith(
+      'provider::openai-codex::login::start',
+      {},
+    )
+    expect(code).toMatchObject({
+      device_code: 'login-1',
+      user_code: 'ABCD-1234',
+      interval: 5,
+    })
+    expect(code.expires_in).toBeGreaterThan(890)
+  })
+
+  it('polls Codex by login id and stops on an error or a replaced sign-in', async () => {
+    if (!codex) throw new Error('Codex signs in from the ADE')
+    trigger
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({
+        status: 'error',
+        error: { code: 'device_login_disabled', message: 'disabled' },
+      })
+      .mockResolvedValueOnce({ status: 'canceled' })
+      .mockResolvedValueOnce({ status: 'ok' })
+    expect(await pollDeviceLogin(codex, 'login-1')).toBe('pending')
+    expect(trigger).toHaveBeenLastCalledWith(
+      'provider::openai-codex::login::poll',
+      { login_id: 'login-1' },
+    )
+    expect(await pollDeviceLogin(codex, 'login-1')).toBe('failed')
+    expect(await pollDeviceLogin(codex, 'login-1')).toBe('failed')
+    expect(await pollDeviceLogin(codex, 'login-1')).toBe('ok')
+  })
+
+  it('still polls GitHub Copilot by device code', async () => {
+    trigger.mockResolvedValue({ status: 'slow_down' })
+    expect(await pollDeviceLogin(copilot, 'device-1')).toBe('slow_down')
+    expect(trigger).toHaveBeenCalledWith(
+      'provider::github-copilot::login::poll',
+      { device_code: 'device-1' },
+    )
   })
 })
