@@ -151,6 +151,9 @@ jobs:
               # libc6 alongside the arm64 dependency from the new sources.
               sudo apt-get update
               sudo apt-get install -y libcap-ng-dev:arm64
+              # capng's build.rs reads only LIBCAPNG_LIB_PATH (a target-scoped
+              # link search); LIBRARY_PATH also reaches the host linker.
+              echo "LIBCAPNG_LIB_PATH=/usr/lib/aarch64-linux-gnu" >> "$GITHUB_ENV"
               echo "LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" >> "$GITHUB_ENV"
               ;;
           esac
