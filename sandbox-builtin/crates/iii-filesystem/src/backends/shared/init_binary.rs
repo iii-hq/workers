@@ -156,9 +156,10 @@ pub(crate) fn is_init_name(name: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(not(has_init_binary))]
     #[test]
     fn test_has_init_without_embed_feature() {
-        // Test builds don't use embed-init, so INIT_BYTES is empty.
+        // Only built when no real init is embedded, so INIT_BYTES is empty.
         assert!(
             !has_init(),
             "has_init() should be false without embed-init feature"
@@ -166,6 +167,7 @@ mod tests {
         assert!(INIT_BYTES.is_empty());
     }
 
+    #[cfg(not(has_init_binary))]
     #[test]
     fn test_init_stat_zero_size_without_embed() {
         let st = init_stat();

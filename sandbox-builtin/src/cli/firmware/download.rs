@@ -92,7 +92,9 @@ pub async fn ensure_init_binary() -> anyhow::Result<PathBuf> {
     )
 }
 
-#[cfg(test)]
+// Both tests check what a build WITHOUT the embed does; with both embeds on this
+// module would be empty and its helpers dead code under `clippy -D warnings`.
+#[cfg(all(test, any(not(has_libkrunfw), not(feature = "embed-init"))))]
 mod tests {
     use super::*;
     use crate::cli::test_support::lock_home;

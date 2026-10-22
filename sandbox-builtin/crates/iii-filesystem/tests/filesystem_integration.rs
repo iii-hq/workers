@@ -493,6 +493,8 @@ fn open_read_existing_file() {
 /// beyond that offset. This exercises the macOS `read_dir_entries` fix where
 /// `lseek(fd, 0, SEEK_SET)` rewinds the directory fd before `dup`/`fdopendir`,
 /// and sequential 1-based indices replace unreliable `telldir` cookies.
+// With a real init embedded the root listing gains a virtual init.krun entry.
+#[cfg(not(has_init_binary))]
 #[test]
 fn readdir_pagination_with_nonzero_offset() {
     let h = setup_fs();
