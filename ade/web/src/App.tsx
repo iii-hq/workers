@@ -219,7 +219,7 @@ export function App({
     [],
   )
   const workspace = useWorkspaceTabs()
-  const { activeTabId } = workspace
+  const { activeTabId, layoutSource } = workspace
   // One report per change of what the active workspace shows: switching tabs
   // or changing a panel's screen.
   // The tab id is in the key so a switch between two tabs that show the same
@@ -228,9 +228,12 @@ export function App({
     activeTabId,
     workspace.activeTab.screens,
   ])
+  // The local layout shows before the server one replaces it: report only
+  // the hydrated layout.
   useEffect(() => {
+    if (layoutSource === 'pending') return
     trackScreens(JSON.parse(activeScreens)[1])
-  }, [activeScreens])
+  }, [activeScreens, layoutSource])
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
   // Per-workspace phone panel, derived so a tab switch renders its own panel first.
@@ -401,7 +404,6 @@ export function App({
   // on the real tabs, not the local copy. `#/traces` and worker pages have
   // no deep link here: `#/traces` and `#/worker/<scope>` boot the standalone
   // shell instead (main.tsx).
-  const layoutSource = workspace.layoutSource
   useEffect(() => {
     if (layoutSource === 'pending') return
     const consume = () => {
