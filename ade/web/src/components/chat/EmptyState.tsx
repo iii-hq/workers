@@ -1,11 +1,17 @@
-import { Bot, Check, Settings2 } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Bot, Check, CircleArrowUp, Settings2 } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { InstallStage } from '@/hooks/use-harness-status'
-import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
+import {
+  type AgentEntry,
+  type KitUpdateEntry,
+  listAgents,
+  listKitUpdates,
+} from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { normalizeErrorMessage } from '@/lib/providers'
@@ -76,6 +82,8 @@ export interface EmptyStateProps {
   onSystemPromptChange?: (next: SystemPromptState) => void
   /** Optional deterministic catalog for stories/tests; omitted loads Directory. */
   agentEntries?: AgentEntry[] | null
+  /** Optional deterministic kit updates for stories/tests; omitted loads Directory. */
+  kitUpdates?: KitUpdateEntry[]
   /** Frozen identity/configuration for the selected Directory agent. */
   agentProfile?: AgentProfileSnapshot
   /**
@@ -113,6 +121,7 @@ export function EmptyState({
   systemPrompt,
   onSystemPromptChange,
   agentEntries,
+  kitUpdates,
   agentProfile,
   onAgentProfileChange,
   preselectDefaultAgent = false,
@@ -146,6 +155,7 @@ export function EmptyState({
             systemPrompt={systemPrompt}
             onSystemPromptChange={onSystemPromptChange}
             agentEntries={agentEntries}
+            kitUpdates={kitUpdates}
             agentProfile={agentProfile}
             onAgentProfileChange={onAgentProfileChange}
             preselectDefaultAgent={preselectDefaultAgent}
@@ -185,6 +195,7 @@ function ReadyBody({
   systemPrompt,
   onSystemPromptChange,
   agentEntries,
+  kitUpdates,
   agentProfile,
   onAgentProfileChange,
   preselectDefaultAgent,
@@ -198,6 +209,7 @@ function ReadyBody({
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
   agentEntries?: AgentEntry[] | null
+  kitUpdates?: KitUpdateEntry[]
   agentProfile?: AgentProfileSnapshot
   onAgentProfileChange?: (
     next: AgentProfileSnapshot | undefined,
@@ -235,6 +247,7 @@ function ReadyBody({
             systemPrompt={systemPrompt}
             onSystemPromptChange={onSystemPromptChange}
             agentEntries={agentEntries}
+            kitUpdates={kitUpdates}
             agentProfile={agentProfile}
             onAgentProfileChange={onAgentProfileChange}
             preselectDefaultAgent={preselectDefaultAgent}
@@ -249,6 +262,7 @@ function SessionSetupControls({
   systemPrompt,
   onSystemPromptChange,
   agentEntries,
+  kitUpdates,
   agentProfile,
   onAgentProfileChange,
   preselectDefaultAgent,
@@ -257,6 +271,7 @@ function SessionSetupControls({
   systemPrompt: SystemPromptState
   onSystemPromptChange: (next: SystemPromptState) => void
   agentEntries?: AgentEntry[] | null
+  kitUpdates?: KitUpdateEntry[]
   agentProfile?: AgentProfileSnapshot
   onAgentProfileChange?: (
     next: AgentProfileSnapshot | undefined,
@@ -267,6 +282,7 @@ function SessionSetupControls({
     agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
   const catalog = useAgentCatalog(agentEntries)
   const agents = (catalog.entries ?? []).filter((entry) => !entry.hidden)
+  const updates = useKitUpdates(kitUpdates)
 
   const select = (entry: AgentEntry, options?: AgentProfileChangeOptions) => {
     if (onAgentProfileChange) {
@@ -301,6 +317,7 @@ function SessionSetupControls({
         error={catalog.error}
         selectedId={selectedAgentId ?? preselect?.id ?? null}
         onSelect={(entry) => select(entry)}
+        kitUpdates={updates}
       />
     </section>
   )
@@ -338,18 +355,78 @@ function useAgentCatalog(provided: AgentEntry[] | null | undefined): {
     : { entries: provided, error: false }
 }
 
+const KITS_ON_CHANGE = 'directory::kits::on-change'
+
+/**
+ * Installed kits with a newer release, for the cards of the profiles they
+ * own. Read again whenever the Directory applies a kit or its update check
+ * changes the set, so an update applied from the panel this screen opened
+ * clears its card.
+ */
+function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
+  const [loaded, setLoaded] = useState<KitUpdateEntry[]>([])
+  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
+
+  useEffect(() => {
+    if (provided !== undefined) return
+    let cancelled = false
+    const offs: Array<() => void> = []
+    void getIiiClient()
+      .then((client) => {
+        if (cancelled) return
+        const read = () =>
+          listKitUpdates(client)
+            .then((next) => {
+              if (!cancelled) setLoaded(next)
+            })
+            // A Directory without kits support has nothing to offer.
+            .catch(() => {})
+        // Per-mount id: the route chat and the dock can both show this screen.
+        const fnId = `console::kit-updates::${instanceId}`
+        try {
+          offs.push(
+            client.on<{ op?: unknown }>(fnId, (change) => {
+              if (change?.op === 'apply' || change?.op === 'updates') {
+                void read()
+              }
+            }),
+          )
+          offs.push(
+            client.registerTrigger({
+              type: KITS_ON_CHANGE,
+              function_id: `${fnId}::${client.browserId}`,
+              config: {},
+            }),
+          )
+        } catch {
+          // No kit events from this Directory: the first read stands.
+        }
+        void read()
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      for (const off of offs) off()
+    }
+  }, [provided, instanceId])
+
+  return provided ?? loaded
+}
+
 function AgentGallery({
   entries,
   loading,
   error,
   selectedId,
   onSelect,
+  kitUpdates,
 }: {
   entries: AgentEntry[]
   loading: boolean
   error: boolean
   selectedId: string | null
   onSelect: (entry: AgentEntry) => void
+  kitUpdates: KitUpdateEntry[]
 }) {
   return (
     <div className="pb-3 text-left">
@@ -376,11 +453,14 @@ function AgentGallery({
           )}
         >
           {entries.map((entry) => (
-            <li key={entry.id} className="min-w-0">
+            <li key={entry.id} className="group/choice relative min-w-0">
               <AgentChoiceCard
                 entry={entry}
                 selected={selectedId === entry.id}
                 onSelect={() => onSelect(entry)}
+                update={kitUpdates.find(
+                  (update) => update.kit === entry.source?.kit,
+                )}
               />
             </li>
           ))}
@@ -431,54 +511,144 @@ function AgentChoiceCard({
   entry,
   selected,
   onSelect,
+  update,
 }: {
   entry: AgentEntry
   selected: boolean
   onSelect: () => void
+  /** The update of the kit this profile came from. */
+  update?: KitUpdateEntry
 }) {
   const Icon =
     (entry.icon && SUBAGENT_ICON_COMPONENTS[entry.icon as SubagentIcon]) || Bot
   const title = entry.name.trim() || entry.id
   const color = (entry.color ?? 'neutral') as SubagentColor
+  const markerId = useId()
 
   return (
-    <button
-      type="button"
-      aria-label={`Use ${title} agent profile`}
-      aria-pressed={selected}
-      onClick={onSelect}
-      className={cn(
-        'group/agent relative flex h-full w-full cursor-pointer flex-col rounded-lg bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-[var(--motion-duration-control)] hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus @lg:min-h-40',
-        selected && 'bg-surface-selected',
-      )}
-    >
-      {selected ? (
-        <span className="absolute right-3 top-3 flex size-5 items-center justify-center rounded-full bg-ink text-bg shadow-xs">
-          <Check aria-hidden className="size-4" strokeWidth={3} />
-        </span>
+    <>
+      <button
+        type="button"
+        aria-label={`Use ${title} agent profile`}
+        aria-pressed={selected}
+        onClick={onSelect}
+        aria-describedby={update && !selected ? markerId : undefined}
+        className={cn(
+          'relative flex h-full w-full cursor-pointer flex-col rounded-lg bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[translate,box-shadow] duration-[var(--motion-duration-control)] group-hover/choice:-translate-y-px group-hover/choice:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus @lg:min-h-40',
+          selected && 'bg-surface-selected',
+          // Room for the kit footer, drawn over the card (a button cannot
+          // hold the update action); the same in both states, so selecting
+          // never resizes the row.
+          update && 'pb-16 sm:pb-14',
+        )}
+      >
+        {selected ? (
+          <span className="absolute right-3 top-3 flex size-5 items-center justify-center rounded-full bg-ink text-bg shadow-xs">
+            <Check aria-hidden className="size-4" strokeWidth={3} />
+          </span>
+        ) : null}
+        <div className="flex min-w-0 flex-1 flex-col gap-2 @lg:gap-3">
+          <div className="flex min-w-0 items-center gap-3 @lg:block">
+            <div
+              className="agent-choice-avatar active-subagent-chip flex size-12 shrink-0 items-center justify-center rounded-lg @lg:size-11"
+              data-color={color}
+            >
+              <Icon aria-hidden className="size-5" strokeWidth={2.25} />
+            </div>
+            <div className="min-w-0 font-sans text-base font-semibold text-ink @lg:hidden">
+              {title}
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <div className="hidden font-sans text-sm font-semibold text-ink @lg:block">
+              {title}
+            </div>
+            <p className="line-clamp-3 text-pretty font-sans text-base leading-6 text-ink-faint sm:text-sm sm:leading-5">
+              {entry.description.trim() || 'No description provided.'}
+            </p>
+          </div>
+        </div>
+      </button>
+      {update ? (
+        <KitUpdateFooter
+          update={update}
+          actionable={selected}
+          markerId={markerId}
+        />
       ) : null}
-      <div className="flex min-w-0 flex-1 flex-col gap-2 @lg:gap-3">
-        <div className="flex min-w-0 items-center gap-3 @lg:block">
-          <div
-            className="agent-choice-avatar active-subagent-chip flex size-12 shrink-0 items-center justify-center rounded-lg @lg:size-11"
-            data-color={color}
-          >
-            <Icon aria-hidden className="size-5" strokeWidth={2.25} />
-          </div>
-          <div className="min-w-0 font-sans text-base font-semibold text-ink @lg:hidden">
-            {title}
-          </div>
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="hidden font-sans text-sm font-semibold text-ink @lg:block">
-            {title}
-          </div>
-          <p className="line-clamp-3 text-pretty font-sans text-base leading-6 text-ink-faint sm:text-sm sm:leading-5">
-            {entry.description.trim() || 'No description provided.'}
-          </p>
-        </div>
-      </div>
-    </button>
+    </>
+  )
+}
+
+const KIT_FOOTER_CLASS =
+  'absolute bottom-3 left-2 flex min-h-12 max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-sm px-2 py-1 font-sans text-base font-medium transition-[translate,color,background-color,opacity] duration-[var(--motion-duration-control)] group-hover/choice:-translate-y-px starting:opacity-0 sm:min-h-0 sm:text-sm'
+
+/**
+ * The card's kit-update footer. Only the selected card offers the action
+ * (it opens the kit in Directory → Kits, where the update is reviewed);
+ * the others carry a quiet note in the same box, which clicks pass through.
+ */
+function KitUpdateFooter({
+  update,
+  actionable,
+  markerId,
+}: {
+  update: KitUpdateEntry
+  actionable: boolean
+  markerId: string
+}) {
+  const icon = (
+    <CircleArrowUp
+      aria-hidden
+      className={cn(
+        'size-4 h-lh shrink-0',
+        update.major ? 'text-warn' : 'text-accent',
+      )}
+    />
+  )
+  // Copy stays short: a three-column card leaves ~150px for the label.
+  const version = <span className="tabular-nums">{update.available}</span>
+
+  if (!actionable) {
+    return (
+      <span
+        id={markerId}
+        className={cn(KIT_FOOTER_CLASS, 'pointer-events-none text-ink-faint')}
+      >
+        {icon}
+        <span className="truncate">
+          {update.major ? 'Major update' : 'Update'} {version}
+          <span className="sr-only"> available</span>
+        </span>
+      </span>
+    )
+  }
+
+  return (
+    <Tooltip
+      label={`${update.kit} ${update.current} → ${update.available} · opens in Directory`}
+    >
+      <button
+        type="button"
+        onClick={() =>
+          requestPanelOpen({
+            pageId: 'directory',
+            context: { collection: 'kits', kit: update.kit },
+          })
+        }
+        className={cn(
+          KIT_FOOTER_CLASS,
+          'cursor-pointer text-ink hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus',
+        )}
+      >
+        {icon}
+        <span className="truncate">
+          {/* The version of a major update lives in the tooltip. */}
+          {update.major ? 'Review major update' : <>Review update {version}</>}
+          <span className="sr-only">, {update.kit} kit</span>
+        </span>
+      </button>
+    </Tooltip>
   )
 }
 

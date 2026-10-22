@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   getPrompt,
   getSkill,
+  listKitUpdates,
   listPrompts,
   listSkills,
   skillBodyWithBaseDir,
@@ -26,6 +27,39 @@ describe('client calls', () => {
     expect(await listPrompts(client)).toEqual(entries)
     expect(client.trigger).toHaveBeenCalledWith(
       'directory::system-prompts::list',
+      {},
+      TIMEOUT,
+    )
+  })
+
+  it('listKitUpdates keeps only kits with an available update', async () => {
+    const client = fakeClient(() => ({
+      kits: [
+        {
+          kit: 'iii/deepwork',
+          version: '0.4.3',
+          update: { available: '0.4.4' },
+        },
+        {
+          kit: 'acme/team',
+          version: '1.4.0',
+          update: { available: '2.0.0', major: true },
+        },
+        { kit: 'iii/current', version: '1.0.0', update: { available: null } },
+        { kit: 'iii/unchecked', version: '1.0.0' },
+      ],
+    }))
+    expect(await listKitUpdates(client)).toEqual([
+      {
+        kit: 'iii/deepwork',
+        current: '0.4.3',
+        available: '0.4.4',
+        major: false,
+      },
+      { kit: 'acme/team', current: '1.4.0', available: '2.0.0', major: true },
+    ])
+    expect(client.trigger).toHaveBeenCalledWith(
+      'directory::kits::list',
       {},
       TIMEOUT,
     )
