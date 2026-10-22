@@ -9,7 +9,6 @@ import {
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -53,6 +52,8 @@ import {
   fetchExamplePrompts,
 } from '@/lib/onboarding/prompts'
 import {
+  type FinishChoice,
+  finishStep,
   reportSetupStep,
   type SetupStepId,
   type SetupStepProperties,
@@ -368,8 +369,8 @@ export function OnboardingWizardHost() {
   )
 
   const start = useCallback(
-    (outcome = 'start_building') => {
-      report('finish', { outcome })
+    (choice: FinishChoice) => {
+      report('finish', finishStep(choice))
       setOpen(false)
       window.requestAnimationFrame(requestComposerFocus)
     },
@@ -402,17 +403,6 @@ export function OnboardingWizardHost() {
     }
   }, [open, step, live])
 
-  const agentNames = useMemo(
-    () =>
-      new Map(
-        (agents ?? []).map((entry) => [
-          entry.id,
-          entry.name.trim() || entry.id,
-        ]),
-      ),
-    [agents],
-  )
-
   // One example per visit: a second click while the dialog animates out
   // would start (and send) a second chat.
   const starting = useRef(false)
@@ -425,7 +415,10 @@ export function OnboardingWizardHost() {
     async (prompt: ExamplePrompt) => {
       if (starting.current) return
       starting.current = true
-      reportRef.current('finish', { outcome: 'example_prompt' })
+      reportRef.current(
+        'finish',
+        finishStep({ kind: 'example', title: prompt.title }),
+      )
       setOpen(false)
       const api = ctxRef.current
       if (!api) return
@@ -444,7 +437,7 @@ export function OnboardingWizardHost() {
       return
     }
     setTour({ kind: 'idle' })
-    reportRef.current('finish', { outcome: 'tour' })
+    reportRef.current('finish', finishStep({ kind: 'tour' }))
     setOpen(false)
     openTour()
   }, [])
@@ -474,10 +467,10 @@ export function OnboardingWizardHost() {
     return () => window.cancelAnimationFrame(frame)
   }, [open, step])
 
-  // Finished steps stay a click away until Ready: setup is recorded then.
-  const reachable = new Set<WizardStepId>(
-    busy || step === 'ready' || step === 'explore' ? [] : visited,
-  )
+  // Finished steps stay a click away throughout, Ready and Explore iii
+  // included: setup is recorded on reaching Ready, and going back after
+  // that only re-records it on the way forward, as Ready's own Back does.
+  const reachable = new Set<WizardStepId>(busy ? [] : visited)
 
   return (
     <LazyMotion features={domAnimation} strict>
@@ -580,6 +573,7 @@ export function OnboardingWizardHost() {
                     onboarding={onboarding}
                     judges={judges}
                     onNext={() => go('explore')}
+                    onBack={() => go('judge')}
                     kits={kits}
                     onRetryKit={(kit) => void retryOnboardingKit(kit)}
                     onReviewKit={reviewKit}
@@ -592,12 +586,11 @@ export function OnboardingWizardHost() {
                       ).length > 0
                     }
                     prompts={prompts}
-                    agentNames={agentNames}
                     onPrompt={(prompt) => void startPrompt(prompt)}
                     tour={tour}
                     onTour={() => void startTour()}
-                    onOwn={() => start()}
-                    onFinish={() => start('finished')}
+                    onOwn={() => start({ kind: 'own' })}
+                    onFinish={() => start({ kind: 'finish' })}
                     onBack={() => go('ready')}
                   />
                 )}

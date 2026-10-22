@@ -334,6 +334,7 @@ describe('ReadyStep after a Chromium download', () => {
         })}
         judges={[]}
         onNext={noop}
+        onBack={noop}
       />,
     )
     expect(out).toContain('Chromium is ready for agents')
@@ -347,6 +348,7 @@ describe('ReadyStep after a Chromium download', () => {
         onboarding={controller({ snapshot: { browser: READY } })}
         judges={[]}
         onNext={noop}
+        onBack={noop}
       />,
     )
     expect(out).not.toContain('Chromium')

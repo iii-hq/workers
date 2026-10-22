@@ -1,4 +1,10 @@
-import { ArrowRight, Check, LoaderCircle, TriangleAlert } from 'lucide-react'
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  LoaderCircle,
+  TriangleAlert,
+} from 'lucide-react'
 import { Wordmark } from '@/components/ui/Wordmark'
 import type { JudgeOption } from '@/lib/onboarding/catalog'
 import type { KitInstall } from '@/lib/onboarding/kits'
@@ -16,6 +22,7 @@ export function ReadyStep({
   onboarding,
   judges,
   onNext,
+  onBack,
   kits = [],
   onRetryKit,
   onReviewKit,
@@ -25,6 +32,8 @@ export function ReadyStep({
   judges: readonly JudgeOption[]
   /** On to Explore iii. */
   onNext: () => void
+  /** Back to Judge, or Browser when it was shown. */
+  onBack: () => void
   /** The template's kits and how their background install is going. */
   kits?: readonly KitInstall[]
   /** Install a kit that failed again. */
@@ -83,10 +92,16 @@ export function ReadyStep({
     <StepLayout
       centered
       footer={
-        <Button className="ml-auto" onClick={() => onNext()}>
-          Next
-          <ArrowRight aria-hidden />
-        </Button>
+        <>
+          <Button variant="ghost" className="-ml-3" onClick={onBack}>
+            <ArrowLeft aria-hidden />
+            Back
+          </Button>
+          <Button onClick={() => onNext()}>
+            Next
+            <ArrowRight aria-hidden />
+          </Button>
+        </>
       }
     >
       <div className="flex flex-col items-center gap-3 text-center">

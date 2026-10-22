@@ -50,7 +50,9 @@ export type SetupStepProperties = Record<
 /**
  * The message published for one closed step: the tour's own five fields
  * (`tour_id`, `tour_title`, `step_number`, `step_id`, `step_title`, as the
- * `onboarding` worker sends them), then what this step adds.
+ * `onboarding` worker sends them), then what this step adds. A substep
+ * (see `finishStep`) may give its own `step_title`; the step's identity
+ * stays the step's.
  */
 export function setupStepMessage(
   step: SetupStepId,
@@ -58,12 +60,53 @@ export function setupStepMessage(
   properties: SetupStepProperties,
 ) {
   return {
+    step_title: STEP_TITLES[step],
     ...properties,
     tour_id: SETUP_TOUR_ID,
     tour_title: SETUP_TOUR_TITLE,
     step_id: step,
-    step_title: STEP_TITLES[step],
     step_number: stepNumber,
+  }
+}
+
+/** What the person confirmed on Explore iii. */
+export type FinishChoice =
+  | { kind: 'example'; title: string }
+  | { kind: 'tour' }
+  | { kind: 'own' }
+  | { kind: 'finish' }
+
+/**
+ * Finish, as the choice made on Explore iii: each choice is a substep of
+ * the one `finish` step, with its own `substep_id` and `step_title`. An
+ * example is named by its title, read from the project's own file, and
+ * identified by that title's slug.
+ */
+export function finishStep(choice: FinishChoice): SetupStepProperties {
+  switch (choice.kind) {
+    case 'example':
+      return {
+        outcome: 'example_prompt',
+        substep_id: choice.title
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, ''),
+        step_title: choice.title,
+      }
+    case 'tour':
+      return {
+        outcome: 'tour',
+        substep_id: 'tour',
+        step_title: 'Take the learn-iii tour',
+      }
+    case 'own':
+      return {
+        outcome: 'own',
+        substep_id: 'own',
+        step_title: 'Explore on my own',
+      }
+    case 'finish':
+      return { outcome: 'finished', substep_id: 'finish', step_title: 'Finish' }
   }
 }
 

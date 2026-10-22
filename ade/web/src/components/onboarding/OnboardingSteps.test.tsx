@@ -282,17 +282,14 @@ function ready(
       onboarding={controller(snapshot, activity)}
       judges={[]}
       onNext={noop}
+      onBack={noop}
     />,
   )
 }
 
 function examples(prompts: readonly ExamplePrompt[] | null) {
   return renderToStaticMarkup(
-    <ExampleList
-      prompts={prompts}
-      agentNames={new Map([['ade-worker-builder', 'Onboarding']])}
-      onPrompt={noop}
-    />,
+    <ExampleList prompts={prompts} picked={null} onPick={noop} />,
   )
 }
 
@@ -304,7 +301,6 @@ function explore(
     <ExploreStep
       connected={connected}
       prompts={prompts}
-      agentNames={new Map()}
       onPrompt={noop}
       tour={{ kind: 'idle' }}
       onTour={noop}
@@ -322,6 +318,7 @@ describe('ReadyStep', () => {
         onboarding={controller({ providers: CONNECTED })}
         judges={[]}
         onNext={noop}
+        onBack={noop}
         kits={[
           { kit: 'iii/deepwork', state: 'installing' },
           { kit: 'iii/done', state: 'installed' },
@@ -397,20 +394,25 @@ describe('ReadyStep', () => {
     expect(html).not.toContain('env://')
   })
 
-  it('moves on to Explore iii, with or without a model', () => {
+  it('moves on to Explore iii, or back, with or without a model', () => {
     expect(ready({ providers: CONNECTED })).toContain('Next')
+    expect(ready({ providers: CONNECTED })).toContain('Back')
     expect(ready({ providers: [] })).toContain('Next')
     expect(ready({ providers: CONNECTED })).not.toContain('Try an example')
   })
 })
 
 describe('ExploreStep', () => {
-  it('offers the examples, the tour and exploring alone', () => {
+  it('offers the examples, the tour and exploring alone as one pick', () => {
     const html = explore(true)
     expect(html).toContain('Explore iii')
     expect(html).toContain('Build an example project')
     expect(html).toContain('Take the learn-iii tour')
     expect(html).toContain('Explore on my own')
+    // A radio group with nothing picked yet; the footer's button is then
+    // Finish, and nothing on the screen is disabled.
+    expect(html.match(/role="radio"/g)).toHaveLength(3)
+    expect(html.match(/aria-checked="false"/g)).toHaveLength(3)
     expect(html).toContain('Finish')
     expect(html).not.toContain('disabled=""')
   })
@@ -426,7 +428,6 @@ describe('ExploreStep', () => {
       <ExploreStep
         connected
         prompts={PROMPTS}
-        agentNames={new Map()}
         onPrompt={noop}
         tour={{ kind: 'failed', error: 'compose is not running' }}
         onTour={noop}
@@ -440,15 +441,13 @@ describe('ExploreStep', () => {
 })
 
 describe('ExampleList', () => {
-  it('offers the four example prompts as chats to start, each with its agent', () => {
+  it('offers the four example prompts to pick from, each with its agent', () => {
     const html = examples(PROMPTS)
-    expect(html).toContain('aria-label="Start a chat: Build a link shortener"')
+    expect(html.match(/role="radio"/g)).toHaveLength(4)
+    expect(html).toContain('Build a link shortener')
     expect(html).toContain('Build an expense tracker')
     expect(html).toContain('Create a test reviewer agent')
     expect(html).toContain('Explain this project')
-    // Each card names the agent profile it runs with, as the gallery does.
-    expect(html).toContain('>Onboarding<')
-    expect(html).toContain('>Default<')
     // The message itself waits for the click; the card never shows it.
     expect(html).not.toContain('link-shortener')
   })
