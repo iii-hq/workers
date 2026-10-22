@@ -1667,7 +1667,8 @@ fn apply_default_filesystem_root(
 
 /// The session's context strategy: its metadata's `context_strategy` (a name
 /// matching `^[a-z0-9-]{1,64}$`; `"default"` = context-manager), else the
-/// worker's `default_context_strategy` (unset = context-manager), with the
+/// worker's `default_context_strategy` (unset = context-manager; never for a
+/// sub-agent's session, which carries `parent_session_id`), with the
 /// metadata's `context_budget_tokens` (a positive integer, read only with a
 /// strategy). A bad value fails the send before anything is written, never a
 /// silent fallback to the default.
@@ -1676,6 +1677,7 @@ fn context_strategy_from_metadata(
     config_default: Option<&str>,
 ) -> Result<Option<ContextStrategy>, HarnessError> {
     let field = |key: &str| metadata.and_then(|metadata| metadata.get(key));
+    let config_default = config_default.filter(|_| field("parent_session_id").is_none());
     let name = match field("context_strategy") {
         None | Some(Value::Null) => match config_default {
             None | Some("default") => return Ok(None),
@@ -3893,6 +3895,22 @@ mod tests {
         // A bad stored default never silently falls back to context-manager.
         let error = context_strategy_from_metadata(None, Some("CLM")).unwrap_err();
         assert_eq!(error.code(), "harness/internal");
+        // A send into a sub-agent's session never takes the config default;
+        // its own metadata still picks one.
+        assert_eq!(
+            pick(
+                serde_json::json!({ "parent_session_id": "s_parent" }),
+                Some("clm")
+            ),
+            None
+        );
+        assert_eq!(
+            pick(
+                serde_json::json!({ "parent_session_id": "s_parent", "context_strategy": "clm" }),
+                Some("default")
+            ),
+            Some(("clm".into(), None))
+        );
     }
 
     #[test]
