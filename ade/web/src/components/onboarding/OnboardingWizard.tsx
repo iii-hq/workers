@@ -462,10 +462,10 @@ export function OnboardingWizardHost() {
     return () => window.cancelAnimationFrame(frame)
   }, [open, step])
 
-  // Finished steps stay a click away until Ready: setup is recorded then.
-  const reachable = new Set<WizardStepId>(
-    busy || step === 'ready' || step === 'explore' ? [] : visited,
-  )
+  // Finished steps stay a click away throughout, Ready and Explore iii
+  // included: setup is recorded on reaching Ready, and going back after
+  // that only re-records it on the way forward, as Ready's own Back does.
+  const reachable = new Set<WizardStepId>(busy ? [] : visited)
 
   return (
     <LazyMotion features={domAnimation} strict>
@@ -585,6 +585,7 @@ export function OnboardingWizardHost() {
                     tour={tour}
                     onTour={() => void startTour()}
                     onOwn={() => start()}
+                    onFinish={() => start('finished')}
                     onBack={() => go('ready')}
                   />
                 )}

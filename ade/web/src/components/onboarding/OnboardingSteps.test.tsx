@@ -305,6 +305,7 @@ function explore(
       tour={{ kind: 'idle' }}
       onTour={noop}
       onOwn={noop}
+      onFinish={noop}
       onBack={noop}
     />,
   )
@@ -431,6 +432,7 @@ describe('ExploreStep', () => {
         tour={{ kind: 'failed', error: 'compose is not running' }}
         onTour={noop}
         onOwn={noop}
+        onFinish={noop}
         onBack={noop}
       />,
     )

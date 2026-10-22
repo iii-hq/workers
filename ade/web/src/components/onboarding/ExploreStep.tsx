@@ -208,8 +208,15 @@ function usePickGroup<K extends string>(
   // has moved on is not pulled back.
   const arrived = useRef(false)
   useEffect(() => {
-    if (picked !== null || first === null) return
-    const target = buttons.current.get(first)
+    // On arrival the picked row, else the first open one; after that only
+    // the first row, when it opens late and the focus is still in here.
+    const key = arrived.current
+      ? picked === null
+        ? first
+        : null
+      : (picked ?? first)
+    if (key === null) return
+    const target = buttons.current.get(key)
     if (!target) return
     const take = () => {
       const within = [...buttons.current.values()].some(
@@ -337,6 +344,7 @@ export function ExploreStep({
   tour,
   onTour,
   onOwn,
+  onFinish,
   onBack,
 }: {
   /** A model is connected: the examples and the tour can run. */
@@ -348,14 +356,20 @@ export function ExploreStep({
   tour: TourState
   /** Get the tour ready, close the wizard and show it. */
   onTour: () => void
-  /** Close the wizard and hand the composer the focus: Finish. */
+  /** Close the wizard and hand the composer the focus: Explore on my own. */
   onOwn: () => void
+  /** Close the wizard: Finish, with nothing picked. */
+  onFinish: () => void
   /** Back to Ready. */
   onBack: () => void
 }) {
   const [examples, setExamples] = useState(false)
   const [picked, setPicked] = useState<ChoiceId | null>(null)
   const [prompt, setPrompt] = useState<number | null>(null)
+  // The pick is an index into the list it was made from; a new list (the
+  // project's file re-read) may order its prompts differently.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `prompts` changing is the point
+  useEffect(() => setPrompt(null), [prompts])
   const preparing = tour.kind === 'preparing'
   const count = prompts?.length ?? 0
   const can: Record<ChoiceId, boolean> = {
@@ -401,7 +415,8 @@ export function ExploreStep({
   const go = () => {
     if (choice === 'example') setExamples(true)
     else if (choice === 'tour') onTour()
-    else onOwn()
+    else if (choice === 'own') onOwn()
+    else onFinish()
   }
   const label = preparing
     ? 'Preparing the tour…'
