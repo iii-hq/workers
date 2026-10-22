@@ -262,7 +262,7 @@ jobs:
           find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Run clippy
-        if: matrix.worker != 'browser'
+        if: matrix.worker != 'browser' && matrix.worker != 'sandbox-builtin'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run clippy (default features)
@@ -279,12 +279,41 @@ jobs:
           echo "III_REDIS_REQUIRE=1" >> "$GITHUB_ENV"
 
       - name: Run tests
-        if: matrix.worker != 'browser'
+        if: matrix.worker != 'browser' && matrix.worker != 'sandbox-builtin'
         run: cargo test --locked --all-features
 
       - name: Run tests (default features)
         if: matrix.worker == 'browser'
         run: cargo test --locked
+
+      # sandbox-builtin: --all-features would turn on embed-init and
+      # embed-libkrunfw without a built guest init, so it gets its own steps.
+      # integration-vm needs KVM and runs in sandbox-builtin-vm-linux.
+      - name: Install libcap-ng (sandbox-builtin)
+        if: matrix.worker == 'sandbox-builtin'
+        run: |
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
+
+      # The only CI run of the fail-closed tests: the embed features compile
+      # them out.
+      - name: Fail-closed tests without embedded artifacts (sandbox-builtin)
+        if: matrix.worker == 'sandbox-builtin'
+        run: cargo test --locked --lib fails_closed
+
+      # embed-init embeds a real init, so build it first. rust-lld links musl:
+      # no musl-tools needed.
+      - name: Build the guest init (sandbox-builtin)
+        if: matrix.worker == 'sandbox-builtin'
+        run: BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh
+
+      - name: Run clippy with embedded artifacts (sandbox-builtin)
+        if: matrix.worker == 'sandbox-builtin'
+        run: cargo clippy --locked --workspace --all-targets --features embed-init,embed-libkrunfw -- -D warnings
+
+      - name: Run tests with embedded artifacts (sandbox-builtin)
+        if: matrix.worker == 'sandbox-builtin'
+        run: cargo test --locked --workspace --features embed-init,embed-libkrunfw
 
       # computer vendors xa11y-linux (AT-SPI only, patched; see
       # computer/vendor/xa11y-linux/PATCHES.md) outside its workspace, so its
@@ -348,6 +377,149 @@ jobs:
           SKIP_UI_BUILD: "1"
           III_REQUIRE_MINILM: "1"
         run: cargo test --locked --test minilm_target
+
+  # ──────────────────────────────────────────────────────────────
+  # sandbox-builtin boots libkrun microVMs. The rust job above lints and
+  # tests it with the guest init and firmware embedded; these two prove the
+  # rest. macOS: the Apple Silicon build and the platform crates the ubuntu
+  # gate never compiles. Linux: real VMs on KVM, the integration-vm suite and
+  # the isolation e2e. The Linux job has no continue-on-error: it gates
+  # every release, so a 1.x whose fixtures drifted from the contract or whose
+  # VMs do not boot cannot ship.
+  # ──────────────────────────────────────────────────────────────
+  sandbox-builtin-macos:
+    name: "sandbox-builtin: lint + test (macos)"
+    needs: discover
+    if: contains(needs.discover.outputs.rust, '"sandbox-builtin"')
+    permissions:
+      contents: read
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: sandbox-builtin
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      # build-init.sh adds the musl target the guest init needs.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: worker-sandbox-builtin-macos
+          save-if: ${{ github.event_name == 'push' }}
+          workspaces: sandbox-builtin -> target
+
+      - name: Build the guest init
+        run: BUILD_TARGET=aarch64-apple-darwin scripts/build-init.sh
+
+      - name: Run clippy with embedded artifacts
+        run: cargo clippy --locked --all-targets --features embed-init,embed-libkrunfw -- -D warnings
+
+      - name: Run tests with embedded artifacts
+        run: cargo test --locked --features embed-init,embed-libkrunfw
+
+      - name: Run iii-filesystem tests
+        run: cargo test --locked -p iii-filesystem
+
+  sandbox-builtin-vm-linux:
+    name: "sandbox-builtin: KVM VM tests + isolation e2e (linux)"
+    needs: discover
+    if: contains(needs.discover.outputs.rust, '"sandbox-builtin"')
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: sandbox-builtin
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: worker-sandbox-builtin-vm-linux
+          save-if: ${{ github.event_name == 'push' }}
+          workspaces: sandbox-builtin -> target
+
+      - name: Enable KVM
+        run: |
+          test -e /dev/kvm || { echo "::error::/dev/kvm missing on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      # The copied fixtures pin this worker's wire shape to the contract's.
+      # Comparing them with the contract's own copies on iii main keeps a
+      # later 1.x from shipping a shape the contract has moved past.
+      - name: Contract drift check
+        run: |
+          set -euo pipefail
+          for f in sandbox_error_codes.json wire_examples.json; do
+            curl -fsSL "https://raw.githubusercontent.com/iii-hq/iii/main/crates/iii-sandbox-contract/tests/fixtures/$f" \
+              | diff -u - "tests/fixtures/$f"
+          done
+
+      - name: Install libcap-ng (sandbox-builtin)
+        run: |
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
+
+      - name: Install pinned iii engine
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          engine_bin=$(command -v iii)
+          [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
+          echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
+          iii --version
+
+      - name: Build the guest init
+        run: BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh
+
+      - name: Run tests with real VMs
+        run: cargo test --locked --features embed-init,embed-libkrunfw,integration-vm
+
+      - name: Build the adapter
+        run: cargo build --locked --features embed-init,embed-libkrunfw
+
+      - name: Sandbox isolation end to end (UBI 9 image, real microVMs)
+        run: |
+          III_BIN="$III_ENGINE_BIN" ADAPTER_BIN=target/debug/sandbox-builtin \
+            WORK="$RUNNER_TEMP/sandbox-isolation" bash scripts/sandbox-isolation-e2e.sh
+
+      - name: Upload isolation e2e logs
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: sandbox-isolation-logs
+          path: ${{ runner.temp }}/sandbox-isolation/logs
+          if-no-files-found: ignore
 
   # ──────────────────────────────────────────────────────────────
   # computer's native driver and accessibility layer per OS. macOS and
@@ -990,6 +1162,12 @@ jobs:
           sudo apt-get update && sudo apt-get install -y cmake libvulkan-dev glslc spirv-headers
           find "${{ matrix.worker }}/target" -xtype l -print -delete 2>/dev/null || true
 
+      - name: Install libcap-ng (sandbox-builtin)
+        if: steps.optout.outputs.skip != 'true' && matrix.worker == 'sandbox-builtin'
+        run: |
+          sudo apt-get install -y libcap-ng-dev \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
+
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (the release build uses default features).
       - name: Build worker binary
@@ -1089,6 +1267,13 @@ jobs:
             export III_LAYA_CHECKPOINT_DIR="$PWD/judge-laya/tests/fixtures/tiny"
           elif [[ "$WORKER" == judge-clef ]]; then
             export III_CLEF_CHECKPOINT_DIR="$PWD/judge-clef/tests/fixtures/tiny"
+          fi
+          # sandbox-builtin exits when its engine does. Started with & here, it
+          # would otherwise watch its spawn parent (this step's shell) and exit
+          # when the step ends, before the interface is collected.
+          if [[ "$WORKER" == sandbox-builtin ]]; then
+            III_ENGINE_PID="$(cat iii-engine.pid)"
+            export III_ENGINE_PID
           fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
