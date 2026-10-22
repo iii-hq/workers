@@ -86,4 +86,33 @@ describe('ExploreStep focus', () => {
     await frames()
     expect(document.activeElement).toBe(button(/^Back$/))
   })
+
+  it('highlights no row on arrival, and the first arrow key picks the first', async () => {
+    const noop = () => undefined
+    act(() =>
+      root.render(
+        <ExploreStep
+          connected
+          prompts={PROMPTS}
+          onPrompt={noop}
+          tour={{ kind: 'idle' }}
+          onTour={noop}
+          onOwn={noop}
+          onFinish={noop}
+          onBack={noop}
+        />,
+      ),
+    )
+    await frames()
+    const focused = document.activeElement as HTMLElement
+    expect(focused.getAttribute('role')).toBe('radiogroup')
+    act(() => {
+      focused.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+      )
+    })
+    const first = button(/Build an example project/)
+    expect(document.activeElement).toBe(first)
+    expect(first.getAttribute('aria-checked')).toBe('true')
+  })
 })

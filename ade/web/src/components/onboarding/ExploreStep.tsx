@@ -157,9 +157,9 @@ function Pick({
 
 /**
  * The keyboard half of a radio group: arrow keys move the pick across the
- * enabled rows and put the focus with it. Rows register themselves by key;
- * `focusFirst` is for the screen's arrival, when nothing is picked yet and
- * the footer's button, which setup would focus, is still disabled.
+ * enabled rows and put the focus with it. Rows register themselves by key.
+ * On arrival with nothing picked, the group itself takes the focus: no row
+ * looks picked until one is, and the first arrow key picks the first row.
  */
 function usePickGroup<K extends string>(
   keys: readonly K[],
@@ -187,8 +187,8 @@ function usePickGroup<K extends string>(
     if (step === 0) return
     const open = keys.filter(enabled)
     if (open.length === 0) return
-    // From the row that has the focus: on arrival that is the first row
-    // with nothing picked yet, and the first key must leave it.
+    // From the row that has the focus. On arrival with nothing picked the
+    // group has it, and the first key picks the first row.
     const focused = open.find(
       (key) => buttons.current.get(key) === document.activeElement,
     )
@@ -204,18 +204,19 @@ function usePickGroup<K extends string>(
   const first = keys.find(enabled) ?? null
   const tabbable = (key: K) => (picked ? key === picked : key === first)
   // On arrival, two frames on — after setup's own focus move, which runs on
-  // the first — the first open row takes the focus. The first row can open
-  // later (the examples are read after the screen shows): then it takes
-  // the focus only if the focus is already in the group, so a reader who
-  // has moved on is not pulled back.
+  // the first — the picked row takes the focus, else the group. The first
+  // row can open later (the examples are read after the screen shows):
+  // then it takes the focus only if the focus is already on a row, so a
+  // reader who has moved on is not pulled back.
   const arrived = useRef(false)
   useEffect(() => {
     if (!active) {
       arrived.current = false
       return
     }
-    // On arrival the picked row, else the first open one; after that only
-    // the first row, when it opens late and the focus is still in here.
+    // On arrival the picked row, else the group (found from the first
+    // row); after that only the first row, when it opens late and the
+    // focus is still on a row.
     const key = arrived.current
       ? picked === null
         ? first
@@ -232,7 +233,11 @@ function usePickGroup<K extends string>(
       const within = [...buttons.current.values()].some(
         (button) => button === document.activeElement,
       )
-      if (!arrived.current || within) target.focus()
+      if (!arrived.current && picked === null) {
+        target.closest<HTMLElement>('[role="radiogroup"]')?.focus()
+      } else if (!arrived.current || within) {
+        target.focus()
+      }
       arrived.current = true
     }
     let inner = 0
@@ -311,7 +316,8 @@ export function ExampleList({
         <ul
           role="radiogroup"
           aria-label="Example projects"
-          className="flex flex-col gap-2.5"
+          tabIndex={-1}
+          className="flex flex-col gap-2.5 outline-none"
           onKeyDown={group.onKeyDown}
         >
           {prompts.map((prompt, index) => {
@@ -482,7 +488,8 @@ export function ExploreStep({
       <ul
         role="radiogroup"
         aria-label="Where to start"
-        className="flex flex-col gap-2.5"
+        tabIndex={-1}
+        className="flex flex-col gap-2.5 outline-none"
         onKeyDown={group.onKeyDown}
       >
         <Pick
