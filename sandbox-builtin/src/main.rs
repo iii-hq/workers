@@ -63,8 +63,14 @@ async fn async_main() -> anyhow::Result<()> {
     let cli_args = Cli::parse();
 
     let exit_code = match cli_args.command {
-        Commands::SandboxDaemon(args) => sandbox_builtin::cli::sandbox_daemon::run(args).await,
-        Commands::VmBoot(args) => {
+        None => match sandbox_builtin::sandbox_daemon::serve().await {
+            Ok(()) => 0,
+            Err(e) => {
+                tracing::error!(error = %e, "sandbox-builtin exited with error");
+                1
+            }
+        },
+        Some(Commands::VmBoot(args)) => {
             // Run the VM on a dedicated OS thread: `msb_krun`'s virtio-blk
             // Drop impls call `tokio::Runtime::block_on` for async shutdown,
             // which panics inside our `#[tokio::main]` runtime. The std

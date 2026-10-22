@@ -1,12 +1,11 @@
 //! Fail-closed behavior:
 //!   - `image_allowlist` empty denies every `sandbox::create` (see
 //!     `catalog::check_allowlist`).
-//!   - `load_config` returns an error on missing / malformed YAML;
-//!     the daemon exits non-zero instead of falling back to defaults.
+//!   - `parse_config` returns an error on a malformed config; the adapter
+//!     exits non-zero instead of falling back to defaults.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -62,7 +61,7 @@ pub struct SandboxConfig {
     /// (e.g. `ghcr.io/acme/my-app:1.2.3`).
     ///
     /// Preset names (`python`, `node`, `bash`, `alpine`) are reserved —
-    /// declaring one here is rejected by `load_config` so nothing can
+    /// declaring one here is rejected by `parse_config` so nothing can
     /// silently shadow the trusted catalog. An image named here still
     /// must appear in `image_allowlist` to be bootable.
     #[serde(default)]
@@ -108,29 +107,25 @@ impl Default for SandboxConfig {
     }
 }
 
-/// Load + parse config YAML. **Fail-closed**: any I/O or parse error
-/// propagates — the daemon exits instead of falling back to defaults.
+/// Parse the value `configuration::get` returned. `None` (nothing stored)
+/// gives the defaults. **Fail-closed**: any error propagates and the adapter
+/// exits instead of falling back to defaults.
 ///
 /// Rejects the legacy wrapped shape (`sandbox: {...}`) with a clear
 /// migration message. That shape was the vm-worker wrapper around
 /// `SandboxConfig` and went away with `vm::exec`.
-pub fn load_config(path: &str) -> Result<SandboxConfig> {
-    let content = fs::read_to_string(path).with_context(|| format!("read {}", path))?;
-    let raw: serde_yaml::Value =
-        serde_yaml::from_str(&content).with_context(|| format!("parse {}", path))?;
-    reject_legacy_wrapped_shape(&raw).with_context(|| format!("iii-sandbox config in {}", path))?;
-    let cfg: SandboxConfig =
-        serde_yaml::from_value(raw).with_context(|| format!("parse {}", path))?;
-    validate_custom_images(&cfg).with_context(|| format!("custom_images in {}", path))?;
+pub fn parse_config(raw: Option<serde_json::Value>) -> Result<SandboxConfig> {
+    let Some(raw) = raw else {
+        return Ok(SandboxConfig::default());
+    };
+    reject_legacy_wrapped_shape(&raw)?;
+    let cfg: SandboxConfig = serde_json::from_value(raw).context("parse sandbox-builtin config")?;
+    validate_custom_images(&cfg).context("custom_images")?;
     Ok(cfg)
 }
 
-fn reject_legacy_wrapped_shape(raw: &serde_yaml::Value) -> Result<()> {
-    let Some(map) = raw.as_mapping() else {
-        return Ok(());
-    };
-    let sandbox_key = serde_yaml::Value::String("sandbox".into());
-    if map.contains_key(&sandbox_key) {
+fn reject_legacy_wrapped_shape(raw: &serde_json::Value) -> Result<()> {
+    if raw.get("sandbox").is_some() {
         anyhow::bail!(
             "legacy wrapped shape detected: move fields from `sandbox:` to the top level. \
              The vm-worker wrapper (`VmWorkerConfig`) and `vm::exec` were removed; \
@@ -241,44 +236,25 @@ per_image_caps:
     }
 
     #[test]
-    fn load_config_rejects_legacy_wrapped_shape() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), "sandbox:\n  image_allowlist: [python]\n").unwrap();
-        let err = load_config(tmp.path().to_str().unwrap()).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("legacy wrapped shape"),
-            "expected migration error, got: {msg}"
+    fn parse_config_fills_defaults_and_fails_closed() {
+        use serde_json::json;
+        assert!(parse_config(None).unwrap().image_allowlist.is_empty());
+        assert_eq!(
+            parse_config(Some(json!({"image_allowlist": ["python", "node"]})))
+                .unwrap()
+                .image_allowlist,
+            ["python", "node"]
         );
+        assert!(parse_config(Some(json!({"sandbox": {}}))).is_err());
+        assert!(parse_config(Some(json!({"custom_images": {"python": "ghcr.io/x/y:1"}}))).is_err());
     }
 
     #[test]
-    fn load_config_rejects_custom_image_shadowing_preset() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(
-            tmp.path(),
-            "custom_images:\n  python: docker.io/evil/python:latest\n",
-        )
-        .unwrap();
-        let err = load_config(tmp.path().to_str().unwrap()).unwrap_err();
-        assert!(format!("{err:#}").contains("shadows a built-in preset"));
-    }
-
-    #[test]
-    fn load_config_rejects_empty_custom_image_key() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(
-            tmp.path(),
-            "custom_images:\n  \"\": docker.io/whatever:latest\n",
-        )
-        .unwrap();
-        let err = load_config(tmp.path().to_str().unwrap()).unwrap_err();
+    fn parse_config_rejects_empty_custom_image_key() {
+        let err = parse_config(Some(
+            serde_json::json!({"custom_images": {"": "docker.io/whatever:latest"}}),
+        ))
+        .unwrap_err();
         assert!(format!("{err:#}").contains("must not be empty"));
-    }
-
-    #[test]
-    fn load_config_missing_file_errors() {
-        let err = load_config("/this/path/does/not/exist/sandbox.yaml");
-        assert!(err.is_err());
     }
 }

@@ -88,9 +88,9 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
-    let _ = iii.register_function(
-        "sandbox::fs::mkdir",
+) -> iii_sdk::runtime::FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::fs::mkdir",
         RegisterFunction::new_async(move |req: MkdirRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -99,7 +99,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_mkdir(req, &registry, &*runner).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::mkdir",
+                    "sandbox-builtin::fs::mkdir",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -111,7 +111,7 @@ pub(super) fn register(
             "Create a directory inside a sandbox. Pass `parents:true` to make missing parents \
              like `mkdir -p`. Example: { sandbox_id: \"...\", path: \"/home/app/cache\", mode: \"0755\", parents: true }",
         ),
-    );
+    )
 }
 
 #[cfg(test)]

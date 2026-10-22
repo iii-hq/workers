@@ -1344,6 +1344,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-config-client"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-filesystem"
 version = "0.1.0"
 dependencies = [
@@ -2847,6 +2859,7 @@ dependencies = [
  "fslock",
  "futures",
  "hex",
+ "iii-config-client",
  "iii-filesystem",
  "iii-helpers",
  "iii-network",

@@ -79,9 +79,9 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
-    let _ = iii.register_function(
-        "sandbox::fs::rm",
+) -> iii_sdk::runtime::FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::fs::rm",
         RegisterFunction::new_async(move |req: RmRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -90,7 +90,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_rm(req, &registry, &*runner).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::rm",
+                    "sandbox-builtin::fs::rm",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -102,7 +102,7 @@ pub(super) fn register(
             "Remove a file or directory inside a sandbox. Pass `recursive:true` to remove \
              directories with contents. Example: { sandbox_id: \"...\", path: \"/home/app/temp\", recursive: true }",
         ),
-    );
+    )
 }
 
 #[cfg(test)]

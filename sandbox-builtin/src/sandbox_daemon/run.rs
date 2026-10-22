@@ -335,10 +335,10 @@ pub(super) fn register(
     runner: Arc<crate::sandbox_daemon::adapters::ShellProtoRunner>,
     fs_runner: Arc<dyn FsRunner>,
     stopper: Arc<crate::sandbox_daemon::adapters::SignalStopper>,
-) {
+) -> iii_sdk::runtime::FunctionRef {
     let engine_address = iii.address().to_string();
-    let _ = iii.register_function(
-        "sandbox::run",
+    iii.register_function(
+        "sandbox-builtin::run",
         RegisterFunction::new_async(move |req: RunRequest| {
             let registry = registry.clone();
             let cfg = cfg.clone();
@@ -366,7 +366,7 @@ pub(super) fn register(
                 // case so the column shape stays uniform.
                 let sid_owned = result.as_ref().ok().and_then(|r| r.sandbox_id.clone());
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::run",
+                    "sandbox-builtin::run",
                     sid_owned.as_deref(),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -381,5 +381,5 @@ pub(super) fn register(
              Sandbox auto-stops on success and on failure unless `keep_sandbox: true`. \
              Example: { image: \"node\", code: \"console.log('hi')\", lang: \"node\" }",
         ),
-    );
+    )
 }

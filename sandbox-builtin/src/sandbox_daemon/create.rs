@@ -18,12 +18,12 @@ use uuid::Uuid;
 pub struct CreateRequest {
     /// Catalog name of the image to boot. Bundled presets are
     /// `"python"` and `"node"`; pass either string verbatim. The only
-    /// other accepted values are the literal keys of
-    /// `engine.workers.iii-sandbox.custom_images` — set by the
-    /// operator. Do NOT pass an OCI ref like
-    /// `"ghcr.io/iii-hq/node:latest"` or `"docker.io/library/node:20"`
-    /// unless that exact string is the catalog key. Unknown values
-    /// return S100 with the allowed set in the error message.
+    /// other accepted values are the literal keys of the adapter's
+    /// `custom_images` config — set by the operator. Do NOT pass an OCI
+    /// ref like `"ghcr.io/iii-hq/node:latest"` or
+    /// `"docker.io/library/node:20"` unless that exact string is the
+    /// catalog key. Unknown values return S100 with the allowed set in
+    /// the error message.
     pub image: String,
     /// vCPU count; daemon/image default applies when omitted.
     #[serde(default)]

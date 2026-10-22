@@ -94,17 +94,13 @@ fn spawn_fake_engine() -> std::process::Child {
         .expect("spawn fake engine")
 }
 
+/// The bare binary against a dead engine URL: its config fetch keeps retrying
+/// (three 5 s attempts), which outlasts every 2.5 s survival window below.
 fn sandbox_command(tmp: &Path, logfile: &Path) -> Command {
-    let config = tmp.join("sandbox-config.yaml");
-    std::fs::write(&config, "image_allowlist: []\n").unwrap();
-
     let log = std::fs::File::create(logfile).unwrap();
     let log_err = log.try_clone().unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandbox-builtin"));
-    cmd.arg("sandbox-daemon")
-        .arg("--config")
-        .arg(config)
-        .args(["--engine", "ws://127.0.0.1:1"])
+    cmd.env("III_URL", "ws://127.0.0.1:1")
         .current_dir(tmp)
         .env("RUST_LOG", "info")
         .env("HOME", tmp)
@@ -182,6 +178,26 @@ fn sandbox_daemon_exits_when_engine_dies() {
 }
 
 #[test]
+fn config_fetch_failure_exits_2() {
+    let tmp = tempfile::tempdir().unwrap();
+    let logfile = tmp.path().join("sandbox-daemon.out");
+    let fake_engine = KillOnDrop(spawn_fake_engine());
+
+    let mut cmd = sandbox_command(tmp.path(), &logfile);
+    cmd.env("III_ENGINE_PID", fake_engine.0.id().to_string());
+    let mut daemon = KillOnDrop(cmd.spawn().expect("spawn sandbox-builtin"));
+
+    let status = wait_for_exit(&mut daemon, Duration::from_secs(60), &logfile);
+    let log = std::fs::read_to_string(&logfile).unwrap_or_default();
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "a failed config fetch must fail closed; log:\n{log}"
+    );
+    assert!(log.contains("aborting (fail-closed)"), "log:\n{log}");
+}
+
+#[test]
 fn sandbox_signal_exit_writes_no_engine_gone_breadcrumb() {
     let tmp = tempfile::tempdir().unwrap();
     let logfile = tmp.path().join("sandbox-daemon.out");
@@ -254,19 +270,15 @@ fn sandbox_lifeline_eof_wins_while_the_declared_engine_is_alive() {
 #[test]
 fn sandbox_survives_orphaning_while_its_declared_engine_is_alive() {
     let tmp = tempfile::tempdir().unwrap();
-    let config = tmp.path().join("sandbox-config.yaml");
     let pidfile = tmp.path().join("sandbox-daemon.pid");
     let logfile = tmp.path().join("sandbox-daemon.out");
-    std::fs::write(&config, "image_allowlist: []\n").unwrap();
 
     let shell = Command::new("sh")
         .arg("-c")
-        .arg(
-            r#""$DAEMON_BIN" sandbox-daemon --config "$SANDBOX_CONFIG" --engine ws://127.0.0.1:1 >>"$DAEMON_LOG" 2>&1 & echo $! > "$DAEMON_PIDFILE"; wait"#,
-        )
+        .arg(r#""$DAEMON_BIN" >>"$DAEMON_LOG" 2>&1 & echo $! > "$DAEMON_PIDFILE"; wait"#)
         .current_dir(tmp.path())
         .env("DAEMON_BIN", env!("CARGO_BIN_EXE_sandbox-builtin"))
-        .env("SANDBOX_CONFIG", &config)
+        .env("III_URL", "ws://127.0.0.1:1")
         .env("DAEMON_PIDFILE", &pidfile)
         .env("DAEMON_LOG", &logfile)
         .env("RUST_LOG", "info")

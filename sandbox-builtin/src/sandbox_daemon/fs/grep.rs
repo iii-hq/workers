@@ -117,9 +117,9 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
-    let _ = iii.register_function(
-        "sandbox::fs::grep",
+) -> iii_sdk::runtime::FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::fs::grep",
         RegisterFunction::new_async(move |req: GrepRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -128,7 +128,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_grep(req, &registry, &*runner).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::grep",
+                    "sandbox-builtin::fs::grep",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -140,7 +140,7 @@ pub(super) fn register(
             "Search for a regex pattern in files inside a sandbox. Walks `path` recursively \
              by default. Example: { sandbox_id: \"...\", path: \"/home/app/src\", pattern: \"TODO\" }",
         ),
-    );
+    )
 }
 
 #[cfg(test)]

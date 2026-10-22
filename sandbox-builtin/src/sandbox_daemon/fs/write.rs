@@ -306,10 +306,10 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
+) -> iii_sdk::runtime::FunctionRef {
     let engine_address = iii.address().to_string();
-    let _ = iii.register_function(
-        "sandbox::fs::write",
+    iii.register_function(
+        "sandbox-builtin::fs::write",
         RegisterFunction::new_async(move |req: WriteRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -319,7 +319,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_write(req, &registry, &*runner, &engine_address).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::write",
+                    "sandbox-builtin::fs::write",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -332,7 +332,7 @@ pub(super) fn register(
              source/text), a StreamChannelRef object (for large uploads), or use `content_b64` \
              for small binary. Example: { sandbox_id: \"...\", path: \"/home/app/index.js\", content: \"console.log('hi')\\n\" }",
         ),
-    );
+    )
 }
 
 // ---------------------------------------------------------------------------

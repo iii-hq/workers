@@ -90,9 +90,9 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
-    let _ = iii.register_function(
-        "sandbox::fs::chmod",
+) -> iii_sdk::runtime::FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::fs::chmod",
         RegisterFunction::new_async(move |req: ChmodRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -101,7 +101,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_chmod(req, &registry, &*runner).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::chmod",
+                    "sandbox-builtin::fs::chmod",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -113,7 +113,7 @@ pub(super) fn register(
             "Change file permissions (and optionally owner) inside a sandbox. \
              Example: { sandbox_id: \"...\", path: \"/home/app/script.sh\", mode: \"0755\" }",
         ),
-    );
+    )
 }
 
 #[cfg(test)]

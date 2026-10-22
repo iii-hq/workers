@@ -17,7 +17,6 @@ pub(crate) mod pidfile;
 pub mod project;
 pub(crate) mod rootfs;
 pub mod rootfs_cache;
-pub mod sandbox_daemon;
 pub(crate) mod shell_relay;
 pub(crate) mod source_sync_host;
 pub(crate) mod source_watcher;

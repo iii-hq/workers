@@ -104,115 +104,157 @@ If detail.fix is non-null, your next call is fn(detail.fix).
 use std::sync::Arc;
 
 use iii_helpers::observability::OtelConfig;
-use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
+use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env};
 
-use crate::sandbox_daemon::config::SandboxConfig;
+use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
 use crate::sandbox_daemon::errors::SandboxErrorWire;
+use crate::wire::{AdapterInfo, AdapterInfoRequest, ContractVersion};
 
-pub async fn serve(config: SandboxConfig, engine_url: &str) -> anyhow::Result<()> {
+/// This adapter's worker name, function prefix and default configuration entry.
+const ADAPTER_NAME: &str = env!("CARGO_PKG_NAME");
+
+/// Serve `sandbox-builtin::*` until a signal or the engine's death. The config
+/// comes from `configuration::get(III_CONFIG_NAME)`, read once; a fetch or
+/// parse error exits 2 (fail-closed).
+pub async fn serve() -> anyhow::Result<()> {
     // FIRST statement, before any await: snapshot spawn-time facts for the
-    // engine-death watch (see crate::daemon_exit). Without it this daemon had
-    // An orphaned sandbox-daemon keeps live libkrun VMs around.
+    // engine-death watch (see crate::daemon_exit). An orphaned adapter keeps
+    // live libkrun VMs around.
     let exit_watch = crate::daemon_exit::ExitWatch::arm_at_startup();
+    // One watch future for the whole life: it races the config fetch, then
+    // parks the ready adapter, so a signal in between is never missed.
+    let exit = exit_watch.wait("sandbox-daemon");
+    tokio::pin!(exit);
 
-    tracing::info!(url = %engine_url, "connecting to III engine");
-    // Identify ourselves as `iii-sandbox` so the engine surfaces this
-    // worker by its config-yaml name (and not the auto-detected
-    // `<hostname>:<pid>`) in `engine::workers::list` and friends. The
-    // publish workflow polls by this name to decide when the worker is
-    // ready for interface collection.
-    let iii = register_worker(
-        engine_url,
-        InitOptions {
-            otel: Some(OtelConfig::default()),
-            metadata: Some(WorkerMetadata {
-                name: "iii-sandbox".to_string(),
-                description: Some(
-                    "Launch and manage isolated worker sandboxes (create, exec, stop, list)."
-                        .to_string(),
-                ),
-                ..Default::default()
-            }),
+    // The SDK reads `III_URL`; a non-empty `III_WORKER_NAME` overrides the name below.
+    let iii = register_worker_from_env(InitOptions {
+        otel: Some(OtelConfig::default()),
+        metadata: Some(WorkerMetadata {
+            name: ADAPTER_NAME.to_string(),
+            description: Some(
+                "Builtin sandbox adapter: microVM sandboxes and worker VMs on libkrun.".to_string(),
+            ),
             ..Default::default()
-        },
-    );
+        }),
+        ..Default::default()
+    });
+    let config_name = std::env::var("III_CONFIG_NAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| ADAPTER_NAME.to_string());
 
+    let reason = tokio::select! {
+        reason = &mut exit => reason,
+        fetched = iii_config_client::fetch(&iii, &config_name) => {
+            let config = match fetched.map_err(anyhow::Error::msg).and_then(parse_config) {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::error!(error = %format!("{e:#}"), config = %config_name,
+                        "failed to load sandbox-builtin config; aborting (fail-closed)");
+                    std::process::exit(2);
+                }
+            };
+            start(&iii, config, &config_name);
+            exit.await
+        }
+    };
+    tracing::info!(reason, "sandbox-builtin shutting down");
+    iii.shutdown_async().await;
+    Ok(())
+}
+
+/// Register every function and spawn the idle reaper.
+fn start(iii: &IIIClient, config: SandboxConfig, config_name: &str) {
+    tracing::info!(
+        auto_install = config.auto_install,
+        allowlist_size = config.image_allowlist.len(),
+        custom_images = config.custom_images.len(),
+        max_concurrent = config.max_concurrent_sandboxes,
+        default_idle_timeout_secs = config.default_idle_timeout_secs,
+        config = %config_name,
+        "loaded sandbox-builtin config"
+    );
     if config.max_concurrent_exec_per_sandbox == 0 {
         tracing::warn!(
-            "max_concurrent_exec_per_sandbox is 0, which this daemon treats as 1 \
+            "max_concurrent_exec_per_sandbox is 0, which this adapter treats as 1 \
              (strict serialization) — it does NOT mean unlimited. Set it to the \
              number of simultaneous execs a guest of default_memory_mb can hold."
         );
     }
-    let sandbox_registry = Arc::new(
-        crate::sandbox_daemon::SandboxRegistry::with_max_exec_in_flight(
-            config.max_concurrent_exec_per_sandbox,
-        ),
-    );
-    let sandbox_cfg = Arc::new(config);
-    let launcher = Arc::new(crate::sandbox_daemon::adapters::IiiWorkerLauncher);
-    let runner = Arc::new(crate::sandbox_daemon::adapters::ShellProtoRunner::new(
-        sandbox_cfg.max_exec_timeout_ms,
+    let registry = Arc::new(SandboxRegistry::with_max_exec_in_flight(
+        config.max_concurrent_exec_per_sandbox,
     ));
-    let stopper = Arc::new(crate::sandbox_daemon::adapters::SignalStopper);
     // How long past its idle timeout a busy sandbox is protected. One clamped
     // exec deadline plus slack: beyond that no legitimate exec can still be
     // running, so a lingering count is leaked and the VM must be reclaimed.
-    let busy_grace = std::time::Duration::from_millis(sandbox_cfg.max_exec_timeout_ms)
+    let busy_grace = std::time::Duration::from_millis(config.max_exec_timeout_ms)
         + std::time::Duration::from_secs(60);
-    let fs_runner: std::sync::Arc<dyn fs::FsRunner> = std::sync::Arc::new(fs::IiiShellFsRunner);
+    register_all(iii, Arc::new(config), registry.clone());
+    tokio::spawn(crate::sandbox_daemon::reaper::run_reaper_loop(
+        (*registry).clone(),
+        Arc::new(crate::sandbox_daemon::adapters::SignalStopper),
+        std::time::Duration::from_secs(10),
+        busy_grace,
+    ));
+    tracing::info!("sandbox-builtin ready");
+}
 
-    register_sandbox_create(
-        &iii,
-        sandbox_registry.clone(),
-        sandbox_cfg.clone(),
-        launcher.clone(),
+/// Register every `sandbox-builtin::*` function, `adapter::info` included.
+pub fn register_all(
+    iii: &IIIClient,
+    config: Arc<SandboxConfig>,
+    registry: Arc<SandboxRegistry>,
+) -> Vec<FunctionRef> {
+    let launcher = Arc::new(crate::sandbox_daemon::adapters::IiiWorkerLauncher);
+    let runner = Arc::new(crate::sandbox_daemon::adapters::ShellProtoRunner::new(
+        config.max_exec_timeout_ms,
+    ));
+    let stopper = Arc::new(crate::sandbox_daemon::adapters::SignalStopper);
+    let fs_runner: Arc<dyn fs::FsRunner> = Arc::new(fs::IiiShellFsRunner);
+
+    let mut refs = vec![
+        register_sandbox_create(iii, registry.clone(), config.clone(), launcher.clone()),
+        register_sandbox_exec(iii, registry.clone(), runner.clone()),
+        register_sandbox_stop(iii, registry.clone(), stopper.clone()),
+        register_sandbox_list(iii, registry.clone()),
+        register_sandbox_catalog_list(iii, config.clone()),
+        // run composes create+write+exec+stop into one call for agents that
+        // just want to run code (workflow TTHW = 1).
+        run::register(
+            iii,
+            registry.clone(),
+            config,
+            launcher,
+            runner,
+            fs_runner.clone(),
+            stopper,
+        ),
+    ];
+    refs.extend(fs::register_all(iii, registry, fs_runner));
+    refs.push(
+        iii.register_function(
+            "sandbox-builtin::adapter::info",
+            RegisterFunction::new_async(|_: AdapterInfoRequest| async {
+                Ok::<_, iii_sdk::Error>(adapter_info())
+            })
+            .description(
+                "Name and version of this sandbox adapter, and the sandbox contract \
+                 version it implements.",
+            ),
+        ),
     );
-    register_sandbox_exec(&iii, sandbox_registry.clone(), runner.clone());
-    register_sandbox_stop(&iii, sandbox_registry.clone(), stopper.clone());
-    register_sandbox_list(&iii, sandbox_registry.clone());
-    register_sandbox_catalog_list(&iii, sandbox_cfg.clone());
+    refs
+}
 
-    // sandbox::run meta-function. Composes create+write+exec+stop into
-    // one call for agents that just want to run code (workflow TTHW = 1).
-    crate::sandbox_daemon::run::register(
-        &iii,
-        sandbox_registry.clone(),
-        sandbox_cfg.clone(),
-        launcher.clone(),
-        runner.clone(),
-        fs_runner.clone(),
-        stopper.clone(),
-    );
-
-    fs::register_all(&iii, sandbox_registry.clone(), fs_runner.clone());
-
-    {
-        let registry = (*sandbox_registry).clone();
-        let stopper = stopper.clone();
-        tokio::spawn(async move {
-            crate::sandbox_daemon::reaper::run_reaper_loop(
-                registry,
-                stopper,
-                std::time::Duration::from_secs(10),
-                busy_grace,
-            )
-            .await;
-        });
+/// This adapter's `adapter::info` reply.
+pub fn adapter_info() -> AdapterInfo {
+    AdapterInfo {
+        adapter: ADAPTER_NAME.to_string(),
+        adapter_version: env!("CARGO_PKG_VERSION").to_string(),
+        contract: ContractVersion::CURRENT,
     }
-
-    tracing::info!("sandbox-daemon ready");
-    // Exit on SIGINT/SIGTERM/SIGHUP or engine death — see crate::daemon_exit.
-    // Previously this parked on bare ctrl_c(): the engine's kill_child SIGTERM
-    // killed it via default disposition, and an abnormal engine exit leaked it
-    // as a reconnect-looping orphan holding live VMs. VM teardown on exit is
-    // unchanged (the reaper/registry semantics are their own concern); this
-    // closes the daemon-leak layer.
-    let reason = exit_watch.wait("sandbox-daemon").await;
-    tracing::info!(reason, "sandbox-daemon shutting down");
-    iii.shutdown_async().await;
-    Ok(())
 }
 
 fn register_sandbox_create(
@@ -220,9 +262,9 @@ fn register_sandbox_create(
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     cfg: Arc<crate::sandbox_daemon::config::SandboxConfig>,
     launcher: Arc<crate::sandbox_daemon::adapters::IiiWorkerLauncher>,
-) {
-    let _ = iii.register_function(
-        "sandbox::create",
+) -> FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::create",
         RegisterFunction::new_async(move |req: crate::sandbox_daemon::create::CreateRequest| {
             let registry = registry.clone();
             let cfg = cfg.clone();
@@ -244,7 +286,7 @@ fn register_sandbox_create(
                 // create-failure events carry the same field shape (just empty).
                 let sid_owned = result.as_ref().ok().map(|r| r.sandbox_id.clone());
                 log_handler_result(
-                    "sandbox::create",
+                    "sandbox-builtin::create",
                     sid_owned.as_deref(),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -255,20 +297,20 @@ fn register_sandbox_create(
         .description(
             "Create an ephemeral sandbox VM. `image` must be a preset \
              (`\"python\"`, `\"node\"`) or a key from \
-             `engine.workers.iii-sandbox.custom_images`; \
+             the adapter's `custom_images` config; \
              OCI refs are NOT accepted unless they match a catalog key. \
              `env` accepts both `Vec<\"K=V\">` and `{ K: V }` map shapes.",
         ),
-    );
+    )
 }
 
 fn register_sandbox_exec(
     iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     runner: Arc<crate::sandbox_daemon::adapters::ShellProtoRunner>,
-) {
-    let _ = iii.register_function(
-        "sandbox::exec",
+) -> FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::exec",
         RegisterFunction::new_async(move |req: crate::sandbox_daemon::exec::ExecRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -278,7 +320,7 @@ fn register_sandbox_exec(
                 let result =
                     crate::sandbox_daemon::exec::handle_exec(req, &registry, &*runner).await;
                 log_handler_result(
-                    "sandbox::exec",
+                    "sandbox-builtin::exec",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -295,16 +337,16 @@ fn register_sandbox_exec(
              use `sandbox::run` with `lang: \"shell\"` for bash semantics. \
              `env` accepts both `Vec<\"K=V\">` and `{ K: V }` map shapes.",
         ),
-    );
+    )
 }
 
 fn register_sandbox_stop(
     iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
     stopper: Arc<crate::sandbox_daemon::adapters::SignalStopper>,
-) {
-    let _ = iii.register_function(
-        "sandbox::stop",
+) -> FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::stop",
         RegisterFunction::new_async(move |req: crate::sandbox_daemon::stop::StopRequest| {
             let registry = registry.clone();
             let stopper = stopper.clone();
@@ -314,7 +356,7 @@ fn register_sandbox_stop(
                 let result =
                     crate::sandbox_daemon::stop::handle_stop(req, &registry, &*stopper).await;
                 log_handler_result(
-                    "sandbox::stop",
+                    "sandbox-builtin::stop",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -326,13 +368,13 @@ fn register_sandbox_stop(
             "Stop and remove a running sandbox. Set `wait: true` to block \
              until the VM process exits and resources are reclaimed.",
         ),
-    );
+    )
 }
 
 fn register_sandbox_list(
     iii: &iii_sdk::IIIClient,
     registry: Arc<crate::sandbox_daemon::SandboxRegistry>,
-) {
+) -> FunctionRef {
     // Note: pre-migration this handler used
     // `serde_json::from_value(payload).unwrap_or_default()`, silently
     // coercing `null`/non-object payloads into an empty `ListRequest`.
@@ -341,8 +383,8 @@ fn register_sandbox_list(
     // production caller (`cli::sandbox::handle_list`, which sends
     // `json!({})`) is unaffected; an empty object still deserializes to
     // the unit `ListRequest`.
-    let _ = iii.register_function(
-        "sandbox::list",
+    iii.register_function(
+        "sandbox-builtin::list",
         RegisterFunction::new_async(move |req: crate::sandbox_daemon::list::ListRequest| {
             let registry = registry.clone();
             async move {
@@ -353,7 +395,7 @@ fn register_sandbox_list(
                 // the fallible handlers.
                 let result: Result<_, crate::sandbox_daemon::errors::SandboxError> = Ok(&response);
                 log_handler_result(
-                    "sandbox::list",
+                    "sandbox-builtin::list",
                     None,
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -362,15 +404,15 @@ fn register_sandbox_list(
             }
         })
         .description("List active sandboxes"),
-    );
+    )
 }
 
 fn register_sandbox_catalog_list(
     iii: &iii_sdk::IIIClient,
     cfg: Arc<crate::sandbox_daemon::config::SandboxConfig>,
-) {
-    let _ = iii.register_function(
-        "sandbox::catalog::list",
+) -> FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::catalog::list",
         RegisterFunction::new_async(
             move |req: crate::sandbox_daemon::catalog::CatalogListRequest| {
                 let cfg = cfg.clone();
@@ -380,7 +422,7 @@ fn register_sandbox_catalog_list(
                     let result: Result<_, crate::sandbox_daemon::errors::SandboxError> =
                         Ok(&response);
                     log_handler_result(
-                        "sandbox::catalog::list",
+                        "sandbox-builtin::catalog::list",
                         None,
                         &result,
                         start.elapsed().as_millis() as u64,
@@ -393,7 +435,7 @@ fn register_sandbox_catalog_list(
             "List bootable images: bundled presets plus operator-registered custom_images. \
              Call this before sandbox::create when you don't know what's available.",
         ),
-    );
+    )
 }
 
 /// Per-handler-boundary tracing emission. Called by every
@@ -401,7 +443,7 @@ fn register_sandbox_catalog_list(
 /// Emits a single `tracing::info!` event with a stable field set so
 /// operators can dashboard sandbox::* usage without grepping logs:
 ///
-/// - `function_id` — the registration name (e.g. `"sandbox::exec"`).
+/// - `function_id` — the registration name (e.g. `"sandbox-builtin::exec"`).
 /// - `sandbox_id` — the sandbox the call targeted, empty string when
 ///   the function has no incoming sandbox_id (sandbox::create,
 ///   sandbox::list, sandbox::catalog::list).
@@ -446,6 +488,62 @@ pub(crate) fn log_handler_result<T>(
                 "sandbox::* handler returned error"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use crate::wire::CONTRACT_MAJOR;
+    use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn registered_ids_are_the_contract_operations_under_the_package_name() {
+        let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:9");
+        let ids: BTreeSet<String> = register_all(
+            &iii,
+            Arc::new(SandboxConfig::default()),
+            Arc::new(SandboxRegistry::default()),
+        )
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+        let want: BTreeSet<String> = [
+            "create",
+            "exec",
+            "stop",
+            "list",
+            "catalog::list",
+            "run",
+            "fs::ls",
+            "fs::stat",
+            "fs::mkdir",
+            "fs::rm",
+            "fs::chmod",
+            "fs::mv",
+            "fs::grep",
+            "fs::sed",
+            "fs::write",
+            "fs::read",
+            "adapter::info",
+        ]
+        .iter()
+        .map(|s| format!("sandbox-builtin::{s}"))
+        .collect();
+        assert_eq!(ids, want);
+    }
+
+    #[test]
+    fn adapter_info_names_the_package_and_the_contract() {
+        let i = adapter_info();
+        assert_eq!(
+            (
+                i.adapter.as_str(),
+                i.adapter_version.as_str(),
+                i.contract.major
+            ),
+            ("sandbox-builtin", "1.0.0", CONTRACT_MAJOR)
+        );
     }
 }
 

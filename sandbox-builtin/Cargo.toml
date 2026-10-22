@@ -31,6 +31,7 @@ iii-filesystem = { path = "crates/iii-filesystem" }
 iii-network = { path = "crates/iii-network" }
 iii-sdk = "=0.24.6"
 iii-helpers = "=0.24.6"
+iii-config-client = { path = "../crates/config-client" }
 iii-shell-client = { path = "crates/iii-shell-client" }
 iii-shell-proto = { path = "crates/iii-shell-proto" }
 iii-supervisor = { path = "crates/iii-supervisor" }

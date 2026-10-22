@@ -15,5 +15,5 @@ pub mod daemon_exit;
 pub mod sandbox_daemon;
 pub mod wire;
 
-pub use cli::app::{Cli, Commands, SandboxDaemonArgs};
+pub use cli::app::{Cli, Commands};
 pub use cli::vm_boot::VmBootArgs;

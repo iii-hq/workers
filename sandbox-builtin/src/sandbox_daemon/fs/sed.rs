@@ -144,9 +144,9 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
-    let _ = iii.register_function(
-        "sandbox::fs::sed",
+) -> iii_sdk::runtime::FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::fs::sed",
         RegisterFunction::new_async(move |req: SedRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -155,7 +155,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_sed(req, &registry, &*runner).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::sed",
+                    "sandbox-builtin::fs::sed",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -167,7 +167,7 @@ pub(super) fn register(
             "Find-and-replace in files inside a sandbox. Pass either `path` (walked like grep) \
              OR `files` (explicit list), not both. Example: { sandbox_id: \"...\", path: \"/home/app/src\", pattern: \"foo\", replacement: \"bar\" }",
         ),
-    );
+    )
 }
 
 #[cfg(test)]

@@ -83,9 +83,9 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
-    let _ = iii.register_function(
-        "sandbox::fs::mv",
+) -> iii_sdk::runtime::FunctionRef {
+    iii.register_function(
+        "sandbox-builtin::fs::mv",
         RegisterFunction::new_async(move |req: MvRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -94,7 +94,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_mv(req, &registry, &*runner).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::mv",
+                    "sandbox-builtin::fs::mv",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -106,7 +106,7 @@ pub(super) fn register(
             "Move or rename a path inside a sandbox. Pass `overwrite:true` to clobber an \
              existing destination. Example: { sandbox_id: \"...\", src: \"/home/app/old.js\", dst: \"/home/app/new.js\" }",
         ),
-    );
+    )
 }
 
 #[cfg(test)]

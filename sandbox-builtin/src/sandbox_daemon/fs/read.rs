@@ -248,10 +248,10 @@ pub(super) fn register(
     iii: &iii_sdk::IIIClient,
     registry: Arc<SandboxRegistry>,
     runner: Arc<dyn FsRunner>,
-) {
+) -> iii_sdk::runtime::FunctionRef {
     let iii_clone = iii.clone();
-    let _ = iii.register_function(
-        "sandbox::fs::read",
+    iii.register_function(
+        "sandbox-builtin::fs::read",
         RegisterFunction::new_async(move |req: ReadRequest| {
             let registry = registry.clone();
             let runner = runner.clone();
@@ -261,7 +261,7 @@ pub(super) fn register(
                 let start = std::time::Instant::now();
                 let result = handle_read(req, &registry, &*runner, &iii).await;
                 crate::sandbox_daemon::log_handler_result(
-                    "sandbox::fs::read",
+                    "sandbox-builtin::fs::read",
                     Some(&sid),
                     &result,
                     start.elapsed().as_millis() as u64,
@@ -275,7 +275,7 @@ pub(super) fn register(
              under 1 MiB, the response also carries an inline `body` string so callers \
              can short-circuit the subscription. Example: { sandbox_id: \"...\", path: \"/home/app/index.js\" }",
         ),
-    );
+    )
 }
 
 // ---------------------------------------------------------------------------
