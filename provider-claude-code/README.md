@@ -132,6 +132,7 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | `requires a Claude Pro/Max OAuth login … API keys belong on provider-anthropic` | credential is an API key | this provider is OAuth-only; use `provider-anthropic` for keys |
 | `Your Claude Code sign-in has expired …` | the local `claude` token expired and no refresh worker is registered | run `claude` once to refresh it, or register the `oauth-claude-code` refresh flow |
 | `Claude Code rejected the current sign-in …` | Anthropic answered 401: the token was revoked, replaced, or is corrupted | run `claude` and `/login` again |
+| `Anthropic refused this request for the current Claude Code sign-in …` | Anthropic answered 403: the token is valid but not allowed this request | signing in again does not help; check the reason in parentheses, such as the plan's access to the model |
 | catalog shows only the curated fallback models | `GET /v1/models` refused the OAuth bearer (403), or returned nothing | expected — streaming still works, and the live list returns once the endpoint accepts the token |
 | upstream 401 despite a valid token | the request no longer resembles Claude Code | keep the identity system block first and the `anthropic-beta: oauth-2025-04-20` header; a future backend change may require a `user-agent` compat header |
 | model routes ambiguously | a `claude-code/*` id collided with another provider | keep ids namespaced; or pin `provider: "claude-code"` |

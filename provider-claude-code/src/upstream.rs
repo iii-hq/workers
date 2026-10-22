@@ -1,7 +1,7 @@
 //! POST /v1/messages (stream:true) → SSE → mpsc<AssistantMessageEvent>.
 //! The receiver dropping aborts the upstream: every send error returns,
 //! which drops the reqwest response mid-body and closes the connection.
-use crate::errors::{classify, SIGN_IN_REJECTED};
+use crate::errors::{classify, REQUEST_REFUSED, SIGN_IN_REJECTED};
 use crate::sse::{
     build_partial, handle_sse_event, synthetic_error_event, synthetic_error_event_from_state,
     PartialState,
@@ -45,16 +45,16 @@ pub fn spawn_upstream(
     rx
 }
 
-/// An auth refusal says what to run; Anthropic's own reason, when it gave
+/// An auth refusal says what happened; Anthropic's own reason, when it gave
 /// one, follows in parentheses.
-fn sign_in_refused(body: &str) -> String {
+fn refused(summary: &str, body: &str) -> String {
     let reason = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|v| v.pointer("/error/message")?.as_str().map(str::to_owned))
         .filter(|reason| !reason.is_empty());
     match reason {
-        Some(reason) => format!("{SIGN_IN_REJECTED} ({reason})"),
-        None => SIGN_IN_REJECTED.to_string(),
+        Some(reason) => format!("{summary} ({reason})"),
+        None => summary.to_string(),
     }
 }
 
@@ -100,8 +100,12 @@ async fn run_upstream(
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         let kind = classify(Some(status.as_u16()), &text);
-        let msg = if kind == ErrorKind::AuthExpired {
-            sign_in_refused(&text)
+        // Only a 401 means the token itself was turned down; a new sign-in
+        // does not fix a 403.
+        let msg = if status.as_u16() == 401 {
+            refused(SIGN_IN_REJECTED, &text)
+        } else if kind == ErrorKind::AuthExpired {
+            refused(REQUEST_REFUSED, &text)
         } else if text.is_empty() {
             format!("claude-code http {status}")
         } else {
@@ -341,9 +345,26 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_without_a_reason_still_says_what_to_run() {
-        assert_eq!(sign_in_refused(""), SIGN_IN_REJECTED);
-        assert_eq!(sign_in_refused("{\"error\":{}}"), SIGN_IN_REJECTED);
+    fn a_refusal_without_a_reason_still_says_what_happened() {
+        assert_eq!(refused(SIGN_IN_REJECTED, ""), SIGN_IN_REJECTED);
+        assert_eq!(
+            refused(SIGN_IN_REJECTED, "{\"error\":{}}"),
+            SIGN_IN_REJECTED
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_403_refuses_the_request_without_asking_for_a_new_sign_in() {
+        let url = stub("HTTP/1.1 403 Forbidden\r\nconnection: close\r\n\r\n").await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AssistantMessageEvent::Error { error } => {
+                assert_eq!(error.error_kind, Some(ErrorKind::AuthExpired));
+                assert_eq!(error.error_message.as_deref(), Some(REQUEST_REFUSED));
+            }
+            other => panic!("want error, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

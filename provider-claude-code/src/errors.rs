@@ -75,6 +75,11 @@ pub const SIGN_IN_EXPIRED: &str =
 pub const SIGN_IN_REJECTED: &str =
     "Claude Code rejected the current sign-in. Run `claude` and /login, then try again.";
 
+/// Anthropic accepted the token but refused this request (403): signing in
+/// again does not change that.
+pub const REQUEST_REFUSED: &str =
+    "Anthropic refused this request for the current Claude Code sign-in.";
+
 /// A sign-in that cannot be used, as `provider/auth_expired`: the setup wizard
 /// reads that code as "sign in again" instead of waiting for models.
 pub fn auth_expired(message: impl Into<String>) -> Error {

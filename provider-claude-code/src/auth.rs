@@ -28,6 +28,7 @@ pub const REFRESH_FN_ID: &str = "oauth::claude-code::refresh";
 /// Token expiry (seconds since epoch) from the credential's `expires_at`.
 /// Anthropic OAuth access tokens are opaque, so there is no JWT fallback.
 fn credential_expires_at(cred: &Value) -> Option<i64> {
+    let cred = cred.get("credential").unwrap_or(cred);
     cred.get("expires_at").and_then(Value::as_i64)
 }
 
@@ -370,5 +371,7 @@ mod tests {
         let soon = json!({ "access_token": "a", "expires_at": crate::now_ms() / 1000 + 30 });
         assert!(!expired(&soon));
         assert!(!expired(&json!({ "access_token": "no-exp" })));
+        let nested = json!({ "credential": { "access_token": "a", "expires_at": 1 } });
+        assert!(expired(&nested));
     }
 }
