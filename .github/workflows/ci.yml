@@ -269,6 +269,15 @@ jobs:
         if: matrix.worker == 'browser'
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      # The state worker's Redis adapter tests skip when no server answers:
+      # give them one, and make a missing one fail instead of skip.
+      - name: Start Redis for the state tests
+        if: matrix.worker == 'state'
+        run: |
+          docker run -d --name redis -p 6379:6379 valkey/valkey:8.1.10-alpine
+          for _ in $(seq 1 30); do docker exec redis valkey-cli ping 2>/dev/null | grep -q PONG && break; sleep 1; done
+          echo "III_REDIS_REQUIRE=1" >> "$GITHUB_ENV"
+
       - name: Run tests
         if: matrix.worker != 'browser'
         run: cargo test --locked --all-features

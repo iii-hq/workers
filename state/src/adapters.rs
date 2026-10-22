@@ -671,11 +671,11 @@ const JSON_UPDATE_SCRIPT: &str = r#"
 /// socket. `ConnectionManager` only finds out when the next command hits the
 /// dead socket: it starts reconnecting but still fails that command with an
 /// I/O error ("broken pipe"). The second attempt waits for the new connection.
-/// The failed attempt may still have run on the server, so `$retry_on` is
-/// `is_connection_dropped` only for calls that give the same result when run
-/// twice. Never `is_io_error`: it also takes a response timeout, after which
-/// the command was sent and the server runs it, and the connection was not
-/// dropped, so a retry would run it again on the same connection.
+///
+/// Only for reads and for `PING` (see `ready`). A dropped connection does not
+/// say whether the command reached the server: an EOF or a reset can come after
+/// the server ran it. A write sent twice would report a wrong old value, or undo
+/// what another writer did in between, so writes are never sent twice.
 macro_rules! retry_once {
     ($retry_on:expr, $call:expr) => {
         match $call {
@@ -690,6 +690,17 @@ macro_rules! retry_once {
 
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
+}
+
+/// Before a write: a `PING`, sent again once if the connection was dropped. It
+/// takes the hit of a socket a Redis restart left dead, so the write that
+/// follows goes once, on a live connection. A connection that drops between the
+/// two fails the write, which is not retried (see `retry_once!`).
+async fn ready(conn: &mut ConnectionManager) -> RedisResult<()> {
+    retry_once!(
+        RedisError::is_connection_dropped,
+        redis::cmd("PING").query_async::<()>(&mut *conn).await
+    )
 }
 
 impl RedisAdapter {
@@ -824,16 +835,16 @@ impl StateAdapter for RedisAdapter {
             "#,
         );
 
-        let old_value_str: Option<String> = retry_once!(
-            RedisError::is_connection_dropped,
-            script
-                .key(&scope_key)
-                .arg(key)
-                .arg(&serialized)
-                .invoke_async(&mut *conn)
-                .await
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to atomically set value in Redis: {}", e))?;
+        ready(&mut conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to atomically set value in Redis: {}", e))?;
+        let old_value_str: Option<String> = script
+            .key(&scope_key)
+            .arg(key)
+            .arg(&serialized)
+            .invoke_async(&mut *conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to atomically set value in Redis: {}", e))?;
 
         let old_value = old_value_str.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
 
@@ -875,29 +886,15 @@ impl StateAdapter for RedisAdapter {
         // Use a single Lua script that atomically gets, applies operations, and sets.
         let script = redis::Script::new(JSON_UPDATE_SCRIPT);
 
-        // Increment, decrement and append change the value again when re-run,
-        // and a dropped connection does not say whether the first run happened. Those
-        // are re-sent only when the connection was refused: nothing was sent.
-        let repeatable = ops.iter().all(|op| {
-            matches!(
-                op,
-                UpdateOp::Set { .. } | UpdateOp::Merge { .. } | UpdateOp::Remove { .. }
-            )
-        });
-        let retry_on: fn(&RedisError) -> bool = if repeatable {
-            RedisError::is_connection_dropped
-        } else {
-            RedisError::is_connection_refusal
-        };
-        let result: RedisResult<Vec<String>> = retry_once!(
-            retry_on,
-            script
-                .key(&scope_key)
-                .arg(key)
-                .arg(&ops_json)
-                .invoke_async(&mut *conn)
-                .await
-        );
+        ready(&mut conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("Redis atomic update script failed: {}", e))?;
+        let result: RedisResult<Vec<String>> = script
+            .key(&scope_key)
+            .arg(key)
+            .arg(&ops_json)
+            .invoke_async(&mut *conn)
+            .await;
 
         match result {
             Ok(values) if values.len() >= 2 => {
@@ -952,11 +949,12 @@ impl StateAdapter for RedisAdapter {
         let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
-        retry_once!(
-            RedisError::is_connection_dropped,
-            conn.hdel::<_, _, ()>(&scope_key, key).await
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
+        ready(&mut conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
+        conn.hdel::<_, _, ()>(&scope_key, key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
         Ok(())
     }
 

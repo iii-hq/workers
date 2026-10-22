@@ -159,6 +159,15 @@ async fn redis_commands_survive_a_dropped_connection() {
         .expect("update after drop");
     assert_eq!(updated.new_value, json!({"n": 1, "m": 2}));
 
+    // Not repeatable: it must still work after a drop, and apply once.
+    drop_connections().await;
+    let counted = adapter
+        .update(&scope, "c", vec![UpdateOp::increment("n", 1)])
+        .await
+        .expect("increment after drop");
+    assert_eq!(counted.new_value, json!({"n": 1}));
+    adapter.delete(&scope, "c").await.expect("cleanup");
+
     drop_connections().await;
     let swapped = adapter
         .compare_and_set(&scope, "k", Some(&json!({"n": 1, "m": 2})), json!("v3"))
