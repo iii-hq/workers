@@ -68,7 +68,7 @@
     { "tag": 7, "name": "dismiss", "args": [], "doc": "Sheet closed by the person; ListDetail detail closed on compact (Back, the chevron, the side swipe)." },
     { "tag": 8, "name": "refresh", "args": [], "doc": "Pull to refresh (Scroll, List)." },
     { "tag": 9, "name": "endReached", "args": [], "doc": "List: the last 5 items came into view (fires once per item count)." },
-    { "tag": 10, "name": "frame", "args": ["width", "height"], "doc": "RemoteScreen: the page size of the frames changed (not sent per frame)." },
+    { "tag": 10, "name": "frame", "args": ["width", "height", "modeChanged"], "doc": "RemoteScreen: after every resize it applies (modeChanged = the resize's mode_changed), for the first frame after an activation (false), and when the page size of the frames changes (false, at most every 250 ms). Never per frame." },
     { "tag": 11, "name": "error", "args": ["message"], "doc": "RemoteScreen: the live view could not start, or stopped with an error." },
     { "tag": 12, "name": "keyboard", "args": ["open"], "doc": "RemoteScreen: the keyboard bar opened or closed by the person." },
     { "tag": 13, "name": "ready", "args": [], "doc": "RemoteScreen: the first frame of the current session is on screen." }
