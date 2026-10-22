@@ -32,8 +32,17 @@
         "format": "uint32",
         "minimum": 0.0
       },
+      "delta_x": {
+        "description": "Horizontal scroll distance in pixels; positive scrolls right (`scroll`). Default 0.",
+        "default": null,
+        "type": [
+          "number",
+          "null"
+        ],
+        "format": "double"
+      },
       "delta_y": {
-        "description": "Scroll distance in pixels; positive scrolls down (`scroll`).",
+        "description": "Scroll distance in pixels; positive scrolls down (`scroll`). Default 600, or 0 when `delta_x` is given.",
         "default": null,
         "type": [
           "number",

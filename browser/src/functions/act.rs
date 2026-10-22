@@ -40,8 +40,13 @@ pub struct ActInput {
     #[serde(default)]
     pub key: Option<String>,
     /// Scroll distance in pixels; positive scrolls down (`scroll`).
+    /// Default 600, or 0 when `delta_x` is given.
     #[serde(default)]
     pub delta_y: Option<f64>,
+    /// Horizontal scroll distance in pixels; positive scrolls right
+    /// (`scroll`). Default 0.
+    #[serde(default)]
+    pub delta_x: Option<f64>,
     /// Drag end x, in viewport pixels (`drag`). The start is `x`/`y` or a
     /// `ref`; the end is `x2`/`y2`.
     #[serde(default)]
@@ -49,6 +54,18 @@ pub struct ActInput {
     /// Drag end y, in viewport pixels (`drag`).
     #[serde(default)]
     pub y2: Option<f64>,
+}
+
+impl ActInput {
+    /// The wheel deltas of a `scroll`: `(delta_x, delta_y)`. A bare scroll
+    /// pages down 600px; one that only names `delta_x` moves sideways only.
+    pub fn scroll_deltas(&self) -> (f64, f64) {
+        let delta_x = self.delta_x.unwrap_or(0.0);
+        let delta_y = self
+            .delta_y
+            .unwrap_or(if self.delta_x.is_some() { 0.0 } else { 600.0 });
+        (delta_x, delta_y)
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -154,6 +171,23 @@ pub fn key_spec(name: &str) -> Option<KeySpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scroll_deltas_default_down_and_go_sideways_only_when_asked() {
+        let scroll = |delta_x, delta_y| ActInput {
+            action: "scroll".to_string(),
+            delta_x,
+            delta_y,
+            ..ActInput::default()
+        };
+        assert_eq!(scroll(None, None).scroll_deltas(), (0.0, 600.0));
+        assert_eq!(scroll(None, Some(-120.0)).scroll_deltas(), (0.0, -120.0));
+        assert_eq!(scroll(Some(240.0), None).scroll_deltas(), (240.0, 0.0));
+        assert_eq!(
+            scroll(Some(-40.0), Some(80.0)).scroll_deltas(),
+            (-40.0, 80.0)
+        );
+    }
 
     #[test]
     fn known_keys_resolve_unknown_reject() {

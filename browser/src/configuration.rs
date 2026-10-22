@@ -2,7 +2,7 @@
 //! seed at boot, read the authoritative (env-expanded) value, and bind a
 //! `configuration` trigger so `configuration:updated` re-fetches and applies
 //! the change. Caps and timeouts hot-reload; `executable`/`headless`/viewport
-//! apply to sessions started after the change.
+//! and `frame_density` apply the next time the browser process launches.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,7 +42,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     let mut payload = json!({
         "id": config_id(),
         "name": "browser",
-        "description": "Session limits, buffers, timeouts, viewport, and executable for the browser worker.",
+        "description": "Session limits, buffers, timeouts, viewport, live-view frame density, and executable for the browser worker.",
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });

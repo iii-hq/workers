@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,7 @@ use base64::Engine;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::browser as cdp_browser;
 use chromiumoxide::cdp::browser_protocol::dom;
+use chromiumoxide::cdp::browser_protocol::emulation as cdp_emulation;
 use chromiumoxide::cdp::browser_protocol::fetch as cdp_fetch;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
@@ -41,7 +42,8 @@ use crate::events::{
     Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, FrameEventPayload,
     NavigatedEvent, PickedElement, PickedEvent, SessionStoppedEvent, SessionUpdatedEvent,
 };
-use crate::functions::doctor;
+use crate::functions::frame::ViewerLease;
+use crate::functions::{doctor, resize};
 
 /// Truncation caps for values that end up in ring buffers and event
 /// payloads — a page can log megabytes; the model reads a summary.
@@ -54,6 +56,10 @@ const RECENT_ERRORS_IN_PICK: usize = 3;
 /// Chromium emits up to 60; the console cannot show more than this, and each
 /// frame crosses the bus as base64 JSON.
 const FRAME_MIN_INTERVAL_MS: i64 = 33;
+/// How often the reaper drops named screencast viewers whose lease lapsed,
+/// so a viewer that vanished stops holding its tab within its lease plus
+/// this.
+const VIEWER_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// Chromium's error text for a committed HTTP error status (a 4xx/5xx with
 /// an empty body). The tab shows the response like any browser does, so it is
 /// reported rather than treated as a failed navigation.
@@ -294,6 +300,17 @@ impl LatestFrame {
     pub fn height(&self) -> u32 {
         self.frame.metadata.device_height.max(0.0) as u32
     }
+}
+
+/// A named viewer of the live view (`browser::screencast::start` with a
+/// `viewer_id`): it holds one screencast consumer, and one pane viewer
+/// unless it is a preview, until it stops or its lease lapses.
+#[derive(Debug, Clone)]
+struct Viewer {
+    expires_at: std::time::Instant,
+    /// Frame pixels it wants per CSS pixel (0.5..3).
+    scale: f64,
+    preview: bool,
 }
 
 /// Refs kept per session before the safety valve clears the table. Only
@@ -684,6 +701,10 @@ pub struct SharedBrowser {
     browser: tokio::sync::Mutex<Browser>,
     pub engine: BrowserEngine,
     pub headless: bool,
+    /// The `frame_density` this process was launched with
+    /// (`--force-device-scale-factor`): the most device pixels per CSS
+    /// pixel its screencast frames can carry. 1 for Lightpanda.
+    pub frame_density: f64,
     /// The browser's user agent with the `Headless` marker dropped, applied
     /// to every page: sites that refuse "HeadlessChrome" (x.com answers 400)
     /// then serve the page they serve any Chrome.
@@ -790,6 +811,28 @@ pub struct Session {
     /// Console panes watching (screencast consumers minus previews and
     /// recordings): a pane auto-fit is arbitrated on this count only.
     pub pane_viewers: std::sync::atomic::AtomicUsize,
+    /// Named viewers holding the screencast through a lease, by viewer id
+    /// (`Sessions::join_viewer`). Locked across the acquire or release each
+    /// change pairs with, so a viewer's join, renewals, stop and lapse never
+    /// interleave.
+    viewers: tokio::sync::Mutex<HashMap<String, Viewer>>,
+    /// The largest `scale` among `viewers` (f64 bits; 0 while there is
+    /// none), read without the lock whenever the screencast (re)starts.
+    viewer_scale: AtomicU64,
+    /// Viewers that did not name themselves (the console's panes and
+    /// corner previews): each start adds one, each stop takes one back.
+    anon_viewers: AtomicUsize,
+    /// Frame pixels per CSS pixel the running screencast was started with
+    /// (f64 bits); a change of viewers that moves it restarts the cast.
+    cast_density: AtomicU64,
+    /// Whether the running screencast was started with a frame-size cap.
+    /// Chromium fixes a cap when the cast starts: a start sent to a running
+    /// cast keeps the old one, and a resize under it keeps streaming at the
+    /// old size, so a capped cast restarts with a stop first.
+    cast_capped: AtomicBool,
+    /// Phone emulation in force (`browser::resize` with `mobile: true`):
+    /// touch input and an Android user agent on top of the mobile viewport.
+    mobile: AtomicBool,
     /// Set while a `browser::recording` is capturing; the screencast pump
     /// writes decoded frames into it.
     pub recording: tokio::sync::Mutex<Option<Recording>>,
@@ -1058,6 +1101,49 @@ impl Session {
         self.screencast_consumers.load(Ordering::Relaxed) > 0
     }
 
+    /// True while `browser::resize` keeps the page in phone emulation.
+    pub fn is_mobile(&self) -> bool {
+        self.mobile.load(Ordering::Relaxed)
+    }
+
+    /// Record the largest `scale` among the named viewers (held lock).
+    fn note_viewer_scale(&self, viewers: &HashMap<String, Viewer>) {
+        let largest = viewers.values().map(|v| v.scale).fold(0.0, f64::max);
+        self.viewer_scale
+            .store(largest.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The frame density a (re)started screencast should stream at, and
+    /// the frame-size cap that gives it. The density is the largest named
+    /// viewer's `scale` held to the launch `frame_density` (and to at least
+    /// 1 while a console viewer also watches), or 1 with no named viewer.
+    /// No cap keeps Chromium's own frame, the viewport in CSS pixels, which
+    /// is all a browser launched at `frame_density` 1 paints; a page in a
+    /// browser the worker did not launch (attach) always streams as that
+    /// browser paints it.
+    fn frame_limits(&self) -> (f64, Option<(i64, i64)>) {
+        let Backing::Shared(shared) = &self.backing else {
+            return (1.0, None);
+        };
+        let named = f64::from_bits(self.viewer_scale.load(Ordering::Relaxed));
+        let density = if named > 0.0 {
+            let floor = if self.anon_viewers.load(Ordering::Relaxed) > 0 {
+                1.0
+            } else {
+                0.0
+            };
+            named.max(floor).min(shared.frame_density)
+        } else {
+            1.0
+        };
+        if shared.frame_density <= 1.0 && density >= 1.0 {
+            return (density, None);
+        }
+        let (width, height) = self.viewport();
+        let cap = |css: u32| (f64::from(css) * density).ceil() as i64;
+        (density, Some((cap(width), cap(height))))
+    }
+
     /// Merge new snapshot refs into the table. Names are session-monotonic
     /// so this never overwrites an older snapshot's names; the safety valve
     /// clears everything if the table grows past `MAX_REFS` (subsequent old
@@ -1136,6 +1222,17 @@ impl Session {
     /// Chromium: finalize a recording, stop the event pumps, drop upload
     /// staging. Enough on its own when the browser is already gone.
     async fn detach(&self) {
+        // Named viewers hold nothing past the page: their consumers die with
+        // it. A renewal after a wake joins the new page afresh.
+        let leased = {
+            let mut viewers = self.viewers.lock().await;
+            let count = viewers.len();
+            viewers.clear();
+            count
+        };
+        if leased > 0 {
+            tracing::info!(session_id = %self.id, viewers = leased, "page closed; dropped its leased screencast viewers");
+        }
         // Finalize any recording first: closing the sender ends the writer,
         // which shuts ffmpeg's stdin so it flushes the file; then reap the
         // child so it is not orphaned. Bound the wait so an ffmpeg that
@@ -1281,6 +1378,7 @@ impl Sessions {
         for tab in sessions.list_tabs() {
             sessions.arm_expiry(&tab);
         }
+        sessions.spawn_viewer_reaper();
         sessions
     }
 
@@ -1682,6 +1780,12 @@ impl Sessions {
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             pane_viewers: std::sync::atomic::AtomicUsize::new(0),
+            viewers: tokio::sync::Mutex::new(HashMap::new()),
+            viewer_scale: AtomicU64::new(0),
+            anon_viewers: AtomicUsize::new(0),
+            cast_density: AtomicU64::new(1.0f64.to_bits()),
+            cast_capped: AtomicBool::new(false),
+            mobile: AtomicBool::new(false),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
@@ -1766,6 +1870,10 @@ impl Sessions {
             return Ok(shared.clone());
         }
         let cfg = self.config.load_full();
+        let frame_density = match cfg.engine {
+            BrowserEngine::Chromium => cfg.frame_density(),
+            BrowserEngine::Lightpanda => 1.0,
+        };
         let (browser, mut handler, child, headless) = match cfg.engine {
             BrowserEngine::Chromium => {
                 let headless = match headful {
@@ -1786,6 +1894,7 @@ impl Sessions {
             browser: tokio::sync::Mutex::new(browser),
             engine: cfg.engine,
             headless,
+            frame_density,
             user_agent: Mutex::new(String::new()),
             handler: Mutex::new(None),
             child: tokio::sync::Mutex::new(child),
@@ -1818,7 +1927,12 @@ impl Sessions {
             .unwrap_or_default();
         *shared.user_agent.lock().unwrap_or_else(|p| p.into_inner()) = user_agent;
         *slot = Some(shared.clone());
-        tracing::info!(engine = cfg.engine.as_str(), headless, "browser launched");
+        tracing::info!(
+            engine = cfg.engine.as_str(),
+            headless,
+            frame_density,
+            "browser launched"
+        );
         Ok(shared)
     }
 
@@ -2031,6 +2145,12 @@ impl Sessions {
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             pane_viewers: std::sync::atomic::AtomicUsize::new(0),
+            viewers: tokio::sync::Mutex::new(HashMap::new()),
+            viewer_scale: AtomicU64::new(0),
+            anon_viewers: AtomicUsize::new(0),
+            cast_density: AtomicU64::new(1.0f64.to_bits()),
+            cast_capped: AtomicBool::new(false),
+            mobile: AtomicBool::new(false),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
@@ -2394,13 +2514,7 @@ impl Sessions {
         if prev > 0 {
             return Ok(());
         }
-        let quality = self.config.load().screenshot_quality as i64;
-        let params = cdp_page::StartScreencastParams::builder()
-            .format(cdp_page::StartScreencastFormat::Jpeg)
-            .quality(quality)
-            .every_nth_frame(1)
-            .build();
-        if let Err(e) = session.page.execute(params).await {
+        if let Err(e) = self.start_screencast(session).await {
             session
                 .screencast_consumers
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -2409,9 +2523,237 @@ impl Sessions {
         Ok(())
     }
 
+    /// `Page.startScreencast` at the density the session's viewers call for
+    /// (`Session::frame_limits`), remembered so a change of viewers that
+    /// moves it can restart the cast.
+    async fn start_screencast(&self, session: &Session) -> Result<(), CdpError> {
+        let quality = self.config.load().screenshot_quality as i64;
+        let (density, limits) = session.frame_limits();
+        let mut params = cdp_page::StartScreencastParams::builder()
+            .format(cdp_page::StartScreencastFormat::Jpeg)
+            .quality(quality)
+            .every_nth_frame(1);
+        if let Some((max_width, max_height)) = limits {
+            params = params.max_width(max_width).max_height(max_height);
+        }
+        session.page.execute(params.build()).await?;
+        session
+            .cast_density
+            .store(density.to_bits(), Ordering::Relaxed);
+        session
+            .cast_capped
+            .store(limits.is_some(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Start a running screencast again for the current viewport and
+    /// viewers. Uncapped, a start sent to the running cast is enough (and
+    /// pushes a fresh frame); a cap, the old one or the new, only changes
+    /// with a stop first (see `Session::cast_capped`).
+    async fn restart_screencast(&self, session: &Session) {
+        if session.cast_capped.load(Ordering::Relaxed) || session.frame_limits().1.is_some() {
+            let _ = session
+                .page
+                .execute(cdp_page::StopScreencastParams::default())
+                .await;
+        }
+        let _ = self.start_screencast(session).await;
+    }
+
+    /// The viewers changed: restart a running screencast whose density no
+    /// longer matches theirs, through the counted `nudge` path.
+    async fn refresh_cast_density(&self, session: &Arc<Session>) {
+        if !session.screencast_on() {
+            return;
+        }
+        let wanted = session.frame_limits().0;
+        let running = f64::from_bits(session.cast_density.load(Ordering::Relaxed));
+        if (wanted - running).abs() > f64::EPSILON {
+            tracing::debug!(session_id = %session.id, from = running, to = wanted, "screencast density changed; restarting");
+            self.nudge_screencast(session).await;
+        }
+    }
+
+    /// A viewer without a `viewer_id` (the console's panes and previews)
+    /// starts watching: one more screencast consumer, and a pane viewer for
+    /// fit arbitration unless it is a corner preview.
+    pub async fn join_anonymous_viewer(
+        &self,
+        session: &Arc<Session>,
+        preview: bool,
+    ) -> Result<(), String> {
+        self.acquire_screencast(session).await?;
+        session.anon_viewers.fetch_add(1, Ordering::Relaxed);
+        if !preview {
+            session.pane_viewers.fetch_add(1, Ordering::Relaxed);
+        }
+        self.refresh_cast_density(session).await;
+        Ok(())
+    }
+
+    /// An anonymous viewer stops. Releases nothing unless one is watching,
+    /// so a stray stop can never take the slot a named viewer or a
+    /// recording holds.
+    pub async fn leave_anonymous_viewer(&self, session: &Arc<Session>, preview: bool) -> bool {
+        let left = session
+            .anon_viewers
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok();
+        if !left {
+            return false;
+        }
+        self.release_screencast(session).await;
+        if !preview {
+            let _ = session
+                .pane_viewers
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        }
+        self.refresh_cast_density(session).await;
+        true
+    }
+
+    /// A named viewer starts or renews its lease. The first start with an
+    /// id joins the screencast (one consumer, one pane viewer unless a
+    /// preview); every later one only moves the lease's end and the
+    /// viewer's `scale`, so repeating it is safe. True when it joined.
+    pub async fn join_viewer(
+        &self,
+        session: &Arc<Session>,
+        lease: &ViewerLease,
+        preview: bool,
+    ) -> Result<bool, String> {
+        let expires_at =
+            std::time::Instant::now() + std::time::Duration::from_millis(lease.lease_ms);
+        let mut viewers = session.viewers.lock().await;
+        let joined = match viewers.get_mut(&lease.viewer_id) {
+            Some(viewer) => {
+                viewer.expires_at = expires_at;
+                viewer.scale = lease.scale;
+                false
+            }
+            None => {
+                viewers.insert(
+                    lease.viewer_id.clone(),
+                    Viewer {
+                        expires_at,
+                        scale: lease.scale,
+                        preview,
+                    },
+                );
+                // Counted before the acquire so a first start already
+                // streams at this viewer's density.
+                session.note_viewer_scale(&viewers);
+                if let Err(error) = self.acquire_screencast(session).await {
+                    viewers.remove(&lease.viewer_id);
+                    session.note_viewer_scale(&viewers);
+                    return Err(error);
+                }
+                if !preview {
+                    session.pane_viewers.fetch_add(1, Ordering::Relaxed);
+                }
+                true
+            }
+        };
+        session.note_viewer_scale(&viewers);
+        drop(viewers);
+        if joined {
+            tracing::info!(
+                session_id = %session.id,
+                viewer_id = %lease.viewer_id,
+                lease_ms = lease.lease_ms,
+                scale = lease.scale,
+                "screencast viewer joined"
+            );
+        } else {
+            tracing::trace!(session_id = %session.id, viewer_id = %lease.viewer_id, "screencast viewer lease renewed");
+        }
+        self.refresh_cast_density(session).await;
+        Ok(joined)
+    }
+
+    /// A named viewer stops. False when the id holds nothing (never
+    /// joined, already stopped, or its lease lapsed).
+    pub async fn leave_viewer(&self, session: &Arc<Session>, viewer_id: &str) -> bool {
+        let mut viewers = session.viewers.lock().await;
+        let Some(viewer) = viewers.remove(viewer_id) else {
+            return false;
+        };
+        session.note_viewer_scale(&viewers);
+        self.release_viewer(session, &viewer).await;
+        drop(viewers);
+        tracing::info!(session_id = %session.id, viewer_id, "screencast viewer left");
+        self.refresh_cast_density(session).await;
+        true
+    }
+
+    /// Give back what a named viewer held. Called under the viewers lock.
+    async fn release_viewer(&self, session: &Arc<Session>, viewer: &Viewer) {
+        self.release_screencast(session).await;
+        if !viewer.preview {
+            let _ = session
+                .pane_viewers
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        }
+    }
+
+    /// Drop every named viewer whose lease lapsed, on every live page. A
+    /// viewer that vanished without a stop (an app killed or sent to the
+    /// background) thereby stops holding its tab awake and streaming.
+    pub async fn reap_viewers(&self) {
+        let now = std::time::Instant::now();
+        // Page by page in parallel: a wedged page waiting out its CDP
+        // timeout must not hold up every other tab's lapsed viewers.
+        let reaps = self
+            .live_sessions()
+            .into_iter()
+            .map(|session| async move {
+                let mut viewers = session.viewers.lock().await;
+                let lapsed: Vec<String> = viewers
+                    .iter()
+                    .filter(|(_, viewer)| viewer.expires_at <= now)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                if lapsed.is_empty() {
+                    return;
+                }
+                for viewer_id in lapsed {
+                    if let Some(viewer) = viewers.remove(&viewer_id) {
+                        self.release_viewer(&session, &viewer).await;
+                        tracing::info!(session_id = %session.id, viewer_id, "screencast viewer lease expired");
+                    }
+                }
+                session.note_viewer_scale(&viewers);
+                drop(viewers);
+                self.refresh_cast_density(&session).await;
+            });
+        futures::future::join_all(reaps).await;
+    }
+
+    /// Run `reap_viewers` every `VIEWER_REAP_INTERVAL` for as long as the
+    /// registry lives. Nothing to do outside a runtime (unit tests that only
+    /// build the registry).
+    fn spawn_viewer_reaper(self: &Arc<Self>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let sessions = Arc::downgrade(self);
+        runtime.spawn(async move {
+            let mut tick = tokio::time::interval(VIEWER_REAP_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let Some(sessions) = sessions.upgrade() else {
+                    return;
+                };
+                sessions.reap_viewers().await;
+            }
+        });
+    }
+
     /// Force a fresh screencast frame (e.g. after a viewport resize) without
     /// racing the acquire/release counter: hold a consumer slot of our own
-    /// while re-issuing StartScreencast, so a real viewer's release cannot
+    /// while restarting the cast (`restart_screencast`, which also sizes
+    /// its frames to the new viewport), so a real viewer's release cannot
     /// hit the 1 -> 0 stop transition mid-restart. With no other viewer the
     /// acquire starts and the release stops the cast; both are the counted
     /// paths, so the counter and the CDP state stay in step.
@@ -2424,15 +2766,96 @@ impl Sessions {
             .load(std::sync::atomic::Ordering::Relaxed)
             > 1
         {
-            let quality = self.config.load().screenshot_quality as i64;
-            let restart = cdp_page::StartScreencastParams::builder()
-                .format(cdp_page::StartScreencastFormat::Jpeg)
-                .quality(quality)
-                .every_nth_frame(1)
-                .build();
-            let _ = session.page.execute(restart).await;
+            self.restart_screencast(session).await;
         }
         self.release_screencast(session).await;
+    }
+
+    /// Switch the page between phone and desktop emulation, the half of
+    /// `browser::resize`'s `mobile` the device-metrics override does not
+    /// cover: touch input (`navigator.maxTouchPoints`, `(pointer: coarse)`,
+    /// touch events) and an Android Chrome user agent with client hints, of
+    /// the running Chromium's major version (`Browser.getVersion`). Back on
+    /// desktop the page gets the touch setting and user agent it was opened
+    /// with. True when the mode changed; the user agent reaches the page on
+    /// its next load.
+    pub async fn emulate_mobile(
+        &self,
+        session: &Arc<Session>,
+        mobile: bool,
+    ) -> Result<bool, String> {
+        if session.is_mobile() == mobile {
+            return Ok(false);
+        }
+        // Lightpanda takes no input or agent emulation; its resize stays
+        // the device-metrics override it always was.
+        if matches!(&session.backing, Backing::Shared(shared) if shared.engine == BrowserEngine::Lightpanda)
+        {
+            session.mobile.store(mobile, Ordering::Relaxed);
+            return Ok(true);
+        }
+        let page = &session.page;
+        let failed = |what: &str, e: CdpError| format!("mobile emulation failed ({what}): {e}");
+        if mobile {
+            let version = page
+                .execute(cdp_browser::GetVersionParams::default())
+                .await
+                .map_err(|e| failed("browser version", e))?
+                .result;
+            let full = resize::chrome_version(&version.product)
+                .or_else(|| resize::chrome_version(&version.user_agent))
+                .ok_or_else(|| {
+                    format!(
+                        "mobile emulation needs a Chromium; this browser reports '{}'",
+                        version.product
+                    )
+                })?;
+            let major = full.split('.').next().unwrap_or(full);
+            let touch = cdp_emulation::SetTouchEmulationEnabledParams::builder()
+                .enabled(true)
+                .max_touch_points(5)
+                .build()
+                .map_err(|e| format!("mobile emulation failed: {e}"))?;
+            page.execute(touch).await.map_err(|e| failed("touch", e))?;
+            let agent = cdp_emulation::SetUserAgentOverrideParams::builder()
+                .user_agent(resize::android_user_agent(major))
+                .platform("Linux armv8l")
+                .user_agent_metadata(resize::android_user_agent_metadata(full))
+                .build()
+                .map_err(|e| format!("mobile emulation failed: {e}"))?;
+            page.execute(agent)
+                .await
+                .map_err(|e| failed("user agent", e))?;
+        } else {
+            match &session.backing {
+                // As `wake` opened it: chromiumoxide's page setup turns touch
+                // emulation on (one touch point) with the viewport, and the
+                // tab carries the browser's own agent minus `Headless`.
+                Backing::Shared(shared) => {
+                    page.execute(cdp_emulation::SetTouchEmulationEnabledParams::new(true))
+                        .await
+                        .map_err(|e| failed("touch", e))?;
+                    page.execute(cdp_network::SetUserAgentOverrideParams::new(
+                        shared.user_agent(),
+                    ))
+                    .await
+                    .map_err(|e| failed("user agent", e))?;
+                }
+                // A tab of the user's own browser had no overrides: an empty
+                // agent clears the one set here.
+                Backing::Own(_) => {
+                    page.execute(cdp_emulation::SetTouchEmulationEnabledParams::new(false))
+                        .await
+                        .map_err(|e| failed("touch", e))?;
+                    page.execute(cdp_emulation::SetUserAgentOverrideParams::new(""))
+                        .await
+                        .map_err(|e| failed("user agent", e))?;
+                }
+            }
+        }
+        session.mobile.store(mobile, Ordering::Relaxed);
+        tracing::info!(session_id = %session.id, mobile, "phone emulation switched");
+        Ok(true)
     }
 
     /// Release a screencast consumer. Stops the Chromium screencast on the
@@ -2735,14 +3158,29 @@ fn build_browser_config(
     headless: bool,
     profile_dir: &std::path::Path,
 ) -> Result<BrowserConfig, String> {
+    // Every page opens with an explicit device scale factor of 1, so
+    // screenshots, PDFs, picks and `act` coordinates stay in CSS pixels even
+    // when `frame_density` makes the whole browser paint at a higher one.
     let mut builder = BrowserConfig::builder()
         .window_size(cfg.viewport_width, cfg.viewport_height)
         .viewport(chromiumoxide::handler::viewport::Viewport {
             width: cfg.viewport_width,
             height: cfg.viewport_height,
+            device_scale_factor: Some(1.0),
             ..Default::default()
         })
         .user_data_dir(profile_dir);
+    let frame_density = cfg.frame_density();
+    if frame_density > 1.0 {
+        // The one way to get screencast frames denser than the viewport's
+        // CSS pixels: the compositor then renders every page at this scale,
+        // and each screencast caps its frames to what its viewers asked for
+        // (`Session::frame_limits`).
+        builder = builder.arg((
+            "force-device-scale-factor",
+            frame_density.to_string().as_str(),
+        ));
+    }
     builder = if headless {
         builder.new_headless_mode()
     } else {

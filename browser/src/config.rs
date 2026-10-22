@@ -288,6 +288,17 @@ pub struct WorkerConfig {
     pub inactive_after_ms: u64,
     /// JPEG quality for `browser::screenshot` (1-100).
     pub screenshot_quality: u64,
+    /// Device pixels per CSS pixel the live view can stream (1-3; 1, the
+    /// default, keeps frames at the viewport's CSS size). Above 1 the
+    /// browser launches with `--force-device-scale-factor` set to it, and a
+    /// viewer that asks for a sharper picture (`browser::screencast::start`
+    /// with `viewer_id` and `scale`) gets frames up to this many pixels per
+    /// CSS pixel. Screenshots, PDFs, picks and `browser::act` coordinates
+    /// stay in CSS pixels. The cost is the whole browser's: every tab
+    /// rasterizes at this density, watched or not. Applies the next time
+    /// the browser process launches.
+    #[schemars(range(min = 1, max = 3))]
+    pub frame_density: f64,
     /// URL schemes `browser::navigate` accepts.
     ///
     /// `file` ships enabled so a local document can be opened and rendered —
@@ -345,6 +356,7 @@ impl Default for WorkerConfig {
             max_timeout_ms: 120_000,
             inactive_after_ms: 1_800_000,
             screenshot_quality: 60,
+            frame_density: 1.0,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
             default_origin_policy: None,
@@ -405,6 +417,15 @@ impl WorkerConfig {
         self.max_bulk_concurrency = self.scrapling.max_bulk_concurrency;
     }
 
+    /// `frame_density` held to 1..3; anything unusable (NaN) is 1.
+    pub fn frame_density(&self) -> f64 {
+        if self.frame_density.is_finite() {
+            self.frame_density.clamp(1.0, 3.0)
+        } else {
+            1.0
+        }
+    }
+
     /// Clamp a caller-supplied timeout to the configured ceiling, defaulting
     /// when omitted.
     pub fn clamp_timeout(&self, requested: Option<u64>) -> u64 {
@@ -434,6 +455,7 @@ mod tests {
         assert_eq!(c.max_timeout_ms, 120_000);
         assert_eq!(c.inactive_after_ms, 1_800_000);
         assert_eq!(c.screenshot_quality, 60);
+        assert_eq!(c.frame_density, 1.0);
         assert_eq!(c.allowed_schemes, vec!["http", "https", "file"]);
         assert_eq!(c.max_snapshot_nodes, 2_000);
         assert!(c.default_origin_policy.is_none());
@@ -641,6 +663,21 @@ mod tests {
     }
 
     #[test]
+    fn frame_density_parses_and_is_held_to_one_through_three() {
+        let c = WorkerConfig::from_json(&serde_json::json!({ "frame_density": 2 })).unwrap();
+        assert_eq!(c.frame_density(), 2.0);
+        let c = WorkerConfig::from_json(&serde_json::json!({ "frame_density": 9.5 })).unwrap();
+        assert_eq!(c.frame_density(), 3.0);
+        let c = WorkerConfig::from_json(&serde_json::json!({ "frame_density": 0.25 })).unwrap();
+        assert_eq!(c.frame_density(), 1.0);
+        let c = WorkerConfig {
+            frame_density: f64::NAN,
+            ..WorkerConfig::default()
+        };
+        assert_eq!(c.frame_density(), 1.0);
+    }
+
+    #[test]
     fn clamp_timeout_defaults_and_ceils() {
         let c = WorkerConfig::default();
         assert_eq!(c.clamp_timeout(None), 30_000);
@@ -781,6 +818,8 @@ mod tests {
         assert!(props.get("engine").is_some());
         assert!(props.get("executable").is_some());
         assert!(props.get("headless").is_some());
+        assert_eq!(props["frame_density"]["minimum"], 1.0);
+        assert_eq!(props["frame_density"]["maximum"], 3.0);
         assert!(props.get("allowed_schemes").is_some());
         assert!(props.get("default_origin_policy").is_some());
         assert!(props.get("origin_policies").is_some());
