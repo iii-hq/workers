@@ -48,6 +48,8 @@ interface RuntimeTelemetry {
 type ScreenUsage = Record<string, { opens: number; ms: number }>
 
 let enabled = false
+/** Setup finished before the settings arrived. */
+let setupPending = false
 let commands: string[] = []
 let screens: ScreenUsage = {}
 /** Screen kinds on the active tab, and since when their time is counted. */
@@ -115,6 +117,7 @@ export async function initTelemetry(): Promise<void> {
   )
   setVisible(document.visibilityState === 'visible')
   startSchedule(VISIT_OFFSETS)
+  if (setupPending) setupCompleted()
 }
 
 /** Referrer properties: `$referrer`, `$referring_domain` and their
@@ -200,6 +203,7 @@ export function trackCommand(entry: { id: string; kind: string }): void {
 
 /** Setup finished: run the post-setup schedule, once per device. */
 export function setupCompleted(): void {
+  setupPending = !enabled
   if (!enabled || read(POST_SETUP_KEY)) return
   write(POST_SETUP_KEY, '1')
   startSchedule(POST_SETUP_OFFSETS)

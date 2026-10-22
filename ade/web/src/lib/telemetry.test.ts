@@ -205,6 +205,36 @@ describe('telemetry', () => {
     expect(usage()).toHaveLength(0)
   })
 
+  it('runs the post-setup schedule when setup finishes before the settings arrive', async () => {
+    let answer: (value: unknown) => void = () => {}
+    vi.resetModules()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise((resolve) => (answer = resolve))),
+    )
+    vi.stubGlobal('window', {
+      location: { href: 'http://x/' },
+      addEventListener: vi.fn(),
+    })
+    vi.stubGlobal('document', {
+      visibilityState: 'visible',
+      addEventListener: vi.fn(),
+    })
+    const t = await import('./telemetry')
+    const started = t.initTelemetry()
+    t.setupCompleted()
+    answer({
+      ok: true,
+      json: async () => ({
+        telemetry: { enabled: true, api_key: 'phc_t', host: 'h' },
+      }),
+    })
+    await started
+    t.trackCommand({ id: 'action:theme', kind: 'action' })
+    vi.advanceTimersByTime(0.5 * MIN)
+    expect(usage()).toHaveLength(1)
+  })
+
   it('flushes on page close by beacon', async () => {
     const t = await load()
     t.trackCommand({ id: 'action:theme', kind: 'action' })
