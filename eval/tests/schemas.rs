@@ -20,11 +20,6 @@ fn catalog_matches_the_registered_surface() {
             "eval::result",
             "eval::cancel",
             "eval::delete",
-            "eval::attach-validation",
-            "eval::start-validation",
-            "eval::review",
-            "eval::reviews",
-            "eval::recurrence",
             "eval::step",
             "eval::sweep",
         ]

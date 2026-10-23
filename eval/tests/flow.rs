@@ -15,7 +15,7 @@ use eval::contract::*;
 use eval::error::EvalError;
 use eval::events::EvalEvents;
 use eval::runtime::{self, Deps};
-use eval::{ids, review, state, validation};
+use eval::{ids, state};
 use harness::functions::metrics::{SessionMetricsResponseV1, SessionUsageTotalsV1};
 use harness::types::content::ContentBlock;
 use harness::types::event::StopReason;
@@ -583,9 +583,7 @@ impl Harness {
         })
         .await
         .expect("worker connects to the fake engine");
-        let mut deps = Deps::new(iii.clone(), EvalEvents::register(&iii));
-        // Whoever runs the tests is not an author the assertions know.
-        deps.host_user = None;
+        let deps = Deps::new(iii.clone(), EvalEvents::register(&iii));
         Self {
             world,
             deps,
@@ -597,7 +595,6 @@ impl Harness {
     /// A fresh process on the same storage: empty in-flight set and locks.
     fn restart(&mut self) {
         self.deps = Deps::new(self.iii.clone(), EvalEvents::register(&self.iii));
-        self.deps.host_user = None;
     }
 
     fn world(&self) -> std::sync::MutexGuard<'_, World> {
@@ -678,17 +675,25 @@ impl Harness {
     ) -> Seeded {
         let observation_key = ids::observation_key(session_id, turn_id);
         let mut supersedes = None;
-        if let Some(index) = state::get_observation(&self.iii, &observation_key)
+        // The turn's newest analysis: the one no other analysis replaces.
+        let earlier: Vec<_> = state::list_records(&self.iii)
             .await
             .unwrap()
-        {
+            .into_iter()
+            .filter(|record| record.observation_key == observation_key)
+            .collect();
+        if let Some(latest) = earlier.iter().find(|record| {
+            !earlier
+                .iter()
+                .any(|other| other.supersedes.as_deref() == Some(record.evaluation_id.as_str()))
+        }) {
             if !reanalyze {
                 return Seeded {
-                    evaluation_id: Some(index.evaluation_id),
+                    evaluation_id: Some(latest.evaluation_id.clone()),
                     reused: true,
                 };
             }
-            supersedes = Some(index.evaluation_id);
+            supersedes = Some(latest.evaluation_id.clone());
         }
         let config = state::get_config(&self.iii)
             .await
@@ -736,18 +741,6 @@ impl Harness {
             signals: BTreeMap::new(),
         };
         state::put_record(&self.iii, &record).await.unwrap();
-        state::put_observation(
-            &self.iii,
-            &state::ObservationIndexV1 {
-                observation_key,
-                session_id: session_id.into(),
-                turn_id: turn_id.into(),
-                evaluation_id: record.evaluation_id.clone(),
-                admitted_at: now,
-            },
-        )
-        .await
-        .unwrap();
         eval::queue::enqueue_step(&self.iii, &record.evaluation_id, 0)
             .await
             .unwrap();
@@ -1151,7 +1144,7 @@ async fn cancel_stops_only_the_monitor_and_beats_late_steps() {
 }
 
 #[tokio::test]
-async fn recovery_republishes_lost_indexes_and_deadlines_fail_pending_work() {
+async fn recovery_requeues_lost_steps_and_deadlines_fail_pending_work() {
     let mut h = Harness::start({
         let mut world = World::new();
         world.descendants_running = true;
@@ -1160,16 +1153,18 @@ async fn recovery_republishes_lost_indexes_and_deadlines_fail_pending_work() {
     .await;
     h.configure(true).await;
     let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
-    // Crash between saving the record and publishing its index.
-    let key = ids::observation_key(ROOT, TURN);
-    h.world()
-        .state
-        .remove(&(state::OBSERVATION_SCOPE.to_string(), key.clone()));
+    // Crash after saving the record, before its step ran.
     h.world().steps.clear();
     h.restart();
     let recovered = runtime::recover(&h.deps).await.unwrap();
-    assert_eq!(recovered.reconciled, 1);
+    // No observation index exists any more, so there is nothing to republish.
+    assert_eq!(recovered.reconciled, 0);
     assert_eq!(recovered.requeued, 1);
+    assert!(h
+        .world()
+        .state
+        .keys()
+        .all(|(scope, _)| scope != "eval_observation" && scope != "eval_suggestion"));
     let again = h.end_turn(ROOT, TURN).await;
     assert!(again.reused);
     assert_eq!(h.records(), 1);
@@ -1193,119 +1188,6 @@ async fn recovery_republishes_lost_indexes_and_deadlines_fail_pending_work() {
         (EvalStatusV1::Collecting, "deadline")
     );
     assert!(failure.message.contains("descendant"));
-}
-
-#[tokio::test]
-async fn validation_links_reference_e2e_executions_without_a_verdict() {
-    let h = Harness::start({
-        let mut world = World::new();
-        world.analyst_result = json!({"suggestions": [suggestion(&format!("e_{TURN}_c2"))]});
-        let bundle = |id: &str, available: bool, harness: &str, behavior: &str| {
-            json!({"manifest": {"executions": [{"id": id, "status": "passed",
-                    "label": format!("run {id}"), "conclusion": "success"}]},
-                "detail": {
-                    "availability": if available { "full" } else { "unavailable" },
-                    "assessment_summary": {"assessment_count": 8,
-                        "assessment_outcomes": {"passed": 8, "failed": 0}},
-                    "scenario_metrics": [{"scenario_id": "tool_contract_recovery",
-                        "behavior_sha256": behavior, "contract_fingerprint": "fnv1a32:beaea932",
-                        "run_count": 2,
-                        "averages": {"function_calls": 5.0, "tokens": 6513.5,
-                            "duration_seconds": 18.9, "cost_usd": 0.0036},
-                        "samples": {"function_calls": 2, "tokens": 2,
-                            "duration_seconds": 2, "cost_usd": 1}}],
-                    "reports": [{"subject_id": "deepseek-flash", "scenario_id": "tool_contract_recovery",
-                        "available": available, "report": {
-                            "subject": {"model": "deepseek-flash", "provider": "deepseek"},
-                            "system_under_test": {"harness_version": harness,
-                                "engine_version": "0.24.4-rc.1", "e2e_revision": "f42b900"}}}]}})
-        };
-        world.executions.insert(
-            "exec-base".into(),
-            bundle("exec-base", true, "1.8.42", "sha256:aa"),
-        );
-        world.executions.insert(
-            "exec-cand".into(),
-            bundle("exec-cand", false, "1.8.43", "sha256:aa"),
-        );
-        world.executions.insert(
-            "exec-other".into(),
-            bundle("exec-other", true, "1.8.43", "sha256:bb"),
-        );
-        world
-    })
-    .await;
-    h.configure(true).await;
-    let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
-    h.drain().await;
-    let analyst = h.result(&evaluation_id).await.record.analyst.unwrap();
-    h.end_turn(&analyst.session_id, analyst.turn_id.as_deref().unwrap())
-        .await;
-    h.drain().await;
-    assert_eq!(
-        h.result(&evaluation_id).await.record.counters.suggestions,
-        1
-    );
-
-    let attach = |base: &str, cand: &str, index: usize| {
-        serde_json::from_value::<AttachValidationRequestV1>(json!({
-            "evaluation_id": evaluation_id, "suggestion_index": index,
-            "baseline_execution_id": base, "candidate_execution_id": cand}))
-        .unwrap()
-    };
-    assert!(
-        runtime::attach_validation(&h.deps, attach("exec-base", "exec-base", 0))
-            .await
-            .is_err()
-    );
-    assert!(
-        runtime::attach_validation(&h.deps, attach("exec-base", "exec-cand", 3))
-            .await
-            .is_err()
-    );
-    assert!(
-        runtime::attach_validation(&h.deps, attach("exec-base", "missing", 0))
-            .await
-            .is_err()
-    );
-    // A dry run looks both runs up without saving anything.
-    let mut preview = attach("exec-base", "exec-other", 0);
-    preview.dry_run = true;
-    let preview = runtime::attach_validation(&h.deps, preview).await.unwrap();
-    assert!(!preview.saved);
-    assert!(!preview.link.comparability.comparable);
-    let mismatch = preview
-        .link
-        .comparability
-        .checks
-        .iter()
-        .find(|check| !check.matches)
-        .unwrap();
-    assert_eq!(mismatch.field, "behavior_sha256");
-    assert_eq!(
-        h.result(&evaluation_id).await.record.counters.validations,
-        0
-    );
-
-    let attached = runtime::attach_validation(&h.deps, attach("exec-base", "exec-cand", 0))
-        .await
-        .unwrap();
-    assert!(attached.saved);
-    let link = attached.link;
-    assert!(link.comparability.comparable, "{:?}", link.comparability);
-    assert_eq!(link.baseline.harness_version.as_deref(), Some("1.8.42"));
-    assert_eq!(link.candidate.harness_version.as_deref(), Some("1.8.43"));
-    assert_eq!(link.baseline.assessments.as_ref().unwrap().passed, 8);
-    let cost = &link.baseline.scenarios[0].measures["cost_usd"];
-    assert_eq!((cost.samples, link.baseline.scenarios[0].run_count), (1, 2));
-    assert!(link.baseline.reports_available);
-    assert!(
-        !link.candidate.reports_available,
-        "unavailable assets stay visible"
-    );
-    let EvalResultResponseV1 { record, assets, .. } = h.result(&evaluation_id).await;
-    assert_eq!(record.counters.validations, 1);
-    assert_eq!(assets.validations, [link]);
 }
 
 #[tokio::test]
@@ -1460,26 +1342,6 @@ async fn provider_checks_are_reported() {
     assert!(!h.world().calls_to("judge::models::list").is_empty());
 }
 
-const SCENARIO: &str = "tool_contract_recovery";
-
-/// An analysis that finished with one suggestion whose plan names `SCENARIO`.
-async fn analyzed_with_suggestion(mut world: World) -> (Harness, String) {
-    let mut planned = suggestion(&format!("e_{TURN}_c2"));
-    planned["validation"]["scenario_id"] = json!(SCENARIO);
-    world.analyst_result = json!({"suggestions": [planned]});
-    let h = Harness::start(world).await;
-    h.configure(true).await;
-    let evaluation_id = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
-    h.drain().await;
-    let analyst = h.result(&evaluation_id).await.record.analyst.unwrap();
-    h.end_turn(&analyst.session_id, analyst.turn_id.as_deref().unwrap())
-        .await;
-    h.drain().await;
-    let record = h.result(&evaluation_id).await.record;
-    assert_eq!(record.counters.suggestions, 1, "{:?}", record.failure);
-    (h, evaluation_id)
-}
-
 /// A directory that exists on this host and holds real files: this crate.
 const CODE_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -1514,6 +1376,15 @@ async fn reanalyze(h: &Harness) -> String {
         .unwrap_or(TURN)
         .to_string();
     h.seed(ROOT, &turn_id, AnalysisOriginV1::Manual, true)
+        .await
+        .evaluation_id
+        .unwrap()
+}
+
+/// The same turn admitted again by the automatic path: another automatic
+/// analysis of it.
+async fn admitted_again(h: &Harness) -> String {
+    h.seed(ROOT, TURN, AnalysisOriginV1::Automatic, true)
         .await
         .evaluation_id
         .unwrap()
@@ -2071,72 +1942,6 @@ async fn collection_records_the_signals() {
 }
 
 #[tokio::test]
-async fn plan_cohorts_fill_each_scenarios_own_measures() {
-    let mut world = World::new();
-    world.executions.insert(
-        "plan-base".into(),
-        json!({"manifest": {"executions": [{"id": "plan-base", "status": "completed"}]},
-            "detail": {
-                "scenario_metrics": [{"scenario_id": SCENARIO, "run_count": 2.0,
-                    "behavior_sha256": "sha256:aa", "contract_fingerprint": "fnv1a32:1",
-                    "averages": {"tokens": 6513.5}, "samples": {"tokens": 2.0}}],
-                "plan_execution": {"measurements": {"cohorts": [
-                    {"scenario_id": SCENARIO,
-                     "aggregate": {"completed_runs": 2, "planned_runs": 3.0, "pass_rate": 0.5,
-                         "mean_score": 80.5, "cost": {"total_usd": 0.5},
-                         "total_tokens_consumed": 1000,
-                         "robustness": {"median_wall_time_ms": 1500.0}},
-                     "consumption": {"p50_function_calls": 7.0}},
-                    {"scenario_id": "another", "aggregate": {"pass_rate": 0.0}}]}}}}),
-    );
-    world.executions.insert(
-        "plan-cand".into(),
-        json!({"manifest": {"executions": [{"id": "plan-cand", "status": "completed"}]},
-            "detail": {"scenario_metrics": [{"scenario_id": SCENARIO, "run_count": 1}]}}),
-    );
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    let preview = runtime::attach_validation(
-        &h.deps,
-        serde_json::from_value(
-            json!({"evaluation_id": evaluation_id, "suggestion_index": 0,
-            "baseline_execution_id": "plan-base", "candidate_execution_id": "plan-cand",
-            "dry_run": true}),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    let scenario = &preview.link.baseline.scenarios[0];
-    assert_eq!(scenario.pass_rate, Some(0.5));
-    assert_eq!(scenario.mean_score, Some(80.5));
-    assert_eq!(
-        (scenario.completed_runs, scenario.planned_runs),
-        (Some(2), Some(3))
-    );
-    assert_eq!(scenario.cost_usd_per_run, Some(0.25));
-    assert_eq!(scenario.total_tokens_per_run, Some(500.0));
-    assert_eq!(scenario.median_wall_time_ms, Some(1500.0));
-    assert_eq!(scenario.p50_function_calls, Some(7.0));
-    // What the execution always reported is kept.
-    assert_eq!(scenario.run_count, 2);
-    assert_eq!(scenario.measures["tokens"].average, Some(6513.5));
-    // Without a cohort nothing is invented.
-    let bare = serde_json::to_value(&preview.link.candidate.scenarios[0]).unwrap();
-    for field in [
-        "pass_rate",
-        "mean_score",
-        "completed_runs",
-        "planned_runs",
-        "cost_usd_per_run",
-        "total_tokens_per_run",
-        "median_wall_time_ms",
-        "p50_function_calls",
-    ] {
-        assert!(bare.get(field).is_none(), "{field}: {bare}");
-    }
-}
-
-#[tokio::test]
 async fn the_analyst_is_offered_the_e2e_scenarios_once_per_ten_minutes() {
     let long = "x".repeat(300);
     let mut world = World::new();
@@ -2208,1390 +2013,6 @@ async fn the_analyst_is_offered_the_e2e_scenarios_once_per_ten_minutes() {
         prompt.contains("an existing harness-e2e scenario"),
         "{prompt}"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Review, validation start and recurrence
-// ---------------------------------------------------------------------------
-
-const PATTERN: &str = "repeated_contract_discovery:engine::functions::info";
-
-fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .output()
-        .expect("git runs");
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().to_string()
-}
-
-/// A clone of the workers repository: `main` and `feat` are on the remote
-/// (as remote-tracking branches), `local` only here.
-struct Repo {
-    dir: std::path::PathBuf,
-    base: String,
-    feat: String,
-}
-
-impl Repo {
-    /// `origin_main: false` leaves the clone without the branch the default
-    /// baseline is taken from.
-    fn new(origin_main: bool) -> Self {
-        let dir = std::env::temp_dir().join(format!("eval-git-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&dir).unwrap();
-        git_in(&dir, &["init", "-q"]);
-        let commit = |name: &str| {
-            std::fs::write(dir.join("file.txt"), name).unwrap();
-            git_in(&dir, &["add", "."]);
-            git_in(&dir, &["commit", "-q", "-m", name]);
-            git_in(&dir, &["rev-parse", "HEAD"])
-        };
-        let base = commit("base");
-        git_in(&dir, &["checkout", "-q", "-b", "feat"]);
-        let feat = commit("feat");
-        git_in(&dir, &["checkout", "-q", "-b", "local"]);
-        commit("local");
-        git_in(&dir, &["update-ref", "refs/remotes/origin/feat", &feat]);
-        if origin_main {
-            git_in(&dir, &["update-ref", "refs/remotes/origin/main", &base]);
-            git_in(
-                &dir,
-                &[
-                    "symbolic-ref",
-                    "refs/remotes/origin/HEAD",
-                    "refs/remotes/origin/main",
-                ],
-            );
-        }
-        git_in(&dir, &["branch", "-q", "main", &base]);
-        Self { dir, base, feat }
-    }
-
-    fn path(&self) -> String {
-        self.dir.to_string_lossy().into_owned()
-    }
-}
-
-impl Drop for Repo {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-const HARNESS_STACK: &str =
-    "# the harness template\niii: latest\ntemplate: harness\ncontainers:\n  \
-    harness:\n    worker: package://harness\n    version: latest\n  harness-e2e:\n    worker: \
-    package://harness-e2e\n    version: 0.17.2\nstartup_timeout: 5m\n";
-
-fn stacks() -> Value {
-    json!({"stacks": [
-        {"id": "default", "template": null, "yaml": "iii: latest\ncontainers: {}\n"},
-        {"id": "harness-template", "template": "harness", "yaml": HARNESS_STACK}]})
-}
-
-fn clean_transcript() -> Vec<Value> {
-    vec![
-        user("e_idem_task", "Schedule the follow-up."),
-        info_call(0, "c1"),
-        info_result(
-            "c1",
-            json!({"function_id": "crm::profile", "request_schema": {"type": "object"}}),
-        ),
-        assistant_text(&format!("e_{TURN}_2_assistant"), "Scheduled once."),
-    ]
-}
-
-/// One run as `execution-get` reports it, with the transcript the detectors
-/// read: `repeats` re-fetches a contract already in context.
-fn e2e_run_record(run_id: &str, repeats: bool, completion: &str, technical: &str) -> Value {
-    json!({"run_id": run_id, "session_id": format!("e2e_{run_id}"), "status": "passed",
-        "completion": completion, "technical": technical, "wall_time_ms": 1000,
-        "cost": {"total_usd": 0.01}, "efficiency": {"total_tokens": 100, "function_calls": 4},
-        "transcript": {"messages": if repeats { rediscovery_transcript() } else { clean_transcript() }}})
-}
-
-fn runs_bundle(id: &str, runs: Vec<Value>) -> Value {
-    json!({"manifest": {"executions": [{"id": id, "status": "passed", "label": id}]},
-        "detail": {"availability": "available",
-            "scenario_metrics": [{"scenario_id": SCENARIO, "run_count": runs.len(),
-                "behavior_sha256": "sha256:aa", "contract_fingerprint": "fnv1a32:1"}],
-            "reports": [{"scenario_id": SCENARIO, "subject_id": "m", "available": true,
-                "report": {"subject": {"model": "deepseek-flash", "provider": "deepseek"},
-                    "system_under_test": {"harness_version": "1.8.43", "engine_version": "e",
-                        "e2e_revision": "r"},
-                    "scenarios": [{"scenario_id": SCENARIO, "runs": runs}]}}]}})
-}
-
-/// `count` complete runs, all repeating a contract or none of them.
-fn runs(prefix: &str, count: usize, repeats: bool) -> Vec<Value> {
-    (0..count)
-        .map(|at| e2e_run_record(&format!("{prefix}{at}"), repeats, "completed", "valid"))
-        .collect()
-}
-
-/// A baseline whose runs repeat the contract fetch and a candidate whose do not.
-fn pair_world(world: &mut World) {
-    world
-        .executions
-        .insert("plan-1".into(), runs_bundle("plan-1", runs("b", 3, true)));
-    world
-        .executions
-        .insert("plan-2".into(), runs_bundle("plan-2", runs("c", 3, false)));
-    world
-        .executions
-        .insert("exec-b".into(), runs_bundle("exec-b", runs("b", 3, true)));
-    world
-        .executions
-        .insert("exec-c".into(), runs_bundle("exec-c", runs("c", 3, false)));
-}
-
-fn executions_state(baseline: &str, candidate: &str) -> Value {
-    json!({"executions": [{"id": "plan-1", "state": baseline}, {"id": "plan-2", "state": candidate}]})
-}
-
-fn start_request(evaluation_id: &str, candidate_ref: &str) -> StartValidationRequestV1 {
-    serde_json::from_value(json!({
-        "evaluation_id": evaluation_id, "suggestion_index": 0, "scenario_id": SCENARIO,
-        "candidate_ref": candidate_ref, "runs": 3,
-        "model": "deepseek-flash", "provider": "deepseek", "by": "ana",
-        "criterion": {"metric": "signal_per_run", "pattern": PATTERN, "direction": "decrease",
-                      "min_effect": 0.5, "min_runs": 3}}))
-    .unwrap()
-}
-
-async fn start(
-    h: &Harness,
-    evaluation_id: &str,
-    edit: impl FnOnce(&mut Value),
-) -> Result<SuggestionReviewV1, EvalError> {
-    let mut request = serde_json::to_value(json!({
-        "evaluation_id": evaluation_id, "suggestion_index": 0, "scenario_id": SCENARIO,
-        "candidate_ref": "feat", "runs": 3, "model": "deepseek-flash", "provider": "deepseek",
-        "by": "ana",
-        "criterion": {"metric": "signal_per_run", "pattern": PATTERN, "direction": "decrease",
-                      "min_effect": 0.5, "min_runs": 3}}))
-    .unwrap();
-    edit(&mut request);
-    match validation::start_validation(&h.deps, serde_json::from_value(request).unwrap()).await? {
-        StartValidationResponseV1::Started(row) => Ok(*row),
-        StartValidationResponseV1::Resolved(_) => panic!("a dry run answered a start"),
-    }
-}
-
-async fn review_with(
-    h: &Harness,
-    evaluation_id: &str,
-    body: Value,
-) -> Result<SuggestionReviewV1, EvalError> {
-    let mut request = json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "by": "ana"});
-    request
-        .as_object_mut()
-        .unwrap()
-        .extend(body.as_object().unwrap().clone());
-    review::review(&h.deps, serde_json::from_value(request).unwrap()).await
-}
-
-async fn attach(h: &Harness, evaluation_id: &str, baseline: &str, candidate: &str) {
-    runtime::attach_validation(
-        &h.deps,
-        serde_json::from_value(
-            json!({"evaluation_id": evaluation_id, "suggestion_index": 0,
-            "baseline_execution_id": baseline, "candidate_execution_id": candidate}),
-        )
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-}
-
-fn stored_reviews(h: &Harness) -> usize {
-    h.world()
-        .state
-        .keys()
-        .filter(|(scope, _)| scope == state::REVIEW_SCOPE)
-        .count()
-}
-
-async fn row(h: &Harness, evaluation_id: &str) -> SuggestionReviewV1 {
-    state::get_review(&h.deps.iii, evaluation_id, 0)
-        .await
-        .unwrap()
-        .expect("the row is stored")
-}
-
-fn criterion_json(metric: &str, min_runs: u32) -> Value {
-    let mut criterion = json!({"metric": metric, "direction": "decrease", "min_effect": 0.5,
-        "min_runs": min_runs});
-    if metric == "signal_per_run" {
-        criterion["pattern"] = json!(PATTERN);
-    }
-    criterion
-}
-
-#[tokio::test]
-async fn starting_a_validation_pins_both_commits_and_the_sweep_attaches_the_pair() {
-    let repo = Repo::new(true);
-    let mut world = World::new();
-    world.stacks = Some(stacks());
-    pair_world(&mut world);
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-
-    // An untouched suggestion reads as `new`, with the patterns its evidence
-    // cites; nothing is stored until somebody acts.
-    let fresh = h.result(&evaluation_id).await.reviews;
-    assert_eq!(fresh.len(), 1);
-    assert_eq!(fresh[0].lifecycle.status, LifecycleStatusV1::New);
-    assert_eq!(fresh[0].patterns, [PATTERN]);
-    assert_eq!(fresh[0].scenario_id.as_deref(), Some(SCENARIO));
-    assert_eq!(
-        fresh[0].title,
-        "Registry notice triggers redundant contract discovery"
-    );
-    assert_eq!(stored_reviews(&h), 0);
-
-    h.configure_code(Some(&repo.path())).await.unwrap();
-    let StartValidationResponseV1::Started(started) =
-        validation::start_validation(&h.deps, start_request(&evaluation_id, "feat"))
-            .await
-            .unwrap()
-    else {
-        panic!("a start answered a dry run")
-    };
-    let started = *started;
-    {
-        let world = h.world();
-        let calls = world.calls_to("e2e::dashboard::execution-start");
-        assert_eq!(calls.len(), 2);
-        for (call, side, commit) in [
-            (&calls[0], "baseline", &repo.base),
-            (&calls[1], "candidate", &repo.feat),
-        ] {
-            assert_eq!(call["label"], format!("eval {evaluation_id} S1 {side}"));
-            let parameters = &call["parameters"];
-            assert_eq!(parameters["scenarios"], json!([SCENARIO]));
-            assert_eq!(
-                (
-                    &parameters["runs"],
-                    &parameters["where"],
-                    &parameters["model"]
-                ),
-                (&json!(3), &json!("docker"), &json!("deepseek-flash"))
-            );
-            assert_eq!(parameters["provider"], "deepseek");
-            let stack = &parameters["stack"];
-            assert!(stack["name"].as_str().unwrap().contains(side), "{stack}");
-            let yaml: serde_yaml::Value =
-                serde_yaml::from_str(stack["yaml"].as_str().unwrap()).unwrap();
-            let harness = &yaml["containers"]["harness"];
-            assert_eq!(harness["worker"], "package://harness");
-            assert_eq!(harness["commit"], commit.as_str());
-            assert_eq!(harness["repository"], "iii-hq/workers");
-            assert!(harness.get("version").is_none());
-            assert_eq!(yaml["containers"]["harness-e2e"]["version"], "0.17.2");
-            assert_eq!(yaml["template"], "harness");
-        }
-        assert_eq!(world.calls_to("e2e::dashboard::stacks-list").len(), 1);
-    }
-    let run = started.run.clone().unwrap();
-    assert_eq!(run.state, ValidationRunStateV1::Running);
-    assert_eq!(run.baseline_execution_id.as_deref(), Some("plan-1"));
-    assert_eq!(run.candidate_execution_id.as_deref(), Some("plan-2"));
-    assert_eq!(
-        (run.baseline_commit.as_str(), run.candidate_commit.as_str()),
-        (repo.base.as_str(), repo.feat.as_str()),
-        "the baseline defaults to the merge base with origin/main"
-    );
-    assert_eq!((run.runs, run.scenario_id.as_str()), (3, SCENARIO));
-    // The criterion was registered before the run began.
-    let criterion = started.criterion.clone().unwrap();
-    assert!(criterion.registered_at <= run.started_at);
-    assert_eq!(criterion.registered_by, "ana");
-    assert_eq!(criterion.scenario_id, SCENARIO);
-    assert_eq!(row(&h, &evaluation_id).await, started);
-
-    // Only one run at a time.
-    let second = start(&h, &evaluation_id, |_| {}).await.unwrap_err();
-    assert!(matches!(second, EvalError::Conflict(_)), "{second:?}");
-    assert_eq!(
-        h.world().calls_to("e2e::dashboard::execution-start").len(),
-        2
-    );
-
-    // Still running: the sweep only asks for the two executions.
-    h.world().executions_list = Some(executions_state("running", "completed"));
-    runtime::sweep(&h.deps).await.unwrap();
-    assert_eq!(
-        h.world().calls_to("e2e::dashboard::executions-list"),
-        [json!({"ids": ["plan-1", "plan-2"]})]
-    );
-    assert!(h
-        .world()
-        .calls_to("e2e::dashboard::execution-get")
-        .is_empty());
-    assert_eq!(
-        row(&h, &evaluation_id).await.run.unwrap().state,
-        ValidationRunStateV1::Running
-    );
-
-    // Both ended: the pair is attached and the evidence computed in code.
-    h.world().executions_list = Some(executions_state("completed", "completed"));
-    runtime::sweep(&h.deps).await.unwrap();
-    let EvalResultResponseV1 {
-        record,
-        assets,
-        reviews,
-    } = h.result(&evaluation_id).await;
-    let attached = &reviews[0];
-    assert_eq!(
-        attached.run.as_ref().unwrap().state,
-        ValidationRunStateV1::Attached
-    );
-    assert_eq!(record.counters.validations, 1);
-    assert_eq!(assets.validations.len(), 1);
-    assert_eq!(assets.validations[0].baseline.execution_id, "plan-1");
-    let evidence = attached.evidence.as_ref().unwrap();
-    assert_eq!(evidence.scenario_id, SCENARIO);
-    assert_eq!(
-        evidence.computed_outcome,
-        ValidationOutcomeV1::ValidatedImprovement
-    );
-    assert_eq!(
-        (evidence.baseline.n, evidence.baseline.mean),
-        (3, Some(1.0))
-    );
-    assert_eq!(
-        (evidence.candidate.n, evidence.candidate.mean),
-        (3, Some(0.0))
-    );
-    assert!(
-        evidence.reason.contains("baseline 1 → candidate 0"),
-        "{}",
-        evidence.reason
-    );
-    assert_eq!(evidence.baseline.runs.len(), 3);
-    assert_eq!(
-        evidence.baseline.runs[0].signals,
-        Some(BTreeMap::from([(PATTERN.to_string(), 1)]))
-    );
-    assert_eq!(
-        evidence.candidate.runs[0].signals,
-        Some(BTreeMap::from([(PATTERN.to_string(), 0)]))
-    );
-
-    // The pair is attached once: a later sweep asks nothing more.
-    let asked = h.world().calls_to("e2e::dashboard::execution-get").len();
-    runtime::sweep(&h.deps).await.unwrap();
-    assert_eq!(
-        h.world().calls_to("e2e::dashboard::execution-get").len(),
-        asked
-    );
-    assert_eq!(
-        h.world().calls_to("e2e::dashboard::executions-list").len(),
-        2
-    );
-
-    // The person's verdict follows, against the criterion registered first.
-    let verdict = review_with(
-        &h,
-        &evaluation_id,
-        json!({"action": "set_verdict", "outcome": "validated_improvement",
-               "rationale": "3.0 → 0.0 with the same invariants",
-               "controls_checked": ["a contract that really changes is still re-fetched"]}),
-    )
-    .await
-    .unwrap()
-    .verdict
-    .unwrap();
-    assert_eq!(verdict.outcome, ValidationOutcomeV1::ValidatedImprovement);
-    assert_eq!(verdict.criterion_snapshot, Some(criterion));
-    assert_eq!(verdict.by, "ana");
-}
-
-#[tokio::test]
-async fn a_validation_that_cannot_start_is_refused_before_anything_is_spent() {
-    let repo = Repo::new(true);
-    let bare = Repo::new(false);
-    let mut world = World::new();
-    world.stacks = Some(stacks());
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    let refused = |error: EvalError, prefix: &str| {
-        assert!(error.to_string().contains(prefix), "{prefix}: {error}");
-    };
-
-    // No codebase directory: no way to resolve a commit.
-    refused(
-        start(&h, &evaluation_id, |_| {}).await.unwrap_err(),
-        "code_repository_required:",
-    );
-    h.configure_code(Some(&repo.path())).await.unwrap();
-
-    for (what, edit, prefix) in [
-        (
-            "unknown ref",
-            Box::new(|r: &mut Value| r["candidate_ref"] = json!("nope")) as Box<dyn Fn(&mut Value)>,
-            "git_ref_invalid:",
-        ),
-        (
-            "an option",
-            Box::new(|r| r["candidate_ref"] = json!("--upload-pack=x")),
-            "git_ref_invalid:",
-        ),
-        (
-            "unpushed candidate",
-            Box::new(|r| r["candidate_ref"] = json!("local")),
-            "commit_not_pushed:",
-        ),
-        (
-            "unpushed baseline",
-            Box::new(|r| r["baseline_ref"] = json!("local")),
-            "commit_not_pushed: the baseline",
-        ),
-        (
-            "candidate already in main",
-            Box::new(|r| r["candidate_ref"] = json!("main")),
-            "git_ref_invalid: baseline and candidate are the same commit",
-        ),
-        (
-            "no runs",
-            Box::new(|r| r["runs"] = json!(0)),
-            "runs must be between 1 and 20",
-        ),
-        (
-            "too many runs",
-            Box::new(|r| r["runs"] = json!(21)),
-            "runs must be between 1 and 20",
-        ),
-        (
-            "criterion beyond the runs",
-            Box::new(|r| r["runs"] = json!(2)),
-            "needs 3 completed runs",
-        ),
-        (
-            "no scenario",
-            Box::new(|r| r["scenario_id"] = json!(" ")),
-            "scenario_id is required",
-        ),
-        (
-            "no author",
-            Box::new(|r| r["by"] = json!(" ")),
-            "`by` is required",
-        ),
-        (
-            "no model",
-            Box::new(|r| r["model"] = json!(" ")),
-            "model is required",
-        ),
-        (
-            "no criterion",
-            Box::new(|r| {
-                r.as_object_mut().unwrap().remove("criterion");
-            }),
-            "criterion is required",
-        ),
-        (
-            "no such suggestion",
-            Box::new(|r| r["suggestion_index"] = json!(4)),
-            "does not exist",
-        ),
-        (
-            "a pattern the suggestion does not cite",
-            Box::new(|r| r["criterion"]["pattern"] = json!("repeated_tool_error:x")),
-            "needs a pattern the suggestion cites",
-        ),
-    ] {
-        let error = start(&h, &evaluation_id, |r| edit(r)).await.unwrap_err();
-        assert!(error.to_string().contains(prefix), "{what}: {error}");
-    }
-    // A clone without origin/main has no default baseline.
-    h.configure_code(Some(&bare.path())).await.unwrap();
-    refused(
-        start(&h, &evaluation_id, |_| {}).await.unwrap_err(),
-        "has no merge base",
-    );
-    h.configure_code(Some(&repo.path())).await.unwrap();
-
-    // An E2E that cannot say how to build the stack.
-    h.world().stacks = Some(json!({"stacks": [{"id": "default", "template": null, "yaml": ""}]}));
-    refused(
-        start(&h, &evaluation_id, |_| {}).await.unwrap_err(),
-        "e2e_unavailable:",
-    );
-    h.world().stacks = None;
-    refused(
-        start(&h, &evaluation_id, |_| {}).await.unwrap_err(),
-        "e2e_unavailable:",
-    );
-
-    // An analysis that has not finished.
-    h.world().stacks = Some(stacks());
-    let pending = reanalyze(&h).await;
-    let error = start(&h, &pending, |_| {}).await.unwrap_err();
-    assert!(matches!(error, EvalError::Conflict(_)), "{error:?}");
-
-    // None of that registered a criterion or reached the E2E.
-    assert_eq!(stored_reviews(&h), 0);
-    assert!(h
-        .world()
-        .calls_to("e2e::dashboard::execution-start")
-        .is_empty());
-
-    // The E2E refuses the baseline: the criterion stays registered, the run failed.
-    h.world().start_failure = Some((0, "the E2E is busy: another execution is in progress"));
-    let busy = start(&h, &evaluation_id, |_| {}).await.unwrap_err();
-    refused(busy, "e2e_busy:");
-    let failed = row(&h, &evaluation_id).await;
-    let run = failed.run.unwrap();
-    assert_eq!(run.state, ValidationRunStateV1::Failed);
-    assert!(run.error.unwrap().starts_with("e2e_busy:"));
-    assert_eq!(
-        (run.baseline_execution_id, run.candidate_execution_id),
-        (None, None)
-    );
-    assert!(failed.criterion.is_some());
-
-    // The E2E refuses the candidate after taking the baseline: it is named.
-    {
-        let mut world = h.world();
-        world.starts = 0;
-        world.start_failure = Some((1, "handler error: invalid stack"));
-    }
-    let half = start(&h, &evaluation_id, |_| {}).await.unwrap_err();
-    refused(half, "e2e_unavailable:");
-    let run = row(&h, &evaluation_id).await.run.unwrap();
-    assert_eq!(run.state, ValidationRunStateV1::Failed);
-    assert_eq!(run.baseline_execution_id.as_deref(), Some("plan-1"));
-    assert!(run
-        .error
-        .unwrap()
-        .contains("baseline execution plan-1 was already started"));
-    // A failed run can be started again with the same criterion.
-    h.world().start_failure = None;
-    let again = start(&h, &evaluation_id, |_| {}).await.unwrap();
-    assert_eq!(again.run.unwrap().state, ValidationRunStateV1::Running);
-}
-
-/// What the dialog sends while the person is still typing: the refs, the
-/// scenario and the runs, no model and no criterion.
-async fn dry_run(
-    h: &Harness,
-    evaluation_id: &str,
-    edit: impl FnOnce(&mut Value),
-) -> Result<ValidationResolutionV1, EvalError> {
-    let mut request = json!({"evaluation_id": evaluation_id, "suggestion_index": 0,
-        "scenario_id": SCENARIO, "candidate_ref": "feat", "runs": 3, "dry_run": true});
-    edit(&mut request);
-    match validation::start_validation(&h.deps, serde_json::from_value(request).unwrap()).await? {
-        StartValidationResponseV1::Resolved(resolution) => Ok(resolution),
-        StartValidationResponseV1::Started(_) => panic!("a start answered a dry run"),
-    }
-}
-
-#[tokio::test]
-async fn a_dry_run_resolves_the_refs_like_a_start_and_changes_nothing() {
-    let repo = Repo::new(true);
-    let mut world = World::new();
-    world.stacks = Some(stacks());
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    let before = h.world().calls.len();
-    let refused = |error: EvalError, prefix: &str| {
-        assert!(error.to_string().contains(prefix), "{prefix}: {error}");
-    };
-
-    refused(
-        dry_run(&h, &evaluation_id, |_| {}).await.unwrap_err(),
-        "code_repository_required:",
-    );
-    h.configure_code(Some(&repo.path())).await.unwrap();
-
-    // The baseline defaults to the merge base with origin/main, which holds it.
-    let resolved = dry_run(&h, &evaluation_id, |_| {}).await.unwrap();
-    assert_eq!(
-        resolved,
-        ValidationResolutionV1 {
-            baseline: ResolvedCommitV1 {
-                commit: repo.base.clone(),
-                short: repo.base[..12].into(),
-                branch: "origin/main".into(),
-            },
-            candidate: ResolvedCommitV1 {
-                commit: repo.feat.clone(),
-                short: repo.feat[..12].into(),
-                branch: "origin/feat".into(),
-            },
-            warnings: vec![],
-        }
-    );
-    // A commit typed in full resolves the same way.
-    let by_sha = dry_run(&h, &evaluation_id, |r| {
-        r["candidate_ref"] = json!(repo.feat)
-    })
-    .await
-    .unwrap();
-    assert_eq!(by_sha, resolved);
-
-    // The same refusals a start gives, before anything is spent.
-    for (what, edit, prefix) in [
-        (
-            "unknown ref",
-            Box::new(|r: &mut Value| r["candidate_ref"] = json!("nope")) as Box<dyn Fn(&mut Value)>,
-            "git_ref_invalid: the candidate ref `nope`",
-        ),
-        (
-            "not pushed",
-            Box::new(|r| r["candidate_ref"] = json!("local")),
-            "commit_not_pushed: the candidate commit",
-        ),
-        (
-            "baseline not pushed",
-            Box::new(|r| r["baseline_ref"] = json!("local")),
-            "commit_not_pushed: the baseline commit",
-        ),
-        (
-            "baseline unknown",
-            Box::new(|r| r["baseline_ref"] = json!("nope")),
-            "git_ref_invalid: the baseline ref `nope`",
-        ),
-        (
-            "same commit",
-            Box::new(|r| r["candidate_ref"] = json!("main")),
-            "git_ref_invalid: baseline and candidate are the same commit",
-        ),
-        (
-            "runs",
-            Box::new(|r| r["runs"] = json!(21)),
-            "runs must be between 1 and 20",
-        ),
-        (
-            "no scenario",
-            Box::new(|r| r["scenario_id"] = json!(" ")),
-            "scenario_id is required",
-        ),
-        (
-            "a criterion that needs more runs",
-            Box::new(|r| {
-                r["criterion"] = criterion_json("signal_per_run", 5);
-            }),
-            "the criterion needs 5 completed runs",
-        ),
-    ] {
-        let error = dry_run(&h, &evaluation_id, |r| edit(r)).await.unwrap_err();
-        assert!(error.to_string().contains(prefix), "{what}: {error}");
-    }
-
-    // A baseline that is not behind the candidate is allowed, with a warning.
-    let diverged = dry_run(&h, &evaluation_id, |r| {
-        r["candidate_ref"] = json!("main");
-        r["baseline_ref"] = json!("feat");
-    })
-    .await
-    .unwrap();
-    assert_eq!(diverged.baseline.branch, "origin/feat");
-    assert_eq!(diverged.warnings.len(), 1);
-    assert!(
-        diverged.warnings[0].contains("is not an ancestor of the candidate"),
-        "{:?}",
-        diverged.warnings
-    );
-
-    // Nothing was registered, recorded or asked of the E2E.
-    assert_eq!(stored_reviews(&h), 0);
-    assert!(h.world().calls[before..]
-        .iter()
-        .all(|(function, _)| !function.starts_with("e2e::")));
-}
-
-#[tokio::test]
-async fn a_start_the_e2e_never_answers_stays_in_progress_instead_of_inviting_a_duplicate() {
-    let repo = Repo::new(true);
-    let mut world = World::new();
-    world.stacks = Some(stacks());
-    // The baseline is accepted; the candidate's answer never arrives.
-    world.unanswered_start = Some(1);
-    let (mut h, evaluation_id) = analyzed_with_suggestion(world).await;
-    h.configure_code(Some(&repo.path())).await.unwrap();
-    h.deps.start_timeout_ms = 300;
-
-    let error = start(&h, &evaluation_id, |_| {}).await.unwrap_err();
-    assert!(matches!(error, EvalError::Unanswered(_)), "{error:?}");
-    let text = error.to_string();
-    assert!(text.contains("e2e_start_unconfirmed:"), "{text}");
-    assert!(
-        text.contains(&format!("eval {evaluation_id} S1 candidate")),
-        "it names what to look for in the E2E: {text}"
-    );
-    assert!(text.contains("baseline execution plan-1"), "{text}");
-    // The candidate may be running: the run is not failed, and what is known
-    // is kept.
-    let run = row(&h, &evaluation_id).await.run.unwrap();
-    assert_eq!(run.state, ValidationRunStateV1::Starting);
-    assert_eq!(run.baseline_execution_id.as_deref(), Some("plan-1"));
-    assert_eq!((run.candidate_execution_id, run.error), (None, None));
-
-    // So a second click cannot start a second pair.
-    let again = start(&h, &evaluation_id, |_| {}).await.unwrap_err();
-    assert!(matches!(again, EvalError::Conflict(_)), "{again:?}");
-    assert_eq!(
-        h.world().calls_to("e2e::dashboard::execution-start").len(),
-        2
-    );
-    runtime::sweep(&h.deps).await.unwrap();
-    assert_eq!(
-        row(&h, &evaluation_id).await.run.unwrap().state,
-        ValidationRunStateV1::Starting,
-        "a fresh start is left alone"
-    );
-
-    // Minutes later the sweep gives it up and the person, who looked in the
-    // E2E, can start again.
-    let mut stale = row(&h, &evaluation_id).await;
-    stale.run.as_mut().unwrap().started_at = ids::now_ms() - 10 * 60 * 1_000;
-    state::put_review(&h.deps.iii, &stale).await.unwrap();
-    runtime::sweep(&h.deps).await.unwrap();
-    let failed = row(&h, &evaluation_id).await;
-    assert_eq!(
-        failed.run.as_ref().unwrap().state,
-        ValidationRunStateV1::Failed
-    );
-    assert!(failed
-        .run
-        .unwrap()
-        .error
-        .unwrap()
-        .contains("never answered"));
-    let restarted = start(&h, &evaluation_id, |_| {}).await.unwrap();
-    assert_eq!(restarted.run.unwrap().state, ValidationRunStateV1::Running);
-    assert_eq!(
-        restarted.first_run_at,
-        Some(stale.run.unwrap().started_at),
-        "the replaced run's executions still count as results that may have been seen"
-    );
-}
-
-#[tokio::test]
-async fn a_verdict_of_improvement_needs_the_criterion_first_and_the_runs_to_match() {
-    let mut world = World::new();
-    pair_world(&mut world);
-    let (mut h, first) = analyzed_with_suggestion(world).await;
-    let settle = || tokio::time::sleep(Duration::from_millis(5));
-
-    // Lifecycle: who moved it and when, with what each status needs.
-    let moved = review_with(
-        &h,
-        &first,
-        json!({"action": "set_lifecycle", "status": "accepted",
-        "note": "worth a try"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(moved.lifecycle.status, LifecycleStatusV1::Accepted);
-    assert_eq!(moved.lifecycle.history[0].by, "ana");
-    assert_eq!(
-        moved.lifecycle.history[0].note.as_deref(),
-        Some("worth a try")
-    );
-    assert_eq!(
-        moved.patterns,
-        [PATTERN],
-        "the row copies what outlives the analysis"
-    );
-    // Without a name the host's user is credited, not the opaque worker id the
-    // engine stamped on the call.
-    h.deps.host_user = Some("layon".into());
-    let by_host = review::review(
-        &h.deps,
-        serde_json::from_value(json!({"evaluation_id": first, "suggestion_index": 0,
-            "action": "set_lifecycle", "status": "in_progress", "pr": "#1300",
-            "_caller_worker_id": "fee30d6b-1890-4a8e-9d51-0c6e5d1f3a77"}))
-        .unwrap(),
-    )
-    .await
-    .unwrap();
-    h.deps.host_user = None;
-    assert_eq!(by_host.lifecycle.history[1].by, "layon");
-    for (body, why) in [
-        (json!({"action": "set_lifecycle"}), "no status"),
-        (
-            json!({"action": "set_lifecycle", "status": "new"}),
-            "back to new",
-        ),
-        (
-            json!({"action": "set_lifecycle", "status": "rejected"}),
-            "no reason",
-        ),
-        (
-            json!({"action": "set_lifecycle", "status": "shipped", "pr": "#1", "version": "latest"}),
-            "version",
-        ),
-        (json!({"action": "set_criterion"}), "no criterion"),
-        (
-            json!({"action": "set_verdict", "outcome": "no_improvement"}),
-            "no rationale",
-        ),
-        (
-            json!({"action": "set_lifecycle", "status": "accepted", "by": " "}),
-            "no author",
-        ),
-    ] {
-        let mut request = json!({"evaluation_id": first, "suggestion_index": 0});
-        request
-            .as_object_mut()
-            .unwrap()
-            .extend(body.as_object().unwrap().clone());
-        // The author comes from `by` unless a body overrides it.
-        if !request.as_object().unwrap().contains_key("by") {
-            request["by"] = json!("ana");
-        }
-        let error = review::review(&h.deps, serde_json::from_value(request).unwrap())
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, EvalError::InvalidRequest(_)),
-            "{why}: {error:?}"
-        );
-    }
-    for (id, index) in [("eval_nobody", 0), (first.as_str(), 3)] {
-        let mut request = json!({"evaluation_id": id, "suggestion_index": index, "by": "ana",
-            "action": "set_lifecycle", "status": "accepted"});
-        request["suggestion_index"] = json!(index);
-        assert!(
-            review::review(&h.deps, serde_json::from_value(request).unwrap())
-                .await
-                .is_err()
-        );
-    }
-    assert_eq!(
-        row(&h, &first).await.lifecycle.history.len(),
-        2,
-        "refusals change nothing"
-    );
-
-    // 1. No criterion at all.
-    let verdict = |outcome: &str| {
-        json!({"action": "set_verdict", "outcome": outcome, "rationale": "the runs show it",
-               "controls_checked": ["control one"]})
-    };
-    let refusal = review_with(&h, &first, verdict("validated_improvement"))
-        .await
-        .unwrap_err();
-    assert!(
-        refusal
-            .to_string()
-            .contains("verdict_refused: no criterion"),
-        "{refusal}"
-    );
-    // Other outcomes need no criterion.
-    let recorded = review_with(&h, &first, verdict("inconclusive"))
-        .await
-        .unwrap();
-    assert_eq!(recorded.verdict.unwrap().criterion_snapshot, None);
-
-    // 2. The pair is attached before the criterion exists: the evidence is
-    // computed but cannot validate, however good it looks.
-    attach(&h, &first, "exec-b", "exec-c").await;
-    let with_evidence = row(&h, &first).await;
-    let evidence = with_evidence.evidence.as_ref().unwrap();
-    assert_eq!(evidence.computed_outcome, ValidationOutcomeV1::Inconclusive);
-    assert!(
-        evidence.reason.contains("no criterion"),
-        "{}",
-        evidence.reason
-    );
-    assert_eq!((evidence.baseline.n, evidence.candidate.n), (3, 3));
-    settle().await;
-    let late = review_with(
-        &h,
-        &first,
-        json!({"action": "set_criterion", "criterion": criterion_json("signal_per_run", 3)}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        late.evidence.unwrap().computed_outcome,
-        ValidationOutcomeV1::ValidatedImprovement
-    );
-    let refusal = review_with(&h, &first, verdict("validated_improvement"))
-        .await
-        .unwrap_err();
-    assert!(
-        refusal
-            .to_string()
-            .contains("registered after the first E2E execution started"),
-        "{refusal}"
-    );
-    // Results exist, so the criterion no longer changes.
-    let frozen = review_with(
-        &h,
-        &first,
-        json!({"action": "set_criterion", "criterion": criterion_json("cost_usd", 3)}),
-    )
-    .await
-    .unwrap_err();
-    assert!(frozen.to_string().contains("criterion_frozen:"), "{frozen}");
-    // The same pair attached again keeps one link and its first time.
-    let attached_at = h.result(&first).await.assets.validations[0].attached_at;
-    attach(&h, &first, "exec-b", "exec-c").await;
-    let validations = h.result(&first).await.assets.validations;
-    assert_eq!(validations.len(), 1);
-    assert_eq!(validations[0].attached_at, attached_at);
-
-    // 3. A criterion registered first, but the runs are fewer than it needs.
-    let second = reanalyze(&h).await;
-    investigated(&h, &second).await;
-    review_with(
-        &h,
-        &second,
-        json!({"action": "set_criterion", "criterion": criterion_json("signal_per_run", 5)}),
-    )
-    .await
-    .unwrap();
-    settle().await;
-    attach(&h, &second, "exec-b", "exec-c").await;
-    let few = row(&h, &second).await;
-    assert_eq!(
-        few.evidence.unwrap().computed_outcome,
-        ValidationOutcomeV1::Inconclusive
-    );
-    let refusal = review_with(&h, &second, verdict("validated_improvement"))
-        .await
-        .unwrap_err();
-    assert!(
-        refusal
-            .to_string()
-            .contains("the baseline has 3 completed run(s), the criterion needs 5"),
-        "{refusal}"
-    );
-
-    // 4. A criterion first and enough completed runs: recorded with its snapshot.
-    let third = reanalyze(&h).await;
-    investigated(&h, &third).await;
-    review_with(
-        &h,
-        &third,
-        json!({"action": "set_criterion", "criterion": criterion_json("signal_per_run", 3)}),
-    )
-    .await
-    .unwrap();
-    settle().await;
-    attach(&h, &third, "exec-b", "exec-c").await;
-    let done = review_with(&h, &third, verdict("validated_improvement"))
-        .await
-        .unwrap();
-    assert_eq!(
-        done.verdict.as_ref().unwrap().outcome,
-        ValidationOutcomeV1::ValidatedImprovement
-    );
-    assert_eq!(done.verdict.unwrap().criterion_snapshot, done.criterion);
-
-    // The list's summary counts each analysis's suggestions by status.
-    let listed = review::reviews(&h.deps, ReviewsRequestV1::default())
-        .await
-        .unwrap();
-    let summary = |id: &str| {
-        listed
-            .summaries
-            .iter()
-            .find(|summary| summary.evaluation_id == id)
-            .unwrap()
-            .clone()
-    };
-    assert_eq!(listed.summaries.len(), 3);
-    assert_eq!(listed.reviews.len(), 3);
-    let first_summary = summary(&first);
-    assert_eq!(
-        (
-            first_summary.suggestions,
-            first_summary.in_progress,
-            first_summary.new
-        ),
-        (1, 1, 0)
-    );
-    // A criterion is not a lifecycle change: the suggestion still needs review.
-    assert_eq!((summary(&second).suggestions, summary(&second).new), (1, 1));
-    let one = review::reviews(
-        &h.deps,
-        ReviewsRequestV1 {
-            evaluation_id: Some(first.clone()),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!((one.reviews.len(), one.summaries.len()), (1, 1));
-    // An untouched suggestion counts as new.
-    h.world()
-        .state
-        .retain(|(scope, _), _| scope != state::REVIEW_SCOPE);
-    let untouched = review::reviews(&h.deps, ReviewsRequestV1::default())
-        .await
-        .unwrap();
-    assert!(untouched.reviews.is_empty());
-    assert!(untouched.summaries.iter().all(|summary| summary.new == 1));
-}
-
-/// The same turn admitted by a live event again (its index gone, as after
-/// retention): another automatic analysis.
-async fn admitted_again(h: &Harness) -> String {
-    let key = ids::observation_key(ROOT, TURN);
-    state::delete_observation(&h.deps.iii, &key).await.unwrap();
-    h.end_turn(ROOT, TURN).await.evaluation_id.unwrap()
-}
-
-#[tokio::test]
-async fn recurrence_compares_the_analyses_before_and_from_the_shipped_version() {
-    let mut world = World::new();
-    world.workers = Some(json!({"workers": [
-        {"name": "harness", "namespace": "default", "version": "1.8.42"}]}));
-    let namespace = {
-        // The worker's own namespace, as admission reads it.
-        let probe = Harness::start(World::new()).await;
-        probe.iii.namespace().unwrap_or_else(|| "default".into())
-    };
-    let versions = |version: Option<&str>| {
-        version.map(|version| {
-            json!({"workers": [{"name": "harness", "namespace": namespace, "version": version}]})
-        })
-    };
-    world.workers = versions(Some("1.8.42"));
-    let (h, first) = analyzed_with_suggestion(world).await;
-    assert_eq!(
-        h.result(&first).await.record.signals,
-        BTreeMap::from([(PATTERN.to_string(), 1)])
-    );
-
-    // Before anything shipped there is nothing to compare.
-    let unshipped = review::recurrence(
-        &h.deps,
-        RecurrenceRequestV1 {
-            evaluation_id: first.clone(),
-            suggestion_index: 0,
-        },
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        unshipped.to_string().contains("recurrence_unavailable:"),
-        "{unshipped}"
-    );
-    review_with(
-        &h,
-        &first,
-        json!({"action": "set_lifecycle", "status": "accepted"}),
-    )
-    .await
-    .unwrap();
-    let unversioned = review_with(
-        &h,
-        &first,
-        json!({"action": "set_lifecycle", "status": "shipped",
-        "pr": "#1300"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(unversioned.lifecycle.version, None);
-    assert!(review::recurrence(
-        &h.deps,
-        RecurrenceRequestV1 {
-            evaluation_id: first.clone(),
-            suggestion_index: 0
-        }
-    )
-    .await
-    .is_err());
-    review_with(
-        &h,
-        &first,
-        json!({"action": "set_lifecycle", "status": "shipped",
-        "version": "1.8.43"}),
-    )
-    .await
-    .unwrap();
-
-    // Another analysis on the same old version that still finds the pattern.
-    let old = admitted_again(&h).await;
-    investigated(&h, &old).await;
-    // Then analyses on the release: the transcript no longer repeats.
-    h.world().workers = versions(Some("1.8.43"));
-    h.world().entries.insert(ROOT.into(), clean_transcript());
-    let released = admitted_again(&h).await;
-    investigated(&h, &released).await;
-    let later = admitted_again(&h).await;
-    investigated(&h, &later).await;
-    // A manual analysis may be of a session that ran on an older version, and
-    // a second analysis of one turn would count its signals twice: it is
-    // left out whatever version is installed.
-    let manual = reanalyze(&h).await;
-    investigated(&h, &manual).await;
-    assert_eq!(h.result(&manual).await.record.harness_version, None);
-    // An engine that did not say its version.
-    h.world().workers = None;
-    let unknown = admitted_again(&h).await;
-    investigated(&h, &unknown).await;
-
-    let found = review::recurrence(
-        &h.deps,
-        RecurrenceRequestV1 {
-            evaluation_id: first.clone(),
-            suggestion_index: 0,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(found.version, "1.8.43");
-    assert_eq!(found.without_version, 2);
-    assert_eq!((found.before.analyses, found.from_version.analyses), (2, 2));
-    let before = &found.before.patterns[0];
-    assert_eq!(before.pattern, PATTERN);
-    assert_eq!(
-        (
-            before.occurrences,
-            before.analyses_with,
-            before.per_analysis
-        ),
-        (2, 2, Some(1.0))
-    );
-    let from = &found.from_version.patterns[0];
-    assert_eq!(
-        (from.occurrences, from.analyses_with, from.per_analysis),
-        (0, 0, Some(0.0))
-    );
-
-    // The row outlives the analysis it came from.
-    runtime::delete(
-        &h.deps,
-        EvaluationIdRequestV1 {
-            evaluation_id: first.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    let kept = review::reviews(
-        &h.deps,
-        ReviewsRequestV1 {
-            evaluation_id: Some(first.clone()),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(kept.reviews.len(), 1);
-    assert!(kept.summaries.is_empty(), "no analysis left to summarize");
-    let still = review::recurrence(
-        &h.deps,
-        RecurrenceRequestV1 {
-            evaluation_id: first,
-            suggestion_index: 0,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        still.before.analyses, 1,
-        "the deleted analysis is gone from the count"
-    );
-}
-
-#[tokio::test]
-async fn the_sweep_fails_runs_that_cannot_finish_and_retries_the_ones_the_e2e_dropped() {
-    let mut world = World::new();
-    pair_world(&mut world);
-    let (h, evaluation_id) = analyzed_with_suggestion(world).await;
-    let base = h.result(&evaluation_id).await.reviews.remove(0);
-    let ago = ids::now_ms() - 10 * 60 * 1_000;
-    let put = |state: ValidationRunStateV1, started_at: i64, ids: bool| {
-        let mut row = base.clone();
-        row.criterion = Some(CriterionV1 {
-            metric: CriterionMetricV1::SignalPerRun,
-            pattern: Some(PATTERN.into()),
-            direction: DirectionV1::Decrease,
-            min_effect: 0.5,
-            min_runs: 3,
-            scenario_id: SCENARIO.into(),
-            registered_at: started_at,
-            registered_by: "ana".into(),
-        });
-        row.run = Some(ValidationRunV1 {
-            baseline_execution_id: ids.then(|| "plan-1".to_string()),
-            candidate_execution_id: ids.then(|| "plan-2".to_string()),
-            baseline_commit: "a".repeat(40),
-            candidate_commit: "b".repeat(40),
-            scenario_id: SCENARIO.into(),
-            runs: 3,
-            model: "deepseek-flash".into(),
-            provider: "deepseek".into(),
-            started_at,
-            finished_at: None,
-            state,
-            error: None,
-        });
-        row
-    };
-    let store = |row: SuggestionReviewV1| {
-        let deps = h.deps.clone();
-        async move { state::put_review(&deps.iii, &row).await.unwrap() }
-    };
-    let run_state = || async { row(&h, &evaluation_id).await.run.unwrap() };
-
-    // A start that lost its answer long ago fails; a fresh one is left alone.
-    store(put(ValidationRunStateV1::Starting, ids::now_ms(), false)).await;
-    runtime::sweep(&h.deps).await.unwrap();
-    assert_eq!(run_state().await.state, ValidationRunStateV1::Starting);
-    store(put(ValidationRunStateV1::Starting, ago, false)).await;
-    runtime::sweep(&h.deps).await.unwrap();
-    let lost = run_state().await;
-    assert_eq!(lost.state, ValidationRunStateV1::Failed);
-    assert!(lost.error.unwrap().contains("the start did not finish"));
-
-    // An execution the E2E no longer lists. Startup recovery never waits on
-    // the E2E: the first sweep does.
-    store(put(ValidationRunStateV1::Running, ago, true)).await;
-    h.world().executions_list = Some(json!({"executions": [{"id": "plan-1", "state": "running"}]}));
-    runtime::recover(&h.deps).await.unwrap();
-    assert!(h
-        .world()
-        .calls_to("e2e::dashboard::executions-list")
-        .is_empty());
-    runtime::sweep(&h.deps).await.unwrap();
-    let gone = run_state().await;
-    assert_eq!(gone.state, ValidationRunStateV1::Failed);
-    assert!(gone
-        .error
-        .unwrap()
-        .contains("e2e_execution_not_found: the candidate execution plan-2"));
-
-    // An E2E that is down when the pair is attached: tried again, and said so.
-    store(put(ValidationRunStateV1::Running, ago, true)).await;
-    {
-        let mut world = h.world();
-        world.executions_list = Some(executions_state("completed", "completed"));
-        world.executions_down = true;
-    }
-    runtime::sweep(&h.deps).await.unwrap();
-    let waiting = run_state().await;
-    assert_eq!(waiting.state, ValidationRunStateV1::Finished);
-    assert!(
-        waiting.error.as_ref().unwrap().contains("e2e_unavailable"),
-        "{:?}",
-        waiting.error
-    );
-    h.world().executions_down = false;
-    runtime::sweep(&h.deps).await.unwrap();
-    let done = run_state().await;
-    assert_eq!(
-        (done.state, done.error),
-        (ValidationRunStateV1::Attached, None)
-    );
-
-    // Down for good: the sweep keeps trying for a while, then gives up and
-    // says why, so the person can attach by hand or start again.
-    h.world().executions_down = true;
-    let finished_ago = |minutes: i64| {
-        let mut row = put(ValidationRunStateV1::Finished, ago, true);
-        row.run.as_mut().unwrap().finished_at = Some(ids::now_ms() - minutes * 60 * 1_000);
-        row
-    };
-    store(finished_ago(5)).await;
-    runtime::sweep(&h.deps).await.unwrap();
-    assert_eq!(run_state().await.state, ValidationRunStateV1::Finished);
-    store(finished_ago(31)).await;
-    runtime::sweep(&h.deps).await.unwrap();
-    let given_up = run_state().await;
-    assert_eq!(given_up.state, ValidationRunStateV1::Failed);
-    let error = given_up.error.unwrap();
-    assert!(error.starts_with("attach_gave_up:"), "{error}");
-    assert!(
-        error.contains("e2e_unavailable"),
-        "the last error is kept: {error}"
-    );
-    h.world().executions_down = false;
-
-    // Executions that ended badly are attached too: the evidence says why it
-    // cannot judge, instead of the pair being dropped.
-    h.world().executions.insert(
-        "plan-1".into(),
-        runs_bundle("plan-1", {
-            let mut broken = runs("b", 1, true);
-            broken.push(e2e_run_record(
-                "b-infra",
-                true,
-                "incomplete",
-                "infrastructure_error",
-            ));
-            broken.push(e2e_run_record(
-                "b-infra2",
-                true,
-                "incomplete",
-                "infrastructure_error",
-            ));
-            broken
-        }),
-    );
-    h.world()
-        .executions
-        .insert("plan-2".into(), runs_bundle("plan-2", vec![]));
-    store(put(ValidationRunStateV1::Running, ago, true)).await;
-    h.world().executions_list = Some(executions_state("failed", "cancelled"));
-    runtime::sweep(&h.deps).await.unwrap();
-    let ended = row(&h, &evaluation_id).await;
-    assert_eq!(ended.run.unwrap().state, ValidationRunStateV1::Attached);
-    let evidence = ended.evidence.unwrap();
-    assert_eq!(evidence.computed_outcome, ValidationOutcomeV1::Inconclusive);
-    assert!(
-        evidence
-            .reason
-            .contains("2 of 3 baseline runs did not complete"),
-        "{}",
-        evidence.reason
-    );
-    assert_eq!(
-        evidence
-            .baseline
-            .runs
-            .iter()
-            .filter(|run| !run.completed)
-            .count(),
-        2,
-        "incomplete runs are listed, not dropped"
-    );
-    assert_eq!(
-        evidence.baseline.runs[1].technical.as_deref(),
-        Some("infrastructure_error")
-    );
-
-    // An execution the E2E forgot between the end and the attach: no retry.
-    h.world().executions.remove("plan-2");
-    store(put(ValidationRunStateV1::Finished, ago, true)).await;
-    runtime::sweep(&h.deps).await.unwrap();
-    let forgotten = run_state().await;
-    assert_eq!(forgotten.state, ValidationRunStateV1::Failed);
-    assert!(forgotten
-        .error
-        .unwrap()
-        .contains("e2e_execution_not_found(candidate)"));
-
-    // An analysis deleted while its run was going.
-    store(put(ValidationRunStateV1::Finished, ago, true)).await;
-    runtime::delete(
-        &h.deps,
-        EvaluationIdRequestV1 {
-            evaluation_id: evaluation_id.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    runtime::sweep(&h.deps).await.unwrap();
-    assert_eq!(run_state().await.state, ValidationRunStateV1::Failed);
 }
 
 // ---------------------------------------------------------------------------
@@ -3818,10 +2239,10 @@ async fn a_turn_record_too_big_for_the_assets_is_left_out_and_says_why() {
 /// The scopes the monitor wrote before the loop existed.
 const LEGACY_SCOPES: [&str; 5] = [
     state::CONFIG_SCOPE,
-    state::OBSERVATION_SCOPE,
+    "eval_observation",
     state::ANALYSIS_SCOPE,
     state::ASSETS_SCOPE,
-    state::REVIEW_SCOPE,
+    "eval_suggestion",
 ];
 
 async fn start_cycle(h: &Harness, request: Value) -> Result<CycleStartResponseV1, EvalError> {
@@ -4131,4 +2552,75 @@ async fn legacy_scopes_are_never_read() {
             Some(&json!({"legacy": true}))
         );
     }
+}
+
+/// The functions `register_all` announces to the engine, in order.
+async fn registered_ids() -> Vec<String> {
+    let registered = Arc::new(Mutex::new(Vec::new()));
+    let seen = registered.clone();
+    let engine = fake_engine::start(move |frame: Value| {
+        if frame["type"] == "registerfunction" {
+            if let Some(id) = frame["id"].as_str() {
+                seen.lock().unwrap().push(id.to_string());
+            }
+        }
+        vec![]
+    })
+    .await;
+    let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    let deps = Deps::new(iii.clone(), EvalEvents::register(&iii));
+    eval::functions::register_all(&iii, &deps);
+    let expected = eval::surface::catalog().len();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while registered.lock().unwrap().len() < expected {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("every function reaches the fake engine");
+    // Anything announced late would still be caught.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let ids = registered.lock().unwrap().clone();
+    drop(engine);
+    ids
+}
+
+#[tokio::test]
+async fn discarded_ids_are_not_registered() {
+    // Removed with the chat monitor (KAN-461), the one-step replay (KAN-462)
+    // and the manual review and validation path (KAN-458).
+    const DISCARDED: [&str; 8] = [
+        "eval::on-turn-completed",
+        "eval::analyze-session",
+        "eval::reproduce",
+        "eval::attach-validation",
+        "eval::start-validation",
+        "eval::review",
+        "eval::reviews",
+        "eval::recurrence",
+    ];
+    let registered = registered_ids().await;
+    let offered: Vec<String> = eval::surface::catalog()
+        .iter()
+        .map(|spec| spec.function_id.to_string())
+        .collect();
+    for removed in DISCARDED {
+        assert!(
+            !registered.iter().any(|id| id == removed),
+            "{removed} is registered: {registered:?}"
+        );
+        assert!(
+            !offered.iter().any(|id| id == removed),
+            "{removed} is offered: {offered:?}"
+        );
+    }
+    // What is registered is exactly what the catalog describes.
+    let (mut registered, mut offered) = (registered, offered);
+    registered.sort();
+    offered.sort();
+    assert_eq!(registered, offered);
+    // The removed state scopes are no longer written by anything the worker
+    // exposes; their old records stay inert (see `legacy_scopes_are_never_read`).
+    assert!(LEGACY_SCOPES.contains(&"eval_observation"));
+    assert!(LEGACY_SCOPES.contains(&"eval_suggestion"));
 }
