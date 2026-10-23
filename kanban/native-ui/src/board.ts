@@ -21,9 +21,17 @@ export interface Lane {
 export interface Memo {
   versions: Map<string, number>
   tombstones: Map<string, number>
+  placed: Placed
 }
 
-export const newMemo = (): Memo => ({ versions: new Map(), tombstones: new Map() })
+/**
+ * Tickets the app counts in a lane without drawing them (their place is past
+ * the rows of a partial lane): id → lane id. The next write of such a ticket
+ * leaves that lane, whatever its event says, so a count is never taken twice.
+ */
+export type Placed = Map<string, string>
+
+export const newMemo = (): Memo => ({ versions: new Map(), tombstones: new Map(), placed: new Map() })
 
 export interface WriteKind {
   /** `ticket.moved`: `order` is the ticket's position in a column the worker just renumbered. */
@@ -60,9 +68,10 @@ export function findRow(lanes: readonly Lane[], id: string): Summary | undefined
  * position (the worker renumbers both columns 1..n, and so do we); any other
  * write keeps the worker's number, so the ticket goes before the first row
  * with a greater one. A ticket whose place is past the rows of a partial lane
- * is not drawn: it comes with the next page, and only the total changes.
+ * is not drawn: it comes with the next page, and only the total changes
+ * (`placed` remembers where it was counted).
  */
-export function upsert(lanes: readonly Lane[], s: Summary, kind: WriteKind = {}): Lane[] {
+export function upsert(lanes: readonly Lane[], s: Summary, kind: WriteKind = {}, placed?: Placed): Lane[] {
   const from = laneOf(lanes, s.id)
   const into = s.deleted_at ? undefined : lanes.find((lane) => lane.id === s.status)
   if (from && from === into && !kind.moved) {
@@ -70,10 +79,11 @@ export function upsert(lanes: readonly Lane[], s: Summary, kind: WriteKind = {})
       lane === from ? { ...lane, rows: lane.rows.map((row) => (row.id === s.id ? s : row)) } : lane,
     )
   }
-  // The column the ticket left: the lane that drew it, else what the write says.
-  const left = from?.id ?? (kind.entered ? null : (kind.from ?? s.status))
+  // The column the ticket left: the lane that drew it, the lane that counted it, else what the write says.
+  const left = from?.id ?? placed?.get(s.id) ?? (kind.entered ? null : (kind.from ?? s.status))
   const changesLane = left !== (into?.id ?? null)
-  return lanes.map((lane) => {
+  let drawn = false
+  const next = lanes.map((lane) => {
     if (lane !== from && lane !== into && lane.id !== left) return lane
     let rows = lane === from ? lane.rows.filter((row) => row.id !== s.id) : lane.rows
     let total = lane.total
@@ -88,11 +98,18 @@ export function upsert(lanes: readonly Lane[], s: Summary, kind: WriteKind = {})
         at = next < 0 ? rows.length : next
         if (next < 0 && wasPartial) at = Number.POSITIVE_INFINITY
       }
-      if (at <= rows.length) rows = [...rows.slice(0, at), s, ...rows.slice(at)]
+      if (at <= rows.length) {
+        rows = [...rows.slice(0, at), s, ...rows.slice(at)]
+        drawn = true
+      }
     }
-    if (kind.moved && (lane === into || lane === from)) rows = renumber(rows)
+    // A move renumbers its column and compacts the one it left (move_ticket), drawn or not.
+    if (kind.moved && (lane === into || lane === from || lane.id === left)) rows = renumber(rows)
     return { ...lane, rows, total: Math.max(total, rows.length) }
   })
+  if (into && !drawn) placed?.set(s.id, into.id)
+  else placed?.delete(s.id)
+  return next
 }
 
 /**
@@ -109,7 +126,7 @@ export function applyWrite(lanes: readonly Lane[], s: Summary, memo: Memo, kind:
   memo.versions.set(s.id, at)
   if (s.deleted_at) memo.tombstones.set(s.id, Math.max(at, time(s.deleted_at)))
   else memo.tombstones.delete(s.id)
-  return upsert(lanes, s, kind)
+  return upsert(lanes, s, kind, memo.placed)
 }
 
 export interface Write {
@@ -120,9 +137,11 @@ export interface Write {
 /**
  * A board read: its lanes, without the tickets this app saw deleted after the
  * version the read holds, then the writes that arrived while it was in flight
- * replayed over it (the ones stamped after the read; the rest it has).
+ * replayed over it (the ones stamped after the newest write the read holds;
+ * the rest it has). Its counts are the worker's: nothing is placed any more.
  */
 export function applyRead(read: BoardRead, journal: readonly Write[], memo: Memo): Lane[] {
+  memo.placed.clear()
   let lanes: Lane[] = read.columns.map((column) => {
     const rows = column.rows.filter((row) => {
       const deletedAt = memo.tombstones.get(row.id)
@@ -131,7 +150,7 @@ export function applyRead(read: BoardRead, journal: readonly Write[], memo: Memo
     return { id: column.id, label: column.label, rows, total: column.total - (column.rows.length - rows.length) }
   })
   for (const lane of lanes) for (const row of lane.rows) memo.versions.set(row.id, time(row.updated_at))
-  const readAt = time(read.updated_at)
+  const readAt = time(read.as_of)
   for (const { summary, kind } of journal) {
     if (time(summary.updated_at) > readAt) lanes = applyWrite(lanes, summary, memo, kind)
   }
@@ -164,6 +183,7 @@ export function appendPage(
       const deletedAt = memo.tombstones.get(row.id)
       if (deletedAt !== undefined && time(row.updated_at) <= deletedAt) return false
       memo.versions.set(row.id, time(row.updated_at))
+      memo.placed.delete(row.id)
       return true
     })
     const next = [...lane.rows, ...added]
@@ -196,13 +216,13 @@ export function dropIndex(
  * (absent = the end of the column), both lanes renumbered like the worker
  * does. A card that lands past the rows of a partial lane only counts.
  */
-export function placeMove(lanes: readonly Lane[], id: string, status: string, index?: number): Lane[] {
+export function placeMove(lanes: readonly Lane[], id: string, status: string, index?: number, placed?: Placed): Lane[] {
   const row = findRow(lanes, id)
   const into = lanes.find((lane) => lane.id === status)
   if (!row || !into) return lanes as Lane[]
   const end = index === undefined
   const at = end ? into.total - (row.status === status ? 1 : 0) : index
-  return upsert(lanes, { ...row, status, order: at + 1 }, { moved: true })
+  return upsert(lanes, { ...row, status, order: at + 1 }, { moved: true }, placed)
 }
 
 /** Every row the app has, lane by lane. */

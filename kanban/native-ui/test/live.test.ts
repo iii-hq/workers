@@ -5,7 +5,7 @@
  * screen.
  */
 import { describe, expect, it } from 'vitest'
-import { callsOf, cards, keysOf, onTop, sample, start } from './fake'
+import { callsOf, cards, FakeKanban, keysOf, onTop, sample, start } from './fake'
 
 describe('the board follows kanban:change', () => {
   it('creates, moves, updates, deletes and restores what others do', async () => {
@@ -164,6 +164,105 @@ describe('this app’s own writes keep a partial lane’s count', () => {
   })
 })
 
+describe('counts and order that the review caught drifting', () => {
+  /** Backlog has 4 cards, Done 61 with 50 read. */
+  function board() {
+    const fake = sample()
+    for (let i = 0; i < 3; i++) fake.add({ title: `Back ${i}`, status: 'backlog' })
+    for (let i = 0; i < 60; i++) fake.add({ title: `Done ${i}`, status: 'done' })
+    return fake
+  }
+  const worker = (fake: ReturnType<typeof sample>, status: string) => String(fake.column(status).length)
+
+  it('Move to… the end of a partial lane counts the card once (answer and event)', async () => {
+    const fake = board()
+    const { host, answers } = await start({ fake })
+    answers.menus.push('Move to…', 'Done')
+    await host.itemLongPress('lane:backlog', 't5')
+    await host.settle()
+    expect(host.lanes('lanes').counts[4]).toBe(worker(fake, 'done'))
+    expect(host.lanes('lanes').counts[0]).toBe(worker(fake, 'backlog'))
+  })
+
+  it('the status chip of an open ticket counts it once too', async () => {
+    const fake = board()
+    const { host, answers } = await start({ fake })
+    await host.itemPress('lane:backlog', 't5')
+    await host.settle()
+    answers.menus.push('Done')
+    await host.press('status')
+    await host.settle()
+    expect(host.lanes('lanes').counts[4]).toBe(worker(fake, 'done'))
+    expect(host.lanes('lanes').counts[0]).toBe(worker(fake, 'backlog'))
+  })
+
+  it('a lane compacted by the move of a card it never drew keeps the worker’s order', async () => {
+    const fake = new FakeKanban()
+    for (let i = 0; i < 62; i++) fake.add({ title: `T${i + 1}`, status: 'todo' })
+    // Deletes leave gaps in the numbers; only a move renumbers.
+    fake.answer('kanban::ticket::delete', { id: 't1' })
+    fake.answer('kanban::ticket::delete', { id: 't2' })
+    const { host } = await start({ fake })
+    expect(cards(host, 'todo')).toHaveLength(50)
+    await fake.elsewhere('ticket::move', { id: 'KAN-57', status: 'backlog' })
+    await fake.elsewhere('ticket::update', { id: 'KAN-53', title: 'renamed' })
+    const keys = keysOf(host, 'todo')
+    expect(keys).toEqual(
+      fake
+        .column('todo')
+        .slice(0, keys.length)
+        .map((t) => t.key),
+    )
+  })
+
+  it('a write that lands while a read is out is not lost, whatever the clock says', async () => {
+    const { host, fake } = await start()
+    fake.hold('board::get')
+    await host.emit('lane:todo', 'refresh')
+    await host.settle()
+    // The read's snapshot is taken before the write; the worker answers it after.
+    const snapshot = fake.answer('kanban::board::get', { limit: 50 }) as Record<string, any>
+    await fake.elsewhere('ticket::update', { id: 'KAN-2', title: 'Renamed while reading' })
+    snapshot.updated_at = new Date(Date.parse(fake.get('KAN-2')?.updated_at ?? '') + 5).toISOString()
+    fake.release('board::get', snapshot)
+    await host.settle()
+    expect(cards(host, 'todo')[0]).toMatchObject({ title: 'Renamed while reading' })
+  })
+
+  it('a page that comes back after the lane changed is read again, so no card goes missing', async () => {
+    const fake = sample()
+    for (let i = 0; i < 120; i++) fake.add({ title: `Done ${i}`, status: 'done' })
+    const { host } = await start({ fake })
+    fake.hold('ticket::list')
+    await host.press('more:done')
+    await host.settle()
+    await fake.elsewhere('ticket::move', { id: 'KAN-10', status: 'todo', index: 0 })
+    fake.release('ticket::list')
+    await host.settle()
+    const keys = keysOf(host, 'done')
+    expect(keys).toEqual(
+      fake
+        .column('done')
+        .slice(0, keys.length)
+        .map((t) => t.key),
+    )
+    expect(host.lanes('lanes').counts[4]).toBe(String(fake.column('done').length))
+  })
+
+  it('a quiet read keeps a lane the person paged to its end', async () => {
+    const fake = sample()
+    for (let i = 0; i < 120; i++) fake.add({ title: `Done ${i}`, status: 'done' })
+    const { host } = await start({ fake })
+    await host.emit('lane:done', 'endReached')
+    await host.settle()
+    expect(cards(host, 'done')).toHaveLength(121)
+    await host.emit('lane:todo', 'refresh')
+    await host.settle()
+    expect(callsOf(host, 'board::get').at(-1)).toEqual({ limit: 150 })
+    expect(cards(host, 'done')).toHaveLength(121)
+  })
+})
+
 describe('the open ticket follows kanban:change', () => {
   it('reads itself again once per burst of its own events', async () => {
     const { host, fake } = await start()
@@ -191,6 +290,21 @@ describe('the open ticket follows kanban:change', () => {
     await host.tick(300)
     await host.settle()
     expect(host.findAll({ type: 'Text', text: '2 of 2' })).toHaveLength(1)
+  })
+
+  it('reads itself again when the engine comes back (what the bus said meanwhile is lost)', async () => {
+    const { host, fake } = await start()
+    await host.itemPress('lane:in_review', 't4')
+    await host.settle()
+    await host.env({ online: false })
+    fake.host = null
+    fake.answer('kanban::comment::create', { ticket_id: 't4', body: 'Said while you were away', author: 'tech-lead' })
+    fake.host = host
+    const reads = callsOf(host, 'ticket::get').length
+    await host.env({ online: true })
+    await host.settle()
+    expect(callsOf(host, 'ticket::get').length).toBe(reads + 1)
+    expect((host.items('activity') as { text: string }[]).some((i) => i.text === 'Said while you were away')).toBe(true)
   })
 
   it('an unrelated event reads nothing', async () => {

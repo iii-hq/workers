@@ -33,6 +33,7 @@ import {
   newMemo,
   partial,
   placeMove,
+  upsert,
   type Write,
   type WriteKind,
 } from './board'
@@ -165,27 +166,25 @@ function applyMeta(read: BoardRead): void {
 
 let loadSeq = 0
 
+export type LoadResult = 'applied' | 'superseded' | 'failed'
+
 /**
  * Reads the board: every row with a filter on (the filters need them all),
  * else as many rows per column as the app shows now (at least the first
- * page). Only the newest read is applied; `quiet` reads show no error over a
- * board already on screen. Resolves false when the read failed.
+ * page; a lane paged to its end keeps its rows). Only the newest read is
+ * applied (an older one resolves `superseded`); `quiet` reads show no error
+ * over a board already on screen.
  */
-export async function load(quiet = false): Promise<boolean> {
+export async function load(quiet = false): Promise<LoadResult> {
   const token = ++loadSeq
   const from = begin()
   const all = wantAll()
-  const shown = Math.max(
-    0,
-    ...lanes()
-      .filter(partial)
-      .map((lane) => lane.rows.length),
-  )
+  const shown = Math.max(0, ...lanes().map((lane) => lane.rows.length))
   const limit = Math.ceil(Math.max(FIRST_PAGE, shown) / FIRST_PAGE) * FIRST_PAGE
   if (all) setReadingAll(true)
   try {
     const read = await kanban.board(all ? undefined : limit)
-    if (token !== loadSeq) return false
+    if (token !== loadSeq) return 'superseded'
     batch(() => {
       applyMeta(read)
       setLanes(applyRead(read, journal.slice(from), memo))
@@ -193,12 +192,12 @@ export async function load(quiet = false): Promise<boolean> {
       setLoaded(true)
     })
     void readVisit()
-    return true
+    return 'applied'
   } catch (err) {
-    if (token !== loadSeq) return false
+    if (token !== loadSeq) return 'superseded'
     if (!quiet || !meta()) setLoadError(readable(err))
     setLoaded(true)
-    return false
+    return 'failed'
   } finally {
     end()
     if (token === loadSeq) setReadingAll(false)
@@ -221,11 +220,13 @@ export async function more(id: string): Promise<void> {
   const had = lane.rows.length
   try {
     const page = await kanban.page(id, had)
-    const next = appendPage(lanes(), id, page.rows, page.total, memo, touched.has(id))
+    const changed = touched.has(id)
+    const next = appendPage(lanes(), id, page.rows, page.total, memo, changed)
     setLanes(next)
     const after = next.find((l) => l.id === id)
-    // Nothing new while still partial: the rows are out of step with the column.
-    if (after && partial(after) && after.rows.length === had) void load(true)
+    // The lane changed while the page was out (its offset may have skipped or repeated a row), or nothing new
+    // came while it is still partial: the rows are out of step with the column. One read sets them right.
+    if (changed || (after && partial(after) && after.rows.length === had)) void load(true)
   } catch (err) {
     toast(`Couldn't read more of ${lane.label}: ${readable(err)}`, 'error')
   } finally {
@@ -311,9 +312,10 @@ const tails = new Map<string, Promise<unknown>>()
 
 /**
  * Moves card `id` to `status` at `index` (absent = the end of the column):
- * on screen at once, then the worker; a failure says why, reads the board
- * again, and puts the lanes back as they were when that read fails too.
- * Resolves with the ticket the worker returned, or null.
+ * on screen at once, then the worker; a failure says why and reads the board
+ * again, and when that read fails too, puts this card back where it was
+ * (unless a newer write of it came meanwhile). Resolves with the ticket the
+ * worker returned, or null.
  */
 export function moveTicket(id: string, status: string, index?: number, from?: string): Promise<Ticket | null> {
   const row = findRow(lanes(), id)
@@ -323,8 +325,13 @@ export function moveTicket(id: string, status: string, index?: number, from?: st
     toast(OFFLINE, 'error')
     return Promise.resolve(null)
   }
-  const before = lanes()
-  setLanes(placeMove(before, id, status, index))
+  const at = row
+    ? (lanes()
+        .find((l) => l.id === row.status)
+        ?.rows.findIndex((r) => r.id === id) ?? -1)
+    : -1
+  const version = memo.versions.get(id)
+  setLanes((current) => placeMove(current, id, status, index, memo.placed))
   const save = async (): Promise<Ticket | null> => {
     const from = begin()
     try {
@@ -337,7 +344,9 @@ export function moveTicket(id: string, status: string, index?: number, from?: st
       return ticket
     } catch (err) {
       toast(`Couldn't move ${row?.key ?? 'the ticket'}: ${readable(err)}`, 'error')
-      if (!(await load(true))) setLanes(before)
+      if ((await load(true)) === 'failed' && row && at >= 0 && memo.versions.get(id) === version) {
+        setLanes((current) => upsert(current, { ...row, order: at + 1 }, { moved: true }, memo.placed))
+      }
       return null
     } finally {
       end()

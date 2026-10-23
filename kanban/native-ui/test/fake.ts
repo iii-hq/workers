@@ -334,6 +334,8 @@ export class FakeKanban {
           canceled_status: 'canceled',
           id_prefix: this.prefix,
           updated_at: new Date(Math.max(Date.now(), this.clock)).toISOString(),
+          // The newest write the read holds, like functions.rs `newest_write`.
+          as_of: this.tickets.reduce((m, t) => (t.updated_at > m ? t.updated_at : m), '1970-01-01T00:00:00.000Z'),
           ...this.plan(),
         }
       case 'ticket::list': {

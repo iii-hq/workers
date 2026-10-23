@@ -127,8 +127,8 @@ export interface BoardRead {
   done_status: string
   canceled_status: string | null
   id_prefix: string
-  /** When the worker read its store: writes stamped later are newer than this read. */
-  updated_at: string
+  /** The newest write this read holds: one stamped later is not in it (`as_of`; an older worker's read time). */
+  as_of: string
   projects: Project[]
   releases: Release[]
 }
@@ -349,7 +349,7 @@ export function boardOf(v: unknown): BoardRead {
     ...config,
     columns,
     ticket_count: num(raw.ticket_count),
-    updated_at: str(raw.updated_at),
+    as_of: str(raw.as_of) || str(raw.updated_at),
     projects: projectsOf(raw.projects),
     releases: releasesOf(raw.releases),
   }
