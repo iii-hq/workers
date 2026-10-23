@@ -60,36 +60,6 @@
         ],
         "type": "object"
       },
-      "CapacityRejectionV1": {
-        "additionalProperties": false,
-        "properties": {
-          "at": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "reason": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/RejectionReasonV1"
-              }
-            ],
-            "default": "at_capacity",
-            "description": "Why the turn was not admitted; rows saved before the cost cap existed read as `at_capacity`."
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "turn_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "at",
-          "session_id",
-          "turn_id"
-        ],
-        "type": "object"
-      },
       "MonitorConfigV1": {
         "additionalProperties": false,
         "properties": {
@@ -110,14 +80,6 @@
           },
           "enabled": {
             "type": "boolean"
-          },
-          "enabled_since": {
-            "description": "When automatic observation last went from paused to on; analyses use it to bound which earlier turns they may report. Unchanged by edits that keep observation on.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
           },
           "model": {
             "$ref": "#/definitions/MonitorModelV1"
@@ -151,7 +113,7 @@
             ]
           },
           "capped": {
-            "description": "A cap is set and `today_capture_usd`, plus the median cost of each investigation still running, reached it: automatic observation admits and investigates nothing until the next UTC day.",
+            "description": "A cap is set and `today_capture_usd`, plus the median cost of each investigation still running, reached it: no automatic analysis starts an investigation until the next UTC day.",
             "type": "boolean"
           },
           "per_analysis": {
@@ -332,24 +294,6 @@
         ],
         "type": "object"
       },
-      "RejectionReasonV1": {
-        "oneOf": [
-          {
-            "description": "The unfinished-analyses cap was reached.",
-            "enum": [
-              "at_capacity"
-            ],
-            "type": "string"
-          },
-          {
-            "description": "The day's known cost reached `daily_cost_cap_usd`.",
-            "enum": [
-              "cost_cap"
-            ],
-            "type": "string"
-          }
-        ]
-      },
       "ThinkingLevel": {
         "oneOf": [
           {
@@ -428,17 +372,6 @@
         ],
         "description": "What the investigations cost so far, to decide before enabling."
       },
-      "last_rejection": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/CapacityRejectionV1"
-          },
-          {
-            "type": "null"
-          }
-        ],
-        "description": "The latest turn not admitted: the monitor was at capacity or the daily cost cap was reached (`reason`)."
-      },
       "limits": {
         "allOf": [
           {
@@ -446,16 +379,6 @@
           }
         ],
         "description": "The limits this version enforces, so the console never restates them."
-      },
-      "observer_bound": {
-        "description": "False when the `harness::turn-completed` binding was refused locally: automatic observation is unavailable even if `config.enabled` is true. The SDK does not wait for the engine's acknowledgement, so true means the binding was requested, not confirmed.",
-        "type": "boolean"
-      },
-      "observer_error": {
-        "type": [
-          "string",
-          "null"
-        ]
       },
       "triage": {
         "anyOf": [
@@ -471,8 +394,7 @@
     },
     "required": [
       "cost",
-      "limits",
-      "observer_bound"
+      "limits"
     ],
     "title": "MonitorStateResponseV1",
     "type": "object"

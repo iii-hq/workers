@@ -78,7 +78,7 @@
         ]
       },
       "daily_cost_cap_usd": {
-        "description": "US dollars of known investigation cost per UTC day after which automatic observation admits nothing until the next day; absent means no cap.",
+        "description": "US dollars of known investigation cost per UTC day after which no automatic analysis starts an investigation until the next day; absent means no cap.",
         "format": "double",
         "type": [
           "number",
@@ -178,14 +178,6 @@
       },
       "enabled": {
         "type": "boolean"
-      },
-      "enabled_since": {
-        "description": "When automatic observation last went from paused to on; analyses use it to bound which earlier turns they may report. Unchanged by edits that keep observation on.",
-        "format": "int64",
-        "type": [
-          "integer",
-          "null"
-        ]
       },
       "model": {
         "$ref": "#/definitions/MonitorModelV1"

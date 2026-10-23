@@ -140,7 +140,7 @@ as it is saved, so a run that stops partway has already counted what it kept.
 The day's spend has two buckets. **Capture** is what an analysis spends (the
 investigation; Jev's triage is in tokens). **Replay** is what `eval::reproduce`
 spends. Only capture is compared with the daily cap, so a manual replay never
-stops automatic observation. The spend persisted before the buckets (one total)
+stops an investigation. The spend persisted before the buckets (one total)
 counts as capture for its day.
 
 `eval::config` returns a `cost` block to decide before enabling:
@@ -166,11 +166,7 @@ counts as capture for its day.
   cost. Without history, `count` is 0 and the statistics are absent.
 
 `daily_cost_cap_usd` (a number above 0; absent means no cap, and then the
-configuration revision is what it was) pauses **automatic** observation for the
-rest of the UTC day once `today_capture_usd` reaches it: the turn is not admitted,
-`eval::config`'s `last_rejection` records the turn with `reason: cost_cap`
-(`at_capacity` for the unfinished-analyses cap).
-The cap is checked twice: at admission and again where the money is spent,
+configuration revision is what it was) is checked where the money is spent,
 right before an automatic analysis first calls the model (under one lock, so
 investigations starting together see each other); one that finds it reached
 fails with `cost_cap` without calling the model; a manual reanalysis is not held
@@ -178,7 +174,7 @@ back by the cap and investigates if Jev answers `needs_investigation` again. A c
 already running are counted at the median cost of the history. With no history
 there is nothing to estimate by and a first burst can overshoot by the
 investigations that run at once (the queue runs 8 steps together). Raising or
-removing the cap resumes observation at once.
+removing the cap lets investigations start again at once.
 
 ## Code access
 
@@ -274,7 +270,7 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | Function | Purpose |
 | --- | --- |
 | `eval::configure` | Model selection, optional code directory, optional daily cost cap and enable/pause. |
-| `eval::config` | Configuration (or null), observer status, the latest rejection and the `cost` block. |
+| `eval::config` | Configuration (or null) and the `cost` block. |
 | `eval::list` | Compact records, newest first (`limit` 1–200, default 50); `observation_key` keeps only the analyses of one observed turn, reanalyses included. |
 | `eval::status` | One compact record, or null. |
 | `eval::result` | Record plus evidence, diagnostics, triage, suggestions, the monitor's own consumption, E2E links and one review row per suggestion (`reviews`). |
@@ -332,8 +328,8 @@ console never restates them:
 Records, indexes and assets live in `state` scopes `eval_monitor`,
 `eval_observation`, `eval_analysis` and `eval_analysis_assets`; the review rows
 in `eval_suggestion` (below). A record is
-saved before its index; startup reconciles missing indexes before the
-observation trigger is bound, and the sweep re-enqueues pending work and
+saved before its index; startup reconciles missing indexes, and the sweep
+re-enqueues pending work and
 fails analyses past their deadline.
 
 - Assets are written before a stage advances, so a restart repeats

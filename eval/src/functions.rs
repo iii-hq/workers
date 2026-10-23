@@ -42,17 +42,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description(
-            "Choose the Harness model/provider the session monitor uses for investigations and \
-             enable or pause automatic observation. A new selection is checked against \
-             router::models::list; credentials stay in the providers and are never accepted \
-             here. An optional code_repository (an absolute directory on this host, normally \
-             the iii workers repository) lets the investigation read that code like a chat \
-             with the directory selected, with only read-only functions allowed (coder::search, \
-             coder::tree, coder::read-file, github::pr::list and engine::functions::info). An \
-             optional daily_cost_cap_usd pauses automatic observation for the rest of the UTC \
-             day once the known investigation cost reaches it (manual analyses are never \
-             refused, and replay spend is reported but not counted). Analyses already admitted \
-             keep the configuration they started with.",
+            "Choose the Harness model/provider the monitor uses for investigations. A new \
+             selection is checked against router::models::list; credentials stay in the \
+             providers and are never accepted here. An optional code_repository (an absolute \
+             directory on this host, normally the iii workers repository) lets the \
+             investigation read that code like a chat with the directory selected, with only \
+             read-only functions allowed (coder::search, coder::tree, coder::read-file, \
+             github::pr::list and engine::functions::info). An optional daily_cost_cap_usd \
+             stops automatic analyses from starting an investigation for the rest of the UTC \
+             day once the known investigation cost reaches it (replay spend is reported but \
+             not counted). Analyses already started keep the configuration they started with.",
         ),
     );
 
@@ -68,11 +67,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description(
-            "Read the monitor configuration (null until configured), whether the \
-             harness::turn-completed observation trigger was requested, the latest rejection \
-             (capacity or daily cost cap), the day's known investigation cost against the cap with \
-             what one analysis has cost, and, with check_providers, whether the Jev triage \
-             provider answers.",
+            "Read the monitor configuration (null until configured), the day's known \
+             investigation cost against the cap with what one analysis has cost, and, with \
+             check_providers, whether the Jev triage provider answers.",
         ),
     );
 

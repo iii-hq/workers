@@ -9,14 +9,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::contract::{
-    AnalysisAssetsV1, AnalysisRecordV1, CapacityRejectionV1, CycleRecordV1, MonitorConfigV1,
-    SuggestionReviewV1,
+    AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1, MonitorConfigV1, SuggestionReviewV1,
 };
 use crate::error::EvalError;
 
 pub const CONFIG_SCOPE: &str = "eval_monitor";
 pub const CONFIG_KEY: &str = "config";
-pub const LAST_REJECTION_KEY: &str = "last_rejection";
 pub const DAILY_SPEND_KEY: &str = "daily_spend";
 pub const OBSERVATION_SCOPE: &str = "eval_observation";
 pub const ANALYSIS_SCOPE: &str = "eval_analysis";
@@ -48,17 +46,6 @@ pub async fn get_config(iii: &IIIClient) -> Result<Option<MonitorConfigV1>, Eval
 
 pub async fn put_config(iii: &IIIClient, config: &MonitorConfigV1) -> Result<(), EvalError> {
     set(iii, CONFIG_SCOPE, CONFIG_KEY, config).await
-}
-
-pub async fn get_last_rejection(iii: &IIIClient) -> Result<Option<CapacityRejectionV1>, EvalError> {
-    get(iii, CONFIG_SCOPE, LAST_REJECTION_KEY).await
-}
-
-pub async fn put_last_rejection(
-    iii: &IIIClient,
-    rejection: &CapacityRejectionV1,
-) -> Result<(), EvalError> {
-    set(iii, CONFIG_SCOPE, LAST_REJECTION_KEY, rejection).await
 }
 
 /// What the monitor spent on the UTC day starting at `since`, kept apart from

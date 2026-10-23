@@ -752,10 +752,8 @@ impl Harness {
             created_at: now,
             updated_at: now,
             deadline: now + 30 * 60 * 1_000,
-            observe_since: config
-                .enabled_since
-                .filter(|_| config.enabled)
-                .unwrap_or(now),
+            // Turns written before the monitor was configured are history.
+            observe_since: config.updated_at,
             completed_at: None,
             counters: AnalysisCountersV1::default(),
             stages: vec![StageTimeV1 {
@@ -1448,19 +1446,6 @@ async fn window_covers_wake_continuations_but_not_history_from_before_the_monito
         "history from before the monitor is not reported as new"
     );
     assert_eq!(record.counters.diagnostics, 0);
-}
-
-#[tokio::test]
-async fn configuration_keeps_the_observation_start_while_observing() {
-    let h = Harness::start(World::new()).await;
-    let first = h.configure(true).await;
-    let since = first.enabled_since.unwrap();
-    tokio::time::sleep(Duration::from_millis(3)).await;
-    let edited = h.configure(true).await;
-    assert_eq!(edited.enabled_since, Some(since), "an edit keeps the start");
-    assert!(h.configure(false).await.enabled_since.is_none());
-    tokio::time::sleep(Duration::from_millis(3)).await;
-    assert!(h.configure(true).await.enabled_since.unwrap() > since);
 }
 
 #[tokio::test]

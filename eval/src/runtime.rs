@@ -121,34 +121,6 @@ impl InFlight {
     }
 }
 
-/// Whether the `harness::turn-completed` binding was accepted.
-#[derive(Clone, Default)]
-pub struct Observer(Arc<Mutex<Option<Result<(), String>>>>);
-
-impl Observer {
-    pub fn set(&self, outcome: Result<(), String>) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(outcome);
-    }
-
-    fn get(&self) -> (bool, Option<String>) {
-        match &*self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-        {
-            Some(Ok(())) => (true, None),
-            Some(Err(error)) => (false, Some(error.clone())),
-            None => (
-                false,
-                Some("the observation trigger is not bound yet".into()),
-            ),
-        }
-    }
-}
-
 /// The E2E scenario list the analyst is offered, kept for ten minutes per
 /// process.
 #[derive(Clone, Default)]
@@ -179,7 +151,6 @@ pub struct Deps {
     pub locks: EvalLocks,
     pub events: EvalEvents,
     pub inflight: InFlight,
-    pub observer: Observer,
     pub scenarios: ScenarioCatalog,
     pub last_maintenance: Arc<AtomicI64>,
     /// How long `eval::start-validation` waits for the E2E to accept an
@@ -197,7 +168,6 @@ impl Deps {
             locks: EvalLocks::default(),
             events,
             inflight: InFlight::default(),
-            observer: Observer::default(),
             scenarios: ScenarioCatalog::default(),
             last_maintenance: Arc::new(AtomicI64::new(0)),
             start_timeout_ms: validation::START_TIMEOUT_MS,
@@ -237,15 +207,6 @@ pub async fn configure(
         validate_against_catalog(deps, &request.model).await?;
     }
     let now = ids::now_ms();
-    // Only the paused → on transition moves the observation start, so an
-    // edit while observing never drops a wake continuation from the window.
-    let enabled_since = request.enabled.then(|| {
-        stored
-            .as_ref()
-            .filter(|config| config.enabled)
-            .and_then(|config| config.enabled_since)
-            .unwrap_or(now)
-    });
     let mut effective = json!({ "enabled": request.enabled, "model": request.model });
     if let Some(path) = &request.code_repository {
         // Only when set, so configurations without code keep their revision.
@@ -261,7 +222,6 @@ pub async fn configure(
         code_repository: request.code_repository,
         daily_cost_cap_usd: request.daily_cost_cap_usd,
         updated_at: now,
-        enabled_since,
     };
     state::put_config(&deps.iii, &config).await?;
     Ok(config)
@@ -314,7 +274,6 @@ pub async fn monitor_state(
     deps: &Deps,
     request: MonitorStateRequestV1,
 ) -> Result<MonitorStateResponseV1, EvalError> {
-    let (observer_bound, observer_error) = deps.observer.get();
     let triage = if request.check_providers {
         Some(triage_availability(deps).await)
     } else {
@@ -329,9 +288,6 @@ pub async fn monitor_state(
     .await?;
     Ok(MonitorStateResponseV1 {
         config,
-        observer_bound,
-        observer_error,
-        last_rejection: state::get_last_rejection(&deps.iii).await?,
         triage,
         cost,
         limits: limits(),
@@ -1035,7 +991,7 @@ async fn resume_analyses(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     Ok(response)
 }
 
-/// Startup recovery, run before the observation trigger is bound: publish
+/// Startup recovery: publish
 /// indexes for records saved before a crash, then resume pending work. The
 /// validation runs wait for the first sweep: the boot never waits on the E2E.
 pub async fn recover(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
@@ -2349,8 +2305,8 @@ pub(crate) enum Spend {
     Capture(f64),
     /// `eval::reproduce`: the known cost of samples, and how many had none (a
     /// failed one included). Added as each sample is saved. Reported next to
-    /// the capture spend, never capped, so a manual replay cannot stop
-    /// automatic observation.
+    /// the capture spend, never capped, so a manual replay cannot stop an
+    /// investigation.
     Replay { usd: f64, unknown: u32 },
 }
 

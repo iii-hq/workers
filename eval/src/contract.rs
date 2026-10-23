@@ -46,9 +46,9 @@ pub struct ConfigureRequestV1 {
     /// monitor's host); absent means no code access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_repository: Option<String>,
-    /// US dollars of known investigation cost per UTC day after which
-    /// automatic observation admits nothing until the next day; absent means
-    /// no cap.
+    /// US dollars of known investigation cost per UTC day after which no
+    /// automatic analysis starts an investigation until the next day; absent
+    /// means no cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_cost_cap_usd: Option<f64>,
     /// Stamped by the engine on every invocation; callers omit it. Listed
@@ -102,11 +102,6 @@ pub struct MonitorConfigV1 {
     /// they were admitted with.
     pub revision: String,
     pub updated_at: i64,
-    /// When automatic observation last went from paused to on; analyses use
-    /// it to bound which earlier turns they may report. Unchanged by edits
-    /// that keep observation on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled_since: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -114,17 +109,6 @@ pub struct MonitorConfigV1 {
 pub struct MonitorStateResponseV1 {
     /// `null` until the user configures the monitor.
     pub config: Option<MonitorConfigV1>,
-    /// False when the `harness::turn-completed` binding was refused locally:
-    /// automatic observation is unavailable even if `config.enabled` is true.
-    /// The SDK does not wait for the engine's acknowledgement, so true means
-    /// the binding was requested, not confirmed.
-    pub observer_bound: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observer_error: Option<String>,
-    /// The latest turn not admitted: the monitor was at capacity or the daily
-    /// cost cap was reached (`reason`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_rejection: Option<CapacityRejectionV1>,
     /// Present when the request asked to check the triage provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage: Option<TriageAvailabilityV1>,
@@ -162,8 +146,8 @@ pub struct MonitorCostV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap_usd: Option<f64>,
     /// A cap is set and `today_capture_usd`, plus the median cost of each
-    /// investigation still running, reached it: automatic observation admits
-    /// and investigates nothing until the next UTC day.
+    /// investigation still running, reached it: no automatic analysis starts
+    /// an investigation until the next UTC day.
     pub capped: bool,
     /// What one investigation has cost, from the history.
     pub per_analysis: AnalysisCostStatsV1,
@@ -206,28 +190,6 @@ pub struct MonitorLimitsV1 {
     pub max_active_analyses: u32,
     pub retention_days: u32,
     pub retention_max_terminal: u32,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RejectionReasonV1 {
-    /// The unfinished-analyses cap was reached.
-    #[default]
-    AtCapacity,
-    /// The day's known cost reached `daily_cost_cap_usd`.
-    CostCap,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CapacityRejectionV1 {
-    pub session_id: String,
-    pub turn_id: String,
-    pub at: i64,
-    /// Why the turn was not admitted; rows saved before the cost cap existed
-    /// read as `at_capacity`.
-    #[serde(default)]
-    pub reason: RejectionReasonV1,
 }
 
 /// What `judge::models::list` answered for the triage provider. The key
