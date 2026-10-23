@@ -347,7 +347,7 @@ console never restates them:
 | Model context | 192 KiB of serialized JSON (about 50k tokens); diagnostics take at most 64 KiB |
 | Assets per analysis | 2 MiB; above it the analysis fails with `coverage_insufficient` before any model call. The turn record kept in `assets.capture.record` is the first thing left out to stay under it |
 | Investigation | 1 turn, 16,384 output tokens, 200,000 total tokens (the model's own caps still apply) |
-| Investigation with a code directory | 32 generate steps, 16,384 output tokens, 800,000 total tokens, only the five read-only functions of the Code access allowlist (`investigation_code_max_turns`, `investigation_code_max_total_tokens`) |
+| Investigation with a code directory | 32 generate steps, 16,384 output tokens, 800,000 total tokens, only the six read-only functions of the Code access allowlist (`investigation_code_max_turns`, `investigation_code_max_total_tokens`) |
 | Queue | `eval-run`, FIFO per analysis, 8 steps at once |
 | Unfinished analyses | 500 |
 | Retention | 30 days and 1,000 terminal analyses |

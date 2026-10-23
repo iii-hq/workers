@@ -287,7 +287,7 @@ Usar `harness::send` e seus tipos atuais, com:
 - `SessionInit.kind: automation` e metadata com `origin: eval_monitor`, fonte e ID da análise.
 - Modelo, provider, thinking e provider options congelados na admissão.
 - Prompt de investigação com `SystemPromptStrategy::Override`.
-- Sem `code_repository`: `FunctionPolicy::default()`, nenhuma função autorizada, de modo que a LLM não altera a tarefa nem o projeto. Com `code_repository`: `fs_scope.root` na metadata da sessão e do turno, `allow` somente leitura (`coder::search`, `coder::tree`, `coder::read-file`, `github::pr::list` e `engine::functions::info`, sem `fp::pipe`), `deny` de `eval::*` e `e2e::dashboard::execution-*` mantido, e passos e tokens maiores (tabela da seção 8). Nesse modo nada escreve, executa shell nem inicia sessão; a leitura continua sem jaula além do escopo do diretório: ver "Code access" e o risco residual no README.
+- Sem `code_repository`: `FunctionPolicy::default()`, nenhuma função autorizada, de modo que a LLM não altera a tarefa nem o projeto. Com `code_repository`: `fs_scope.root` na metadata da sessão e do turno, `allow` somente leitura (`coder::search`, `coder::tree`, `coder::read-file`, `session::messages`, `github::pr::list` e `engine::functions::info`, sem `fp::pipe`), `deny` de `eval::*` e `e2e::dashboard::execution-*` mantido, e passos e tokens maiores (tabela da seção 8). Nesse modo nada escreve, executa shell nem inicia sessão; a leitura continua sem jaula além do escopo do diretório: ver "Code access" e o risco residual no README.
 - `OutputContract::Json`, com schema gerado dos tipos de resposta.
 - Sem código: uma geração. Com código: até 32 gerações (`analyst_step_cap` quando o turno as esgota sem entregar). Limites de tokens e zero retries de validação.
 
