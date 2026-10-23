@@ -205,11 +205,11 @@ export async function load(quiet = false): Promise<boolean> {
   }
 }
 
-/** The whole board, once: the filters see every card from now on. */
+/** The whole board, once: the filters see every card from now on. A failure shows (the filters would be short). */
 export function readAll(): void {
   if (wantAll() && (complete() || readingAll())) return
   setWantAll(true)
-  if (!complete()) void load(true)
+  if (!complete()) void load()
 }
 
 /** The next page of a partial lane (`endReached`, Load more). */
@@ -315,8 +315,10 @@ const tails = new Map<string, Promise<unknown>>()
  * again, and puts the lanes back as they were when that read fails too.
  * Resolves with the ticket the worker returned, or null.
  */
-export function moveTicket(id: string, status: string, index?: number): Promise<Ticket | null> {
+export function moveTicket(id: string, status: string, index?: number, from?: string): Promise<Ticket | null> {
   const row = findRow(lanes(), id)
+  // The column it leaves, for the counts when the board does not hold the card (a partial lane).
+  const left = row?.status ?? from
   if (!online()) {
     toast(OFFLINE, 'error')
     return Promise.resolve(null)
@@ -328,7 +330,7 @@ export function moveTicket(id: string, status: string, index?: number): Promise<
     try {
       const ticket = await kanban.move(id, status, index)
       noteOwn(ticket)
-      write(summaryOf(ticket), { moved: true })
+      write(summaryOf(ticket), { moved: true, from: left })
       // Another card changed while this one was out (its place was drawn against a guess), or nothing changed.
       const crowded = journal.slice(from).some((w) => w.summary.id !== id)
       if (crowded || (row && Date.parse(ticket.updated_at) <= Date.parse(row.updated_at))) void load(true)
@@ -362,10 +364,14 @@ export function noteOwn(ticket: { id: string; updated_at: string }): void {
   setOwnVersion((v) => v + 1)
 }
 
-/** A ticket write of this app: noted as its own, and on the board at once. */
-export function wrote(ticket: Ticket): void {
+/**
+ * A ticket write of this app: noted as its own, and on the board at once.
+ * `kind` says what the write did to its column (a create or a restore
+ * enters it; a move names the column it left), so a partial lane counts it.
+ */
+export function wrote(ticket: Ticket, kind: WriteKind = {}): void {
   noteOwn(ticket)
-  write(summaryOf(ticket))
+  write(summaryOf(ticket), kind)
 }
 
 const [lastVisit, setLastVisit] = createSignal<string | null>(null)

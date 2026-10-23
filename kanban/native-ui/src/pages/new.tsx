@@ -79,7 +79,7 @@ export function NewPage(props: { params: JsonObject }) {
       if (release()) payload.release = release()
       if (parent) payload.parent = parent
       const ticket = await kanban.create(payload)
-      wrote(ticket)
+      wrote(ticket, { entered: true })
       page.pop({ key: ticket.key, status: ticket.status })
     } catch (err) {
       toast(`Couldn't create the ticket: ${readable(err)}`, 'error')
