@@ -1,8 +1,8 @@
 //! `storage::headObject` — fetch object metadata without downloading the body.
 
-use super::{err_to_str, AppState};
+use super::{err_to_str, validate_key, AppState};
 use crate::backend::HeadReq as BackendHeadReq;
-use crate::error::{backend_error_to_storage, StorageError};
+use crate::error::backend_error_to_storage;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,11 +23,7 @@ pub struct HeadResp {
 }
 
 pub async fn handle(state: &AppState, req: HeadReq) -> Result<HeadResp, String> {
-    if req.key.is_empty() {
-        return Err(err_to_str(StorageError::ConfigError {
-            message: "key must not be empty".into(),
-        }));
-    }
+    validate_key(&req.key).map_err(err_to_str)?;
     let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     let resp = backend
         .head(BackendHeadReq {

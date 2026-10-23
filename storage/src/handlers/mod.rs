@@ -60,3 +60,150 @@ impl AppState {
 pub fn err_to_str(e: StorageError) -> String {
     e.to_wire_string()
 }
+
+/// The one rule every handler that takes an object `key` applies before the
+/// request reaches a backend.
+///
+/// Some requests carry the key in a URL path: a path-style S3 endpoint, and the
+/// presigned URLs of S3, R2 and GCS, which a browser then opens. URL parsers
+/// resolve `.` and `..` segments the way the WHATWG URL standard does, where
+/// `%2e` (any case) is a dot, a backslash is a slash, and a tab, CR or LF is
+/// dropped. So `%2e%2e/other/x` in bucket `scratch` can be signed or served as
+/// `/other/x`, another bucket. Percent-encoding the dots can't prevent that, so
+/// a key with such a segment, read the way those parsers read it, is refused.
+pub fn validate_key(key: &str) -> Result<(), StorageError> {
+    if key.is_empty() {
+        return Err(StorageError::ConfigError {
+            message: "key must not be empty".into(),
+        });
+    }
+    let as_url: String = key
+        .chars()
+        .filter(|c| !matches!(*c, '\t' | '\r' | '\n'))
+        .collect::<String>()
+        .to_ascii_lowercase()
+        .replace("%2e", ".");
+    if as_url
+        .split(['/', '\\'])
+        .any(|segment| matches!(segment, "." | ".."))
+    {
+        return Err(StorageError::InvalidKey {
+            reason: "an object key with a '.' or '..' segment is not supported (a dot may also be written %2e, and a backslash counts as a slash)".into(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::mock::MockBackend;
+    use serde_json::{from_value, json};
+
+    /// Runs every handler that takes a `key` against one mock-backed bucket.
+    async fn every_key_handler(state: &AppState, key: &str) -> Vec<Result<(), String>> {
+        let bucket = "b";
+        vec![
+            super::put_object::handle(
+                state,
+                from_value(json!({"bucket": bucket, "key": key, "body_base64": ""})).unwrap(),
+            )
+            .await
+            .map(|_| ()),
+            super::get_object::handle(
+                state,
+                from_value(json!({"bucket": bucket, "key": key})).unwrap(),
+            )
+            .await
+            .map(|_| ()),
+            super::head_object::handle(
+                state,
+                from_value(json!({"bucket": bucket, "key": key})).unwrap(),
+            )
+            .await
+            .map(|_| ()),
+            super::delete_object::handle(
+                state,
+                from_value(json!({"bucket": bucket, "key": key})).unwrap(),
+            )
+            .await
+            .map(|_| ()),
+            super::presign_url::handle(
+                state,
+                from_value(json!({"bucket": bucket, "key": key, "method": "GET"})).unwrap(),
+            )
+            .await
+            .map(|_| ()),
+            super::presign_post::handle(
+                state,
+                from_value(json!({"bucket": bucket, "key": key, "content_type": "text/plain"}))
+                    .unwrap(),
+            )
+            .await
+            .map(|_| ()),
+        ]
+    }
+
+    fn state() -> (AppState, Arc<MockBackend>) {
+        let mock = Arc::new(MockBackend::default());
+        let backends = HashMap::from([("b".to_string(), mock.clone() as Arc<dyn Backend>)]);
+        (AppState::new(backends), mock)
+    }
+
+    #[tokio::test]
+    async fn every_handler_refuses_a_key_with_a_dot_segment() {
+        for key in [
+            "..",
+            ".",
+            "../escape",
+            "a/../b",
+            "a/./b",
+            "a/b/..",
+            "./a",
+            // As a URL parser reads them: %2e is a dot, a backslash a slash,
+            // and a tab, CR or LF is dropped.
+            "%2e%2e/other/x",
+            ".%2E/other/x",
+            "%2e./x",
+            "a/%2E/b",
+            "a\\..\\..\\other\\x",
+            ".\t./other/x",
+            "..\r\n/x",
+        ] {
+            let (state, mock) = state();
+            for result in every_key_handler(&state, key).await {
+                let err = result.expect_err(key);
+                assert!(err.contains("INVALID_KEY"), "{key}: {err}");
+                assert!(err.contains("'.' or '..' segment"), "{key}: {err}");
+            }
+            assert!(
+                mock.calls.lock().unwrap().is_empty(),
+                "{key} reached the backend"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dots_that_are_not_a_whole_segment_are_fine() {
+        for key in [
+            "a.b",
+            "...",
+            "..a",
+            "a..",
+            ".hidden",
+            "a/.b/c..d",
+            "dir/my file&+%.txt",
+            "a%2eb",
+            "%2e%2e%2e",
+            "back\\slash.txt",
+        ] {
+            let (state, mock) = state();
+            for result in every_key_handler(&state, key).await {
+                if let Err(err) = result {
+                    assert!(!err.contains("INVALID_KEY"), "{key}: {err}");
+                }
+            }
+            assert_eq!(mock.calls.lock().unwrap().len(), 6, "{key}");
+        }
+    }
+}
