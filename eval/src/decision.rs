@@ -6,6 +6,7 @@
 //! rejected.
 
 use crate::contract::*;
+use crate::cost;
 use crate::error::EvalError;
 use crate::runtime;
 
@@ -462,6 +463,19 @@ pub fn decide_cycle(
     evidence: &[EvidenceV1],
     now: i64,
 ) -> Result<CycleDecisionV1, EvalError> {
+    decide_cycle_spent(record, None, baseline, candidate, evidence, now)
+}
+
+/// [`decide_cycle`] with the cycle's budget `ledger`: while any of its work
+/// has an unknown cost, a cost reduction is never accepted (inconclusive).
+pub fn decide_cycle_spent(
+    record: &mut CycleRecordV1,
+    ledger: Option<&CycleLedgerV1>,
+    baseline: &DecisionSideV1,
+    candidate: &DecisionSideV1,
+    evidence: &[EvidenceV1],
+    now: i64,
+) -> Result<CycleDecisionV1, EvalError> {
     let Some(plan) = &record.plan else {
         return Err(EvalError::InvalidRequest(format!(
             "cycle {} has no frozen plan; freeze it before recording results",
@@ -471,7 +485,18 @@ pub fn decide_cycle(
     if let Some(decided) = &record.decision {
         return Ok(decided.clone());
     }
-    let decision = decide(plan, baseline, candidate, evidence, now);
+    let mut decision = decide(plan, baseline, candidate, evidence, now);
+    let unknown = ledger.map_or(0, |ledger| cost::usage(ledger, now).unknown_cost);
+    if decision.outcome == DecisionOutcomeV1::Accepted
+        && plan.criterion.metric == CriterionMetricV1::CostUsd
+        && unknown > 0
+    {
+        decision.outcome = DecisionOutcomeV1::Inconclusive;
+        decision.reason = format!(
+            "no cost reduction is claimed: {unknown} work item(s) of the cycle have an unknown cost; {}",
+            decision.reason
+        );
+    }
     record.decision = Some(decision.clone());
     record.updated_at = now;
     Ok(decision)

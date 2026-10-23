@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::contract::{
-    AdmissionCheckpointV1, AdmissionV1, AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1,
-    ExecutionEvidenceV1, MonitorConfigV1,
+    AdmissionCheckpointV1, AdmissionV1, AnalysisAssetsV1, AnalysisRecordV1, CycleLedgerV1,
+    CycleRecordV1, ExecutionEvidenceV1, MonitorConfigV1,
 };
 use crate::decision;
 use crate::error::EvalError;
@@ -32,6 +32,11 @@ pub const ADMISSION_CHECKPOINT_KEY: &str = "checkpoint";
 /// Imported native report bundles of admitted executions, keyed by admission
 /// key: the durable copy the first pass reads, independent of E2E retention.
 pub const EVIDENCE_SCOPE: &str = "eval_loop_evidence";
+/// Each cycle's budget ledger, keyed by `cycle_id`, written only with
+/// compare-and-set so concurrent reservations never both pass a limit.
+pub const BUDGET_SCOPE: &str = "eval_loop_budget";
+/// Compare-and-set attempts of one ledger update before giving up.
+const LEDGER_ATTEMPTS: usize = 8;
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 /// A stored configuration that no longer parses under the current schema (a
@@ -154,6 +159,52 @@ pub async fn claim_admission(
             claim.admission_key
         ))
     })
+}
+
+pub async fn get_ledger(
+    iii: &IIIClient,
+    cycle_id: &str,
+) -> Result<Option<CycleLedgerV1>, EvalError> {
+    get(iii, BUDGET_SCOPE, cycle_id).await
+}
+
+/// Applies `apply` to the stored ledger of `cycle_id` and writes what it
+/// returns with compare-and-set against exactly the value it read, retrying
+/// on a concurrent write. `None` writes nothing.
+pub async fn update_ledger<T>(
+    iii: &IIIClient,
+    cycle_id: &str,
+    mut apply: impl FnMut(Option<CycleLedgerV1>) -> Result<(Option<CycleLedgerV1>, T), EvalError>,
+) -> Result<T, EvalError> {
+    for _ in 0..LEDGER_ATTEMPTS {
+        let stored: Option<Value> = get(iii, BUDGET_SCOPE, cycle_id).await?;
+        let current = stored
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                EvalError::State(format!("parse {BUDGET_SCOPE}/{cycle_id}: {error}"))
+            })?;
+        let (next, out) = apply(current)?;
+        let Some(next) = next else {
+            return Ok(out);
+        };
+        let mut payload = json!({
+            "scope": BUDGET_SCOPE,
+            "key": cycle_id,
+            "value": serde_json::to_value(&next)?,
+        });
+        if let Some(stored) = stored {
+            payload["expected"] = stored;
+        }
+        let response = call(iii, "state::compare-and-set", payload).await?;
+        if response["swapped"].as_bool() == Some(true) {
+            return Ok(out);
+        }
+    }
+    Err(EvalError::Conflict(format!(
+        "{BUDGET_SCOPE}/{cycle_id} kept changing under {LEDGER_ATTEMPTS} attempts"
+    )))
 }
 
 pub async fn get_evidence(

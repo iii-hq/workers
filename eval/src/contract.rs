@@ -952,6 +952,18 @@ pub struct CycleRecordV1 {
     /// The decision on the cycle's pair, recorded once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<CycleDecisionV1>,
+    /// Why the cycle ended inconclusive without a decision, e.g. its budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inconclusive: Option<CycleInconclusiveV1>,
+}
+
+/// A cycle that ended inconclusive without a decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleInconclusiveV1 {
+    /// A stable reason code: `budget` when a limit of the cycle was reached.
+    pub reason: String,
+    pub detail: String,
 }
 
 /// How many measured runs each side needs and the inputs they run on.
@@ -1025,6 +1037,73 @@ pub struct CycleDecisionV1 {
     /// Each preserved condition, judged, in the plan's order.
     pub preserved: Vec<EvidenceV1>,
     pub decided_at: i64,
+}
+
+/// The limits of one cycle, covering every kind of its work.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleBudgetV1 {
+    pub max_spend_usd: f64,
+    /// Wall time since the cycle was created.
+    pub max_duration_ms: i64,
+    /// Dispatched work items, retries included.
+    pub max_calls: u32,
+    /// Candidates the cycle may try.
+    pub max_candidates: u32,
+}
+
+/// What a piece of cycle work is; every kind draws on the same budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CycleWorkKindV1 {
+    Investigation,
+    Jev,
+    Build,
+    E2e,
+    Control,
+    Retry,
+}
+
+/// One piece of work a cycle is about to dispatch. `work_id` is stable
+/// across redelivery and restart: the same work reserved twice is one
+/// reservation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleWorkV1 {
+    pub work_id: String,
+    pub kind: CycleWorkKindV1,
+    /// What the work is reserved at; an unknown actual cost stays charged at
+    /// it, never at zero.
+    pub estimated_usd: f64,
+    /// Whether the work tries a new candidate.
+    #[serde(default)]
+    pub candidate: bool,
+}
+
+/// A reservation in a cycle's ledger, settled once the work reports.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkReservationV1 {
+    pub work: CycleWorkV1,
+    pub reserved_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<i64>,
+    /// The reported cost; `None` once settled means unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+/// A cycle's budget and every reservation against it, keyed by `work_id`,
+/// written only with compare-and-set in the loop's budget scope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleLedgerV1 {
+    pub cycle_id: String,
+    pub budget: CycleBudgetV1,
+    /// When the cycle was created: its time limit runs from here.
+    pub started_at: i64,
+    #[serde(default)]
+    pub reservations: BTreeMap<String, WorkReservationV1>,
 }
 
 /// Starts a cycle from exactly one of `objective` or `execution_id`.

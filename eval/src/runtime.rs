@@ -474,6 +474,7 @@ async fn create_cycle(
         failure: None,
         plan: None,
         decision: None,
+        inconclusive: None,
     };
     state::put_cycle(&deps.iii, &record).await?;
     queue::enqueue_step(&deps.iii, &record.cycle_id, record.step).await?;
@@ -577,6 +578,105 @@ async fn resume_cycles(deps: &Deps) -> Result<(), EvalError> {
         }
     }
     Ok(())
+}
+
+/// Reserves `work` in the cycle's budget ledger (compare-and-set in the
+/// loop's budget scope) before anything dispatches it. Only `Reserved` may
+/// be dispatched: a work id already reserved, by a redelivery, a concurrent
+/// caller or before a restart, is never dispatched again, and work that
+/// would pass a limit ends the cycle inconclusive with reason `budget`.
+pub async fn reserve_cycle_work(
+    deps: &Deps,
+    cycle_id: &str,
+    work: &CycleWorkV1,
+) -> Result<cost::Reservation, EvalError> {
+    let record = state::get_cycle(&deps.iii, cycle_id)
+        .await?
+        .ok_or_else(|| EvalError::NotFound(cycle_id.into()))?;
+    if record.status.is_terminal() {
+        return Err(EvalError::Conflict(format!(
+            "cycle {cycle_id} is {:?}: it dispatches no more work",
+            record.status
+        )));
+    }
+    let now = ids::now_ms();
+    let reservation = state::update_ledger(&deps.iii, cycle_id, |stored| {
+        let mut ledger = stored.unwrap_or_else(|| {
+            cost::new_ledger(cycle_id, cost::default_budget(), record.created_at)
+        });
+        Ok(match cost::reserve(&mut ledger, work, now) {
+            reserved @ cost::Reservation::Reserved(_) => (Some(ledger), reserved),
+            other => (None, other),
+        })
+    })
+    .await?;
+    if let cost::Reservation::OverLimit(detail) = &reservation {
+        end_over_budget(deps, cycle_id, detail).await?;
+    }
+    Ok(reservation)
+}
+
+/// Settles a reservation once with the cost its work reported; `None` is an
+/// unknown cost, which stays charged at the estimate.
+pub async fn settle_cycle_work(
+    deps: &Deps,
+    cycle_id: &str,
+    work_id: &str,
+    cost_usd: Option<f64>,
+) -> Result<bool, EvalError> {
+    let now = ids::now_ms();
+    state::update_ledger(&deps.iii, cycle_id, |stored| {
+        let mut ledger = stored
+            .ok_or_else(|| EvalError::NotFound(format!("cycle {cycle_id} has no budget ledger")))?;
+        let settled = cost::settle(&mut ledger, work_id, cost_usd, now)?;
+        Ok((settled.then_some(ledger), settled))
+    })
+    .await
+}
+
+/// The one way a cycle dispatches work: reserve, then call. `None` when the
+/// work was not dispatched (already reserved, or over a limit).
+pub async fn dispatch_cycle_work(
+    deps: &Deps,
+    cycle_id: &str,
+    work: &CycleWorkV1,
+    function_id: &str,
+    payload: Value,
+    timeout_ms: u64,
+) -> Result<Option<Value>, EvalError> {
+    match reserve_cycle_work(deps, cycle_id, work).await? {
+        cost::Reservation::Reserved(_) => {
+            call(deps, function_id, payload, timeout_ms).await.map(Some)
+        }
+        cost::Reservation::Existing(_) | cost::Reservation::OverLimit(_) => Ok(None),
+    }
+}
+
+/// Ends a cycle that reached a limit: completed, inconclusive with reason
+/// `budget`, and its queued step made stale.
+async fn end_over_budget(deps: &Deps, cycle_id: &str, detail: &str) -> Result<(), EvalError> {
+    let _guard = deps.locks.guard(cycle_id).await;
+    let Some(mut record) = state::get_cycle(&deps.iii, cycle_id).await? else {
+        return Ok(());
+    };
+    if record.status.is_terminal() {
+        return Ok(());
+    }
+    let now = ids::now_ms();
+    record.status = CycleStatusV1::Completed;
+    record.step += 1;
+    record.updated_at = now;
+    record.completed_at = Some(now);
+    record.inconclusive = Some(CycleInconclusiveV1 {
+        reason: cost::BUDGET_REASON.into(),
+        detail: detail.into(),
+    });
+    record.history.push(cycle_event(
+        now,
+        CycleStatusV1::Completed,
+        &format!("inconclusive: {}: {detail}", cost::BUDGET_REASON),
+    ));
+    state::put_cycle(&deps.iii, &record).await
 }
 
 // ---------------------------------------------------------------------------
