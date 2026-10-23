@@ -192,7 +192,7 @@ async fn handle_connection(
                     }
                 },
                 other => {
-                    if let Some(out) = axum_to_tungstenite(other) {
+                    if let Some(out) = client_frame_to_engine(other) {
                         if a_engine_out.send(out).await.is_err() {
                             break;
                         }
@@ -297,6 +297,18 @@ fn query_to_multi_map(query: Option<&str>) -> HashMap<String, Vec<String>> {
     map
 }
 
+/// A non-text frame from the downstream worker, as it may reach the engine.
+/// Binary is dropped: only text frames pass the interceptor, and the engine
+/// decodes a binary frame as a protocol message, so one would reach the
+/// trusted listener with no RBAC and no middleware.
+pub(crate) fn client_frame_to_engine(msg: AxumMessage) -> Option<TungMessage> {
+    if matches!(msg, AxumMessage::Binary(_)) {
+        tracing::warn!("dropping a binary frame from the downstream worker");
+        return None;
+    }
+    axum_to_tungstenite(msg)
+}
+
 /// Convert an axum `Message` into a tungstenite `Message` (verbatim from
 /// `console`). Returns `None` when the variant has no useful equivalent.
 pub(crate) fn axum_to_tungstenite(msg: AxumMessage) -> Option<TungMessage> {
@@ -352,6 +364,14 @@ mod tests {
         assert!(matches!(&tung, TungMessage::Text(s) if s.as_str() == "hello"));
         let back = tungstenite_to_axum(tung).unwrap();
         assert!(matches!(&back, AxumMessage::Text(s) if s.as_str() == "hello"));
+    }
+
+    #[test]
+    fn client_binary_never_reaches_the_engine() {
+        let frame = br#"{"type":"invokefunction","invocation_id":"x","function_id":"engine::functions::list","data":{}}"#;
+        assert!(client_frame_to_engine(AxumMessage::Binary(frame.to_vec())).is_none());
+        let ping = client_frame_to_engine(AxumMessage::Ping(vec![1])).unwrap();
+        assert!(matches!(ping, TungMessage::Ping(_)));
     }
 
     #[test]
