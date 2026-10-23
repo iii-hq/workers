@@ -48,6 +48,35 @@ export interface SubagentStatus {
   since_ms: number
 }
 
+/** `tmux::subagents::transcript`: what one sub-agent has done so far. */
+export interface SubagentTranscript {
+  pane_id: string
+  /** Matcher id of the agent running it: `claude` or `codex`. */
+  agent: string
+  subagent_id: string
+  /** Still in its agent's `subagents` list. */
+  working: boolean
+  /** The task it was given; null when the transcript holds none. */
+  prompt: string | null
+  /** The latest items, oldest first, without the task. */
+  items: TranscriptItem[]
+  /** Older items were left out. */
+  truncated: boolean
+}
+
+export type TranscriptItemKind = 'user' | 'text' | 'thinking' | 'tool_call' | 'tool_result'
+
+export interface TranscriptItem {
+  kind: TranscriptItemKind
+  at_ms: number | null
+  /** Cut at 4 000 characters. A tool call's is its main argument. */
+  text: string
+  /** The tool's name, on tool calls and results. */
+  tool: string | null
+  /** The tool reported a failure. */
+  error: boolean
+}
+
 export interface ComposeRef {
   namespace: string
   pid: number

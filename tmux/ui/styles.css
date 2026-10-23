@@ -113,6 +113,71 @@
   .tmux-chip { font-size: 11px; }
   .tmux-bell { color: var(--color-warn); }
 
+  /* ── sub-agent transcript ────────────────────────────────────────── */
+  .tmux-subagent-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+  .tmux-subagent-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .tmux-subagent-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .tmux-subagent-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 16px 24px;
+  }
+  .tmux-subagent-prompt { margin-bottom: 12px; }
+  .tmux-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .tmux-step-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--color-muted-foreground);
+    font-size: 12px;
+  }
+  .tmux-step-label { font-weight: 600; }
+  .tmux-step-time { margin-left: auto; font-size: 11px; }
+  .tmux-step-text {
+    margin-top: 4px;
+    padding-left: 22px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--color-ink);
+  }
+  .tmux-step-thinking .tmux-step-text { color: var(--color-ink-faint); }
+  .tmux-step-code {
+    max-height: 240px;
+    overflow: auto;
+    margin-left: 22px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--color-card-highlight);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .tmux-step-error .tmux-step-head { color: var(--color-alert); }
+
   /* ── terminal ────────────────────────────────────────────────────── */
   .tmux-terminal {
     flex: 1;

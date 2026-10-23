@@ -169,9 +169,7 @@ impl ActivityReader {
         Some(Activity { state, subagents })
     }
 
-    /// `<config>/projects/<project>/<session id>`: the project folder is the
-    /// cwd with every other character than a letter or digit as `-`, except
-    /// for long paths, which get a shortened name; those are looked for.
+    /// [`find_transcript_dir`], remembering a missing folder for a while.
     fn transcript_dir(&mut self, config: &Path, session: &ClaudeSession) -> Option<PathBuf> {
         let poll = self.poll;
         if let Some(entry) = self.transcripts.get_mut(&session.session_id) {
@@ -182,21 +180,7 @@ impl ActivityReader {
                 Lookup::Missing(_) => {}
             }
         }
-        let projects = config.join("projects");
-        let direct = session.cwd.as_deref().map(|cwd| {
-            let folder: String = cwd
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect();
-            projects.join(folder).join(&session.session_id)
-        });
-        let found = direct.filter(|path| path.is_dir()).or_else(|| {
-            std::fs::read_dir(&projects)
-                .ok()?
-                .flatten()
-                .map(|entry| entry.path().join(&session.session_id))
-                .find(|path| path.is_dir())
-        });
+        let found = find_transcript_dir(config, session);
         let value = match &found {
             Some(path) => Lookup::Found(path.clone()),
             None => Lookup::Missing(Instant::now()),
@@ -319,19 +303,7 @@ impl ActivityReader {
             .get(&pid)
             .is_some_and(|entry| entry.value.0.elapsed() < OPEN_FILES_TTL);
         if !fresh {
-            // The wrapper (`node … codex.js`) and the native `codex` under it;
-            // MCP servers and shells in the subtree hold no rollouts.
-            let pids: Vec<u32> = table
-                .subtree(pid, CODEX_DEPTH)
-                .into_iter()
-                .map(|(pid, _)| pid)
-                .filter(|pid| {
-                    table
-                        .get(*pid)
-                        .is_some_and(|proc| proc.names().any(|name| name == "codex"))
-                })
-                .collect();
-            let files = procs::open_files(&pids, is_rollout);
+            let files = procs::open_files(&codex_pids(table, pid), is_rollout);
             self.open.insert(
                 pid,
                 Cached {
@@ -463,6 +435,74 @@ struct ClaudeSubagentMeta {
     spawn_depth: Option<u32>,
     #[serde(default)]
     finished: bool,
+}
+
+/// `<config>/projects/<project>/<session id>`: the project folder is the
+/// cwd with every other character than a letter or digit as `-`, except
+/// for long paths, which get a shortened name; those are looked for.
+fn find_transcript_dir(config: &Path, session: &ClaudeSession) -> Option<PathBuf> {
+    let projects = config.join("projects");
+    let direct = session.cwd.as_deref().map(|cwd| {
+        let folder: String = cwd
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        projects.join(folder).join(&session.session_id)
+    });
+    direct.filter(|path| path.is_dir()).or_else(|| {
+        std::fs::read_dir(&projects)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path().join(&session.session_id))
+            .find(|path| path.is_dir())
+    })
+}
+
+/// The transcript of sub-agent `id` of Claude Code process `pid`, finished
+/// or not, if it has one yet. `id` must be a bare file-name part.
+pub fn claude_subagent_file(pid: u32, id: &str) -> Option<PathBuf> {
+    claude_subagent_file_at(&claude_config_dir(pid)?, pid, id)
+}
+
+fn claude_subagent_file_at(config: &Path, pid: u32, id: &str) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(config.join("sessions").join(format!("{pid}.json"))).ok()?;
+    let session: ClaudeSession = serde_json::from_str(&text).ok()?;
+    if session.pid != pid {
+        return None;
+    }
+    let path = find_transcript_dir(config, &session)?
+        .join("subagents")
+        .join(format!("agent-{id}.jsonl"));
+    path.is_file().then_some(path)
+}
+
+/// The rollout of thread `id` held open by the Codex process under agent
+/// `pid`: its name ends with the thread id. `id` must be a bare file-name
+/// part.
+pub fn codex_thread_file(table: &ProcTable, pid: u32, id: &str) -> Option<PathBuf> {
+    let suffix = format!("-{id}.jsonl");
+    procs::open_files(&codex_pids(table, pid), is_rollout)
+        .into_iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        })
+}
+
+/// The wrapper (`node … codex.js`) and the native `codex` under agent `pid`;
+/// MCP servers and shells in the subtree hold no rollouts.
+fn codex_pids(table: &ProcTable, pid: u32) -> Vec<u32> {
+    table
+        .subtree(pid, CODEX_DEPTH)
+        .into_iter()
+        .map(|(pid, _)| pid)
+        .filter(|pid| {
+            table
+                .get(*pid)
+                .is_some_and(|proc| proc.names().any(|name| name == "codex"))
+        })
+        .collect()
 }
 
 /// `CLAUDE_CONFIG_DIR` of the process, else `~/.claude` of its home.

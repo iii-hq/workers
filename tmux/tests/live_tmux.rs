@@ -88,6 +88,7 @@ fn world() -> World {
         ctx: Ctx {
             collector: collector.clone(),
             monitor,
+            transcripts: Default::default(),
         },
         collector,
     }

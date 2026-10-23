@@ -152,6 +152,60 @@ pub struct SubagentStatus {
     pub since_ms: u64,
 }
 
+/// What one sub-agent has done so far, from the transcript its agent keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SubagentTranscript {
+    /// Pane id of the agent running the sub-agent.
+    pub pane_id: String,
+    /// Matcher id of that agent: `claude` or `codex`.
+    pub agent: String,
+    /// The sub-agent's id, as in `agent.subagents`.
+    pub subagent_id: String,
+    /// The sub-agent is still in its agent's `subagents` list.
+    pub working: bool,
+    /// The task it was given, cut at 16 000 characters. Null when the
+    /// transcript holds none; Codex keeps a sub-agent's task encrypted, so
+    /// there it shows only the task's name and sender.
+    pub prompt: Option<String>,
+    /// The latest items, oldest first, without the task.
+    pub items: Vec<TranscriptItem>,
+    /// Older items were left out: past `limit`, or before the last 4 MiB of
+    /// the file.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptItemKind {
+    /// A message to the sub-agent after its task, from the agent that runs it.
+    User,
+    /// What the sub-agent wrote.
+    Text,
+    /// Its reasoning, when the agent records it in clear.
+    Thinking,
+    /// A tool it called, with the call's main argument.
+    ToolCall,
+    /// What a tool returned.
+    ToolResult,
+}
+
+/// One step of a sub-agent's transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TranscriptItem {
+    pub kind: TranscriptItemKind,
+    /// When the agent recorded it.
+    pub at_ms: Option<u64>,
+    /// The text, cut at 4 000 characters (then ending in `…`). A tool call's
+    /// is its main argument: the command, path, pattern or query, else the
+    /// whole input as JSON.
+    pub text: String,
+    /// The tool's name, on `tool_call` and `tool_result` items.
+    pub tool: Option<String>,
+    /// The tool reported a failure (`tool_result` only).
+    #[serde(default)]
+    pub error: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ComposeRef {
     /// Compose daemon namespace.

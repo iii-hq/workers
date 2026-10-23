@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
         Arc::new(Ctx {
             collector: collector.clone(),
             monitor: monitor.clone(),
+            transcripts: Default::default(),
         }),
     );
     terminal::register(&iii, terminals.clone());

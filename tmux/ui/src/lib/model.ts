@@ -13,6 +13,8 @@ import type {
   Session,
   SessionsSnapshot,
   SubagentStatus,
+  SubagentTranscript,
+  TranscriptItem,
   Window,
 } from './types'
 
@@ -28,6 +30,8 @@ export interface AgentBadge {
 /** A sub-agent at work, as a row under its window. */
 export interface SubagentRow {
   key: string
+  /** The sub-agent's id, as `tmux::subagents::transcript` takes it. */
+  id: string
   paneId: string
   /** The agent that runs it, e.g. `Claude Code`. */
   agentLabel: string
@@ -107,6 +111,28 @@ export function subagentCountLabel(count: number): string {
   return `${count} sub-agent${count === 1 ? '' : 's'}`
 }
 
+/** The heading of one transcript item. */
+export function transcriptItemLabel(item: Pick<TranscriptItem, 'kind' | 'tool' | 'error'>, agentLabel: string): string {
+  switch (item.kind) {
+    case 'user':
+      return `Message from ${agentLabel}`
+    case 'text':
+      return 'Sub-agent'
+    case 'thinking':
+      return 'Thinking'
+    case 'tool_call':
+      return item.tool ?? 'Tool call'
+    case 'tool_result':
+      return `${item.tool ?? 'Tool'} ${item.error ? 'failed' : 'result'}`
+  }
+}
+
+/** How long the transcript view waits before asking again. */
+export function transcriptPollMs(transcript: Pick<SubagentTranscript, 'working'> | null, failed: boolean): number {
+  if (failed) return 5_000
+  return transcript && !transcript.working ? 10_000 : 2_000
+}
+
 export function windowLabel(window: Pick<Window, 'index' | 'name'>): string {
   return `${window.index}:${window.name}`
 }
@@ -136,6 +162,7 @@ function windowRow(session: Session, window: Window, ports: PortsSnapshot | null
       for (const sub of running) {
         subagents.push({
           key: `${pane.id}/${sub.id}`,
+          id: sub.id,
           paneId: pane.id,
           agentLabel: pane.agent.label,
           description: sub.description,

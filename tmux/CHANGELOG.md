@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **iii-sdk 0.25.0.** The worker builds against the 0.25 SDK. Console terminal calls
+  (`tmux::terminal::*`) take their caller from the invocation context the engine stamps
+  (`caller.worker_id`); the payload's `_caller_worker_id` is read only on an engine
+  without observe (0.24). A call from an observer activation is refused.
+  `tmux::changed` is still a trigger type, registered the 0.24 way, so existing
+  consumers see no change on either engine.
+
 ### Added
 
 - **tmux sessions and windows as functions.** `tmux::sessions::{list,create,rename,kill}`
@@ -29,8 +38,17 @@
   `since_ms`). Claude Code's state comes from its session file
   (`~/.claude/sessions/<pid>.json`, or under `CLAUDE_CONFIG_DIR`) and its sub-agents'
   meta files and transcripts; Codex's from the rollouts its process holds open. A
-  sub-agent leaves the list once it finishes or is stopped. The Console page shows the count on the agent's badge and a row per sub-agent under its
-  window. A prompt on screen still makes the agent `waiting`.
+  sub-agent leaves the list once it finishes or is stopped. The Console page shows the
+  count on the agent's badge and a row per sub-agent under its window. A prompt on
+  screen still makes the agent `waiting`.
+- **Sub-agent transcripts.** A sub-agent has no pane of its own, so
+  `tmux::subagents::transcript` (`pane`, `subagent`) returns what it has done so far:
+  the task it was given, what it wrote and reasoned, the tools it called and what they
+  returned, oldest first (the latest 200, or `limit` up to 1000). It reads Claude Code's
+  sub-agent transcript or the thread's Codex rollout, while the sub-agent runs and after
+  it finished, and each call reads only what was added since the last. Selecting a
+  sub-agent in the Console page's tree opens its transcript in a Sub-agent tab, which
+  follows new steps every 2 s.
 - **Agent session titles.** An agent's `title` is the pane title it set (Claude Code's
   conversation topic) without the status glyph in front, or null when the pane still
   shows tmux's default title, the host name.

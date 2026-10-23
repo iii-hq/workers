@@ -58,7 +58,7 @@ pub struct PaneCapture {
     pub text: String,
 }
 
-fn pane_arg(raw: &str) -> Result<&str, String> {
+pub(super) fn pane_arg(raw: &str) -> Result<&str, String> {
     let pane = raw.trim();
     if is_pane_id(pane) {
         Ok(pane)

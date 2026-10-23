@@ -12,11 +12,13 @@ import {
   shortPath,
   subagentCountLabel,
   terminalGone,
+  transcriptItemLabel,
+  transcriptPollMs,
   validateCommand,
   validateDirectory,
   validateName,
 } from '../model'
-import type { Listener, Pane, PortsSnapshot, Session, SessionsSnapshot, Window } from '../types'
+import type { Listener, Pane, PortsSnapshot, Session, SessionsSnapshot, TranscriptItemKind, Window } from '../types'
 
 const tmux = {
   available: true,
@@ -273,10 +275,10 @@ describe('sub-agents', () => {
     const [row] = rows
     expect(row.agents).toEqual({ working: 2, waiting: 0, idle: 1, subagents: 3 })
     const [win] = row.windows
-    expect(win.subagents.map((sub) => [sub.key, sub.agentLabel, sub.depth])).toEqual([
-      ['%1/a1', 'Claude Code', 2],
-      ['%2/t1', 'Codex', 1],
-      ['%1/a2', 'Claude Code', 1],
+    expect(win.subagents.map((sub) => [sub.key, sub.id, sub.paneId, sub.agentLabel, sub.depth])).toEqual([
+      ['%1/a1', 'a1', '%1', 'Claude Code', 2],
+      ['%2/t1', 't1', '%2', 'Codex', 1],
+      ['%1/a2', 'a2', '%1', 'Claude Code', 1],
     ])
     expect(win.agents.map((agent) => [agent.id, agent.subagents.length])).toEqual([
       ['claude', 2],
@@ -288,6 +290,26 @@ describe('sub-agents', () => {
   it('labels counts', () => {
     expect(subagentCountLabel(1)).toBe('1 sub-agent')
     expect(subagentCountLabel(3)).toBe('3 sub-agents')
+  })
+
+  it('heads transcript items', () => {
+    const label = (kind: TranscriptItemKind, tool: string | null = null, error = false) =>
+      transcriptItemLabel({ kind, tool, error }, 'Claude Code')
+    expect(label('user')).toBe('Message from Claude Code')
+    expect(label('text')).toBe('Sub-agent')
+    expect(label('thinking')).toBe('Thinking')
+    expect(label('tool_call', 'Bash')).toBe('Bash')
+    expect(label('tool_call')).toBe('Tool call')
+    expect(label('tool_result', 'Read')).toBe('Read result')
+    expect(label('tool_result', 'Read', true)).toBe('Read failed')
+    expect(label('tool_result')).toBe('Tool result')
+  })
+
+  it('asks for the transcript often while the sub-agent works', () => {
+    expect(transcriptPollMs(null, false)).toBe(2_000)
+    expect(transcriptPollMs({ working: true }, false)).toBe(2_000)
+    expect(transcriptPollMs({ working: false }, false)).toBe(10_000)
+    expect(transcriptPollMs({ working: true }, true)).toBe(5_000)
   })
 })
 

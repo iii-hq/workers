@@ -22,6 +22,10 @@ use crate::model::{
 use crate::procs::{self, IiiEnv, ProcTable, Scanner, SocketListener};
 use crate::tmux_cli::{list_all_args, parse_list_all, RawSnapshot, Socket, Tmux, TmuxError};
 
+/// How old the agents of the last collection may be when a function asks
+/// for one pane's.
+const SEEN_FRESH: Duration = Duration::from_secs(3);
+
 /// ttys of the tmux clients this worker runs for console terminals.
 #[derive(Clone, Default)]
 pub struct ConsoleClients(Arc<RwLock<HashSet<String>>>);
@@ -72,6 +76,8 @@ pub struct Collector {
     procs: Mutex<ProcCache>,
     agents: Mutex<AgentTracker>,
     compiled: StdMutex<Option<CompiledAgents>>,
+    /// The agents the last collection found, by pane id, and when.
+    seen: StdMutex<Option<(Instant, HashMap<String, AgentStatus>)>>,
     console: ConsoleClients,
     /// One collection at a time: concurrent callers would only race each
     /// other's scans.
@@ -88,6 +94,7 @@ impl Collector {
             procs: Mutex::new(ProcCache::default()),
             agents: Mutex::new(AgentTracker::default()),
             compiled: StdMutex::new(None),
+            seen: StdMutex::new(None),
             console,
             gate: Mutex::new(()),
         }
@@ -95,6 +102,28 @@ impl Collector {
 
     pub fn config(&self) -> Arc<WorkerConfig> {
         self.config.load_full()
+    }
+
+    /// The agent running in `pane`, from a collection at most
+    /// [`SEEN_FRESH`] old.
+    pub async fn pane_agent(&self, pane: &str) -> Option<AgentStatus> {
+        let fresh = |collector: &Self| {
+            let seen = collector.seen.lock().unwrap_or_else(|p| p.into_inner());
+            match seen.as_ref() {
+                Some((at, agents)) if at.elapsed() < SEEN_FRESH => Some(agents.get(pane).cloned()),
+                _ => None,
+            }
+        };
+        if let Some(agent) = fresh(self) {
+            return agent;
+        }
+        self.overview().await;
+        fresh(self).flatten()
+    }
+
+    /// The process table of the last scan.
+    pub async fn proc_table(&self) -> Arc<ProcTable> {
+        self.procs.lock().await.table.clone()
     }
 
     /// The configured tmux, or why there is none.
@@ -390,6 +419,7 @@ impl Collector {
             );
         }
         tracker.retain(&out.keys().cloned().collect());
+        *self.seen.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), out.clone()));
         out
     }
 }

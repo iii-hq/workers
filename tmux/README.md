@@ -68,7 +68,33 @@ those sub-agents in `subagents`:
 ```
 
 The Console page shows the count on the agent's badge and a row per sub-agent
-under its window. The agent's
+under its window. A sub-agent has no pane of its own: selecting its row opens
+its transcript, which `tmux::subagents::transcript` returns from the same
+files. That is the task it was given, what it wrote and reasoned, and the
+tools it called with what they returned, oldest first, while it runs and
+after it finished:
+
+```bash
+iii trigger tmux::subagents::transcript pane=%9 subagent=01a16528-d646
+```
+
+```json
+{ "pane_id": "%9", "agent": "codex", "subagent_id": "01a16528-d646", "working": true,
+  "prompt": "Message Type: NEW_TASK\nTask name: /root/review/tests\n…",
+  "items": [ { "kind": "tool_call", "at_ms": 1792698540000, "text": "cargo test",
+               "tool": "shell", "error": false },
+             { "kind": "tool_result", "at_ms": 1792698551000, "text": "test result: ok…",
+               "tool": "shell", "error": false } ],
+  "truncated": false }
+```
+
+Item kinds are `user` (a later message from the main agent), `text`,
+`thinking` (when the agent records it in clear), `tool_call` and
+`tool_result`. Each text is cut at 4 000 characters, and only the last 4 MiB
+of a long transcript are read, plus its task. Codex keeps a sub-agent's task
+encrypted, so there the prompt shows only its name and sender.
+
+The agent's
 `title` is the session title it put on its pane (Claude Code's conversation
 topic) without the ✳ or spinner in front; it is null while the pane shows
 tmux's default title, the host name. Selecting a window

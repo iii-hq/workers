@@ -26,8 +26,11 @@ const MAX_PORT_CHIPS = 2
 export interface SessionTreeProps {
   rows: SessionRow[]
   narrow: boolean
+  /** Key of the sub-agent whose transcript the page shows. */
+  selectedSubagent?: string | null
   onSelectSession(row: SessionRow): void
   onSelectWindow(session: SessionRow, window: WindowRow): void
+  onSelectSubagent(sub: SubagentRow): void
   onNewWindow(session: SessionRow): void
   onRenameSession(session: SessionRow): void
   onKillSession(session: SessionRow): void
@@ -184,14 +187,25 @@ function SessionMeta({ row }: { row: SessionRow }) {
   )
 }
 
-/** A sub-agent at work, under its window; selecting it selects the window. */
-function SubagentItem({ sub, now, onSelect }: { sub: SubagentRow; now: number; onSelect(): void }) {
+/** A sub-agent at work, under its window; selecting it opens its transcript. */
+function SubagentItem({
+  sub,
+  now,
+  selected,
+  onSelect,
+}: {
+  sub: SubagentRow
+  now: number
+  selected: boolean
+  onSelect(): void
+}) {
   const since = formatRelative(sub.sinceMs, now)
   return (
     // biome-ignore lint/a11y/useSemanticElements: tree rows share the treeItem recipe with the window rows.
     <div
       className={`${uiClasses.treeItem} tmux-subagent`}
       role="button"
+      aria-current={selected ? 'true' : undefined}
       tabIndex={0}
       style={{ '--iii-ui-tree-depth': 1 + sub.depth } as CSSProperties}
       title={subagentSummary(sub, now)}
@@ -221,6 +235,8 @@ export function SessionTree({
   onKillSession,
   onRenameWindow,
   onKillWindow,
+  selectedSubagent = null,
+  onSelectSubagent,
 }: SessionTreeProps) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const now = useNow(rows.some((row) => row.agents.subagents > 0))
@@ -331,7 +347,13 @@ export function SessionTree({
                       </span>
                     </div>
                     {windowRow.subagents.map((sub) => (
-                      <SubagentItem key={sub.key} sub={sub} now={now} onSelect={() => onSelectWindow(row, windowRow)} />
+                      <SubagentItem
+                        key={sub.key}
+                        sub={sub}
+                        now={now}
+                        selected={sub.key === selectedSubagent}
+                        onSelect={() => onSelectSubagent(sub)}
+                      />
                     ))}
                   </Fragment>
                 ))
