@@ -69,11 +69,13 @@ That bundle mounts as the §5.7 counter of the design, byte for byte
 (`conformance/counter.json`). [`examples/hello`](examples/hello) is a
 slightly larger app (a list, a text field, buttons, a menu, storage) and the
 known-good bundle to load in a host: `pnpm -F @iii-dev/native-ui build:example`
-writes `examples/hello/dist/native.js`.
+writes `examples/hello/dist/native.js`. [`examples/catalog2`](examples/catalog2)
+does the same for catalogue 2 (`build:catalog2`, `dist/catalog2.js`), one
+page per new piece, with the testTags a host's instrumented tests use.
 
 ### Pages
 
-`defineApp({ pages })` declares every page once; `root` is required. A page
+`defineApp({ pages, catalog? })` declares every page once; `root` is required. A page
 is a component `(props: { page, params }) => JSX` or `{ component, modal?,
 fullScreen? }`. The host mounts and unmounts page instances (one per card
 of the app's deck); `iii.nav.push(name, params)` stacks a page and resolves
@@ -81,13 +83,30 @@ with the result its card leaves with (`usePage().pop(result)`), or `null`
 after Back. `usePage()` gives the instance (`inst`, `name`, `params`) with
 `pop` and `replace` bound to it.
 
+### The catalogue an app needs
+
+`catalog` (default 1) is the lowest catalogue version the app needs; it goes
+in `ready`, and an iii app with an older catalogue shows "Needs a newer iii
+app" instead of running it. Declare `catalog: 2` to use what catalogue 2
+added (`Markdown`, `Lanes`, `hue`, `List.dragGroup`/`onDrop`,
+`ListDetail.listFill`), and give the worker's descriptor the same
+(`NativeUi::catalog(2)`, which the hub reads before it loads anything). The
+SDK warns once when an app uses a piece newer than it declared (the
+generated `SINCE` table says which version added what); an app that needs
+none of it keeps 1, as the browser does, and runs on older apps too.
+
+```tsx
+defineApp({ catalog: 2, pages: { root: Board, ticket: Ticket } })
+```
+
 ### Components
 
 One component per catalogue type, with the catalogue's names: `Column`,
 `Row`, `Box`, `Scroll`, `Spacer`, `Divider`, `Text`, `Icon`, `Badge`,
 `StatusDot`, `Spinner`, `Progress`, `EmptyState`, `Image`, `StatusPanel`,
-`Button`, `IconButton`, `TextField`, `Switch`, `Segmented`, `Chip`, `List`,
-`ListRow`, `Card`, `Page`, `ListDetail`, `Sheet`, `RemoteScreen`.
+`Markdown`, `Button`, `IconButton`, `TextField`, `Switch`, `Segmented`,
+`Chip`, `List`, `ListRow`, `Card`, `Lanes`, `Page`, `ListDetail`, `Sheet`,
+`RemoteScreen`.
 
 - **Props** are typed from the catalogue (`src/generated/props.ts`). Enums
   take their names (`role="title"`, `kind="primary"`); `null`/`undefined`
@@ -98,20 +117,21 @@ One component per catalogue type, with the catalogue's names: `Column`,
   and the target of `iii.ui.focus`).
 - **Events** are `on<Event>` props (`onPress`, `onLongPress`, `onChange`,
   `onSubmit`, `onSelect`, `onFocus`, `onDismiss`, `onRefresh`,
-  `onEndReached`, `onFrame`, `onError`, `onKeyboard`, `onReady`). A handler
+  `onEndReached`, `onFrame`, `onError`, `onKeyboard`, `onReady`, `onLink`,
+  `onDrop`). A handler
   subscribes the node; the host only sends subscribed events and only arms
   the gestures behind them (no long-press haptic without `onLongPress`).
 - **Slots**: `children` is slot 0; the other slots are props named after
   them (`actions`, `top`, `bottom`, `leading`, `trailing`, `list`, `detail`,
   `emptyDetail`, `header`, `empty`, `footer`). Where slot 0 has another name
   (`EmptyState.actions`, `StatusPanel.action`, `Page.body`,
-  `Sheet.content`), that prop works too.
-- **Text**: the JSX children of `Text`, `Button`, `Badge` and `Chip` become
-  their `text` (`<Text>Count {n()}</Text>`). Text anywhere else is not shown
-  (a warning in the log).
-- `Switch` and `Segmented` show the person's change at once; if the app
-  does not take it (the `checked`/`selected` prop stays), the SDK sends the
-  app's value back.
+  `Sheet.content`, `Lanes.lanes`), that prop works too.
+- **Text**: the JSX children of `Text`, `Button`, `Badge`, `Chip` and
+  `Markdown` become their `text` (`<Text>Count {n()}</Text>`). Text
+  anywhere else is not shown (a warning in the log).
+- `Switch`, `Segmented` and `Lanes` show the person's change at once; if the
+  app does not take it (the `checked`/`selected` prop stays), the SDK sends
+  the app's value back.
 - `RemoteScreen` is only configured from the script (`session`, `wire`,
   `enabled`, `mode`, `mobile`, `keyboard`, `placeholder`, `maxScale`):
   frames and gestures go between the worker and the native view and never
@@ -122,6 +142,82 @@ One component per catalogue type, with the catalogue's names: `Column`,
   `onKeyboard(false)` when the person closes the keyboard, `onError(message)`
   when the stream fails. The wire of the browser and the placeholders:
   design §6.7 and §6.8, `catalog.json` › `remoteScreen`.
+
+### Catalogue 2: Markdown, Lanes, drag and drop, hues, listFill
+
+All of these need `defineApp({ catalog: 2, … })`.
+
+**`Markdown`** draws CommonMark (GFM tables, strikethrough, autolinks) with
+the app's chat renderer; `dense` is the small type of a comment or a card,
+`selectable` lets the person select text. Images show as their alt text and
+raw HTML as text; past `limits.maxMarkdownChars` (200 000) the host draws
+the start and a note. The host **never opens a link**: a tap is
+`onLink(href)`, with the destination as written, and the script decides.
+
+```tsx
+<Markdown dense onLink={(href) => (href.startsWith('kan:') ? openTicket(href.slice(4)) : iii.openUrl(href))}>
+  {ticket().description}
+</Markdown>
+```
+
+**`Lanes`** shows its children, one per title, as columns side by side when
+at least two fit the host's width (`laneWidth`, default 300 dp), or one per
+page under a tab strip. `counts` puts a short text after each title.
+`selected` is the lane in view (a page) or the one scrolled into view
+(columns); `onSelect(index)` comes when the person settles on another page,
+optimistic like `Segmented`'s. Each lane keeps its own scroll.
+
+```tsx
+<Lanes titles={['Todo', 'Doing', 'Done']} counts={lanes.map((l) => String(l.items().length))}
+  selected={lane()} onSelect={setLane}>
+  {lanes.map((source) => <List source={source} templates={[card]} />)}
+</Lanes>
+```
+
+**Drag and drop**: a `List` with `dragGroup` lets a long press lift an item;
+released without moving it is the item's `onLongPress`, moved it is a drag
+to any `List` of the same group (itself included: a reorder). Releasing it
+over a List fires that List's `onDrop(key, index, source)`: `key` is the
+item's key, `index` its position among the target's items once it is out of
+its old place, and `source` the List it came from as a `NodeRef`, the same
+object that List's `ref` gave (null if it is gone), so compare it with your
+refs:
+
+```tsx
+const refs: (NodeRef | undefined)[] = []
+const drop = (to: number) => (key: string | number, index: number, source: NodeRef | null) => {
+  const from = source ? refs.indexOf(source) : -1
+  const item = from < 0 ? undefined : lanes[from].get(key)
+  if (!item) return
+  batch(() => {
+    lanes[from].remove(key)
+    lanes[to].splice(index, 0, { ...item, status: STATUSES[to] })
+  })
+  iii.call('kanban::ticket::move', { id: key, status: STATUSES[to] }).catch(() => {
+    // put it back, and say so
+  })
+}
+{lanes.map((source, i) => (
+  <List ref={(n) => (refs[i] = n)} source={source} dragGroup="cards" onDrop={drop(i)} templates={[card]} />
+))}
+```
+
+**Hues**: `hue` on `Icon`, `Badge`, `StatusDot` and `Chip` (`none`, `blue`,
+`purple`, `teal`, `green`, `amber`, `rose`: the app's agent and project
+colours) replaces the tone, or the Badge's variant, when it is not `none`.
+In a List template, bind it to an item field holding the name
+(`hue={row.hue}` with `{ hue: 'teal' }`): see Lists below.
+
+**`ListDetail.listFill`**: on a wide window, while `showDetail` is false the
+list takes the whole width (no detail column, no `emptyDetail`, no hide
+button), so a board of `Lanes` fills the screen; with `showDetail` the list
+goes back to its usual width beside the detail. No effect on a compact
+window. Open a card by setting the lane and `showDetail` in one batch, so
+the narrowed board shows the card's lane:
+
+```tsx
+const open = (lane: number) => (item: Ticket) => batch(() => { setLane(lane); setOpen(item.id) })
+```
 
 ### TextField: the text belongs to the host
 
@@ -163,7 +259,14 @@ const tabs = createList<Tab>({ key: 'key', kind: 'kind' })
 
 - A template runs **once**; `row.title` is `{"$item": "title"}` on the wire
   (nested paths work: `row.meta.host`). The host does not format anything:
-  compute the strings a row shows into the item.
+  compute the strings a row shows into the item. A bound field holds what
+  the prop takes (a string for `text`, a boolean for `visible`); the harness
+  fails an item whose bound field has the wrong type.
+- An enum prop bound to a field (`hue={row.hue}`, `tone={row.tone}`) takes
+  the enum's name in the item, as a plain prop does: the host reads an
+  index, so the SDK sends the index (an unknown name as null, the default,
+  with a warning). Your items keep the names; the harness's `items()` shows
+  what the host got. Don't bind the same field to a text prop too.
 - Handlers inside a template get the item first (found by the key of the
   host's `itemEvent`). Argument-less handlers are typed `(item?: any)`;
   inside a template, annotate the item (`(item: Tab) => …`).
@@ -189,7 +292,7 @@ the host checks:
 |---|---|
 | `iii.app` | `{ key: 'worker:<ns>', ns }` |
 | `iii.call(fn, payload?, { timeoutMs? })` | A function of the app's own namespace (`<ns>::…`; never `iii::…` or `engine::…`). Any other is refused here, before it reaches the host, with `IiiError` `forbidden`; the host checks again. `timeoutMs` defaults to 30 000, at most 120 000. |
-| `iii.on(type, config, handler)` | Binds a trigger type of the app's namespace (another throws `forbidden` at once). Returns an unsubscribe function with a `ready` promise: bind first, read initial state after `ready`. |
+| `iii.on(type, config, handler)` | Binds a trigger type of the app's namespace, `<ns>::…` or `<ns>:…` (`kanban:change`); another throws `forbidden` at once (never `iii::…` or `engine::…`). Returns an unsubscribe function with a `ready` promise: bind first, read initial state after `ready`. |
 | `iii.nav` | `push`, `pop`, `replace`, `popToRoot` over the pages of `defineApp`. |
 | `iii.env`, `iii.onEnv` | `windowClass` (`compact`/`wide`, the 720 dp cut), `posture`, `platform`, `visible`, `theme`, `locale`, `online`; reactive in Solid scopes. Use `visible` to stop work nobody sees. |
 | `iii.ui` | `toast`, `actionMenu` (an action sheet on the phone, an NSMenu on the Mac; resolves with the index or -1), `confirm`, `prompt`, `focus`. |
@@ -256,6 +359,22 @@ for it:
   (`browser/native-ui/src/address.ts`) lets only well-formed http(s) URLs
   through, so `javascript:`, `data:`, `file:` and the like never reach the
   worker. `iii.openUrl` already allows only http, https and mailto.
+- **Markdown never opens a link itself.** A tap is `onLink(href)` and
+  nothing else; without `onLink`, links do nothing. The href is whatever
+  the text wrote (worker data, so `javascript:` too): route your own scheme
+  (`kan:KAN-12`) to `iii.nav.push`, and hand the rest to `iii.openUrl`,
+  which takes only http, https and mailto and asks the person first.
+- **A drop is optimistic; the script must splice.** The host keeps showing
+  the item where it was dropped only until the next batch that changes
+  either List, or for 1 s; then the lists show what the script left. Splice
+  both lists in `onDrop` itself (one `batch`), then call the worker, and on
+  a failure put the item back and toast. A handler that only calls the
+  worker makes the card jump back and forth.
+- **Lanes leaves the layout to the host.** Don't pick columns or pages from
+  `iii.env.windowClass`, and don't build your own tab strip: the host
+  decides from its own width (a ListDetail's list column is narrower than
+  the window) and `laneWidth`. In columns `onSelect` does not come; keep
+  `selected` for the lane you want in view (the card you opened).
 
 ## Build
 
@@ -309,7 +428,10 @@ expect(host.tree()).toMatchInlineSnapshot()
 ```
 
 Options, with their defaults: `bundle` (required), `ns` (`demo`), `appKey`
-(`worker:<ns>`), `host` and `engine` (what `init` says: `android 0.1.0`,
+(`worker:<ns>`), `catalog` (the catalogue the host renders, `init.catalog`:
+the SDK's, 2; a bundle whose `ready` needs more fails to load with
+`VmFailure` kind `catalog`, as the app shows "Needs a newer iii app"),
+`host` and `engine` (what `init` says: `android 0.1.0`,
 `quickjs-emscripten 0.31.0`), `env` (merged over `DEFAULT_ENV`), `calls`,
 `ui` (the dialogs' answers; without one, `actionMenu` −1, `confirm` false,
 `prompt` null, `openUrl` true), `storage`, `now` (the fake clock's start,
@@ -336,8 +458,9 @@ microtasks). The fake host keeps the tree, answers requests (`calls`, `ui`
 answers, `storage`), keeps the subscriptions and the deck, and checks the
 protocol on every message: creates before use, inserts of detached nodes,
 indexes in range, no node left detached at the end of a batch, bindings only
-in templates, prop values of their catalogue type, messages within
-`limits.maxMessageBytes`. Any violation or uncaught VM error fails the
+in templates, prop values of their catalogue type (and bound item fields
+too), messages within `limits.maxMessageBytes`. Its policy is the host's:
+calls to `<ns>::…`, bindings of `<ns>::…` and `<ns>:…`. Any violation or uncaught VM error fails the
 action (`strict: false` to only record them). `rawRequests: true` exposes a
 test-only `__iiiui_request(method, args)` in the VM that skips the SDK's own
 checks, to show what the host answers to a request the SDK would refuse.
@@ -345,15 +468,33 @@ checks, to show what the host answers to a request the SDK would refuse.
 API: `mount` (resolves with the page instance), `unmount`, `back`, `tick`,
 `settle`, `deliver`, `respond`, `fail`, `env`, `emitTrigger` (resolves with
 how many subscriptions got it), `press`, `longPress`, `emit`, `type`,
-`typeWhileBusy`, `submit`, `toggle`, `select`, `itemPress`,
-`itemLongPress`, `itemEmit`, `find`, `findAll`, `prop`, `tree`, `memory`,
-`dispose`; and the records `messages`, `ops`, `toVm`, `transcript`,
+`typeWhileBusy`, `submit`, `toggle`, `select`, `link`, `drop`,
+`itemPress`, `itemLongPress`, `itemEmit`, `find`, `findAll`, `prop`,
+`items`, `keys`, `lanes`, `tree`, `memory`, `dispose`; and the records `messages`, `ops`, `toVm`, `transcript`,
 `requests`, `pending`, `logs`, `errors`, `exceptions`, `violations`,
 `toasts`, `menus`, `dialogs`, `clipboard`, `shared`, `saved`, `opened`,
 `focusRequests`, `subscriptions`, `storage`, `deck`, `droppedWrites`; the
 state `ready` (the bundle's `ready` info), `roots`, `failed` (a `VmFailure`'s
 kind and message once the VM stopped: `watchdog`, `memory`, `reported`,
-`load`, `protocol`), `envState`, `clock`, `initInfo()`. The module also
+`load`, `protocol`, `catalog`), `envState`, `clock`, `initInfo()`.
+
+The catalogue 2 events, as the device host sends them:
+
+```ts
+await host.link('description', 'kan:KAN-12')      // a Markdown: link [href]; the href must be in its text
+await host.select('board', 2)                      // a Lanes (or a Segmented): shown at once, then select [index]
+await host.drop('lane-doing', 'KAN-3', 0, 'lane-todo') // drop [key, index, source] on the target List
+await host.drop('lane-todo', 'KAN-1', 2)           // a reorder: the source defaults to the target
+await host.itemLongPress('lane-todo', 'KAN-1')     // a lifted card released without moving
+host.keys('lane-doing')                            // ['KAN-3', …]: the List's keys, in order
+host.items('lane-doing')                           // its items as the host holds them (enum fields as indexes)
+host.lanes('board')                                // { titles, counts, selected, lanes: NodeView[] }
+```
+
+`drop` checks what the host guarantees: both Lists share a `dragGroup`, the
+key is in the source, the index is in range (`0..count`, one less for a
+reorder), and the target subscribed `onDrop`. Like the device, the lists
+then show what the script left. The module also
 exports `HostError`, `VmFailure`, `DEFAULT_ENV`, `createDecoder`,
 `decodeMessage` (a json-v0 message of either direction as named entries, for assertions) and `HostTree`.
 Types: `src/testing/index.d.mts`.
@@ -362,14 +503,17 @@ Types: `src/testing/index.d.mts`.
 
 `conformance/*.json` are flows the harness produced from
 `conformance/apps/*.tsx`, for the hosts to replay in their own unit tests.
-A flow has `name`, `description`, `catalog`, `encoding` (`json-v0`), `app`,
+A flow has `name`, `description`, `catalog` (the catalogue its bundle
+declares), `encoding` (`json-v0`), `app`,
 `ns`; `toVm` and `fromVm` hold the exact json-v0 messages of each
 direction, `order` interleaves them, `tree` is the host's tree of every card
 at the end, `host` what else the host did (`droppedWrites`, `toasts`,
 `menus`, `errors`), and `designExamples` the design strings it produced.
 Every string of design §5.7 comes out of a flow byte for byte;
 `conformance/design-examples.json` lists them (`id`, `dir`, `message`,
-`decoded`, `flow`).
+`decoded`, `flow`). Those flows run on a catalogue 1 host (their `init`
+says `"catalog":1`, as the design writes it); the catalogue 2 flows run on
+the SDK's.
 
 The ide repo copies these files into
 `android/app/src/test/resources/workerui/conformance/`, replays each flow
@@ -390,6 +534,11 @@ piece of work (`ide/native/README.md` › Conformance fixtures).
 | `nav-result.json` | A page popping itself with a result |
 | `env.json` | §5.7: the window passing 720 dp |
 | `action-menu.json` | An anchored action menu and the host's answer |
+| `markdown.json` | Catalogue 2: a dense, selectable Markdown; two link taps (an app link, a web link) |
+| `lanes-select.json` | Catalogue 2: a board (ListDetail `listFill` > Lanes > three Lists with `dragGroup`, cards with a bound `hue`); select on two lanes |
+| `list-drop.json` | Catalogue 2: a reorder, a drop across lanes, a drop into an empty lane, each spliced by the script |
+| `list-fill.json` | Catalogue 2: a card opened (`selected` and `showDetail` in one message), then dismissed |
+| `hue.json` | Catalogue 2: Icon, Badge and StatusDot in every hue, a Chip whose hue changes |
 
 ## The wire, as this SDK writes it
 
@@ -419,13 +568,17 @@ pnpm -F @iii-dev/native-ui typecheck     # the VM code (no DOM, no Node) and the
 pnpm -F @iii-dev/native-ui gen           # scripts/gen-catalog.mjs: src/generated/ after a catalog.json change
 node packages/native-ui/scripts/gen-conformance.mjs   # after a change that moves bytes on the wire
 pnpm -F @iii-dev/native-ui build:example # examples/hello/dist/native.js (also takes --watch)
+pnpm -F @iii-dev/native-ui build:catalog2 # examples/catalog2/dist/catalog2.js
 ```
 
 Both generators take `--check` (exit 1 when their output is stale), and a
 test (`test/catalog.test.ts`, `test/conformance.test.ts`) fails when
-`src/generated/` or `conformance/` is stale. `examples/hello` is tested by
-`test/example.test.ts`. A `catalog.json` change is orchestrated with the ide
-copy (`native/catalog/catalog.json`) and its generated Kotlin.
+`src/generated/` or `conformance/` is stale. `examples/hello` and
+`examples/catalog2` are tested by `test/example.test.ts`. A `catalog.json`
+change is orchestrated with the ide copy (`native/catalog/catalog.json`)
+and its generated Kotlin. A new catalogue version also lists what it added
+in `ADDED` of `scripts/gen-catalog.mjs` (catalog.json keeps no history),
+which the generator checks against catalog.json and turns into `SINCE`.
 
 In CI, the `native-ui` job (`.github/workflows/ci.yml`) runs biome, this
 package's typecheck and tests, the generators' `--check`, and every

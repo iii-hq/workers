@@ -142,9 +142,9 @@ export function host(): Readonly<JsonObject> | null {
 }
 
 /**
- * Functions are `<ns>::…`; trigger types are `<ns>::…` or `<ns>:…` (a
- * worker may name its triggers `kanban:ticket-changed`). Never `iii::` or
- * `engine::`. The host's policy checks the same.
+ * Functions are `<ns>::…`; trigger types are `<ns>::…` or `<ns>:…` (the
+ * kanban worker's are `kanban:change` and `kanban:comment`). Never `iii::`
+ * or `engine::`. The host's policy checks the same.
  */
 function checkOwn(kind: 'call' | 'bind', id: string): void {
   if (typeof id !== 'string' || !id) throw new IiiError('invalid', `iii.${kind === 'call' ? 'call' : 'on'} needs an id`)
