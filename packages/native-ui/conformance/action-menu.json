@@ -1,0 +1,76 @@
+{
+  "name": "action-menu",
+  "description": "An action menu anchored to the IconButton in the Page actions slot (anchor = its node id): title, subtitle, three actions (one with a hint, one destructive); the host answers index 2, and the page shows the choice.",
+  "catalog": 1,
+  "encoding": "json-v0",
+  "app": "conformance/apps/action-menu.tsx",
+  "ns": "demo",
+  "toVm": [
+    "[[1,{\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[2,3,1,[]]]",
+    "[[8,1,1,{\"index\":2}]]"
+  ],
+  "fromVm": [
+    "[[23,{\"sdk\":\"0.1.0\",\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
+    "[[1,1,40],[2,1,16,\"Tab\"],[1,2,10],[2,2,16,\"Nothing picked\"],[3,1,0,0,2],[1,3,21],[2,3,16,\"ellipsis-vertical\"],[2,3,17,\"More\"],[2,3,2,2],[3,1,1,0,3],[7,1,1]]",
+    "[[20,1,21,{\"anchor\":3,\"title\":\"Example Domain\",\"subtitle\":\"example.com\",\"actions\":[{\"label\":\"Copy URL\",\"icon\":\"copy\"},{\"label\":\"Zoom in\",\"icon\":\"zoom-in\",\"hint\":\"110%\"},{\"label\":\"Close tab\",\"icon\":\"x\",\"destructive\":true}]}]]",
+    "[[2,2,16,\"Picked Close tab\"]]"
+  ],
+  "order": ["fromVm", "toVm", "fromVm", "toVm", "fromVm", "toVm", "fromVm"],
+  "tree": {
+    "1": {
+      "type": "Page",
+      "id": 1,
+      "props": {
+        "title": "Tab"
+      },
+      "slots": {
+        "body": [
+          {
+            "type": "Text",
+            "id": 2,
+            "props": {
+              "text": "Picked Close tab"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "type": "IconButton",
+            "id": 3,
+            "props": {
+              "events": ["press"],
+              "icon": "ellipsis-vertical",
+              "label": "More"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "host": {
+    "menus": [
+      {
+        "anchor": 3,
+        "title": "Example Domain",
+        "subtitle": "example.com",
+        "actions": [
+          {
+            "label": "Copy URL",
+            "icon": "copy"
+          },
+          {
+            "label": "Zoom in",
+            "icon": "zoom-in",
+            "hint": "110%"
+          },
+          {
+            "label": "Close tab",
+            "icon": "x",
+            "destructive": true
+          }
+        ]
+      }
+    ]
+  }
+}

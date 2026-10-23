@@ -25,6 +25,8 @@ iii-sdk = "=0.24.6"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
+# The native app for the iii app (src/native_ui.rs): descriptor, bundle, hot reload.
+iii-native-ui = { path = "../crates/native-ui" }
 # Typed judge::evaluate messages for browser::run; the judge worker itself is
 # optional at runtime.
 judge-contract = { path = "../crates/judge-contract" }
