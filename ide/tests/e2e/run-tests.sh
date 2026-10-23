@@ -49,7 +49,7 @@ Env overrides:
   WORKER_BIN_LINK     Path to the symlink the engine reads.
   HARNESS_TIMEOUT     Seconds to wait for the harness sentinel (default: 90).
                       config.yaml binds sandbox-mock, so sandbox::create gets
-                      S301 and cases-exec-sandbox.ts SKIPs, on KVM hosts too.
+                      S304 and cases-exec-sandbox.ts SKIPs, on KVM hosts too.
                       Real-VM ide coverage is the template-stack check (spec 11).
   E2E_PORT            Engine WebSocket port (default: 49134).
 EOF

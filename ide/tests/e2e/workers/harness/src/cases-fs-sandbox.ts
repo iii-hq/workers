@@ -114,7 +114,7 @@ export function setupSandboxMocks(sdk: IIIClient): void {
     );
   });
   // NOTE: no sandbox-mock::create / exec / stop. The exec-side cases
-  // (cases-exec-sandbox.ts) need a real VM: here sandbox::create gets S301
+  // (cases-exec-sandbox.ts) need a real VM: here sandbox::create gets S304
   // and they SKIP, on KVM hosts too (real-VM coverage: template-stack check,
   // spec 11). The fs mocks test wire-level forwarding shape only, without a
   // VM per case.

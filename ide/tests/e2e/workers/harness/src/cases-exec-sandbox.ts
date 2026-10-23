@@ -20,7 +20,7 @@ import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts
 //      sandbox.
 //
 // tests/e2e/config.yaml binds the `sandbox-mock` adapter, so the fs
-// cases go through the router while sandbox::create gets S301 and every
+// cases go through the router while sandbox::create gets S304 and every
 // case here logs SKIP, on KVM hosts too. Real-VM ide coverage is the
 // template-stack check (spec 11).
 
@@ -56,7 +56,7 @@ async function ensureSandbox(ctx: CaseContext): Promise<string | null> {
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     sandbox.status = 'unavailable';
-    sandbox.skipReason = `iii-sandbox not reachable or host lacks virt: ${msg}`;
+    sandbox.skipReason = `sandbox::create failed (bound adapter has no create, or host lacks virt): ${msg}`;
     return null;
   }
 }

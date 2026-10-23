@@ -20,7 +20,7 @@ Modeled on `database/tests/e2e/`.
 - **Sandbox-target cases**: `config.yaml` binds the `sandbox-mock`
   adapter (`sandbox: {adapter: sandbox-mock, namespace: ide-e2e}`), which
   the harness registers. The fs cases go through the engine's sandbox
-  router; `sandbox::create` gets `S301`, so every case in
+  router; `sandbox::create` gets `S304`, so every case in
   `EXEC_SANDBOX_CASES` short-circuits with a `SKIP` log line and the rest
   of the suite still runs, on KVM hosts too. Real-VM ide coverage is the
   template-stack check (spec 11).
