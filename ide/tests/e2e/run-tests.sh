@@ -48,11 +48,9 @@ Env overrides:
   WORKER_BIN_TARGET   Path to the built worker binary.
   WORKER_BIN_LINK     Path to the symlink the engine reads.
   HARNESS_TIMEOUT     Seconds to wait for the harness sentinel (default: 90).
-                      Bump this on a fresh dev machine: cases-exec-sandbox.ts
-                      drives the real iii-sandbox worker, and the first
-                      sandbox::create cold-pulls the python image. Try
-                      HARNESS_TIMEOUT=300 if you see "did not emit sentinel
-                      within 90s" on initial runs.
+                      config.yaml binds sandbox-mock, so sandbox::create gets
+                      S304 and cases-exec-sandbox.ts SKIPs, on KVM hosts too.
+                      Real-VM ide coverage is the template-stack check (spec 11).
   E2E_PORT            Engine WebSocket port (default: 49134).
 EOF
       exit 0
@@ -205,11 +203,11 @@ done
 echo "[run-tests] engine listening"
 
 # 8. Start the shell worker as a host process. Project workers are no longer
-# accepted in config.yaml by iii 0.23. The harness's sandbox::fs::* mocks live
-# in ide-e2e, so the worker looks for those there; create/exec/stop still reach
-# the real iii-sandbox in `default`.
+# accepted in config.yaml by iii 0.23. The worker calls sandbox::* in
+# `default`, where the engine's router forwards them to the sandbox-mock
+# adapter the harness registers in ide-e2e.
 echo "[run-tests] starting shell worker"
-(cd "$RUN_ROOT" && III_NAMESPACE=ide-e2e III_SANDBOX_FS_NAMESPACE=ide-e2e "$WORKER_BIN_TARGET" \
+(cd "$RUN_ROOT" && III_NAMESPACE=ide-e2e "$WORKER_BIN_TARGET" \
   --url "ws://127.0.0.1:$E2E_PORT" --config "$WORKER_CONFIG") \
   >"$WORKER_LOG" 2>&1 &
 WORKER_PID=$!

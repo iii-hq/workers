@@ -20,10 +20,11 @@ use crate::triggers::TriggerFwd;
 pub(crate) struct SandboxExecResponse {
     pub stdout: String,
     pub stderr: String,
-    pub exit_code: i32,
+    // `null` when the in-VM process died on a signal (no exit status).
+    pub exit_code: Option<i32>,
     pub duration_ms: u64,
     pub timed_out: bool,
-    // The engine wire also has `success` (== exit_code == 0 && !timed_out);
+    // The engine wire also has `success` (== exit_code == Some(0) && !timed_out);
     // we drop it on this side because it's derived.
 }
 
@@ -115,7 +116,7 @@ impl ExecBackend for SandboxExecBackend {
         Ok(ExecOutcome {
             stdout: parsed.stdout,
             stderr: parsed.stderr,
-            exit_code: Some(parsed.exit_code),
+            exit_code: parsed.exit_code,
             duration_ms: parsed.duration_ms,
             timed_out: parsed.timed_out,
             // sandbox::exec doesn't expose host-side truncation; spec says
@@ -442,6 +443,44 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "S216");
+    }
+
+    #[tokio::test]
+    async fn signal_death_null_exit_code_round_trips_as_none() {
+        // The router returns `exit_code: null` when the in-VM process died on a
+        // signal; that must surface as `None`, not a decode error.
+        let stub = StubFwd::ok(json!({
+            "stdout": "", "stderr": "Killed\n", "exit_code": null,
+            "duration_ms": 3, "timed_out": false, "success": false,
+        }));
+        let b = backend(stub, Uuid::new_v4());
+        let out = b
+            .run(&["sh".into()], 1000, &ExecOverrides::default())
+            .await
+            .expect("null exit_code is a valid response");
+        assert_eq!(out.exit_code, None);
+        assert!(!out.timed_out);
+        assert_eq!(out.stderr, "Killed\n");
+    }
+
+    #[tokio::test]
+    async fn remote_s301_keeps_router_fix_text() {
+        // The router's S301 (adapter not connected) carries its own fix text;
+        // the ide must forward it verbatim even though S301 is not one of its
+        // canonical codes and collapses to S216.
+        let stub = StubFwd::remote_err(
+            "invocation_failed",
+            r#"{"type":"transient","code":"S301","message":"adapter sandbox-builtin not connected in namespace my-proj; compose::add iii-sandbox in that project installs it","retryable":true}"#,
+        );
+        let b = backend(stub, Uuid::new_v4());
+        let err = b
+            .run(&["echo".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S216");
+        assert!(err
+            .message
+            .contains("compose::add iii-sandbox in that project installs it"));
     }
 
     #[tokio::test]

@@ -179,10 +179,12 @@ containers:
         self.local_worker("harness")
         self.local_worker("node-worker", "language: typescript\nscripts: {start: 'node index.js'}\n")
         self.local_worker("no-start", "language: typescript\n")
+        self.local_worker("sandbox-builtin")
         self.write("worker-compose.yaml", """\
 containers:
   agent: {worker: 'package://harness', scripts: {run: 'cargo run --release'}}
   node: {worker: package://node-worker}
+  adapter: {worker: package://sandbox-builtin}
   missing: {worker: package://no-start}
   registry: {worker: 'package://example.com/harness'}
 """, template="harness-kanban")
@@ -192,6 +194,7 @@ containers:
         self.assertEqual(containers["agent"]["worker"], "path://../../harness")
         self.assertEqual(containers["agent"]["scripts"], {"run": "cargo run --release"})
         self.assertEqual(containers["node"], {"worker": "path://../../node-worker"})
+        self.assertEqual(containers["adapter"]["worker"], "package://sandbox-builtin")
         self.assertEqual(containers["missing"]["worker"], "package://no-start")
         self.assertEqual(containers["registry"]["worker"], "package://example.com/harness")
 

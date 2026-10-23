@@ -237,7 +237,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           # Only the source stack is pinned; registry validation retains its explicit cli_channel.
-          III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+          III_RELEASE_TAG: 'iii/v0.26.0'
           III_INSTALL_URL: https://install.iii.dev/iii/main/install.sh
           III_INSTALL_BIN_DIR: ${{ github.workspace }}/target/iii/bin
         run: |
@@ -248,9 +248,7 @@ jobs:
             -o "$installer"
           BIN_DIR="$III_INSTALL_BIN_DIR" sh "$installer"
 
-          for binary in iii iii-init iii-worker; do
-            test -x "$III_INSTALL_BIN_DIR/$binary"
-          done
+          test -x "$III_INSTALL_BIN_DIR/iii"
           version=$("$III_INSTALL_BIN_DIR/iii" --version | awk '{print $NF}')
           test -n "$version"
           {
@@ -382,8 +380,6 @@ jobs:
           set -euo pipefail
           paths=(
             target/iii/bin/iii
-            target/iii/bin/iii-init
-            target/iii/bin/iii-worker
             database/target/release/database
             state/target/release/state
             queue/target/release/queue

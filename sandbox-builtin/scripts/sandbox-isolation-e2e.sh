@@ -170,12 +170,17 @@ echo "adapter: $ADAPTER_BIN ($(sha256sum "$ADAPTER_BIN" | cut -c1-16)), function
 [ "$(id -u)" -ne 0 ] || echo "WARNING: running as root; the unprivileged erofs build path is not exercised"
 if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then fail "/dev/kvm is not usable by $(id -un)"; exit 1; fi
 
+# `sandbox:` binds the engine's sandbox::* router to the adapter (namespace
+# default). It is unconditional: the direct sandbox-builtin::* ids keep working
+# on a bound engine, so the script runs under either SANDBOX_ID_PREFIX.
 cat > "$WORK/config.yaml" << EOF
 workers:
   - name: iii-worker-manager
     config:
       port: $PORT
       host: 127.0.0.1
+sandbox:
+  adapter: sandbox-builtin
 EOF
 # The adapter reads this once at startup from the engine's configuration worker.
 # vCPUs and memory come from the config defaults (1 vCPU, 512 MiB).

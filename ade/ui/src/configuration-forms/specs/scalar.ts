@@ -146,7 +146,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
             'sandbox_image',
             'Image',
             [],
-            "Booted when a session names no image. The list is iii-sandbox's custom_images (name — OCI ref); add an OCI image there, in iii-sandbox's own configuration.",
+            "Booted when a session names no image. The list is iii-sandbox's custom_images (name — OCI ref); add an OCI image there, in sandbox-builtin's configuration.",
             {
               optional: true,
               placeholder: 'Every session names its image',

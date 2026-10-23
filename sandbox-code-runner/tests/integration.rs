@@ -1,9 +1,12 @@
-//! End-to-end: engine → sandbox-code-runner → iii-sandbox → microVM → runner.
+//! End-to-end: engine → sandbox-code-runner → sandbox router → sandbox-builtin
+//! adapter → microVM → runner.
 //!
 //! GATED: set SANDBOX_CODE_RUNNER_E2E=1 to run (needs /dev/kvm, network for the
-//! first image pull, and an engine binary — same convention as
-//! node-engine's integration test). Skips silently otherwise so
-//! `cargo test` is green on machines without virtualization.
+//! first image pull, an engine binary — same convention as
+//! node-engine's integration test — and the adapter binary in ADAPTER_BIN, a
+//! sandbox-builtin built with `--features embed-init`, as in its isolation e2e).
+//! Skips silently otherwise so `cargo test` is green on machines without
+//! virtualization.
 
 use std::time::Duration;
 
@@ -11,7 +14,9 @@ fn gated() -> bool {
     if std::env::var("SANDBOX_CODE_RUNNER_E2E").as_deref() == Ok("1") {
         return false;
     }
-    eprintln!("SKIPPED: set SANDBOX_CODE_RUNNER_E2E=1 (and III_BIN) to run the e2e test");
+    eprintln!(
+        "SKIPPED: set SANDBOX_CODE_RUNNER_E2E=1 (and III_BIN, ADAPTER_BIN) to run the e2e test"
+    );
     true
 }
 
@@ -35,42 +40,38 @@ fn wait_for_listen(port: u16, deadline: Duration) {
     panic!("nothing listening on port {port} after {deadline:?}");
 }
 
-/// Spawn a local `iii` engine the way `node-engine/tests/integration.rs`
-/// does (Task 9 Step 1): resolve the binary, write a `workers:` config with
-/// an `iii-worker-manager` block bound to `port`, and start it with
-/// `-c <path> --no-update-check`.
-///
-/// Two differences from that recipe, both required by this task:
-///
-/// - Binary resolution also honors `III_BIN` (checked first, falling back
-///   to `which::which("iii")` — node-engine's actual lookup). node-engine's
-///   committed test has no `III_BIN` support at all; it is PATH-only. This
-///   test adds the env override because Step 3's verification command
-///   (`III_BIN=<engine binary> cargo test ...`) requires it.
-/// - The config additionally carries an `iii-sandbox` block. Confirmed
-///   against `iii-worker/src/sandbox_daemon/README.md`'s "Sample
-///   Configuration", `docs/creating-workers/sandboxes.mdx`, and — decisively
-///   — the commented-out block already living under `workers:` in the real
-///   engine's own `engine/config.yaml` and the `workers:` list in
-///   `sdk/fixtures/config-test.yaml`: the block is a `- name: iii-sandbox`
-///   entry under the same top-level `workers:` key as `iii-worker-manager`,
-///   not a separate top-level key.
-fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
-    let iii_bin = std::env::var_os("III_BIN")
+/// Resolve the `iii` binary: `III_BIN` first, falling back to
+/// `which::which("iii")` — node-engine's actual lookup. node-engine's
+/// committed test has no `III_BIN` support at all; it is PATH-only. This test
+/// adds the env override because the verification command
+/// (`III_BIN=<engine binary> cargo test ...`) requires it.
+fn iii_bin() -> std::path::PathBuf {
+    std::env::var_os("III_BIN")
         .map(std::path::PathBuf::from)
         .or_else(|| which::which("iii").ok())
         .expect(
             "III_BIN must point at an iii engine binary, or `iii` must be on PATH \
              (same convention as node-engine/tests/integration.rs)",
-        );
+        )
+}
 
+/// Spawn a local `iii` engine the way `node-engine/tests/integration.rs`
+/// does (Task 9 Step 1): write a `workers:` config with an
+/// `iii-worker-manager` block bound to `port`, and start it with
+/// `-c <path> --no-update-check`.
+///
+/// The config also carries the top-level `sandbox:` key that binds the
+/// engine's `sandbox::*` router to the `sandbox-builtin` adapter. The VM
+/// daemon is no longer an `iii-sandbox` entry under `workers:` (the engine
+/// refuses one); `spawn_adapter` starts it as its own process instead.
+fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
     let cfg_path = home.join("config.yaml");
     let cfg_body = format!(
-        "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n\n  - name: iii-sandbox\n    config:\n      auto_install: true\n      image_allowlist:\n        - python\n        - node\n"
+        "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n\nsandbox:\n  adapter: sandbox-builtin\n"
     );
     std::fs::write(&cfg_path, &cfg_body).expect("write engine config.yaml");
 
-    std::process::Command::new(&iii_bin)
+    std::process::Command::new(iii_bin())
         .arg("-c")
         .arg(&cfg_path)
         .arg("--no-update-check")
@@ -80,26 +81,71 @@ fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
         .expect("spawn iii engine binary")
 }
 
+/// Seed the adapter's config, then spawn the `$ADAPTER_BIN` sandbox-builtin.
+///
+/// The adapter reads config id `sandbox-builtin` once at startup and falls
+/// back to serde defaults that deny every image, so the allowlist must be in
+/// the engine's configuration worker first. `flush: false` keeps it in memory
+/// (`configuration::set` may precede registration). The port can open before
+/// the configuration worker serves, so the call is retried until it exits 0.
+fn spawn_adapter(iii_bin: &std::path::Path, port: u16) -> std::process::Child {
+    let set = serde_json::json!({
+        "id": "sandbox-builtin",
+        "value": { "auto_install": true, "image_allowlist": ["python", "node"] },
+        "flush": false,
+    });
+    let start = std::time::Instant::now();
+    loop {
+        let out = std::process::Command::new(iii_bin)
+            .args(["trigger", "--port", &port.to_string(), "configuration::set"])
+            .args(["--json", &set.to_string()])
+            .output()
+            .expect("run iii trigger configuration::set");
+        if out.status.success() {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "configuration::set sandbox-builtin never exited 0: {} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let adapter_bin = std::env::var_os("ADAPTER_BIN").expect(
+        "ADAPTER_BIN must point at a sandbox-builtin binary built with --features embed-init",
+    );
+    std::process::Command::new(adapter_bin)
+        .env("III_URL", format!("ws://127.0.0.1:{port}"))
+        .spawn()
+        .expect("sandbox-builtin adapter starts")
+}
+
 /// Kills whatever processes have been handed to it and removes the scratch
 /// home on drop — including when a panic unwinds through this scope, not
 /// just on a normal return.
 ///
-/// `wait_for_listen` and the `sandbox-code-runner` spawn below both run BEFORE the
-/// `catch_unwind` block, so a panic there (e.g. the engine hanging mid-boot)
-/// would otherwise skip straight past the manual cleanup at the bottom of
-/// this function. `std::process::Child` does not kill its process on drop,
-/// so that window would leak the already-spawned engine (and the scratch
-/// home) on exactly the failure path a developer most needs clean state on.
-/// Mirrors `KillOnDrop` in `node-engine/tests/integration.rs`.
+/// `wait_for_listen` and the adapter and `sandbox-code-runner` spawns below all
+/// run BEFORE the `catch_unwind` block, so a panic there (e.g. the engine
+/// hanging mid-boot) would otherwise skip straight past the manual cleanup at
+/// the bottom of this function. `std::process::Child` does not kill its
+/// process on drop, so that window would leak the already-spawned engine (and
+/// the scratch home) on exactly the failure path a developer most needs clean
+/// state on. Mirrors `KillOnDrop` in `node-engine/tests/integration.rs`.
 struct Cleanup {
     engine: Option<std::process::Child>,
+    adapter: Option<std::process::Child>,
     worker: Option<std::process::Child>,
     home: Option<std::path::PathBuf>,
 }
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        for c in [&mut self.engine, &mut self.worker].into_iter().flatten() {
+        for c in [&mut self.engine, &mut self.adapter, &mut self.worker]
+            .into_iter()
+            .flatten()
+        {
             let _ = c.kill();
             let _ = c.wait();
         }
@@ -498,12 +544,17 @@ fn full_loop_eval_register_trigger_teardown() {
     std::fs::create_dir_all(&home).unwrap();
     let mut cleanup = Cleanup {
         engine: None,
+        adapter: None,
         worker: None,
         home: Some(home.clone()),
     };
 
     cleanup.engine = Some(spawn_engine(port, &home));
     wait_for_listen(port, Duration::from_secs(30));
+
+    // The adapter connects asynchronously; until it has, router calls answer
+    // S301 and the retry loop below keeps polling.
+    cleanup.adapter = Some(spawn_adapter(&iii_bin(), port));
 
     cleanup.worker = Some(
         std::process::Command::new(env!("CARGO_BIN_EXE_sandbox-code-runner"))

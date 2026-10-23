@@ -5,10 +5,15 @@ stop_timeout: 10s
 
 engine:
   url: ws://127.0.0.1:${III_ENGINE_PORT:-49134}
-  # Built into the engine, so it is not a container: boots the microVMs behind
-  # computer's sandbox sessions. `desktop` is the console's default image.
-  workers:
-    iii-sandbox:
+
+containers:
+  # Serves the engine's sandbox::* calls in microVMs, behind computer's sandbox
+  # sessions. Operator-declared and unmarked, so Compose never removes it while
+  # computer needs it. `desktop` is the console's default image.
+  sandbox-builtin:
+    worker: package://sandbox-builtin
+    version: '^1'
+    config_override:
       auto_install: true
       image_allowlist: [desktop, anthropic]
       custom_images:
@@ -16,7 +21,6 @@ engine:
         # Firefox and LibreOffice; give it computer's sandbox_memory_mb >= 2048.
         anthropic: ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
 
-containers:
   queue:
     worker: path://../queue
     env_file:
@@ -246,6 +250,7 @@ containers:
       - judge-typesafe
       - judge
       - computer
+      - sandbox-builtin
     environment:
       RUST_LOG: info
       CI: "true"

@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Atomic worker initialization requires configuration::ensure (MOT-4736).
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+  III_RELEASE_TAG: 'iii/v0.26.0'
 
 jobs:
   scripts-tests:
@@ -498,6 +498,9 @@ jobs:
         run: cargo build --locked --features embed-init,embed-libkrunfw
 
       - name: Sandbox isolation end to end (UBI 9 image, real microVMs)
+        env:
+          # The script drives sandbox::*; the engine routes it to the adapter.
+          SANDBOX_ID_PREFIX: sandbox
         run: |
           III_BIN="$III_ENGINE_BIN" ADAPTER_BIN=target/debug/sandbox-builtin \
             WORK="$RUNNER_TEMP/sandbox-isolation" bash scripts/sandbox-isolation-e2e.sh
