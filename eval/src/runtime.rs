@@ -3558,4 +3558,91 @@ mod tests {
         );
         assert!(down.to_string().contains("e2e_unavailable"));
     }
+
+    fn check(
+        decision_point: &str,
+        signal: SignalV1,
+        change: Vec<ChangeEditV1>,
+    ) -> SuggestionCheckV1 {
+        SuggestionCheckV1 {
+            decision_point: decision_point.into(),
+            signal,
+            change,
+        }
+    }
+
+    fn rule() -> SignalV1 {
+        SignalV1 {
+            rule: Some(SignalRuleV1::ContractRediscovery),
+            question: None,
+        }
+    }
+
+    fn question(text: &str) -> SignalV1 {
+        SignalV1 {
+            rule: None,
+            question: Some(text.into()),
+        }
+    }
+
+    fn edit(target: &str, find: Option<&str>, replace: Option<&str>, remove: bool) -> ChangeEditV1 {
+        ChangeEditV1 {
+            target: target.into(),
+            find: find.map(str::to_string),
+            replace: replace.map(str::to_string),
+            remove,
+        }
+    }
+
+    #[test]
+    fn a_suggestion_check_needs_an_assistant_entry_and_exactly_one_signal() {
+        assert!(validate_check(&check("e_t_1_4_assistant", rule(), vec![])).is_ok());
+        assert!(validate_check(&check("e_t_1_4_assistant", question("did it?"), vec![])).is_ok());
+        // Both a rule and a question: refused.
+        assert!(validate_check(&check(
+            "e_t_1_4_assistant",
+            SignalV1 {
+                rule: Some(SignalRuleV1::ContractRediscovery),
+                question: Some("q".into()),
+            },
+            vec![],
+        ))
+        .is_err());
+        // Neither: refused.
+        assert!(validate_check(&check(
+            "e_t_1_4_assistant",
+            SignalV1 {
+                rule: None,
+                question: None
+            },
+            vec![],
+        ))
+        .is_err());
+        assert!(validate_check(&check("e_t_1_4_assistant", question("  "), vec![])).is_err());
+        let long = "x".repeat(MAX_QUESTION_CHARS + 1);
+        assert!(validate_check(&check("e_t_1_4_assistant", question(&long), vec![])).is_err());
+        assert!(validate_check(&check(" ", rule(), vec![])).is_err());
+        assert!(validate_check(&check("e_t_1_4_user", rule(), vec![])).is_err());
+        // A bad edit makes the whole check invalid.
+        assert!(validate_check(&check(
+            "e_t_1_4_assistant",
+            rule(),
+            vec![edit(SYSTEM_PROMPT_TARGET, None, None, true)],
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn an_edit_replaces_text_or_removes_an_entry_but_never_the_system_prompt() {
+        assert!(validate_edit(&edit("e1", Some("a"), Some("b"), false)).is_ok());
+        assert!(validate_edit(&edit(SYSTEM_PROMPT_TARGET, Some("a"), Some(""), false)).is_ok());
+        assert!(validate_edit(&edit("e1", None, None, true)).is_ok());
+        assert!(validate_edit(&edit(SYSTEM_PROMPT_TARGET, None, None, true)).is_err());
+        assert!(validate_edit(&edit("e1", Some("a"), None, true)).is_err());
+        assert!(validate_edit(&edit("e1", None, Some("b"), true)).is_err());
+        assert!(validate_edit(&edit("e1", Some(""), Some("b"), false)).is_err());
+        assert!(validate_edit(&edit("e1", Some("a"), None, false)).is_err());
+        assert!(validate_edit(&edit("e1", None, None, false)).is_err());
+        assert!(validate_edit(&edit(" ", Some("a"), Some("b"), false)).is_err());
+    }
 }
