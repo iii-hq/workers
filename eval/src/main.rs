@@ -66,12 +66,12 @@ async fn main() -> Result<()> {
         .context("ensuring eval-run queue")?;
 
     // Publish indexes saved before a crash and resume pending analyses before
-    // any new observation can be admitted.
+    // the sweep is bound.
     match runtime::recover(&deps).await {
         Ok(recovered) => tracing::info!(?recovered, "eval startup recovery finished"),
         Err(error) => tracing::warn!(%error, "eval startup recovery failed; the sweep retries"),
     }
-    let _trigger_handles = bind_triggers(&iii, &deps);
+    let _trigger_handles = bind_triggers(&iii);
 
     tracing::info!("eval ready");
     tokio::signal::ctrl_c().await?;
@@ -79,23 +79,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>, deps: &Deps) -> Vec<Trigger> {
+fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>) -> Vec<Trigger> {
     let mut handles = Vec::new();
-    for (trigger_type, function_id, config) in [
-        ("harness::turn-completed", functions::WAKE_ID, json!({})),
-        (
-            "cron",
-            functions::SWEEP_ID,
-            json!({ "expression": "*/15 * * * * *" }),
-        ),
-    ] {
+    for (trigger_type, function_id, config) in [(
+        "cron",
+        functions::SWEEP_ID,
+        json!({ "expression": "*/15 * * * * *" }),
+    )] {
         match iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config)) {
-            Ok(handle) => {
-                if function_id == functions::WAKE_ID {
-                    deps.observer.set(Ok(()));
-                }
-                handles.push(handle);
-            }
+            Ok(handle) => handles.push(handle),
             Err(error) => {
                 tracing::warn!(
                     trigger_type,
@@ -103,11 +95,6 @@ fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>, deps: &Deps) -> Vec<Trigger> {
                     %error,
                     "eval trigger binding failed"
                 );
-                if function_id == functions::WAKE_ID {
-                    // Shown by eval::config: automatic observation is
-                    // unavailable even when enabled.
-                    deps.observer.set(Err(error.to_string()));
-                }
             }
         }
     }

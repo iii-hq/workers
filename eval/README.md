@@ -14,21 +14,10 @@ behavior is specified in
 
 ## How an analysis works
 
-1. **Admission.** A terminal `harness::turn-completed` of a root session (or
-   a manual `eval::analyze-session`) admits one analysis per session turn.
-   Automatic observation admits only the user's chats. From `session::get` the
-   session must have kind `user` (a record without a kind counts as `user`), a
-   chat `metadata.surface` (`console`, `slack` or `telegram`, which each client
-   writes on every send) and no `metadata` key starting with `e2e_`.
-   Everything else answers `not_user_chat` and can still be analyzed by hand:
-   E2E runs (kind `e2e`, or `e2e_*` metadata on the ones recorded before the
-   kind existed), automations (sentinel investigations and the monitor's own,
-   which it opens as `automation`; the console stamps `console` on those too,
-   so the kind is what excludes them), scripted and sub-agent sessions (kind
-   `user` but no surface) and sessions whose record cannot be read. Progress
-   events,
-   descendants and the monitor's own sessions are never admitted; a
-   redelivered event returns the existing analysis.
+1. **Admission.** eval never consults or admits user chats: it binds no
+   Harness turn trigger and has no manual session analysis. Work enters
+   through a loop cycle (`eval::start`, from an objective or an E2E
+   execution).
 2. **Collection.** The monitor waits until the turn is definitive and every
    descendant has finished (`harness::metrics.complete`), then reads every
    transcript page with `include_custom: true`, failing on malformed pages
@@ -116,30 +105,19 @@ The monitor reuses the existing providers; it never receives a TypeSafe or
 LLM key. Jev credentials stay in `judge-typesafe`; the LLM's in its provider.
 
 ```bash
-# 1. Choose the investigating model (validated against router::models::list)
-#    and keep it paused.
+# 1. Choose the investigating model (validated against router::models::list).
 iii trigger eval::configure --json '{
   "enabled": false,
   "model": {"model": "<model-id>", "provider": "<provider-id>"}
 }'
 
-# 2. Analyze one finished root session by hand (works while paused).
-iii trigger eval::analyze-session --json '{"session_id": "<session>"}'
-
-# 3. Follow it, then read evidence, triage and suggestions.
-iii trigger eval::status --json '{"evaluation_id": "<id>"}'
-iii trigger eval::result --json '{"evaluation_id": "<id>"}'
-
-# 4. Enable automatic observation once the manual results look right.
-iii trigger eval::configure --json '{
-  "enabled": true,
-  "model": {"model": "<model-id>", "provider": "<provider-id>"}
-}'
+# 2. Start a loop cycle, follow it, read its result.
+iii trigger eval::start --json '{"objective": "<objective>"}'
+iii trigger eval::status --json '{"cycle_id": "<id>"}'
+iii trigger eval::result --json '{"cycle_id": "<id>"}'
 ```
 
-`eval::config` shows the configuration and whether the
-`harness::turn-completed` binding is active (`observer_bound`); when it is
-false, automatic observation is unavailable even if enabled.
+`eval::config` shows the configuration.
 
 `thinking_level`, `provider_options` (namespaced by the selected provider),
 `code_repository` and `daily_cost_cap_usd` are optional. A configuration
@@ -190,10 +168,8 @@ counts as capture for its day.
 `daily_cost_cap_usd` (a number above 0; absent means no cap, and then the
 configuration revision is what it was) pauses **automatic** observation for the
 rest of the UTC day once `today_capture_usd` reaches it: the turn is not admitted,
-`eval::on-turn-completed` answers `cost_cap`, and `eval::config`'s
-`last_rejection` records the turn with `reason: cost_cap` (`at_capacity` for the
-unfinished-analyses cap). A manual `eval::analyze-session` is never refused by
-the cap, and a redelivered event of an already admitted turn is still reused.
+`eval::config`'s `last_rejection` records the turn with `reason: cost_cap`
+(`at_capacity` for the unfinished-analyses cap).
 The cap is checked twice: at admission and again where the money is spent,
 right before an automatic analysis first calls the model (under one lock, so
 investigations starting together see each other); one that finds it reached
@@ -299,7 +275,6 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | --- | --- |
 | `eval::configure` | Model selection, optional code directory, optional daily cost cap and enable/pause. |
 | `eval::config` | Configuration (or null), observer status, the latest rejection and the `cost` block. |
-| `eval::analyze-session` | Manual analysis; `reanalyze: true` creates another analysis after the previous one ended. |
 | `eval::list` | Compact records, newest first (`limit` 1–200, default 50); `observation_key` keeps only the analyses of one observed turn, reanalyses included. |
 | `eval::status` | One compact record, or null. |
 | `eval::result` | Record plus evidence, diagnostics, triage, suggestions, the monitor's own consumption, E2E links and one review row per suggestion (`reviews`). |
@@ -313,8 +288,8 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | `eval::reproduce` | Replays a suggestion's decision point: rebuilds the request the model received at that step (optionally edited), samples the next reply N times without running any function and reads the signal in each. `dry_run` only rebuilds and checks fidelity. See [VALIDATION.md](VALIDATION.md). |
 | `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
 
-Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8),
-`eval::on-turn-completed` and `eval::sweep` (cron, every 15 s).
+Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8)
+and `eval::sweep` (cron, every 15 s).
 
 ## Evidence handling
 

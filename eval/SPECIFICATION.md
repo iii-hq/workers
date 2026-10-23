@@ -62,6 +62,8 @@ Uma conclusão intermediária com continuação pendente não deve ser tratada c
 
 Sessões criadas pelo próprio monitor para investigar evidências devem ser excluídas da observação automática, inclusive seus descendentes. Essa exclusão evita um ciclo de avaliações das próprias avaliações.
 
+Chats de usuário não são consultados nem admitidos: o eval não observa o fim de turnos do Harness e não oferece análise manual de sessão; o trabalho entra pelo ciclo do loop.
+
 ### 4.2 Captura e rastreabilidade
 
 Cada análise deve identificar a sessão e o turno que a originaram, o momento da captura e a versão das regras usadas.

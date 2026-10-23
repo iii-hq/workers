@@ -5,16 +5,15 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 
 use crate::contract::{
-    AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, CycleIdRequestV1,
-    CycleListRequestV1, CycleStartRequestV1, EvaluationIdRequestV1, MonitorStateRequestV1,
-    RecurrenceRequestV1, ReproduceRequestV1, ReviewRequestV1, ReviewsRequestV1,
-    StartValidationRequestV1, StepRequestV1, SweepEventV1, WakeEventV1,
+    AttachValidationRequestV1, ConfigureRequestV1, CycleIdRequestV1, CycleListRequestV1,
+    CycleStartRequestV1, EvaluationIdRequestV1, MonitorStateRequestV1, RecurrenceRequestV1,
+    ReproduceRequestV1, ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1,
+    SweepEventV1,
 };
 use crate::runtime::Deps;
 
 pub const CONFIGURE_ID: &str = "eval::configure";
 pub const CONFIG_ID: &str = "eval::config";
-pub const ANALYZE_SESSION_ID: &str = "eval::analyze-session";
 pub const START_ID: &str = "eval::start";
 pub const LIST_ID: &str = "eval::list";
 pub const STATUS_ID: &str = "eval::status";
@@ -28,7 +27,6 @@ pub const REVIEWS_ID: &str = "eval::reviews";
 pub const RECURRENCE_ID: &str = "eval::recurrence";
 pub const REPRODUCE_ID: &str = "eval::reproduce";
 pub const STEP_ID: &str = "eval::step";
-pub const WAKE_ID: &str = "eval::on-turn-completed";
 pub const SWEEP_ID: &str = "eval::sweep";
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
@@ -75,24 +73,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
              (capacity or daily cost cap), the day's known investigation cost against the cap with \
              what one analysis has cost, and, with check_providers, whether the Jev triage \
              provider answers.",
-        ),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        ANALYZE_SESSION_ID,
-        RegisterFunction::new_async(move |request: AnalyzeSessionRequestV1| {
-            let deps = current.clone();
-            async move {
-                crate::runtime::analyze_session(&deps, request)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description(
-            "Analyze the latest definitive turn of a finished root Harness session. Returns the \
-             existing analysis of that turn unless reanalyze is true; reanalysis needs the \
-             previous analysis to be terminal. Works while automatic observation is paused.",
         ),
     );
 
@@ -327,21 +307,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             }
         })
         .description("Internal durable analysis step.")
-        .metadata(json!({ "internal": true, "trace_hidden": true })),
-    );
-
-    let current = deps.clone();
-    iii.register_function(
-        WAKE_ID,
-        RegisterFunction::new_async(move |event: WakeEventV1| {
-            let deps = current.clone();
-            async move {
-                crate::runtime::wake(&deps, event)
-                    .await
-                    .map_err(Error::from)
-            }
-        })
-        .description("Internal harness turn-completed admission and wake-up.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 

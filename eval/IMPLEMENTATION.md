@@ -62,7 +62,6 @@ Validar seleção não vazia e opções suportadas pelo modelo. Usar `router::mo
 | --- | --- | --- |
 | `eval::configure` | Configuração acima. | Configuração efetiva e revisão. |
 | `eval::config` | `{}`. | Configuração ou `null` quando não configurado. |
-| `eval::analyze-session` | `session_id`, `reanalyze` opcional, padrão `false`. | `evaluation_id`, `status` e indicação de reutilização de uma análise existente. |
 | `eval::list` | `limit` opcional, padrão 50, máximo 200. | Resumos recentes, sem carregar transcripts. |
 | `eval::status` | `evaluation_id`. | Estado e contadores resumidos, ou `null`. |
 | `eval::result` | `evaluation_id`. | Registro com evidências, triagem, sugestões e vínculos E2E, ou `null`. |
@@ -71,9 +70,7 @@ Validar seleção não vazia e opções suportadas pelo modelo. Usar `router::mo
 | `eval::attach-validation` | `evaluation_id`, `suggestion_index`, `baseline_execution_id`, `candidate_execution_id`. | Vínculo com execuções E2E existentes e disponibilidade das evidências. |
 | `eval::compare-sessions` | Contrato atual. | Comparação atual, sem julgamento de equivalência ou vitória. |
 
-`reanalyze: true` é uma ação manual explícita: cria outra análise com nova identidade e configuração atual, mantendo a anterior no histórico. Só permitir quando a análise anterior for terminal. Entrega repetida de evento nunca solicita reanálise.
-
-Manter internas `eval::step`, `eval::on-turn-completed` e `eval::sweep`. O request de step conserva `evaluation_id` e uma revisão monotônica `step`. O evento de wake precisa ler `session_id`, `turn_id`, `terminal`, `timestamp`, `parent` e `parent_session_id`, tolerando campos adicionais.
+Manter internas `eval::step` e `eval::sweep`. O request de step conserva `evaluation_id` e uma revisão monotônica `step`.
 
 Remover a superfície antiga de `eval::start`, `eval::rerun` e `eval::assert::*`. Atualizar cadastro e schemas juntos. Usar `deny_unknown_fields` nas saídas geradas pela LLM e nas estruturas internas que exigem esse controle; requests de transporte precisam aceitar os metadados adicionados pelo Engine, inclusive `_caller_worker_id`.
 
@@ -168,19 +165,7 @@ Para a LLM, uma retomada pode consultar a sessão de investigação e reenviar o
 
 ### 4.1 Eventos
 
-O handler de `harness::turn-completed` deve apenas validar elegibilidade, persistir a admissão e enfileirar. Não chamar modelos dentro dele.
-
-Aplicar nesta ordem:
-
-1. Se a sessão pertencer ao monitor, acordar sua análise correspondente e não criar uma nova observação.
-2. Se `terminal` for falso, tratar como progresso e encerrar o handler.
-3. Se houver relação de descendente, deixá-lo sob a análise da raiz.
-4. Se a configuração estiver ausente ou desativada, não admitir análise automática.
-5. Deduplicar a sessão/turno e admitir o job.
-
-Reconhecer as sessões do monitor por ID e metadata de origem; verificar ancestralidade quando houver descendentes. Prefixo de ID é prevenção de recursão, não autorização de acesso.
-
-A versão inicial recupera jobs conhecidos. Recuperação de jobs não recupera eventos nunca recebidos enquanto o monitor estava offline. Registrar essa lacuna; sessões desse período podem ser selecionadas manualmente. Não prometer cobertura retroativa automática sem implementá-la.
+O eval não consulta nem admite chats de usuário: não há binding de `harness::turn-completed` nem análise manual de sessão. O trabalho entra pelo ciclo do loop (`eval::start`). Sessões de usuário de períodos anteriores não são recuperadas.
 
 ### 4.2 Captura
 

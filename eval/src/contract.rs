@@ -48,7 +48,7 @@ pub struct ConfigureRequestV1 {
     pub code_repository: Option<String>,
     /// US dollars of known investigation cost per UTC day after which
     /// automatic observation admits nothing until the next day; absent means
-    /// no cap. A manual `eval::analyze-session` is never refused by it.
+    /// no cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_cost_cap_usd: Option<f64>,
     /// Stamped by the engine on every invocation; callers omit it. Listed
@@ -874,23 +874,6 @@ pub struct MonitorStateRequestV1 {
     pub check_providers: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct AnalyzeSessionRequestV1 {
-    pub session_id: String,
-    /// Explicitly create another analysis of an already analyzed turn.
-    #[serde(default)]
-    pub reanalyze: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AnalyzeSessionResponseV1 {
-    pub evaluation_id: String,
-    pub status: EvalStatusV1,
-    /// True when an existing analysis of the same session turn was returned.
-    pub reused: bool,
-}
-
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct EvalListRequestV1 {
     #[serde(default)]
@@ -1140,52 +1123,6 @@ pub struct StepRequestV1 {
 pub struct StepResponseV1 {
     pub skipped: bool,
     pub status: EvalStatusV1,
-}
-
-/// `harness::turn-completed`; extra fields are tolerated.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-pub struct WakeEventV1 {
-    #[serde(default)]
-    pub session_id: String,
-    #[serde(default)]
-    pub turn_id: String,
-    #[serde(default)]
-    pub terminal: bool,
-    #[serde(default)]
-    pub timestamp: Option<i64>,
-    #[serde(default)]
-    pub parent: Option<Value>,
-    #[serde(default)]
-    pub parent_session_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum WakeOutcomeV1 {
-    Ignored,
-    Progress,
-    Descendant,
-    MonitorSession,
-    Disabled,
-    Stale,
-    Admitted,
-    Reused,
-    AtCapacity,
-    // The day's known cost reached `daily_cost_cap_usd`; a plain comment so
-    // the schema stays a flat string enum.
-    CostCap,
-    // Automatic observation covers only the user's chats (kind `user`,
-    // surface `console`, `slack` or `telegram`); E2E runs, automations and
-    // scripted or sub-agent sessions are analyzed by hand.
-    NotUserChat,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct WakeResponseV1 {
-    pub outcome: WakeOutcomeV1,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evaluation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -2103,16 +2040,5 @@ mod tests {
         }
         .normalized_limit()
         .is_err());
-    }
-
-    #[test]
-    fn wake_event_tolerates_additional_fields() {
-        let event: WakeEventV1 = serde_json::from_value(json!({
-            "session_id": "s", "turn_id": "t", "terminal": true, "timestamp": 5,
-            "status": "completed", "result": {"ok": true}, "context": {}
-        }))
-        .unwrap();
-        assert!(event.terminal);
-        assert_eq!(event.timestamp, Some(5));
     }
 }
