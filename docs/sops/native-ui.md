@@ -133,6 +133,28 @@ first line:
 - Frames, video and anything streaming never go through the script: a
   high-level component (`RemoteScreen`) takes them natively.
 
+### Pitfalls
+
+Each of these has broken an app in review; write the test for it with the
+harness:
+
+- **Never run a regex built from user text inside the VM.** Catastrophic
+  backtracking passes the 250 ms step deadline and the app stops for good
+  (every page shows "stopped responding"). Filter with a substring in the
+  script; send a regex only to the worker.
+- **Check worker data entry by entry.** Skip a bad entry, don't fail the
+  list: one session with a numeric title must not blank the whole tab list.
+- **Calls fail and hang.** Always pass `timeoutMs` or rely on the 30 s
+  default (the host and the harness both enforce it), and make the UI state
+  recover when the call rejects. Test it: a `calls` handler that never
+  settles, then `host.tick(30_000)`.
+- **Gate what reaches navigation-like calls.** One function decides what
+  may be opened, and every path to the worker goes through it: the browser's
+  `webUrl` (`browser/native-ui/src/address.ts`) admits only well-formed
+  http(s) URLs, from the address bar, Retry and history alike.
+- **Unique List keys.** Pass worker data that may repeat a key through
+  `lastPerKey(items, key)` before `createList().set`.
+
 ## 2. Build: limits and smoke run
 
 `pnpm --dir <worker>/native-ui build` writes `dist/native.js` (git-ignored):

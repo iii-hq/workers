@@ -172,6 +172,10 @@ const tabs = createList<Tab>({ key: 'key', kind: 'kind' })
   order, else one splice between the common head and tail), `splice`,
   `update(key, patch)`, `remove(key)`, `get(key)`. Treat items as immutable
   JSON; change them through the source.
+- Keys must be unique: the host logs a duplicate (and suffixes it), the
+  harness fails on it, and `set` warns once. When worker data may repeat a
+  key, `lastPerKey(items, 'key')` keeps the last entry of each key, where it
+  last appears.
 - `TextField`, `List`, `RemoteScreen` and `Sheet` cannot sit in a template:
   the host draws a neutral placeholder there. Neither the SDK nor the
   harness checks it.
@@ -226,6 +230,32 @@ ECMAScript itself, `console`, `setTimeout`/`setInterval`/`clear*`,
 `TextEncoder`, `atob`/`btoa`, `Intl`, `eval` or `new Function`.
 `parseUrl(url)` stands in for `URL`. The package's types declare exactly
 these globals (with `tsconfig.app.json`, which loads no DOM).
+
+### Pitfalls
+
+What has broken apps on a device, and passes a quick test unless you look
+for it:
+
+- **No regex from user text in the VM.** A pattern a person typed (a log
+  filter) can backtrack catastrophically; the script then passes the
+  250 ms step deadline and the whole app stops with "stopped responding".
+  Filter in the script with a plain substring (`text.toLowerCase().includes(q)`),
+  and send a regex only to the worker, which runs it outside the VM.
+- **Check worker data entry by entry.** A list from the worker can hold one
+  bad entry (a missing field, a number where a string was due): skip that
+  entry, don't throw and lose the whole list. Read fields with type checks,
+  never trust the shape.
+- **Every call can fail or hang.** Pass `timeoutMs` (or rely on the 30 s
+  default; the host enforces it, and so does the test harness), and make
+  the UI state behind a call recover when it rejects: a "loading" flag, a
+  disabled button, a spinner must clear in a `finally`, or the screen stays
+  stuck after one hung call.
+- **Gate what reaches navigation-like calls.** Anything the person types or
+  the worker sends that ends up opening something (a URL to navigate, a
+  path, a command) passes one gate function first; the browser's `webUrl`
+  (`browser/native-ui/src/address.ts`) lets only well-formed http(s) URLs
+  through, so `javascript:`, `data:`, `file:` and the like never reach the
+  worker. `iii.openUrl` already allows only http, https and mailto.
 
 ## Build
 
@@ -289,7 +319,12 @@ true), `memoryLimit` (64 MiB), `stackSize` (1 MiB), `stepBudgetMs` (250),
 `loadBudgetMs` (2000), `maxMessageBytes` (8 MiB), `log` (every console line).
 A `call` whose function is not in `calls` answers `function_not_found`; a
 `calls` handler that throws answers its `code` (throw a `HostError(code,
-message)`), or `invocation_failed`.
+message)`), or `invocation_failed`. Like the device host, a call that has
+not answered when the fake clock passes its `timeoutMs` (default
+`limits.callTimeoutMsDefault`, 30 000; at most 120 000) fails with
+`{code: "timeout", message: "The engine didn't answer in time"}`, and a
+later answer is dropped: a handler returning a promise that never settles
+plus `tick(30_000)` is how a test shows the UI recovering from a hung call.
 
 The bundle runs in `quickjs-emscripten` with the device VM's globals (timers
 on a fake clock, `console`, `performance.now`, no `eval`), its heap cap and
