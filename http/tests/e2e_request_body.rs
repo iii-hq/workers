@@ -75,6 +75,7 @@ async fn register_request_body_echo_backend(
         }),
     );
 
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     iii.register_trigger(RegisterTriggerInput::new(
         iii_http::TRIGGER_TYPE.to_string(),
         function_id,

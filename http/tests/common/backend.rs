@@ -1,4 +1,7 @@
 #![allow(dead_code)]
+// These backends bind routes as old consumers do, with the deprecated
+// `register_trigger` on the `http` trigger type.
+#![allow(deprecated)]
 //! Test backend: an echo function bound to an `http` trigger.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
