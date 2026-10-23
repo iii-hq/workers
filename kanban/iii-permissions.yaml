@@ -2,9 +2,10 @@
 version: 1
 
 rules:
-  # Console asset delivery and the configuration reload sink are engine
-  # plumbing, never agent-callable.
+  # Console asset delivery, the native app's bundle and the configuration
+  # reload sink are engine plumbing, never agent-callable.
   - '!kanban::ui-content'
+  - '!kanban::native-ui'
   - '!kanban::on-config-change'
   # Deleting and restoring a ticket is the human's call, made from the
   # ticket screen (see skills/tickets/kanban-tickets.md). Agents move tickets.
