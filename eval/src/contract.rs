@@ -126,20 +126,14 @@ pub struct MonitorCostV1 {
     /// Start (ms since the Unix epoch) of the UTC day the `today_*` values
     /// cover. The monitor has no timezone setting, so a day is a UTC day.
     pub since: i64,
-    /// Everything the monitor is known to have spent since `since`:
-    /// `today_capture_usd` + `today_replay_usd`. The cap does not compare this.
+    /// Everything the monitor is known to have spent since `since`: equal to
+    /// `today_capture_usd`.
     pub today_usd: f64,
     /// The capture bucket, the only one the cap compares: the larger of the
     /// day's persisted capture spend (deleting an analysis does not give it
     /// back) and the sum of the stored analyses' `usage.llm_cost_usd`. A day
     /// persisted before the buckets counts entirely as capture.
     pub today_capture_usd: f64,
-    /// The replay bucket: the known cost of the day's `eval::reproduce`
-    /// samples. Never capped.
-    pub today_replay_usd: f64,
-    /// Replay samples of the day without a cost, failed ones included. They
-    /// add nothing to `today_replay_usd`, but their cost is unknown, not zero.
-    pub today_replay_unknown: u32,
     /// Analyses of the day whose investigation started but reported no cost.
     /// They add nothing to `today_capture_usd`, but their cost is unknown, not zero.
     pub today_unknown: u32,
@@ -824,7 +818,7 @@ pub struct AnalysisAssetsV1 {
     #[serde(default)]
     pub validations: Vec<ValidationLinkV1>,
     /// The observed turn's record, copied when the evidence was captured:
-    /// what a reproduction rebuilds the request from.
+    /// what a later fork of the session needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<TurnCaptureV1>,
 }
@@ -1827,74 +1821,6 @@ pub struct ReproductionV1 {
     pub finished_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-/// What a reproduction changes in the request.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ReproduceChangeV1 {
-    #[default]
-    None,
-    Proposed,
-    Custom {
-        edits: Vec<ChangeEditV1>,
-    },
-}
-
-/// `eval::reproduce`.
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReproduceRequestV1 {
-    pub evaluation_id: String,
-    pub suggestion_index: usize,
-    #[serde(default)]
-    pub change: ReproduceChangeV1,
-    /// Replies to sample, 1–50; default 20.
-    #[serde(default)]
-    pub samples: Option<u32>,
-    /// Add replies to this earlier reproduction of the suggestion, with its
-    /// change; with `samples: 0`, only finish what a failure left undone.
-    #[serde(default)]
-    pub extend: Option<String>,
-    /// The decision point and signal, for a suggestion without a `check` (an
-    /// older analysis) or to override it.
-    #[serde(default)]
-    pub check: Option<SuggestionCheckV1>,
-    /// Rebuild the request and check its fidelity without sampling: nothing
-    /// is spent or stored.
-    #[serde(default)]
-    pub dry_run: bool,
-    #[serde(default)]
-    pub by: Option<String>,
-    /// Stamped by the engine on every invocation; callers omit it.
-    #[serde(rename = "_caller_worker_id", default)]
-    pub caller_worker_id: Option<String>,
-}
-
-/// What a dry run reports before anything is spent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReproducePreviewV1 {
-    pub fidelity: FidelityV1,
-    pub original: ReplyV1,
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// What the original step cost; null when the provider reported nothing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_cost_usd: Option<f64>,
-    pub samples: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReproduceResponseV1 {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<ReproducePreviewV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reproduction_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review: Option<SuggestionReviewV1>,
 }
 
 #[cfg(test)]

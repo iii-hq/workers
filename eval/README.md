@@ -130,21 +130,9 @@ directory and its `config_revision`.
 ## Cost
 
 Only LLM cost is in dollars: the investigation's (`usage.llm_cost_usd`, from
-`harness::metrics`, and known only once the investigation ends) and the
-`eval::reproduce` samples' (`cost_usd` of each reply). Jev's usage, in a
-triage or in classifying a replay's replies, is reported in tokens and never
-priced. A missing cost is unknown, never zero, and is never estimated: a
-replay sample without a cost, one that failed included (the provider may still
-bill a request the bus gave up on), adds nothing to the sums, is counted in the
-reproduction's `cost_unknown_samples` (which makes its `cost_usd` a lower
-bound) and in the day's `today_replay_unknown`. Each sample is added to the day
-as it is saved, so a run that stops partway has already counted what it kept.
-
-The day's spend has two buckets. **Capture** is what an analysis spends (the
-investigation; Jev's triage is in tokens). **Replay** is what `eval::reproduce`
-spends. Only capture is compared with the daily cap, so a manual replay never
-stops an investigation. The spend persisted before the buckets (one total)
-counts as capture for its day.
+`harness::metrics`, and known only once the investigation ends). Jev's usage,
+in a triage, is reported in tokens and never priced. A missing cost is
+unknown, never zero, and is never estimated.
 
 `eval::config` returns a `cost` block to decide before starting work:
 
@@ -155,11 +143,7 @@ counts as capture for its day.
   persisted daily spend as each investigation reports it, and
   `today_capture_usd` is the larger of that and the stored analyses' sum, so
   deleting analyses (or retention) does not give the budget back.
-- `today_replay_usd` and `today_replay_unknown`: the replay bucket, the known
-  cost of the day's `eval::reproduce` samples and how many had no cost
-  (failed samples included). Reported, never capped.
-- `today_usd`: both buckets together, everything known to be spent. **The cap
-  does not compare it.**
+- `today_usd`: everything known to be spent, equal to `today_capture_usd`.
 - `cap_usd` and `capped`: the optional `daily_cost_cap_usd` and whether
   `today_capture_usd`, plus the median cost of each investigation still
   running, reached it.
@@ -286,7 +270,6 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | `eval::review` | `set_lifecycle`, `set_criterion` or `set_verdict` on one suggestion of a terminal analysis. |
 | `eval::reviews` | The stored review rows and, per analysis, its suggestions counted by lifecycle status. |
 | `eval::recurrence` | For a suggestion shipped in a version, how often its patterns appeared per analysis before and from that version. |
-| `eval::reproduce` | Replays a suggestion's decision point: rebuilds the request the model received at that step (optionally edited), samples the next reply N times without running any function and reads the signal in each. `dry_run` only rebuilds and checks fidelity. See [VALIDATION.md](VALIDATION.md). |
 | `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
 
 Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8)
@@ -349,39 +332,22 @@ fails analyses past their deadline.
   under storage loss.
 - Locks are per process: run a single `eval` instance.
 - Persisted records reject fields they do not know, so state written by a newer
-  `eval` (a capture's `record`, a reproduction's `cost_unknown_samples`) cannot
-  be read back by an older one. Rolling back is not supported once new analyses
-  or replays exist.
+  `eval` (a capture's `record`) cannot be read back by an older one. Rolling
+  back is not supported once new analyses exist.
 
-## Validation by replay
+## Turn capture
 
-The first check of a suggestion is a replay of the step where its behavior
-happened ([VALIDATION.md](VALIDATION.md)). Each suggestion carries a `check`:
-the `decision_point` (an assistant entry of its evidence), the `signal` (a rule,
-`contract_rediscovery` or `repeated_error_call`, or a yes/no `question` Jev
-answers per reply) and the proposed `change` as edits of what the model saw.
-Older suggestions have none; `eval::reproduce` then takes `check` in the request.
+Each suggestion may carry a `check`: the `decision_point` (an assistant entry
+of its evidence), the `signal` (a rule, `contract_rediscovery` or
+`repeated_error_call`, or a yes/no `question`) and the proposed `change` as
+edits of what the model saw. A malformed check is dropped, not the suggestion.
 
-`eval::reproduce` rebuilds the request the Harness sent at that step: the
-window from the durable log (`harness::window::build`, notices included), the
-frozen runtime context, the turn's system prompt and skills baseline (copied
-into the analysis as `assets.capture`, because the Harness keeps only a
-session's latest turn record), the `agent_trigger` tool and `context::assemble`.
-`assets.capture.record` also keeps the Harness's whole turn record as read (a
-later fork of the session needs it, and the next turn replaces it); when it
-would take the assets over their limit it is left out and
-`assets.capture.record_omitted` says why, while the options and digest above
-stay.
-It counts the result with `router::count_tokens` (the context manager's estimate
-when the provider has no counter) against the recorded usage: `exact` when the
-difference equals the fixed overhead measured at the turn's first step,
-`approximate` otherwise, with the reasons. It then samples `router::complete`
-(one warm-up call, then four at a time), never runs a function, reads each
-reply's signal and stores everything in the suggestion's review row
-(`reproductions[]`). `extend` adds replies; `samples: 0` finishes one that
-failed. A restart marks running replays `failed` (interrupted). Not supported
-yet: native function exposure, output contracts, and windows the context
-manager would prune or compact.
+The observed turn's options, prompt digest and the Harness's whole turn record
+are copied into the analysis as `assets.capture`, because the Harness keeps
+only a session's latest turn record (a later fork of the session needs it, and
+the next turn replaces it); when the record would take the assets over their
+limit it is left out and `assets.capture.record_omitted` says why, while the
+options and digest stay.
 
 ## E2E validation
 
@@ -578,8 +544,6 @@ monitor interface in a separate change.
 cargo fmt --manifest-path eval/Cargo.toml --all -- --check
 cargo test --locked --manifest-path eval/Cargo.toml --all-targets
 cargo clippy --locked --manifest-path eval/Cargo.toml --all-targets -- -D warnings
-# Replay the detectors over exported session::messages entries:
-cargo run --manifest-path eval/Cargo.toml --example replay -- <session>=<entries.json>
 ```
 
 `tests/flow.rs` runs the whole flow over the SDK wire protocol against an

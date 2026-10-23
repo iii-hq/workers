@@ -952,7 +952,6 @@ fn e2e_reference(execution_id: &str, bundle: &Value) -> E2eExecutionRefV1 {
 /// the E2E.
 pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     let response = resume_analyses(deps).await?;
-    crate::reproduce::expire_interrupted(deps).await;
     // Last: waiting on the E2E never delays the monitor's own recovery.
     validation::advance_runs(deps).await;
     Ok(response)
@@ -1353,12 +1352,11 @@ async fn collect_stage(
             record.source_title = snapshot.source_title.clone();
             assets.snapshot = Some(*snapshot);
             // Best effort: the Harness keeps only a session's latest turn, so
-            // a reproduction (or a fork) later needs this copy of the observed one.
-            assets.capture =
-                crate::reproduce::capture_turn(deps, &record.session_id, &record.turn_id).await;
+            // a fork of the session later needs this copy of the observed one.
+            assets.capture = capture_turn(deps, &record.session_id, &record.turn_id).await;
             let mut size = serde_json::to_vec(&assets)?.len();
-            // The whole record is the first thing to give way: what a
-            // reproduction reads stays, and the capture says why.
+            // The whole record is the first thing to give way: the options
+            // and digest stay, and the capture says why.
             if let Some(capture) = assets
                 .capture
                 .as_mut()
@@ -1674,7 +1672,7 @@ async fn collect(deps: &Deps, record: &AnalysisRecordV1) -> Result<Collected, Co
 
 /// Collects the current definitive turn of `session_id` and returns the
 /// snapshot without persisting anything or calling a model: a read-only dry
-/// run of the collection stage (used by the `replay --live` example).
+/// run of the collection stage.
 pub async fn capture(deps: &Deps, session_id: &str) -> Result<SnapshotV1, EvalError> {
     let status: Option<StatusReport> = call(
         deps,
@@ -2303,11 +2301,6 @@ pub(crate) enum Spend {
     /// What an analysis spends: the investigation (Jev's triage is in tokens).
     /// The only bucket the daily cap compares.
     Capture(f64),
-    /// `eval::reproduce`: the known cost of samples, and how many had none (a
-    /// failed one included). Added as each sample is saved. Reported next to
-    /// the capture spend, never capped, so a manual replay cannot stop an
-    /// investigation.
-    Replay { usd: f64, unknown: u32 },
 }
 
 /// Adds to the day's spend. Bookkeeping that cannot fail an analysis: the
@@ -2323,18 +2316,99 @@ pub(crate) async fn add_spend(deps: &Deps, spend: Spend) {
                 since,
                 ..Default::default()
             });
-        match spend {
-            Spend::Capture(usd) => today.usd += usd,
-            Spend::Replay { usd, unknown } => {
-                today.replay_usd += usd;
-                today.replay_unknown += unknown;
-            }
-        }
+        let Spend::Capture(usd) = spend;
+        today.usd += usd;
         state::put_spend(&deps.iii, &today).await
     }
     .await;
     if let Err(error) = written {
         tracing::warn!(%error, "could not add to the day's spend");
+    }
+}
+
+/// The observed turn's record from the Harness, when it still holds that turn
+/// (it keeps only a session's latest one): its options and digest, and the
+/// whole record as read.
+async fn capture_turn(deps: &Deps, session_id: &str, turn_id: &str) -> Option<TurnCaptureV1> {
+    let record = state::get_turn_record(&deps.iii, session_id).await.ok()??;
+    if record["turn_id"].as_str() != Some(turn_id) || !record["options"].is_object() {
+        return None;
+    }
+    let snapshot = &record["context_snapshot"];
+    let capture = TurnCaptureV1 {
+        turn_id: turn_id.into(),
+        options: record["options"].clone(),
+        record: None,
+        record_omitted: None,
+        prompt_surface_digest: snapshot["prompt_surface_digest"]
+            .as_str()
+            .map(str::to_string),
+        hook_guidance_tokens: snapshot["categories"]["hook_guidance"]
+            .as_u64()
+            .unwrap_or(0),
+    };
+    Some(TurnCaptureV1 {
+        record: Some(record),
+        ..capture
+    })
+}
+
+const SYSTEM_PROMPT_TARGET: &str = "system_prompt";
+const MAX_QUESTION_CHARS: usize = 500;
+
+fn invalid_check(message: impl Into<String>) -> EvalError {
+    EvalError::InvalidRequest(message.into())
+}
+
+/// A suggestion's `check` must name an assistant entry and exactly one signal.
+fn validate_check(check: &SuggestionCheckV1) -> Result<(), EvalError> {
+    if check.decision_point.trim().is_empty() {
+        return Err(invalid_check("check.decision_point is empty"));
+    }
+    if !check.decision_point.ends_with("_assistant") {
+        return Err(invalid_check(
+            "check.decision_point must be an assistant entry (…_<step>_assistant)",
+        ));
+    }
+    match (&check.signal.rule, &check.signal.question) {
+        (Some(_), None) => {}
+        (None, Some(question)) if question.trim().is_empty() => {
+            return Err(invalid_check("check.signal.question is empty"))
+        }
+        (None, Some(question)) if question.chars().count() > MAX_QUESTION_CHARS => {
+            return Err(invalid_check(format!(
+                "check.signal.question is longer than {MAX_QUESTION_CHARS} characters"
+            )))
+        }
+        (None, Some(_)) => {}
+        _ => {
+            return Err(invalid_check(
+                "check.signal needs exactly one of rule or question",
+            ))
+        }
+    }
+    for edit in &check.change {
+        validate_edit(edit)?;
+    }
+    Ok(())
+}
+
+fn validate_edit(edit: &ChangeEditV1) -> Result<(), EvalError> {
+    if edit.target.trim().is_empty() {
+        return Err(invalid_check(
+            "an edit needs a target entry id or system_prompt",
+        ));
+    }
+    match (edit.remove, edit.find.as_deref(), edit.replace.as_deref()) {
+        (true, None, None) if edit.target != SYSTEM_PROMPT_TARGET => Ok(()),
+        (true, None, None) => Err(invalid_check("the system prompt cannot be removed")),
+        (true, _, _) => Err(invalid_check(
+            "an edit that removes an entry has no find or replace",
+        )),
+        (false, Some(find), Some(_)) if !find.is_empty() => Ok(()),
+        _ => Err(invalid_check(
+            "an edit needs a non-empty find and a replace (or remove: true)",
+        )),
     }
 }
 
@@ -3209,7 +3283,7 @@ pub fn validate_suggestions(
         if reasons.is_empty() {
             // A malformed check costs the replay, not the suggestion.
             if let Some(check) = &suggestion.check {
-                let problem = crate::reproduce::validate_check(check)
+                let problem = validate_check(check)
                     .err()
                     .map(|e| e.to_string())
                     .or_else(|| {

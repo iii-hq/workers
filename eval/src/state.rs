@@ -62,21 +62,13 @@ pub async fn put_config(iii: &IIIClient, config: &MonitorConfigV1) -> Result<(),
 
 /// What the monitor spent on the UTC day starting at `since`, kept apart from
 /// the analyses: deleting one, or retention, must not give the budget back.
-/// Two buckets: `usd` is the capture spend, the only one the daily cap
-/// compares; the replay spend is reported next to it, never capped.
+/// `usd` is the capture spend, the one the daily cap compares.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DailySpendV1 {
     pub since: i64,
     /// Capture: what an analysis spends. The key predates the buckets, when it
     /// held everything, so a day stored then counts as capture (conservative).
     pub usd: f64,
-    /// Replay: the known cost of `eval::reproduce` samples.
-    #[serde(default)]
-    pub replay_usd: f64,
-    /// Replay samples without a cost, failed ones included: unknown, not in
-    /// `replay_usd`.
-    #[serde(default)]
-    pub replay_unknown: u32,
 }
 
 pub async fn get_spend(iii: &IIIClient) -> Result<Option<DailySpendV1>, EvalError> {
