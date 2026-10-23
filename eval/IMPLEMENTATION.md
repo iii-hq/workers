@@ -33,7 +33,7 @@ Remover tipos, funções, telas e agregações exclusivos de A/B de prompt. `rep
 
 Persistir em `eval_monitor/config` uma configuração com:
 
-- `enabled`: começa como `false`.
+- `enabled`: campo obrigatório mantido para compatibilidade com clientes e configurações salvas; não tem efeito, pois o `eval` não observa chats.
 - `model.model` e `model.provider`: seleção explícita do usuário.
 - `model.thinking_level` e `model.provider_options`: opções existentes do Harness, quando selecionadas.
 - `updated_at` e uma revisão calculada da configuração efetiva.

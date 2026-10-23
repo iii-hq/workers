@@ -21,10 +21,10 @@ behavior is specified in
 2. **Collection.** The monitor waits until the turn is definitive and every
    descendant has finished (`harness::metrics.complete`), then reads every
    transcript page with `include_custom: true`, failing on malformed pages
-   instead of skipping evidence. The window is the observed turn plus earlier
-   root turns no analysis covered that started while the monitor was already
-   observing (a wake continuation); history from before it is never reported
-   as new. Descendants
+   instead of skipping evidence. The window is the analyzed turn plus earlier
+   root turns no analysis covered that started after the record's
+   `observe_since`; history from before it is never reported as new.
+   Descendants
    linked to other turns are listed but not read. Status and tree membership
    are checked again at the end; a changed session fails the analysis rather
    than mixing turns.
@@ -90,11 +90,9 @@ to start).
 
 Each record also keeps three facts for comparing analyses and releases:
 `supersedes` (the earlier `evaluation_id` of the same turn, set when the
-analysis is a reanalysis), `harness_version` (the version of this worker's
-Harness that `engine::workers::list` reported when a live event admitted the
-analysis, read from the engine's `default` namespace: the turn just ended on
-it. A manual analysis, which may be of an older session, has none, and neither
-has one admitted while the engine did not answer, which never blocks admission) and
+analysis is a reanalysis), `harness_version` (the Harness version recorded
+on analyses the removed chat monitor admitted; analyses admitted now have
+none) and
 `signals` (occurrences per deterministic pattern the collection found, keyed
 `<rule_id>:<target>`; empty both when nothing was found and before collection,
 and `coverage` tells which).
@@ -118,6 +116,11 @@ iii trigger eval::result --json '{"cycle_id": "<id>"}'
 ```
 
 `eval::config` shows the configuration.
+
+`enabled` is still a required field of the request and of the stored
+configuration, kept so existing clients and stored configurations stay valid,
+but it has no effect: eval observes no chats, so there is nothing to enable or
+pause.
 
 `thinking_level`, `provider_options` (namespaced by the selected provider),
 `code_repository` and `daily_cost_cap_usd` are optional. A configuration
@@ -143,7 +146,7 @@ spends. Only capture is compared with the daily cap, so a manual replay never
 stops an investigation. The spend persisted before the buckets (one total)
 counts as capture for its day.
 
-`eval::config` returns a `cost` block to decide before enabling:
+`eval::config` returns a `cost` block to decide before starting work:
 
 - `today_capture_usd` and `today_unknown`: the known capture cost since `since`
   (the start of the current **UTC** day: the monitor has no timezone setting),
@@ -170,7 +173,10 @@ configuration revision is what it was) is checked where the money is spent,
 right before an automatic analysis first calls the model (under one lock, so
 investigations starting together see each other); one that finds it reached
 fails with `cost_cap` without calling the model; a manual reanalysis is not held
-back by the cap and investigates if Jev answers `needs_investigation` again. A cost is known only when an investigation ends, so the investigations
+back by the cap and investigates if Jev answers `needs_investigation` again.
+No automatic analysis is admitted any more (the chat monitor was removed), so
+the cap only holds back automatic analyses recorded before that and still
+unfinished, which the sweep resumes. A cost is known only when an investigation ends, so the investigations
 already running are counted at the median cost of the history. With no history
 there is nothing to estimate by and a first burst can overshoot by the
 investigations that run at once (the queue runs 8 steps together). Raising or
@@ -192,8 +198,7 @@ iii trigger eval::configure --json '{
 ```
 
 - The path must be absolute and an existing directory on the host that runs
-  `eval` (checked when it changes; blank means off). The monitor stays
-  disabled by default. It reads the **current** working tree, uncommitted
+  `eval` (checked when it changes; blank means off). It reads the **current** working tree, uncommitted
   changes included: there is no pinned copy, no tag lookup and no requirement
   that the directory is a git clone. To implement a suggestion, create a
   worktree or work however you prefer.
@@ -269,7 +274,7 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 
 | Function | Purpose |
 | --- | --- |
-| `eval::configure` | Model selection, optional code directory, optional daily cost cap and enable/pause. |
+| `eval::configure` | Model selection, optional code directory, optional daily cost cap; `enabled` is required but has no effect. |
 | `eval::config` | Configuration (or null) and the `cost` block. |
 | `eval::list` | Compact records, newest first (`limit` 1–200, default 50); `observation_key` keeps only the analyses of one observed turn, reanalyses included. |
 | `eval::status` | One compact record, or null. |
@@ -338,8 +343,6 @@ fails analyses past their deadline.
   `external_outcome_unknown`; it is not repeated automatically (the provider
   has no durable response cache). Request a reanalysis.
 - A lost `harness::send` reply is resent with the same idempotency key.
-- Events emitted while `eval` was offline are not recovered; analyze those
-  sessions manually.
 - Recovery assumes `state` kept its records. The default `kv` adapter
   flushes to disk every `save_interval_ms` (5 s by default), so a crash of the
   state worker can lose the last writes; there is no exactly-once guarantee
