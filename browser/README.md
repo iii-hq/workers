@@ -41,6 +41,31 @@ composer as an actionable ref:
   <img src="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/pick.png" alt="pick mode highlighting an element and inserting it into the chat composer" width="100%" />
 </a>
 
+## In the iii app
+
+The worker also publishes a native app, `browser::native-ui`: a bundle
+built from [`native-ui/`](native-ui) by `build.rs` (next to the console UI),
+embedded in the binary and served by its hash. The iii IDE app shows it as
+the Browser app, on a phone, a tablet or the desktop: the tab list
+(incognito tabs under their own header), the live page with touch (a tap
+clicks, a drag scrolls, a long press is the page's menu) and the page's
+keyboard, the address bar with back, forward and find, and console and
+network cards that follow the page live. How a worker ships such an app is
+in [`docs/sops/native-ui.md`](../docs/sops/native-ui.md).
+
+The app drives the same tabs as the console, through what the worker gives
+a native viewer (details in
+[Live view for native viewers](#live-view-for-native-viewers)):
+
+- a named viewer with a lease (`viewer_id`, `lease_ms`), renewed while the
+  page is on screen, so a phone that goes away stops holding the tab;
+- `scale`, the screen's density, so frames are sharp up to `frame_density`
+  (default 2; the app asks for 1 on a metered network);
+- `browser::resize` with `mobile: true` and `fit: true` at the size of its
+  view: the page sees a phone (touch, an Android user agent) and fills it;
+- `browser::act` with `ghost_cursor: false`: a person's own taps draw no
+  agent cursor.
+
 ## Tabs, sleep, and incognito
 
 A session is a tab in the worker's browser. Tabs share one Chromium process
