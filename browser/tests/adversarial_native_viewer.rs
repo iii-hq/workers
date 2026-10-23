@@ -952,7 +952,6 @@ async fn ghost_cursor_false_never_injects_for_any_pointer_action() {
 /// each return (ok or a refusal) and leave the worker answering: a page
 /// evaluation still works afterwards and no call hangs.
 #[tokio::test]
-#[ignore = "finding 4: a scroll with a wheel delta of 1e300 fails with a CDP request timeout after about 30 s"]
 async fn act_coordinates_outside_the_viewport_return_and_leave_the_worker_answering() {
     let Some(h) = boot("  max_sessions: 4\n").await else {
         eprintln!("skipping: `iii` or Chromium not available");

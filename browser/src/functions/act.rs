@@ -64,6 +64,10 @@ pub struct ActInput {
 
 /// Most clicks one `click` makes (a triple-click selects a paragraph).
 pub const MAX_CLICK_COUNT: u32 = 3;
+/// Largest wheel delta one `scroll` sends, either way. Far past any page's
+/// height, and well inside what Chromium handles: a delta of 1e300 left the
+/// call waiting out CDP's 30 s timeout.
+pub const MAX_SCROLL_DELTA: f64 = 100_000.0;
 
 impl ActInput {
     /// The clicks of a `click`, held to 1..`MAX_CLICK_COUNT`.
@@ -71,14 +75,22 @@ impl ActInput {
         i64::from(self.click_count.unwrap_or(1).clamp(1, MAX_CLICK_COUNT))
     }
 
-    /// The wheel deltas of a `scroll`: `(delta_x, delta_y)`. A bare scroll
-    /// pages down 600px; one that only names `delta_x` moves sideways only.
+    /// The wheel deltas of a `scroll`: `(delta_x, delta_y)`, each held to
+    /// ±`MAX_SCROLL_DELTA`. A bare scroll pages down 600px; one that only
+    /// names `delta_x` moves sideways only.
     pub fn scroll_deltas(&self) -> (f64, f64) {
+        let held = |delta: f64| {
+            if delta.is_finite() {
+                delta.clamp(-MAX_SCROLL_DELTA, MAX_SCROLL_DELTA)
+            } else {
+                0.0
+            }
+        };
         let delta_x = self.delta_x.unwrap_or(0.0);
         let delta_y = self
             .delta_y
             .unwrap_or(if self.delta_x.is_some() { 0.0 } else { 600.0 });
-        (delta_x, delta_y)
+        (held(delta_x), held(delta_y))
     }
 }
 
@@ -201,6 +213,11 @@ mod tests {
             scroll(Some(-40.0), Some(80.0)).scroll_deltas(),
             (-40.0, 80.0)
         );
+        assert_eq!(
+            scroll(Some(-1e300), Some(1e300)).scroll_deltas(),
+            (-MAX_SCROLL_DELTA, MAX_SCROLL_DELTA)
+        );
+        assert_eq!(scroll(Some(f64::NAN), None).scroll_deltas(), (0.0, 0.0));
     }
 
     #[test]
