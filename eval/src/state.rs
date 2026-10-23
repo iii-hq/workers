@@ -8,7 +8,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::contract::{AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1, MonitorConfigV1};
+use crate::contract::{
+    AdmissionCheckpointV1, AdmissionV1, AnalysisAssetsV1, AnalysisRecordV1, CycleRecordV1,
+    MonitorConfigV1,
+};
 use crate::error::EvalError;
 
 pub const CONFIG_SCOPE: &str = "eval_monitor";
@@ -21,6 +24,10 @@ pub const HARNESS_TURN_SCOPE: &str = "harness_turn";
 /// The loop's own cycle records, keyed by `cycle_id`. Cycle functions read
 /// and write only this scope, never the monitor's scopes above.
 pub const CYCLE_SCOPE: &str = "eval_loop_cycle";
+/// The loop's admission claims, keyed by admission key, and the sweep
+/// checkpoint. Kept apart from the cycles so cycle listings carry neither.
+pub const ADMISSION_SCOPE: &str = "eval_loop_admission";
+pub const ADMISSION_CHECKPOINT_KEY: &str = "checkpoint";
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 /// A stored configuration that no longer parses under the current schema (a
@@ -106,6 +113,52 @@ pub async fn put_cycle(iii: &IIIClient, record: &CycleRecordV1) -> Result<(), Ev
 
 pub async fn list_cycles(iii: &IIIClient) -> Result<Vec<CycleRecordV1>, EvalError> {
     list(iii, CYCLE_SCOPE).await
+}
+
+/// Claims `claim.admission_key` only when absent. Returns the stored claim and
+/// whether this call set it.
+pub async fn claim_admission(
+    iii: &IIIClient,
+    claim: &AdmissionV1,
+) -> Result<(AdmissionV1, bool), EvalError> {
+    let value = serde_json::to_value(claim)?;
+    let response = call(
+        iii,
+        "state::compare-and-set",
+        json!({ "scope": ADMISSION_SCOPE, "key": claim.admission_key, "value": value }),
+    )
+    .await?;
+    if response["swapped"].as_bool() == Some(true) {
+        return Ok((claim.clone(), true));
+    }
+    let current: Option<AdmissionV1> = match &response["current"] {
+        Value::Null => get(iii, ADMISSION_SCOPE, &claim.admission_key).await?,
+        current => Some(serde_json::from_value(current.clone()).map_err(|error| {
+            EvalError::State(format!(
+                "parse {ADMISSION_SCOPE}/{}: {error}",
+                claim.admission_key
+            ))
+        })?),
+    };
+    current.map(|stored| (stored, false)).ok_or_else(|| {
+        EvalError::State(format!(
+            "compare-and-set {ADMISSION_SCOPE}/{} neither swapped nor stored",
+            claim.admission_key
+        ))
+    })
+}
+
+pub async fn get_admission_checkpoint(
+    iii: &IIIClient,
+) -> Result<Option<AdmissionCheckpointV1>, EvalError> {
+    get(iii, ADMISSION_SCOPE, ADMISSION_CHECKPOINT_KEY).await
+}
+
+pub async fn put_admission_checkpoint(
+    iii: &IIIClient,
+    checkpoint: &AdmissionCheckpointV1,
+) -> Result<(), EvalError> {
+    set(iii, ADMISSION_SCOPE, ADMISSION_CHECKPOINT_KEY, checkpoint).await
 }
 
 /// The Harness's record of a session's latest turn, with its content-addressed

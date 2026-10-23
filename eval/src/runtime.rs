@@ -441,14 +441,28 @@ pub async fn cycle_start(
     request: CycleStartRequestV1,
 ) -> Result<CycleStartResponseV1, EvalError> {
     let input = request.input()?;
-    let now = ids::now_ms();
     let detail = match &input {
         CycleInputV1::Objective(_) => "started from objective",
         CycleInputV1::ExecutionId(_) => "started from execution_id",
     };
+    let record = create_cycle(deps, ids::cycle_id(), input, detail).await?;
+    Ok(CycleStartResponseV1 {
+        cycle_id: record.cycle_id,
+        status: record.status,
+    })
+}
+
+/// Persists a queued cycle under `cycle_id`, then enqueues its first step.
+async fn create_cycle(
+    deps: &Deps,
+    cycle_id: String,
+    input: CycleInputV1,
+    detail: &str,
+) -> Result<CycleRecordV1, EvalError> {
+    let now = ids::now_ms();
     let record = CycleRecordV1 {
         schema_version: CYCLE_SCHEMA_VERSION,
-        cycle_id: ids::cycle_id(),
+        cycle_id,
         input,
         status: CycleStatusV1::Queued,
         step: 0,
@@ -461,10 +475,7 @@ pub async fn cycle_start(
     };
     state::put_cycle(&deps.iii, &record).await?;
     queue::enqueue_step(&deps.iii, &record.cycle_id, record.step).await?;
-    Ok(CycleStartResponseV1 {
-        cycle_id: record.cycle_id,
-        status: record.status,
-    })
+    Ok(record)
 }
 
 pub async fn cycle_status(
@@ -566,6 +577,286 @@ async fn resume_cycles(deps: &Deps) -> Result<(), EvalError> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Execution input: terminal E2E executions admitted into the loop
+// ---------------------------------------------------------------------------
+
+/// Statuses of a normal execution that finished on its own, passed or not.
+const ADMITTED_STATUSES: [&str; 3] = ["passed", "failed", "completed"];
+/// Statuses of an execution still in progress: the checkpoint never moves
+/// past one.
+const OPEN_STATUSES: [&str; 5] = ["queued", "pending", "starting", "running", "in_progress"];
+const STATUS_FIELDS: [&str; 2] = ["/status", "/state"];
+/// When an execution finished, most precise first.
+const FINISHED_FIELDS: [&str; 4] = [
+    "/finished_at",
+    "/completed_at",
+    "/updated_at",
+    "/started_at",
+];
+
+fn text_at(value: &Value, pointers: &[&str]) -> Option<String> {
+    pointers
+        .iter()
+        .find_map(|pointer| match value.pointer(pointer)? {
+            Value::String(text) => Some(text.trim().to_string()).filter(|text| !text.is_empty()),
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        })
+}
+
+fn time_at(value: &Value, pointers: &[&str]) -> Option<i64> {
+    pointers
+        .iter()
+        .find_map(|pointer| match value.pointer(pointer)? {
+            Value::Number(number) => number.as_i64(),
+            Value::String(text) => ids::parse_ms(text),
+            _ => None,
+        })
+}
+
+fn status_of(entry: &Value) -> String {
+    text_at(entry, &STATUS_FIELDS)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// The execution's own entry in an `execution-get` bundle.
+fn execution_entry<'a>(bundle: &'a Value, execution_id: &str) -> Option<&'a Value> {
+    bundle
+        .pointer("/manifest/executions")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry["id"] == execution_id || entry["execution_id"] == execution_id)
+}
+
+/// The loop cycle an execution was started to validate a candidate of, when
+/// it carries one.
+fn carried_cycle(entry: &Value) -> Option<String> {
+    text_at(
+        entry,
+        &[
+            "/eval_cycle_id",
+            "/cycle_id",
+            "/metadata/eval_cycle_id",
+            "/metadata/cycle_id",
+        ],
+    )
+    .filter(|id| ids::is_cycle(id))
+}
+
+fn not_admitted(reason: impl Into<String>) -> ExecutionAdmissionResponseV1 {
+    ExecutionAdmissionResponseV1 {
+        admitted: false,
+        cycle_id: None,
+        reason: reason.into(),
+    }
+}
+
+/// An `e2e::dashboard::changed` event: the execution it names is re-read and
+/// admitted; an event naming none runs the admission sweep.
+pub async fn execution_changed(
+    deps: &Deps,
+    event: ExecutionChangedEventV1,
+) -> Result<ExecutionAdmissionResponseV1, EvalError> {
+    match event.execution_id() {
+        Some(execution_id) => admit_execution(deps, execution_id).await,
+        None => {
+            let admitted = admission_sweep(deps).await?;
+            Ok(ExecutionAdmissionResponseV1 {
+                admitted: admitted > 0,
+                cycle_id: None,
+                reason: format!("no execution_id: the sweep admitted {admitted}"),
+            })
+        }
+    }
+}
+
+/// Re-reads `execution-get` (the source of truth, never the event) and admits
+/// a normal terminal execution once per execution/run/attempt: the claim is
+/// set with compare-and-set before anything else, and a found claim only
+/// completes what a restart interrupted. An execution carrying the id of a
+/// known cycle returns to it and never starts another.
+pub async fn admit_execution(
+    deps: &Deps,
+    execution_id: &str,
+) -> Result<ExecutionAdmissionResponseV1, EvalError> {
+    let bundle: Value = call(
+        deps,
+        "e2e::dashboard::execution-get",
+        json!({ "execution_id": execution_id }),
+        BUS_TIMEOUT_MS,
+    )
+    .await?;
+    let Some(entry) = execution_entry(&bundle, execution_id) else {
+        return Ok(not_admitted("execution-get does not list the execution"));
+    };
+    let status = status_of(entry);
+    if !ADMITTED_STATUSES.contains(&status.as_str()) {
+        return Ok(not_admitted(format!(
+            "status {status:?} is not a normal terminal status"
+        )));
+    }
+    if let Some(kind) = text_at(entry, &["/kind", "/mode", "/execution_kind"])
+        .filter(|kind| !kind.eq_ignore_ascii_case("normal"))
+    {
+        return Ok(not_admitted(format!("{kind:?} is not a normal execution")));
+    }
+    let carried = carried_cycle(entry);
+    if let Some(origin) = &carried {
+        if state::get_cycle(&deps.iii, origin).await?.is_none() {
+            return Ok(not_admitted(format!(
+                "candidate validation of unknown cycle {origin}"
+            )));
+        }
+    }
+    let run_id = text_at(entry, &["/run_id"]).or_else(|| text_at(&bundle, &["/detail/run_id"]));
+    let attempt_id = text_at(entry, &["/attempt_id", "/attempt"])
+        .or_else(|| text_at(&bundle, &["/detail/attempt_id"]));
+    let claim = AdmissionV1 {
+        admission_key: ids::sha256_json(&(execution_id, &run_id, &attempt_id)),
+        execution_id: execution_id.into(),
+        run_id,
+        attempt_id,
+        kind: if carried.is_some() {
+            AdmissionKindV1::CandidateValidation
+        } else {
+            AdmissionKindV1::Cycle
+        },
+        cycle_id: carried.unwrap_or_else(ids::cycle_id),
+        claimed_at: ids::now_ms(),
+    };
+    let (claim, claimed) = state::claim_admission(&deps.iii, &claim).await?;
+    match claim.kind {
+        AdmissionKindV1::Cycle => ensure_admitted_cycle(deps, &claim).await?,
+        AdmissionKindV1::CandidateValidation => return_to_cycle(deps, &claim, &status).await?,
+    }
+    Ok(ExecutionAdmissionResponseV1 {
+        admitted: claimed,
+        reason: if claimed {
+            "admitted".into()
+        } else {
+            "already admitted".into()
+        },
+        cycle_id: Some(claim.cycle_id),
+    })
+}
+
+/// Creates the claimed cycle unless it exists: a restart between the claim
+/// and the cycle never loses it, and redelivery never creates a second.
+async fn ensure_admitted_cycle(deps: &Deps, claim: &AdmissionV1) -> Result<(), EvalError> {
+    let _guard = deps.locks.guard(&claim.cycle_id).await;
+    if state::get_cycle(&deps.iii, &claim.cycle_id)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    create_cycle(
+        deps,
+        claim.cycle_id.clone(),
+        CycleInputV1::ExecutionId(claim.execution_id.clone()),
+        "admitted from a terminal E2E execution",
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Records a candidate-validation execution in the history of the cycle it
+/// validates, once.
+async fn return_to_cycle(deps: &Deps, claim: &AdmissionV1, status: &str) -> Result<(), EvalError> {
+    let _guard = deps.locks.guard(&claim.cycle_id).await;
+    let Some(mut record) = state::get_cycle(&deps.iii, &claim.cycle_id).await? else {
+        return Ok(());
+    };
+    let mut marker = format!("candidate validation execution {}", claim.execution_id);
+    if let Some(run_id) = &claim.run_id {
+        marker.push_str(&format!(" run {run_id}"));
+    }
+    if let Some(attempt_id) = &claim.attempt_id {
+        marker.push_str(&format!(" attempt {attempt_id}"));
+    }
+    let marker = format!("{marker} returned");
+    if record.history.iter().any(|event| {
+        event
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.starts_with(&marker))
+    }) {
+        return Ok(());
+    }
+    let now = ids::now_ms();
+    record.updated_at = now;
+    let event = cycle_event(now, record.status, &format!("{marker}: {status}"));
+    record.history.push(event);
+    state::put_cycle(&deps.iii, &record).await
+}
+
+/// Recovers `e2e::dashboard::changed` events that never arrived: every
+/// terminal execution listed since the checkpoint goes through the same
+/// admission. The checkpoint never passes an execution still open or one
+/// whose admission failed; an E2E that is down only delays the sweep.
+async fn admission_sweep(deps: &Deps) -> Result<u64, EvalError> {
+    let stored = state::get_admission_checkpoint(&deps.iii).await?;
+    let since = stored.as_ref().map_or(0, |checkpoint| checkpoint.since);
+    let listed: Value = match call(
+        deps,
+        "e2e::dashboard::executions-list",
+        json!({}),
+        BUS_TIMEOUT_MS,
+    )
+    .await
+    {
+        Ok(listed) => listed,
+        Err(error) => {
+            tracing::debug!(%error, "admission sweep: E2E executions unavailable");
+            return Ok(0);
+        }
+    };
+    let (mut admitted, mut newest, mut ceiling) = (0u64, since, None::<i64>);
+    let mut hold = |at: Option<i64>| {
+        if let Some(at) = at {
+            ceiling = Some(ceiling.map_or(at, |current: i64| current.min(at)));
+        }
+    };
+    for entry in listed["executions"].as_array().into_iter().flatten() {
+        let Some(execution_id) = text_at(entry, &["/id", "/execution_id"]) else {
+            continue;
+        };
+        let status = status_of(entry);
+        let at = time_at(entry, &FINISHED_FIELDS);
+        if OPEN_STATUSES.contains(&status.as_str()) {
+            hold(at);
+            continue;
+        }
+        if !ADMITTED_STATUSES.contains(&status.as_str()) || at.is_some_and(|at| at < since) {
+            continue;
+        }
+        match admit_execution(deps, &execution_id).await {
+            Ok(response) => {
+                admitted += u64::from(response.admitted);
+                newest = newest.max(at.unwrap_or(since));
+            }
+            Err(error) => {
+                tracing::warn!(%execution_id, %error, "admission sweep could not admit");
+                hold(at);
+            }
+        }
+    }
+    let next = since.max(ceiling.map_or(newest, |ceiling| newest.min(ceiling)));
+    if stored.is_none() || next != since {
+        state::put_admission_checkpoint(
+            &deps.iii,
+            &AdmissionCheckpointV1 {
+                since: next,
+                updated_at: ids::now_ms(),
+            },
+        )
+        .await?;
+    }
+    Ok(admitted)
+}
+
 /// Everything that must match between baseline and candidate; only the
 /// Harness version is meant to differ. Unknown values never match.
 pub fn comparability(
@@ -640,9 +931,14 @@ pub fn comparability(
 // Recovery
 // ---------------------------------------------------------------------------
 
-/// The periodic sweep: `resume_analyses`.
+/// The periodic sweep: `resume_analyses`, then the checkpointed admission
+/// sweep, whose failure never fails the rest.
 pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
-    resume_analyses(deps).await
+    let response = resume_analyses(deps).await?;
+    if let Err(error) = admission_sweep(deps).await {
+        tracing::warn!(%error, "admission sweep failed; the next sweep retries");
+    }
+    Ok(response)
 }
 
 /// Re-enqueues pending analyses, fails those past their deadline and, at most

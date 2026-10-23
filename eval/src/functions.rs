@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 
 use crate::contract::{
     ConfigureRequestV1, CycleIdRequestV1, CycleListRequestV1, CycleStartRequestV1,
-    EvaluationIdRequestV1, MonitorStateRequestV1, StepRequestV1, SweepEventV1,
+    EvaluationIdRequestV1, ExecutionChangedEventV1, MonitorStateRequestV1, StepRequestV1,
+    SweepEventV1,
 };
+use crate::events::E2E_CHANGED;
 use crate::runtime::Deps;
 
 pub const CONFIGURE_ID: &str = "eval::configure";
@@ -20,6 +23,7 @@ pub const CANCEL_ID: &str = "eval::cancel";
 pub const DELETE_ID: &str = "eval::delete";
 pub const STEP_ID: &str = "eval::step";
 pub const SWEEP_ID: &str = "eval::sweep";
+pub const EXECUTION_CHANGED_ID: &str = "eval::execution-changed";
 
 pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
     let current = deps.clone();
@@ -180,7 +184,35 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             let deps = current.clone();
             async move { crate::runtime::sweep(&deps).await.map_err(Error::from) }
         })
-        .description("Internal recovery, deadline and retention sweep.")
+        .description("Internal recovery, deadline, retention and admission sweep.")
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
+
+    let current = deps.clone();
+    iii.register_function(
+        EXECUTION_CHANGED_ID,
+        RegisterFunction::new_async(move |event: ExecutionChangedEventV1| {
+            let deps = current.clone();
+            async move {
+                crate::runtime::execution_changed(&deps, event)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "Internal: on e2e::dashboard::changed, re-read the execution with \
+             e2e::dashboard::execution-get and admit a normal terminal execution (passed or \
+             failed) into one loop cycle per execution/run/attempt. An execution started to \
+             validate a candidate returns to its original cycle.",
+        )
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+    // The handle is not kept: dropping it leaves the binding in place.
+    if let Err(error) = iii.register_trigger(RegisterTriggerInput::new(
+        E2E_CHANGED,
+        EXECUTION_CHANGED_ID,
+        json!({}),
+    )) {
+        tracing::warn!(%error, "binding {E2E_CHANGED} failed; the sweep still admits executions");
+    }
 }

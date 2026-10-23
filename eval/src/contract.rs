@@ -1059,6 +1059,73 @@ pub struct SweepResponseV1 {
     pub retained_deleted: u64,
 }
 
+/// An `e2e::dashboard::changed` event. Only the execution it names is read;
+/// `execution-get` stays the source of truth. An event naming none runs the
+/// checkpointed admission sweep instead.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ExecutionChangedEventV1 {
+    #[serde(default)]
+    pub execution_id: Option<String>,
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+impl ExecutionChangedEventV1 {
+    pub fn execution_id(&self) -> Option<&str> {
+        self.execution_id
+            .as_deref()
+            .or(self.id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+    }
+}
+
+/// How an admitted execution entered the loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionKindV1 {
+    /// A normal terminal execution that started its own cycle.
+    Cycle,
+    /// An execution started to validate a candidate of `cycle_id`: it returns
+    /// to that cycle and never starts a new one.
+    CandidateValidation,
+}
+
+/// The claim of one execution/run/attempt, set once with compare-and-set:
+/// redelivery and restart find it and never admit twice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionV1 {
+    pub admission_key: String,
+    pub execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
+    pub kind: AdmissionKindV1,
+    pub cycle_id: String,
+    pub claimed_at: i64,
+}
+
+/// Where the admission sweep resumes: executions that finished before
+/// `since` (ms since the Unix epoch) were already looked at.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionCheckpointV1 {
+    pub since: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionAdmissionResponseV1 {
+    /// True only when this call claimed the execution.
+    pub admitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_id: Option<String>,
+    pub reason: String,
+}
+
 // ---------------------------------------------------------------------------
 // Comparison: the evidence and outcome of a baseline/candidate pair
 // ---------------------------------------------------------------------------

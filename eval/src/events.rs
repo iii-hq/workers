@@ -13,6 +13,9 @@ use serde_json::{json, Value};
 use crate::contract::EvalStatusV1;
 
 pub const COMPLETED: &str = "eval::completed";
+/// The E2E dashboard's change event: eval binds it to admit finished
+/// executions; the payload is only a hint to re-read `execution-get`.
+pub const E2E_CHANGED: &str = "e2e::dashboard::changed";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
