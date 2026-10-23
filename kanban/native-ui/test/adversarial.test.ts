@@ -6,7 +6,19 @@
  */
 import { HostError } from '@iii-dev/native-ui/testing'
 import { describe, expect, it } from 'vitest'
-import { callsOf, cards, FakeKanban, keysOf, sample, start } from './fake'
+import {
+  activityOf,
+  callsOf,
+  cards,
+  descriptionOf,
+  FakeKanban,
+  itemOf,
+  keysOf,
+  piecesOf,
+  sample,
+  start,
+  tapLink,
+} from './fake'
 
 describe('malformed worker data', () => {
   it('a board with bad columns and bad cards shows the good ones', async () => {
@@ -81,9 +93,9 @@ describe('malformed worker data', () => {
     await host.settle()
     expect(host.failed).toBeNull()
     expect(host.prop('title', 'text')).toBe('KAN-4')
-    expect(host.findAll('description')).toHaveLength(0)
-    const items = host.items('activity') as Record<string, unknown>[]
-    expect(items.map((i) => [i.kind, i.text])).toEqual([
+    expect(piecesOf(host)).toEqual([])
+    expect(itemOf(host, '@d-none')).toMatchObject({ isNote: true, note: 'No description yet.' })
+    expect(activityOf(host).map((i) => [i.kind, i.text])).toEqual([
       [0, 'You updated this'],
       [1, 'dup'],
     ])
@@ -216,7 +228,7 @@ describe('drops and links that make no sense', () => {
     await host.itemPress('lane:in_review', 't4')
     await host.settle()
     for (const href of ['javascript:alert(1)', 'file:///etc/passwd', '#kanban-ticket/KAN-999']) {
-      await host.link('description', href)
+      await tapLink(host, href)
       expect(host.toasts.at(-1)).toEqual({ text: "This link can't be opened here", kind: 'info' })
     }
     expect(host.opened).toEqual([])
@@ -234,7 +246,8 @@ describe('size', () => {
     await host.itemPress('lane:in_review', 't4')
     await host.settle()
     expect(host.failed).toBeNull()
-    expect(String(host.prop('description', 'text')).length).toBeGreaterThan(180_000)
+    expect(descriptionOf(host).length).toBeGreaterThan(180_000)
+    expect(piecesOf(host).length).toBeGreaterThan(100)
   })
 
   it('a ticket with 600 comments lists them', async () => {
@@ -265,7 +278,7 @@ describe('size', () => {
     await host.itemPress('lane:in_review', 't4')
     await host.settle()
     expect(host.failed).toBeNull()
-    expect(host.items('activity')).toHaveLength(603)
+    expect(activityOf(host)).toHaveLength(603)
   })
 
   it('a board with 3 000 done tickets: the first page, then the whole of it under a filter', async () => {

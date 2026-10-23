@@ -637,3 +637,50 @@ export function shown(host: TestHost, testTag: string): boolean {
   const all = host.findAll(testTag)
   return all.length > 0 && all.every((n) => n.props?.visible !== false)
 }
+
+type Item = Record<string, any>
+
+/** The items of a ticket's List (default: the one on screen as `activity`). */
+export const ticketList = (host: TestHost, list: string | number = 'activity'): Item[] => host.items(list) as Item[]
+
+/** The events and comments of a ticket's List, in order. */
+export const activityOf = (host: TestHost, list: string | number = 'activity') =>
+  ticketList(host, list).filter((i) => i.kind === 0 || i.kind === 1)
+
+/** The description's pieces (kind 2). */
+export const piecesOf = (host: TestHost, list: string | number = 'activity') =>
+  ticketList(host, list).filter((i) => i.kind === 2)
+
+/** The description as drawn: its pieces joined. */
+export const descriptionOf = (host: TestHost, list: string | number = 'activity') =>
+  piecesOf(host, list)
+    .map((i) => i.text)
+    .join('')
+
+/** One item by key. */
+export const itemOf = (host: TestHost, key: string, list: string | number = 'activity') =>
+  ticketList(host, list).find((i) => i.key === key)
+
+/** A tap on `href` in the description piece that holds it. */
+export async function tapLink(host: TestHost, href: string, list: string | number = 'activity'): Promise<void> {
+  const piece = piecesOf(host, list).find((i) => String(i.text).includes(`(${href}`))
+  if (!piece) throw new Error(`no description piece links to ${href}`)
+  await host.itemEmit(list, piece.key, { type: 'Markdown' }, 'link', [href])
+}
+
+/** About `size` characters of varied Markdown: paragraphs, a loose list, a table, a fence with blank lines inside. */
+export function longMarkdown(size = 20_000): string {
+  const parts: string[] = []
+  let n = 0
+  while (parts.join('\n\n').length < size) {
+    n++
+    parts.push(
+      `## Section ${n}`,
+      `Paragraph ${n} explains a thing at some length, with **bold**, a \`code span\` and a [link](https://example.com/${n}). It goes on for a while so that the section has some weight to it, like an agent's report does.`,
+      `- item one of ${n}\n\n- item two of ${n}, loose\n\n  continued under it\n\n- item three`,
+      `| step | phone |\n|---|---|\n| lift ${n} | 400 ms |\n| switch | 400 ms |`,
+      `\`\`\`ts\nconst a${n} = 1\n\n\n// two blank lines above, inside the fence\nconst b = 2\n\`\`\``,
+    )
+  }
+  return parts.join('\n\n')
+}
