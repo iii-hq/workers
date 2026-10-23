@@ -424,8 +424,11 @@ test (`test/catalog.test.ts`, `test/conformance.test.ts`) fails when
 `test/example.test.ts`. A `catalog.json` change is orchestrated with the ide
 copy (`native/catalog/catalog.json`) and its generated Kotlin.
 
-No CI job runs these vitest suites or the typecheck yet, and
-`discover_changed_workers.py` has no rule for `packages/`: a change here does
-not rebuild the workers that bundle the SDK (the `browser`). Run the tests,
-and the tests of the apps that use it (`pnpm --dir browser/native-ui test`),
-by hand.
+In CI, the `native-ui` job (`.github/workflows/ci.yml`) runs biome, this
+package's typecheck and tests, the generators' `--check`, and every
+`<worker>/native-ui` app's `typecheck` and `test`, whenever the SDK, an app,
+`crates/native-ui/`, the root lockfile or the workspace file changes; and a
+change here puts every worker whose app depends on `@iii-dev/native-ui` in
+the `rust` matrix (`discover_changed_workers.py`, `BUNDLED_PACKAGES`), so
+its embedded bundle is rebuilt and tested. The SOP's §6 has the local
+equivalents.
