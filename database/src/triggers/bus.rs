@@ -1,11 +1,10 @@
-//! The `database::row-changed` binding table and fan-out.
+//! The `database::on-row-changed` event, the transaction buffer, and the emit
+//! path.
 //!
-//! The worker owns this trigger type, so it owns the bindings: the engine hands
-//! each `register_trigger` to the handler, which files it here, and every
-//! successful mutation looks up the matching bindings and calls their functions
-//! directly (`harness/src/events.rs` does the same for turn events).
-//!
-//! Two rules shape it:
+//! The worker announces its own writes through `database::on-row-changed`,
+//! an owner-delivered function (`capture.rs`): each event is routed to the
+//! observers whose args name its db, table and op. This module decides WHEN
+//! an event exists:
 //!
 //! * **Emit after the write is durable, never before.** A statement inside a
 //!   transaction has not happened until the commit does, so interactive
@@ -17,6 +16,8 @@
 //!   `capture: native` databases hear every client instead (`native.rs`,
 //!   `sqlite_watch.rs`, `mysql_binlog.rs`) and hand their events to
 //!   [`RowChangeBus::emit_event`] already shaped.
+//! * **Nothing is serialized for nobody.** With no active observer (and no
+//!   binding of the old trigger type) an event costs a few atomic loads.
 //!
 //! The event never invents row data. On the statements path `returning` is the
 //! writer's own `RETURNING` projection, forwarded verbatim; on the native path
@@ -25,14 +26,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::capture::NativeCapture;
 use super::sql::{self, Op};
 
-/// The trigger type this worker registers.
+/// The trigger type this worker registered before 0.25, still registered on
+/// every engine for consumers that bind it (see `legacy.rs`).
 pub const ROW_CHANGED_TYPE: &str = "database::row-changed";
 
 /// How many changed-row keys one `capture: native` event carries at most.
@@ -42,32 +44,39 @@ pub const ROW_CHANGED_TYPE: &str = "database::row-changed";
 /// the postgres trigger additionally halves the count until the payload fits.
 pub(crate) const KEY_CAP: usize = 100;
 
-/// Per-binding config: which database, and optionally which table.
-#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+/// An observer's args: which database, and optionally which table and
+/// operations. Also the shape of the old trigger config.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct RowChangedConfig {
+pub struct RowChangedArgs {
     /// Database handle, as named in the worker's config.
-    // Required: a binding that watched every database would fire for traffic
-    // its owner never asked about.
+    // Required: an observer that watched every database would fire for
+    // traffic its owner never asked about.
     pub db: String,
-    /// Table filter. Matched case-insensitively and ignoring a schema
-    /// qualifier. Optional on a `capture: statements` database (omit to hear
-    /// every table); required on a `capture: native` one, where per-table
-    /// database triggers are what make other clients' writes visible.
+    /// Table, canonical: the bare name, unquoted and lowercased (`orders`,
+    /// not `public.Orders`). Optional on a `capture: statements` database
+    /// (omit to hear every table); required on a `capture: native` one,
+    /// where per-table database triggers are what make other clients'
+    /// writes visible.
     #[serde(default)]
     pub table: Option<String>,
-    /// Operation filter. Omit to hear every operation.
+    /// Operations. Omit to hear every operation.
     #[serde(default)]
     pub ops: Option<Vec<Op>>,
 }
 
-/// What a subscriber receives.
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+/// One committed write statement: the input of `database::on-row-changed`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RowChangedEvent {
     pub db: String,
-    /// `null` when the statement was recognisably a write but its table could
-    /// not be read out of the SQL (a CTE-wrapped write, for example). Always
-    /// set on a `capture: native` database.
+    /// The table's schema, lowercased, when the SQL or the driver named one;
+    /// `null` otherwise.
+    pub schema: Option<String>,
+    /// Canonical table name: bare, unquoted, lowercased. `null` when the
+    /// statement was recognisably a write but its table could not be read out
+    /// of the SQL (a CTE-wrapped write, for example): such an event reaches
+    /// only observers whose args name no table. Always set on a
+    /// `capture: native` database.
     pub table: Option<String>,
     pub op: Op,
     /// Rows the statement changed. Exact even when `returning` is capped.
@@ -80,7 +89,7 @@ pub struct RowChangedEvent {
     /// reports the new key), capped at 100 rows per event; absent for a
     /// table without a primary key. Values are encoded like `database::query`
     /// returns them for the same column.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub returning: Option<Vec<serde_json::Map<String, Value>>>,
     /// True when `returning` holds fewer keys than `affected_rows` because the
     /// per-event cap dropped the rest (native capture only). Omitted when
@@ -91,38 +100,80 @@ pub struct RowChangedEvent {
     pub at: i64,
 }
 
-#[derive(Clone, Debug)]
-struct Subscriber {
-    instance_id: String,
-    function_id: String,
-    /// The metadata the engine stored on this binding, handed back verbatim at
-    /// fire time. Load-bearing, not decoration: a harness binding carries its
-    /// `__binding` pointer here, and a dispatch without it reaches the harness
-    /// with nothing to resolve — the event is simply dropped, silently.
-    metadata: Option<Value>,
-    config: SubscriberFilter,
+/// What a `database::row-changed` binding received before 0.25, and still
+/// receives: no `schema`, and the table schema-qualified when a schema is
+/// known (`public.orders` from postgres native capture, as before).
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct LegacyRowChangedEvent {
+    pub db: String,
+    pub table: Option<String>,
+    pub op: Op,
+    pub affected_rows: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returning: Option<Vec<serde_json::Map<String, Value>>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    pub at: i64,
 }
 
-#[derive(Clone, Debug)]
-struct SubscriberFilter {
-    db: String,
-    table: Option<String>,
-    ops: Option<Vec<Op>>,
-}
-
-impl SubscriberFilter {
-    fn matches(&self, db: &str, table: Option<&str>, op: Op) -> bool {
-        if self.db != db {
-            return false;
-        }
-        let table_matches = match (&self.table, table) {
-            (None, _) => true,
-            // A binding that named a table never matches an event whose table
-            // could not be determined: silence beats a wrong match.
-            (Some(_), None) => false,
-            (Some(want), Some(got)) => sql::same_table(want, got),
+impl RowChangedEvent {
+    /// An event for a table reference as the SQL or the driver spelled it
+    /// (`orders`, `"Orders"`, `public.orders`): split and canonicalized here.
+    pub(crate) fn from_raw(
+        db: &str,
+        raw_table: Option<&str>,
+        op: Op,
+        affected_rows: u64,
+        returning: Option<Vec<serde_json::Map<String, Value>>>,
+        truncated: bool,
+    ) -> Self {
+        let (schema, table) = match raw_table.map(sql::split_table) {
+            Some((schema, table)) => (schema, Some(table)),
+            None => (None, None),
         };
-        table_matches && self.ops.as_ref().is_none_or(|ops| ops.contains(&op))
+        Self {
+            db: db.to_string(),
+            schema,
+            table,
+            op,
+            affected_rows,
+            returning: returning.filter(|r| !r.is_empty()),
+            truncated,
+            at: now_ms(),
+        }
+    }
+
+    /// The same event canonicalized: native producers fill `table` with what
+    /// the database reported (postgres: `schema.table`) and no `schema`.
+    pub(crate) fn canonical(self) -> Self {
+        if self.schema.is_some() {
+            return self;
+        }
+        let Some(raw) = self.table.as_deref() else {
+            return self;
+        };
+        let (schema, table) = sql::split_table(raw);
+        Self {
+            schema,
+            table: Some(table),
+            ..self
+        }
+    }
+
+    /// The pre-0.25 shape of this event (see [`LegacyRowChangedEvent`]).
+    pub fn legacy_view(&self) -> LegacyRowChangedEvent {
+        LegacyRowChangedEvent {
+            db: self.db.clone(),
+            table: match (&self.schema, &self.table) {
+                (Some(schema), Some(table)) => Some(format!("{schema}.{table}")),
+                (_, table) => table.clone(),
+            },
+            op: self.op,
+            affected_rows: self.affected_rows,
+            returning: self.returning.clone(),
+            truncated: self.truncated,
+            at: self.at,
+        }
     }
 }
 
@@ -136,43 +187,16 @@ struct Pending {
     returning: Option<Vec<serde_json::Map<String, Value>>>,
 }
 
+/// The transaction buffer. Kept separate from the client so the buffer
+/// semantics — the part with real consequences if wrong — are testable
+/// without a live engine.
 #[derive(Default)]
-struct Inner {
-    subscribers: Vec<Subscriber>,
+struct Buffer {
     /// transaction id → changes not yet committed.
     pending: HashMap<String, Vec<Pending>>,
 }
 
-/// Everything the bus does that does not need the engine: bookkeeping and
-/// matching. Kept separate so the buffer semantics — the part with real
-/// consequences if wrong — are testable without a live client.
-impl Inner {
-    fn register(
-        &mut self,
-        instance_id: String,
-        function_id: String,
-        metadata: Option<Value>,
-        cfg: RowChangedConfig,
-    ) {
-        // Idempotent on the engine's instance id: a re-registration replaces
-        // rather than doubles.
-        self.subscribers.retain(|s| s.instance_id != instance_id);
-        self.subscribers.push(Subscriber {
-            instance_id,
-            function_id,
-            metadata,
-            config: SubscriberFilter {
-                db: cfg.db,
-                table: cfg.table,
-                ops: cfg.ops,
-            },
-        });
-    }
-
-    fn unregister(&mut self, instance_id: &str) {
-        self.subscribers.retain(|s| s.instance_id != instance_id);
-    }
-
+impl Buffer {
     fn stage(
         &mut self,
         transaction_id: &str,
@@ -202,21 +226,12 @@ impl Inner {
     fn take_pending(&mut self, transaction_id: &str) -> Vec<Pending> {
         self.pending.remove(transaction_id).unwrap_or_default()
     }
-
-    /// Matching subscribers as (function id, stored metadata) pairs.
-    fn targets_for(&self, db: &str, table: Option<&str>, op: Op) -> Vec<(String, Option<Value>)> {
-        self.subscribers
-            .iter()
-            .filter(|s| s.config.matches(db, table, op))
-            .map(|s| (s.function_id.clone(), s.metadata.clone()))
-            .collect()
-    }
 }
 
 pub struct RowChangeBus {
     iii: Arc<IIIClient>,
-    dispatch_timeout_ms: u64,
-    inner: Mutex<Inner>,
+    capture: Arc<NativeCapture>,
+    inner: Mutex<Buffer>,
 }
 
 impl RowChangeBus {
@@ -227,35 +242,28 @@ impl RowChangeBus {
         &self.iii
     }
 
+    /// A bus over its own, empty capture: staging and commit work, events go
+    /// nowhere. For tests that exercise the buffer.
     pub fn new(iii: Arc<IIIClient>, dispatch_timeout_ms: u64) -> Self {
+        let capture = Arc::new(NativeCapture::detached(iii.clone(), dispatch_timeout_ms));
+        Self::with_capture(iii, capture)
+    }
+
+    /// A bus that hands its events to `capture`, which routes them.
+    pub fn with_capture(iii: Arc<IIIClient>, capture: Arc<NativeCapture>) -> Self {
         Self {
             iii,
-            dispatch_timeout_ms,
-            inner: Mutex::new(Inner::default()),
+            capture,
+            inner: Mutex::new(Buffer::default()),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+    pub fn capture(&self) -> &Arc<NativeCapture> {
+        &self.capture
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Buffer> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn register(
-        &self,
-        instance_id: String,
-        function_id: String,
-        metadata: Option<Value>,
-        cfg: RowChangedConfig,
-    ) {
-        self.lock()
-            .register(instance_id, function_id, metadata, cfg);
-    }
-
-    pub fn unregister(&self, instance_id: &str) {
-        self.lock().unregister(instance_id);
-    }
-
-    pub fn subscriber_count(&self) -> usize {
-        self.lock().subscribers.len()
     }
 
     #[cfg(test)]
@@ -266,7 +274,7 @@ impl RowChangeBus {
     /// Announce an already-shaped event — the native capture path, where the
     /// database told us table/op/count and there is no SQL to classify.
     pub async fn emit_event(&self, event: RowChangedEvent) {
-        self.fan_out(event).await;
+        self.fan_out(event.canonical()).await;
     }
 
     /// Announce a committed change. `sql` is classified here so callers stay
@@ -278,26 +286,27 @@ impl RowChangeBus {
         affected_rows: u64,
         returning: Option<&[serde_json::Map<String, Value>]>,
     ) {
-        if affected_rows == 0 {
+        if affected_rows == 0 || !self.capture.is_listened() {
             return;
         }
         let Some(mutation) = sql::classify(sql) else {
             return;
         };
-        let event = RowChangedEvent {
-            db: db.to_string(),
-            table: mutation.table.clone(),
-            op: mutation.op,
+        let event = RowChangedEvent::from_raw(
+            db,
+            mutation.table.as_deref(),
+            mutation.op,
             affected_rows,
-            returning: returning.map(|r| r.to_vec()).filter(|r| !r.is_empty()),
-            truncated: false,
-            at: now_ms(),
-        };
+            returning.map(<[_]>::to_vec),
+            false,
+        );
         self.fan_out(event).await;
     }
 
     /// Buffer a change made inside an interactive transaction. Nothing is
     /// announced until [`commit`] — the row does not exist for anyone else yet.
+    /// Staging stays unconditional: an observer that becomes active between a
+    /// statement and its commit is owed the event.
     pub fn stage(
         &self,
         transaction_id: &str,
@@ -314,15 +323,14 @@ impl RowChangeBus {
     pub async fn commit(&self, transaction_id: &str) {
         let staged = self.lock().take_pending(transaction_id);
         for p in staged {
-            self.fan_out(RowChangedEvent {
-                db: p.db,
-                table: p.table,
-                op: p.op,
-                affected_rows: p.affected_rows,
-                returning: p.returning,
-                truncated: false,
-                at: now_ms(),
-            })
+            self.fan_out(RowChangedEvent::from_raw(
+                &p.db,
+                p.table.as_deref(),
+                p.op,
+                p.affected_rows,
+                p.returning,
+                false,
+            ))
             .await;
         }
     }
@@ -334,41 +342,16 @@ impl RowChangeBus {
     }
 
     async fn fan_out(&self, event: RowChangedEvent) {
-        let targets = self
-            .lock()
-            .targets_for(&event.db, event.table.as_deref(), event.op);
-        if targets.is_empty() {
+        // Nobody observing: no serialization, no call, no frames.
+        if !self.capture.is_listened() {
             return;
         }
-        let payload = match serde_json::to_value(&event) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %e, "row-changed event serialize failed");
-                return;
-            }
-        };
-        for (function_id, metadata) in targets {
-            let request = TriggerRequest {
-                function_id: function_id.clone(),
-                payload: payload.clone(),
-                action: Some(iii_sdk::TriggerAction::Void),
-                timeout_ms: Some(self.dispatch_timeout_ms),
-            };
-            // `Void` enqueues and returns without awaiting subscriber
-            // execution. The stored metadata rides along — the target may
-            // need it to know which binding this is.
-            let res = match metadata {
-                Some(m) => self.iii.trigger(request.metadata(m)).await,
-                None => self.iii.trigger(request).await,
-            };
-            if let Err(e) = res {
-                tracing::warn!(
-                    function_id = %function_id,
-                    error = %e,
-                    "row-changed dispatch failed"
-                );
-            }
-        }
+        // Routed in-process, from the invocation that made the write (the
+        // `database::execute` / `commitTransaction` handler, or a native
+        // listener task): the SDK checks each routed observer's filters and
+        // reports only matches, with that invocation as the event's caller.
+        // Awaited, so a transaction's statements are reported in commit order.
+        self.capture.route(&event).await;
     }
 }
 
@@ -384,58 +367,9 @@ pub(crate) fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
-    fn filter(db: &str, table: Option<&str>) -> SubscriberFilter {
-        SubscriberFilter {
-            db: db.into(),
-            table: table.map(str::to_string),
-            ops: None,
-        }
-    }
-
-    #[test]
-    fn a_table_filter_matches_case_and_schema_insensitively() {
-        let f = filter("primary", Some("orders"));
-        assert!(f.matches("primary", Some("orders"), Op::Insert));
-        assert!(f.matches("primary", Some("ORDERS"), Op::Insert));
-        assert!(f.matches("primary", Some("public.orders"), Op::Insert));
-        assert!(!f.matches("primary", Some("order_items"), Op::Insert));
-        assert!(!f.matches("analytics", Some("orders"), Op::Insert));
-    }
-
-    #[test]
-    fn a_db_only_filter_hears_every_table() {
-        let f = filter("primary", None);
-        assert!(f.matches("primary", Some("orders"), Op::Insert));
-        assert!(f.matches("primary", Some("payments"), Op::Update));
-        // Including the ones whose table could not be classified.
-        assert!(f.matches("primary", None, Op::Other));
-        assert!(!f.matches("other", Some("orders"), Op::Delete));
-    }
-
-    #[test]
-    fn a_named_table_never_matches_an_unknown_one() {
-        // Silence beats a wrong match: a CTE-wrapped write reports no table,
-        // and a binding watching `orders` must not claim it.
-        let f = filter("primary", Some("orders"));
-        assert!(!f.matches("primary", None, Op::Other));
-    }
-
-    #[test]
-    fn an_op_filter_matches_only_selected_operations() {
-        let f = SubscriberFilter {
-            db: "primary".into(),
-            table: Some("orders".into()),
-            ops: Some(vec![Op::Insert, Op::Delete]),
-        };
-        assert!(f.matches("primary", Some("orders"), Op::Insert));
-        assert!(f.matches("primary", Some("orders"), Op::Delete));
-        assert!(!f.matches("primary", Some("orders"), Op::Update));
-        assert!(!f.matches("primary", Some("orders"), Op::Other));
-    }
-
     #[test]
     fn staged_changes_survive_until_commit_and_die_on_rollback() {
-        let mut inner = Inner::default();
+        let mut inner = Buffer::default();
         inner.stage("tx1", "primary", "INSERT INTO a (n) VALUES (1)", 1, None);
         inner.stage("tx1", "primary", "UPDATE a SET n = 2", 1, None);
         inner.stage("tx2", "primary", "DELETE FROM b", 3, None);
@@ -458,7 +392,7 @@ mod tests {
 
     #[test]
     fn staging_ignores_statements_that_change_no_rows() {
-        let mut inner = Inner::default();
+        let mut inner = Buffer::default();
         inner.stage("tx1", "primary", "SELECT * FROM a", 0, None);
         inner.stage("tx1", "primary", "CREATE TABLE b (id INT)", 0, None);
         inner.stage("tx1", "primary", "UPDATE a SET n = 1", 0, None);
@@ -467,7 +401,7 @@ mod tests {
 
     #[test]
     fn staged_changes_keep_returning_rows() {
-        let mut inner = Inner::default();
+        let mut inner = Buffer::default();
         let rows = vec![serde_json::json!({ "id": 7 }).as_object().unwrap().clone()];
         inner.stage(
             "tx1",
@@ -483,8 +417,8 @@ mod tests {
     }
 
     #[test]
-    fn config_rejects_unknown_filter_keys() {
-        let err = serde_json::from_value::<RowChangedConfig>(serde_json::json!({
+    fn args_reject_unknown_keys() {
+        let err = serde_json::from_value::<RowChangedArgs>(serde_json::json!({
             "db": "primary",
             "tabl": "orders"
         }))
@@ -493,156 +427,76 @@ mod tests {
     }
 
     #[test]
-    fn unknown_table_serializes_as_null() {
-        let value = serde_json::to_value(RowChangedEvent {
-            db: "primary".into(),
-            table: None,
-            op: Op::Other,
-            affected_rows: 1,
-            returning: None,
-            truncated: false,
-            at: 0,
-        })
-        .unwrap();
-        assert_eq!(value["table"], serde_json::Value::Null);
+    fn events_carry_canonical_schema_and_table() {
+        let event = RowChangedEvent::from_raw(
+            "primary",
+            Some("public.\"Orders\""),
+            Op::Insert,
+            1,
+            None,
+            false,
+        );
+        assert_eq!(event.schema.as_deref(), Some("public"));
+        assert_eq!(event.table.as_deref(), Some("orders"));
+        let bare = RowChangedEvent::from_raw("primary", Some("ORDERS"), Op::Insert, 1, None, false);
+        assert_eq!(bare.schema, None);
+        assert_eq!(bare.table.as_deref(), Some("orders"));
+        // A native postgres event names `schema.table`; canonical() splits it.
+        let native = RowChangedEvent {
+            schema: None,
+            table: Some("public.orders".into()),
+            ..bare.clone()
+        }
+        .canonical();
+        assert_eq!(native.schema.as_deref(), Some("public"));
+        assert_eq!(native.table.as_deref(), Some("orders"));
+        // Legacy bindings keep the schema-qualified name they got before.
+        assert_eq!(native.legacy_view().table.as_deref(), Some("public.orders"));
+        assert_eq!(bare.legacy_view().table.as_deref(), Some("orders"));
     }
 
-    /// The wire shape a listener sees today must not change for events that
+    #[test]
+    fn unknown_table_serializes_as_null() {
+        let value = serde_json::to_value(RowChangedEvent::from_raw(
+            "primary",
+            None,
+            Op::Other,
+            1,
+            None,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(value["table"], serde_json::Value::Null);
+        assert_eq!(value["schema"], serde_json::Value::Null);
+    }
+
+    /// The wire shape a listener sees must not grow keys for events that
     /// carry no row identity: no `returning` key, no `truncated` key. The
-    /// flag appears only when it is true.
+    /// flag appears only when it is true. The legacy view has no `schema`.
     #[test]
     fn events_without_keys_omit_returning_and_truncated() {
-        let plain = serde_json::to_value(RowChangedEvent {
-            db: "primary".into(),
-            table: Some("orders".into()),
-            op: Op::Update,
-            affected_rows: 3,
-            returning: None,
-            truncated: false,
-            at: 0,
-        })
-        .unwrap();
-        assert!(plain.get("returning").is_none(), "{plain}");
-        assert!(plain.get("truncated").is_none(), "{plain}");
+        let plain =
+            RowChangedEvent::from_raw("primary", Some("orders"), Op::Update, 3, None, false);
+        let value = serde_json::to_value(&plain).unwrap();
+        assert!(value.get("returning").is_none(), "{value}");
+        assert!(value.get("truncated").is_none(), "{value}");
+        let legacy = serde_json::to_value(plain.legacy_view()).unwrap();
+        assert!(legacy.get("schema").is_none(), "{legacy}");
+        assert!(legacy.get("returning").is_none(), "{legacy}");
 
-        let capped = serde_json::to_value(RowChangedEvent {
-            db: "primary".into(),
-            table: Some("orders".into()),
-            op: Op::Insert,
-            affected_rows: 150,
-            returning: Some(vec![serde_json::json!({ "id": 1 })
+        let capped = RowChangedEvent::from_raw(
+            "primary",
+            Some("orders"),
+            Op::Insert,
+            150,
+            Some(vec![serde_json::json!({ "id": 1 })
                 .as_object()
                 .unwrap()
                 .clone()]),
-            truncated: true,
-            at: 0,
-        })
-        .unwrap();
-        assert_eq!(capped["truncated"], serde_json::json!(true));
-        assert_eq!(capped["returning"][0]["id"], 1);
-    }
-
-    #[test]
-    fn registration_is_idempotent_on_the_instance_id() {
-        let mut inner = Inner::default();
-        let cfg = || RowChangedConfig {
-            db: "primary".into(),
-            table: None,
-            ops: None,
-        };
-        inner.register("i1".into(), "app::on-change".into(), None, cfg());
-        inner.register("i1".into(), "app::on-change".into(), None, cfg());
-        assert_eq!(inner.subscribers.len(), 1);
-        inner.register("i2".into(), "app::other".into(), None, cfg());
-        assert_eq!(inner.subscribers.len(), 2);
-        inner.unregister("i1");
-        assert_eq!(inner.subscribers.len(), 1);
-        // Unregistering something unknown is a no-op, not a panic.
-        inner.unregister("nope");
-        assert_eq!(inner.subscribers.len(), 1);
-    }
-
-    #[test]
-    fn fan_out_targets_only_matching_subscribers() {
-        let mut inner = Inner::default();
-        inner.register(
-            "i1".into(),
-            "app::orders".into(),
-            None,
-            RowChangedConfig {
-                db: "primary".into(),
-                table: Some("orders".into()),
-                ops: None,
-            },
+            true,
         );
-        inner.register(
-            "i2".into(),
-            "app::everything".into(),
-            None,
-            RowChangedConfig {
-                db: "primary".into(),
-                table: None,
-                ops: None,
-            },
-        );
-        inner.register(
-            "i3".into(),
-            "app::other-db".into(),
-            None,
-            RowChangedConfig {
-                db: "analytics".into(),
-                table: None,
-                ops: None,
-            },
-        );
-
-        let names = |db: &str, t: Option<&str>, op: Op| -> Vec<String> {
-            inner
-                .targets_for(db, t, op)
-                .into_iter()
-                .map(|(f, _)| f)
-                .collect()
-        };
-        assert_eq!(
-            names("primary", Some("orders"), Op::Insert),
-            vec!["app::orders".to_string(), "app::everything".to_string()]
-        );
-        assert_eq!(
-            names("primary", Some("payments"), Op::Update),
-            vec!["app::everything".to_string()]
-        );
-        // An unclassifiable table reaches only the db-wide watcher.
-        assert_eq!(
-            names("primary", None, Op::Other),
-            vec!["app::everything".to_string()]
-        );
-        assert_eq!(
-            names("analytics", Some("orders"), Op::Delete),
-            vec!["app::other-db".to_string()]
-        );
-    }
-
-    #[test]
-    fn stored_metadata_rides_along_to_the_target() {
-        // The bug this pins: dispatching without the binding's metadata
-        // reaches the harness with no `__binding` to resolve, and the event is
-        // dropped silently — the write happened, nobody heard it.
-        let mut inner = Inner::default();
-        inner.register(
-            "i1".into(),
-            "harness::trigger::deliver".into(),
-            Some(serde_json::json!({ "__binding": "sub_abc" })),
-            RowChangedConfig {
-                db: "primary".into(),
-                table: None,
-                ops: None,
-            },
-        );
-        let targets = inner.targets_for("primary", Some("orders"), Op::Insert);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(
-            targets[0].1.as_ref().and_then(|m| m.get("__binding")),
-            Some(&serde_json::json!("sub_abc"))
-        );
+        let value = serde_json::to_value(&capped).unwrap();
+        assert_eq!(value["truncated"], serde_json::json!(true));
+        assert_eq!(value["returning"][0]["id"], 1);
     }
 }

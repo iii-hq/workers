@@ -34,6 +34,13 @@ export const DB = {
   history: 'database::history',
   getTableView: 'database::getTableView',
   saveTableView: 'database::saveTableView',
+  testConnection: 'database::testConnection',
+  getConnection: 'database::getConnection',
+  saveConnection: 'database::saveConnection',
+  deleteConnection: 'database::deleteConnection',
+  distinctValues: 'database::distinctValues',
+  insertRow: 'database::insertRow',
+  formatSql: 'database::formatSql',
 } as const
 
 export type DbFunction = (typeof DB)[keyof typeof DB]
@@ -54,14 +61,15 @@ export const OPTIONAL_FNS: readonly DbFunction[] = [
   DB.history,
   DB.getTableView,
   DB.saveTableView,
+  DB.getConnection,
+  DB.saveConnection,
+  DB.deleteConnection,
+  DB.distinctValues,
+  DB.insertRow,
+  DB.formatSql,
 ]
 
-async function call<T>(
-  host: Host,
-  fn: DbFunction,
-  payload: Record<string, unknown>,
-  schema: z.ZodType<T>,
-): Promise<T> {
+async function call<T>(host: Host, fn: DbFunction, payload: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> {
   const raw = await host.iii.trigger<unknown>(fn, payload)
   const parsed = schema.safeParse(raw)
   if (!parsed.success) {
@@ -82,6 +90,10 @@ export const queryResponseSchema = z.object({
   rows: z.array(z.record(z.string(), z.unknown())),
   row_count: z.number(),
   columns: z.array(columnMetaSchema),
+  /** The result stopped at `max_rows`. Absent from older workers. */
+  truncated: z.boolean().optional(),
+  /** Server-side execution time. Absent from older workers. */
+  elapsed_ms: z.number().optional(),
 })
 export type QueryResponse = z.infer<typeof queryResponseSchema>
 
@@ -160,6 +172,37 @@ export interface FilterSpec {
   case_sensitive?: boolean
   /** Kept in the bar but not applied. */
   disabled?: boolean
+  /**
+   * A raw SQL boolean expression. Present (even empty) marks a raw chip: the
+   * worker ANDs it in parentheses and ignores `column`/`op`, inside a
+   * read-only transaction so it can never write.
+   */
+  raw?: string
+}
+
+/** A chip holding a raw SQL condition rather than column/operator/value. */
+export function isRawFilter(f: FilterSpec): boolean {
+  return typeof f.raw === 'string'
+}
+
+/** A new, empty raw SQL chip. */
+export function rawFilter(raw = ''): FilterSpec {
+  return { column: '', op: 'equals', raw }
+}
+
+/**
+ * The chip as the worker takes it. A raw chip sends only its expression
+ * (`column`/`op` are required by the wire shape and ignored when `raw` is
+ * set); a column chip never carries a stray `raw`.
+ */
+export function toWireFilter(f: FilterSpec): FilterSpec {
+  if (isRawFilter(f)) {
+    const wire: FilterSpec = { column: '', op: 'equals', raw: (f.raw ?? '').trim() }
+    if (f.disabled) wire.disabled = true
+    return wire
+  }
+  const { raw: _raw, ...rest } = f
+  return rest
 }
 
 /** Human labels, grouped the way a picker should present them. */
@@ -184,12 +227,7 @@ export const OP_LABEL: Record<FilterOp, string> = {
   is_empty: 'Is empty',
 }
 
-export type SortMode =
-  | 'default'
-  | 'natural'
-  | 'length'
-  | 'absolute_value'
-  | 'random'
+export type SortMode = 'default' | 'natural' | 'length' | 'absolute_value' | 'random'
 
 export interface SortSpec {
   column: string
@@ -205,19 +243,7 @@ export interface SortSpec {
 export function opsFor(category: TypeCategory): FilterOp[] {
   switch (category) {
     case 'numeric':
-      return [
-        'equals',
-        'not_equals',
-        'gt',
-        'gte',
-        'lt',
-        'lte',
-        'between',
-        'in',
-        'not_in',
-        'is_null',
-        'is_not_null',
-      ]
+      return ['equals', 'not_equals', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'not_in', 'is_null', 'is_not_null']
     case 'bool':
       return ['is_true', 'is_false', 'is_null', 'is_not_null']
     case 'date':
@@ -243,13 +269,7 @@ export function opsFor(category: TypeCategory): FilterOp[] {
 export const SET_OPS: ReadonlySet<FilterOp> = new Set(['in', 'not_in'])
 
 /** Operators taking no operand — a chip using one is complete immediately. */
-const NULLARY: ReadonlySet<FilterOp> = new Set([
-  'is_true',
-  'is_false',
-  'is_null',
-  'is_not_null',
-  'is_empty',
-])
+const NULLARY: ReadonlySet<FilterOp> = new Set(['is_true', 'is_false', 'is_null', 'is_not_null', 'is_empty'])
 
 /**
  * Whether a chip is ready to send. An incomplete chip stays in the bar as a
@@ -257,6 +277,7 @@ const NULLARY: ReadonlySet<FilterOp> = new Set([
  * learn that would make typing feel broken.
  */
 export function isComplete(f: FilterSpec): boolean {
+  if (isRawFilter(f)) return (f.raw ?? '').trim() !== ''
   if (!f.column) return false
   if (NULLARY.has(f.op)) return true
   if (f.op === 'between') return hasValue(f.value) && hasValue(f.value2)
@@ -269,22 +290,14 @@ function hasValue(v: unknown): boolean {
   return v !== undefined && v !== null && v !== ''
 }
 
-export type TypeCategory =
-  | 'numeric'
-  | 'text'
-  | 'bool'
-  | 'date'
-  | 'json'
-  | 'binary'
-  | 'other'
+export type TypeCategory = 'numeric' | 'text' | 'bool' | 'date' | 'json' | 'binary' | 'other'
 
 /** Coarse category for a driver-reported column type. */
 export function typeCategory(type: string | undefined): TypeCategory {
   if (!type) return 'other'
   const t = type.toLowerCase()
   if (/bool/.test(t)) return 'bool'
-  if (/int|real|float|double|decimal|numeric|serial|money/.test(t))
-    return 'numeric'
+  if (/int|real|float|double|decimal|numeric|serial|money/.test(t)) return 'numeric'
   if (/date|time|year/.test(t)) return 'date'
   if (/json/.test(t)) return 'json'
   if (/blob|bytea|binary/.test(t)) return 'binary'
@@ -297,15 +310,46 @@ export function typeCategory(type: string | undefined): TypeCategory {
 export const PAGE_SIZE = 50
 export type DbDriver = 'sqlite' | 'postgres' | 'mysql' | 'unknown'
 
+/**
+ * One `database::listDatabases` entry. Everything past `name`/`driver` is
+ * optional: older workers send only those (and `url`), and a newer field
+ * must never make the whole list unreadable.
+ */
+export const databaseEntrySchema = z.object({
+  name: z.string(),
+  driver: z.string(),
+  url: z.string().nullish(),
+  host: z.string().nullish(),
+  port: z.number().nullish(),
+  user: z.string().nullish(),
+  database: z.string().nullish(),
+  display: z.object({ icon: z.string().nullish(), color: z.string().nullish() }).nullish(),
+  folder: z.string().nullish(),
+  ssh: z
+    .object({
+      host: z.string().nullish(),
+      port: z.number().nullish(),
+      user: z.string().nullish(),
+    })
+    .nullish(),
+  tls: z
+    .object({
+      mode: z.string().nullish(),
+      ca_cert_present: z.boolean().nullish(),
+      client_cert_present: z.boolean().nullish(),
+      trust_native: z.boolean().nullish(),
+    })
+    .nullish(),
+  uses_secrets: z.boolean().nullish(),
+  pool: z.object({ max: z.number().nullish() }).nullish(),
+  /** Why the pool could not be built (an unresolvable secret, say). */
+  error: z.string().nullish(),
+  /** Where that happened: `config`, `secrets`, `ssh`, `tcp`, `tls`, … */
+  error_stage: z.string().nullish(),
+})
+
 const listDatabasesSchema = z.object({
-  databases: z.array(
-    z.object({
-      name: z.string(),
-      driver: z.string(),
-      url: z.string().optional(),
-      pool: z.object({ max: z.number().optional() }).optional(),
-    }),
-  ),
+  databases: z.array(databaseEntrySchema),
   count: z.number(),
 })
 
@@ -314,31 +358,72 @@ export interface DbInfo {
   driver: DbDriver
   url?: string
   poolMax?: number
+  host?: string
+  port?: number
+  user?: string
+  database?: string
+  /** `display.icon`, a Lucide name. */
+  icon?: string
+  /** `display.color`, `#RRGGBB`. */
+  color?: string
+  folder?: string
+  ssh?: { host?: string; port?: number; user?: string }
+  usesSecrets?: boolean
+  /** The pool could not be built; every read against it will fail. */
+  error?: string
+  errorStage?: string
 }
 
 function parseDriver(raw: string | undefined): DbDriver {
-  return raw === 'sqlite' || raw === 'postgres' || raw === 'mysql'
-    ? raw
-    : 'unknown'
+  return raw === 'sqlite' || raw === 'postgres' || raw === 'mysql' ? raw : 'unknown'
+}
+
+const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
+
+export function toDbInfo(d: z.infer<typeof databaseEntrySchema>): DbInfo {
+  const color = d.display?.color ?? undefined
+  return {
+    name: d.name,
+    driver: parseDriver(d.driver),
+    url: d.url ?? undefined,
+    poolMax: d.pool?.max ?? undefined,
+    host: d.host ?? undefined,
+    port: d.port ?? undefined,
+    user: d.user ?? undefined,
+    database: d.database ?? undefined,
+    icon: d.display?.icon ?? undefined,
+    color: color && HEX_COLOR.test(color) ? color : undefined,
+    folder: d.folder ?? undefined,
+    ssh: d.ssh
+      ? {
+          host: d.ssh.host ?? undefined,
+          port: d.ssh.port ?? undefined,
+          user: d.ssh.user ?? undefined,
+        }
+      : undefined,
+    usesSecrets: d.uses_secrets ?? undefined,
+    error: d.error || undefined,
+    errorStage: d.error_stage || undefined,
+  }
+}
+
+/** Where a connection points, for a subtitle: `host:port/db`, the file, or the url. */
+export function dbEndpoint(db: DbInfo): string {
+  if (db.host) {
+    const endpoint = db.port ? `${db.host}:${db.port}` : db.host
+    return db.database ? `${endpoint}/${db.database}` : endpoint
+  }
+  if (db.driver === 'sqlite' && db.database) return db.database
+  return db.url ?? db.name
 }
 
 export async function listDbs(host: Host): Promise<DbInfo[]> {
   const res = await call(host, DB.listDatabases, {}, listDatabasesSchema)
-  return res.databases.map((d) => ({
-    name: d.name,
-    driver: parseDriver(d.driver),
-    url: d.url,
-    poolMax: d.pool?.max,
-  }))
+  return res.databases.map(toDbInfo)
 }
 
 export async function listTables(host: Host, db: string): Promise<TableRef[]> {
-  const res = await call(
-    host,
-    DB.listTables,
-    { db },
-    z.object({ tables: z.array(tableRefSchema), count: z.number() }),
-  )
+  const res = await call(host, DB.listTables, { db }, z.object({ tables: z.array(tableRefSchema), count: z.number() }))
   return res.tables
 }
 
@@ -348,19 +433,10 @@ export async function describeTable(
   table: string,
   schema?: string | null,
 ): Promise<TableDescription> {
-  return call(
-    host,
-    DB.describeTable,
-    { db, table, schema },
-    tableDescriptionSchema,
-  )
+  return call(host, DB.describeTable, { db, table, schema }, tableDescriptionSchema)
 }
 
-export async function describeSchema(
-  host: Host,
-  db: string,
-  includeIndexes = false,
-): Promise<TableDescription[]> {
+export async function describeSchema(host: Host, db: string, includeIndexes = false): Promise<TableDescription[]> {
   const res = await call(
     host,
     DB.describeSchema,
@@ -381,6 +457,7 @@ const browseSchema = z.object({
   page_size: z.number(),
   has_more: z.boolean(),
   total: z.number().nullish(),
+  elapsed_ms: z.number().optional(),
 })
 export type BrowseResult = z.infer<typeof browseSchema>
 
@@ -411,20 +488,27 @@ export async function browseTable(
       page_size: Math.max(1, Math.trunc(opts.pageSize ?? PAGE_SIZE)),
       sort: opts.sort ?? [],
       // Draft chips never leave the browser.
-      filters: (opts.filters ?? []).filter(isComplete),
+      filters: (opts.filters ?? []).filter(isComplete).map(toWireFilter),
       include_total: opts.includeTotal ?? true,
     },
     browseSchema,
   )
 }
 
-/** Ad-hoc read SQL from the editor. Goes through `database::query`. */
+/**
+ * Ad-hoc read SQL from the editor. Goes through `database::query`.
+ * `maxRows` caps the result server-side (`truncated` says it did); left
+ * out, the worker returns everything, as it always has.
+ */
 export async function runSql(
   host: Host,
   db: string,
   sql: string,
+  opts: { maxRows?: number | null } = {},
 ): Promise<QueryResponse> {
-  return call(host, DB.query, { db, sql }, queryResponseSchema)
+  const payload: Record<string, unknown> = { db, sql }
+  if (opts.maxRows != null && opts.maxRows > 0) payload.max_rows = Math.trunc(opts.maxRows)
+  return call(host, DB.query, payload, queryResponseSchema)
 }
 
 const executeResponseSchema = z.object({
@@ -433,17 +517,14 @@ const executeResponseSchema = z.object({
   // JS number holds exactly.
   last_insert_id: z.string().nullish(),
   returned_rows: z.array(z.record(z.string(), z.unknown())).nullish(),
+  elapsed_ms: z.number().optional(),
 })
 export type ExecuteResponse = z.infer<typeof executeResponseSchema>
 
 /** Ad-hoc write SQL from the editor. Goes through `database::execute` — the
     same surface agents use, so policy and `database::row-changed` both see
     it. */
-export async function execSql(
-  host: Host,
-  db: string,
-  sql: string,
-): Promise<ExecuteResponse> {
+export async function execSql(host: Host, db: string, sql: string): Promise<ExecuteResponse> {
   return call(host, DB.execute, { db, sql }, executeResponseSchema)
 }
 
@@ -499,12 +580,7 @@ const explainSchema = z.object({
 })
 export type ExplainResult = z.infer<typeof explainSchema>
 
-export async function explain(
-  host: Host,
-  db: string,
-  sql: string,
-  analyze = false,
-): Promise<ExplainResult> {
+export async function explain(host: Host, db: string, sql: string, analyze = false): Promise<ExplainResult> {
   return call(host, DB.explain, { db, sql, analyze }, explainSchema)
 }
 
@@ -674,11 +750,7 @@ export interface DiagramOptions {
   depth?: number
 }
 
-export async function schemaDiagram(
-  host: Host,
-  db: string,
-  opts: DiagramOptions = {},
-): Promise<SchemaDiagram> {
+export async function schemaDiagram(host: Host, db: string, opts: DiagramOptions = {}): Promise<SchemaDiagram> {
   return call(
     host,
     DB.schemaDiagram,
@@ -699,10 +771,7 @@ const savedQuerySchema = z.object({
 })
 export type SavedQuery = z.infer<typeof savedQuerySchema>
 
-export async function listSavedQueries(
-  host: Host,
-  db: string,
-): Promise<SavedQuery[]> {
+export async function listSavedQueries(host: Host, db: string): Promise<SavedQuery[]> {
   const res = await call(
     host,
     DB.listSavedQueries,
@@ -718,25 +787,11 @@ export async function saveQuery(
   name: string,
   sql: string,
 ): Promise<{ id: string; replaced: boolean }> {
-  return call(
-    host,
-    DB.saveQuery,
-    { db, name, sql },
-    z.object({ id: z.string(), replaced: z.boolean() }),
-  )
+  return call(host, DB.saveQuery, { db, name, sql }, z.object({ id: z.string(), replaced: z.boolean() }))
 }
 
-export async function deleteSavedQuery(
-  host: Host,
-  db: string,
-  id: string,
-): Promise<boolean> {
-  const res = await call(
-    host,
-    DB.deleteSavedQuery,
-    { db, id },
-    z.object({ deleted: z.boolean() }),
-  )
+export async function deleteSavedQuery(host: Host, db: string, id: string): Promise<boolean> {
+  const res = await call(host, DB.deleteSavedQuery, { db, id }, z.object({ deleted: z.boolean() }))
   return res.deleted
 }
 
@@ -770,34 +825,99 @@ const tableViewSchema = z.object({
 })
 export type TableView = z.infer<typeof tableViewSchema>
 
-export async function getTableView(
-  host: Host,
-  db: string,
-  table: string,
-): Promise<TableView> {
+export async function getTableView(host: Host, db: string, table: string): Promise<TableView> {
   return call(host, DB.getTableView, { db, table }, tableViewSchema)
 }
 
-export async function saveTableView(
-  host: Host,
-  db: string,
-  table: string,
-  view: TableView,
-): Promise<boolean> {
-  const r = await call(
-    host,
-    DB.saveTableView,
-    { db, table, ...view },
-    z.object({ saved: z.boolean() }),
-  )
+export async function saveTableView(host: Host, db: string, table: string, view: TableView): Promise<boolean> {
+  const r = await call(host, DB.saveTableView, { db, table, ...view }, z.object({ saved: z.boolean() }))
   return r.saved
 }
 
-export async function history(
-  host: Host,
-  db: string,
-  limit = 25,
-): Promise<HistoryEntry[]> {
+export async function history(host: Host, db: string, limit = 25): Promise<HistoryEntry[]> {
   const res = await call(host, DB.history, { db, limit }, historySchema)
   return res.entries
+}
+
+/* ---------------- value suggestions, inserts, formatting ---------------- */
+
+export const distinctValuesSchema = z.object({
+  values: z.array(z.object({ value: z.unknown(), count: z.number() })),
+  truncated: z.boolean(),
+})
+export type DistinctValues = z.infer<typeof distinctValuesSchema>
+
+/**
+ * A column's most frequent values, optionally narrowed by `search` (matched
+ * case-insensitively against the text form) — what the filter bar offers as
+ * you type a value.
+ */
+export async function distinctValues(
+  host: Host,
+  db: string,
+  table: string,
+  schema: string | null | undefined,
+  column: string,
+  opts: { search?: string; limit?: number } = {},
+): Promise<DistinctValues> {
+  const payload: Record<string, unknown> = { db, table, column }
+  if (schema) payload.schema = schema
+  if (opts.search) payload.search = opts.search
+  if (opts.limit) payload.limit = opts.limit
+  return call(host, DB.distinctValues, payload, distinctValuesSchema)
+}
+
+export const insertRowSchema = z.object({
+  row: z.record(z.string(), z.unknown()).nullish(),
+  affected_rows: z.number(),
+  elapsed_ms: z.number().optional(),
+})
+export type InsertRowResult = z.infer<typeof insertRowSchema>
+
+/**
+ * Insert one row. Columns left out of `values` take their default; the
+ * worker quotes identifiers and casts each value to the column's type, so
+ * the page sends plain JSON.
+ */
+export async function insertRow(
+  host: Host,
+  db: string,
+  table: string,
+  schema: string | null | undefined,
+  values: Record<string, unknown>,
+): Promise<InsertRowResult> {
+  const payload: Record<string, unknown> = { db, table, values }
+  if (schema) payload.schema = schema
+  return call(host, DB.insertRow, payload, insertRowSchema)
+}
+
+/** Reformat SQL in the database's dialect; statements and comments kept. */
+export async function formatSql(host: Host, db: string, sql: string): Promise<string> {
+  const res = await call(host, DB.formatSql, { db, sql }, z.object({ sql: z.string() }))
+  return res.sql
+}
+
+export const testConnectionSchema = z.object({
+  ok: z.boolean(),
+  driver: z.string().optional(),
+  latency_ms: z.number().optional(),
+  server_version: z.string().nullish(),
+  message: z.string().nullish(),
+  /** Where a failed probe stopped. */
+  stage: z.string().nullish(),
+  /** The SSH server's key, offered for pinning as `ssh.host_key`. */
+  ssh_host_key: z.object({ algorithm: z.string(), fingerprint: z.string() }).nullish(),
+})
+export type TestConnectionResult = z.infer<typeof testConnectionSchema>
+
+/** Probe a draft connection before it is saved. `ok: false` is data, not an error. */
+export async function testConnection(host: Host, payload: Record<string, unknown>): Promise<TestConnectionResult> {
+  const raw = await host.iii.trigger<unknown>(DB.testConnection, payload, {
+    timeoutMs: 40_000,
+  })
+  const parsed = testConnectionSchema.safeParse(raw)
+  if (!parsed.success) {
+    throw new Error(`unexpected response shape from ${DB.testConnection}`)
+  }
+  return parsed.data
 }

@@ -900,6 +900,8 @@ mod tests {
                 table: t.into(),
                 column: c.into(),
             }),
+            auto_increment: false,
+            generated: false,
         }
     }
 

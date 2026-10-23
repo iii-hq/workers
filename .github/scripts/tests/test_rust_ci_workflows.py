@@ -209,9 +209,19 @@ def test_other_engine_installers_use_the_atomic_configuration_release() -> None:
                     **job.get("env", {}),
                     **step.get("env", {}),
                 }
-                assert effective_env.get("III_RELEASE_TAG") == "iii/v0.24.0-rc.2", (
-                    path.name, job_name, step.get("name"), effective_env.get("III_RELEASE_TAG")
-                )
+                tag = effective_env.get("III_RELEASE_TAG")
+                if tag == "${{ matrix.engine }}":
+                    # A matrix over engines still runs the atomic configuration
+                    # release; its other legs are extra (database-e2e: the
+                    # 0.25 engine, for the observe migration).
+                    engines = job.get("strategy", {}).get("matrix", {}).get("engine", [])
+                    assert "iii/v0.24.0-rc.2" in engines, (
+                        path.name, job_name, step.get("name"), engines
+                    )
+                else:
+                    assert tag == "iii/v0.24.0-rc.2", (
+                        path.name, job_name, step.get("name"), tag
+                    )
                 covered.add(path.name)
     registry_validation = workflow("_worker-e2e.yml")
     assert "III_RELEASE_TAG" not in registry_validation.get("env", {})

@@ -1,9 +1,9 @@
 //! Postgres pool wrapping `deadpool-postgres` over `tokio-postgres`.
 
 use crate::config::{PoolConfig, TlsConfig};
+use crate::connector::Connector;
 use crate::error::DbError;
-use crate::pool::tls::make_pg_connector;
-use deadpool_postgres::{Config as DpConfig, ManagerConfig, Pool as DpPool, RecyclingMethod};
+use deadpool_postgres::{Manager, ManagerConfig, Pool as DpPool, RecyclingMethod};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_postgres::NoTls;
@@ -13,6 +13,8 @@ pub struct PostgresPool {
     inner: Arc<DpPool>,
     db_name: Arc<str>,
     acquire_timeout: Duration,
+    /// Keeps the entry's SSH tunnel (if any) alive as long as the pool.
+    connector: Arc<Connector>,
 }
 
 pub type PgClient = deadpool_postgres::Object;
@@ -31,45 +33,67 @@ impl PostgresPool {
         }
     }
 
+    /// A pool over a url with literal credentials (tests, tools).
     pub async fn new(
         url: &str,
         pool_cfg: &PoolConfig,
         tls_cfg: &TlsConfig,
     ) -> Result<Self, DbError> {
-        let mut dp = DpConfig::new();
-        dp.url = Some(url.to_string());
-        dp.manager = Some(ManagerConfig {
-            recycling_method: RecyclingMethod::Fast,
-        });
-        // `queue_mode` defaults to `Fifo`; we set it implicitly via
-        // `..Default::default()` because `QueueMode` is not re-exported
-        // by `deadpool_postgres` (it lives in `deadpool::managed`), and
-        // adding a direct `deadpool` dep just for the explicit value would
-        // be needless coupling.
-        dp.pool = Some(deadpool_postgres::PoolConfig {
-            max_size: pool_cfg.max as usize,
-            timeouts: deadpool_postgres::Timeouts {
-                wait: Some(Duration::from_millis(pool_cfg.acquire_timeout_ms)),
-                create: Some(Duration::from_millis(pool_cfg.acquire_timeout_ms)),
-                recycle: Some(Duration::from_millis(pool_cfg.idle_timeout_ms)),
-            },
-            ..Default::default()
-        });
-        // `make_pg_connector` returns None for `mode: disable`; in that
-        // case we hand `NoTls` to deadpool. Otherwise we use the rustls
-        // connector which honors the configured chain/hostname policy.
-        let pool = match make_pg_connector(tls_cfg)? {
-            Some(connector) => dp.create_pool(Some(deadpool_postgres::Runtime::Tokio1), connector),
-            None => dp.create_pool(Some(deadpool_postgres::Runtime::Tokio1), NoTls),
-        }
-        .map_err(|_| DbError::ConfigError {
-            message: "postgres pool init failed; check the configured url".into(),
+        let mut db = crate::config::DatabaseConfig::from_url(url);
+        db.pool = pool_cfg.clone();
+        db.tls = tls_cfg.clone();
+        db.validate("(unset)")
+            .map_err(|message| DbError::ConfigError { message })?;
+        let connector = Connector::literal("(unset)", &db)?;
+        Self::from_connector(Arc::new(connector), pool_cfg)
+    }
+
+    /// A pool over a resolved connector. Connections open lazily.
+    pub fn from_connector(
+        connector: Arc<Connector>,
+        pool_cfg: &PoolConfig,
+    ) -> Result<Self, DbError> {
+        let (config, tls) = connector.pg().ok_or_else(|| DbError::ConfigError {
+            message: "internal: postgres pool built from a non-postgres connector".into(),
         })?;
+        // `Clean` resets session state when a connection comes back:
+        // `RESET ALL`, `UNLISTEN *`, `pg_advisory_unlock_all()`, temp tables
+        // and sequences, open cursors. Without it one caller's
+        // `set_config(…, false)` or advisory lock (both possible from a
+        // read-only `query`) leaked into whoever drew the connection next.
+        // Prepared statements survive (no `DISCARD ALL`).
+        let manager_config = || ManagerConfig {
+            recycling_method: RecyclingMethod::Clean,
+        };
+        // `tls` is None for `mode: disable`; deadpool then gets `NoTls`.
+        // Otherwise the rustls connector honors the configured
+        // chain/hostname policy.
+        let manager = match tls {
+            Some(connector) => {
+                Manager::from_config(config.clone(), connector.clone(), manager_config())
+            }
+            None => Manager::from_config(config.clone(), NoTls, manager_config()),
+        };
+        let pool = DpPool::builder(manager)
+            .max_size(pool_cfg.max as usize)
+            .wait_timeout(Some(Duration::from_millis(pool_cfg.acquire_timeout_ms)))
+            .create_timeout(Some(Duration::from_millis(pool_cfg.acquire_timeout_ms)))
+            .recycle_timeout(Some(Duration::from_millis(pool_cfg.idle_timeout_ms)))
+            .runtime(deadpool_postgres::Runtime::Tokio1)
+            .build()
+            .map_err(|_| DbError::ConfigError {
+                message: "postgres pool init failed; check the configured connection".into(),
+            })?;
         Ok(Self {
             inner: Arc::new(pool),
             db_name: Arc::from("(unset)"),
             acquire_timeout: Duration::from_millis(pool_cfg.acquire_timeout_ms),
+            connector,
         })
+    }
+
+    pub fn connector(&self) -> &Arc<Connector> {
+        &self.connector
     }
 
     pub fn with_db_name(mut self, name: &str) -> Self {
@@ -86,7 +110,8 @@ impl PostgresPool {
                 waited_ms,
             },
             deadpool_postgres::PoolError::Backend(be) => {
-                let class = classify_pg_error(&be);
+                let class = crate::pool::tunnel_class(&self.connector)
+                    .unwrap_or_else(|| classify_pg_error(&be));
                 // `deadpool_postgres::PoolError::Display` chains through
                 // `tokio_postgres::Error`, which can include the configured
                 // host and other connection-string fragments. Logging is
@@ -140,7 +165,7 @@ impl PostgresPool {
 /// and (3) a `Debug`-string sniff as a last resort. The upstream `Debug`
 /// impl prints the `kind:` field via `debug_struct` and has been stable
 /// for years; the alternative is a real upstream API gap.
-fn classify_pg_error(err: &tokio_postgres::Error) -> &'static str {
+pub(crate) fn classify_pg_error(err: &tokio_postgres::Error) -> &'static str {
     if let Some(code) = err.code() {
         match &code.code()[..2] {
             // invalid_authorization_specification / invalid_password

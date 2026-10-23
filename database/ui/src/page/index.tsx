@@ -50,31 +50,14 @@ import {
   useConfirm,
 } from '@iii-dev/console-ui'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import {
-  ChevronLeft,
-  ChevronRight,
-  CircleAlert,
-  Database,
-  RefreshCw,
-  Table2,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, CircleAlert, Database, RefreshCw, Table2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  ALL,
-  type Capabilities,
-  MIN_VERSION_HINT,
-  probe,
-} from '../lib/capabilities'
-import { DB } from '../lib/rpc'
+import { TEST_STAGE_LABELS } from '../configuration/connection'
+import { ALL, type Capabilities, MIN_VERSION_HINT, probe } from '../lib/capabilities'
+import { ConnectionIcon } from '../lib/connection-icons'
+import { DB, dbEndpoint } from '../lib/rpc'
 import { ChangesPanel } from './ChangesPanel'
-import {
-  type DbInfo,
-  driverLabel,
-  listDbs,
-  listTables,
-  PAGE_SIZE,
-  quoteTableRef,
-} from './db-data'
+import { type DbInfo, driverLabel, listDbs, listTables, PAGE_SIZE, quoteTableRef } from './db-data'
 import { ErdPanel } from './ErdPanel'
 import { HealthPanel } from './HealthPanel'
 import { parseDatabasePanelContext } from './panel-context'
@@ -151,14 +134,11 @@ export function DatabasePage({
   // the panel to SQL — the panel itself owns the editor instance.
   const sqlPanelRef = useRef<SqlPanelHandle>(null)
 
-  const follow = useCallback(
-    (table: string, column: string, value: unknown) => {
-      setTrail((prev) => [...prev, { table, column, value }])
-      setSelectedTable(table)
-      setMode('data')
-    },
-    [],
-  )
+  const follow = useCallback((table: string, column: string, value: unknown) => {
+    setTrail((prev) => [...prev, { table, column, value }])
+    setSelectedTable(table)
+    setMode('data')
+  }, [])
 
   /** Truncate the trail at `depth`, the way a breadcrumb behaves. */
   const goBackTo = useCallback((depth: number) => {
@@ -211,10 +191,7 @@ export function DatabasePage({
   // Hidden-not-broken leaves a trace: an older worker's page looks smaller,
   // and this one line says why (MIN_VERSION_HINT exists for exactly this).
   const hiddenModes = useMemo(
-    () =>
-      (['diagram', 'health', 'changes'] as const).filter(
-        (m) => !modes.includes(m),
-      ),
+    () => (['diagram', 'health', 'changes'] as const).filter((m) => !modes.includes(m)),
     [modes],
   )
 
@@ -226,8 +203,7 @@ export function DatabasePage({
   const dbsFetcher = useCallback(() => listDbs(host), [host])
   const dbsRead = useDatabaseRead(true, dbsFetcher)
   const dbs = dbsRead.data ?? []
-  const activeDb: DbInfo | undefined =
-    dbs.find((db) => db.name === selectedDb) ?? dbs[0]
+  const activeDb: DbInfo | undefined = dbs.find((db) => db.name === selectedDb) ?? dbs[0]
 
   // The list travels with the name of the database it came from. The read
   // hook keeps its previous data while a switch's fetch is in flight or
@@ -240,10 +216,7 @@ export function DatabasePage({
     return listTables(host, db, activeDb.driver).then((list) => ({ db, list }))
   }, [host, activeDb])
   const tablesRead = useDatabaseRead(!!activeDb, tablesFetcher)
-  const tables =
-    tablesRead.data && tablesRead.data.db === activeDb?.name
-      ? tablesRead.data.list
-      : []
+  const tables = tablesRead.data && tablesRead.data.db === activeDb?.name ? tablesRead.data.list : []
   const tableCount = tables.filter((t) => t.kind === 'table').length
   const viewCount = tables.length - tableCount
 
@@ -303,10 +276,16 @@ export function DatabasePage({
       if (dbs.some((d) => d.name === targetDb)) setSelectedDb(targetDb)
       return
     }
-    if (!tables.some((t) => t.name === context.table)) return
+    // A connection without a table (a mention, say): showing it is all.
+    if (!context.table) {
+      appliedContextRef.current = panelContext.id
+      return
+    }
+    const table = context.table
+    if (!tables.some((t) => t.name === table)) return
     appliedContextRef.current = panelContext.id
     setTrail([])
-    setSelectedTable(context.table)
+    setSelectedTable(table)
     setMode('data')
     if (narrow) setDrilled(true)
   }, [panelContext, activeDb, dbs, tables, narrow])
@@ -343,9 +322,7 @@ export function DatabasePage({
           run: () => {
             if (narrow) setDrilled(false)
             window.requestAnimationFrame(() =>
-              shellRef.current
-                ?.querySelector<HTMLElement>('[data-db-tables-filter]')
-                ?.focus(),
+              shellRef.current?.querySelector<HTMLElement>('[data-db-tables-filter]')?.focus(),
             )
           },
         },
@@ -355,12 +332,9 @@ export function DatabasePage({
 
   // A configured database without a `url` (redacted in the worker's config
   // response) still counts as configured — fall back to its name, not to the
-  // "nothing here" copy.
-  const subtitle = activeDb
-    ? (activeDb.url ?? activeDb.name)
-    : dbsRead.error
-      ? 'Worker not connected'
-      : 'No database configured'
+  // "nothing here" copy. Structured entries describe themselves as
+  // host:port/db (or the file).
+  const subtitle = activeDb ? dbEndpoint(activeDb) : dbsRead.error ? 'Worker not connected' : 'No database configured'
 
   // Narrow: one pane at a time. Wide: both, with an optionally collapsed rail.
   const showSide = !narrow || !drilled
@@ -370,7 +344,7 @@ export function DatabasePage({
     <PageShell ref={shellRef} className="db-ui-shell">
       {dialog}
       <PageHeader
-        icon={<Database size={16} />}
+        icon={activeDb ? <ConnectionIcon name={activeDb.icon} color={activeDb.color} /> : <Database size={16} />}
         title="Database"
         description={subtitle}
         actions={
@@ -383,6 +357,9 @@ export function DatabasePage({
                   value: db.name,
                   label: db.name,
                   title: db.url,
+                  // The connection's state where it is chosen: one that the
+                  // worker could not open says why before it is picked.
+                  description: db.error ? `Unavailable · ${db.error}` : `${driverLabel(db.driver)} · ${dbEndpoint(db)}`,
                 }))}
                 onChange={async (next) => {
                   if (next === activeDb.name) return
@@ -433,10 +410,24 @@ export function DatabasePage({
           />
         </div>
       ) : (
-        <div
-          className={`db-ui-browser${narrow ? ' narrow' : ''}`}
-          ref={rootRef}
-        >
+        <div className={`db-ui-browser${narrow ? ' narrow' : ''}`} ref={rootRef}>
+          {activeDb?.error ? (
+            // The pool could not be built (an unresolvable secret, an
+            // unreachable host): every read below would fail with less
+            // context than the worker's own reason.
+            <div className="db-pad db-ui-conn-error">
+              <StatusPanel
+                variant="alert"
+                icon={<CircleAlert size={18} />}
+                headline={
+                  activeDb.errorStage
+                    ? `${activeDb.name} is unavailable · ${TEST_STAGE_LABELS[activeDb.errorStage] ?? activeDb.errorStage}`
+                    : `${activeDb.name} is unavailable`
+                }
+                detail={activeDb.error}
+              />
+            </div>
+          ) : null}
           <div className="db-ui-modesbar">
             <SegmentedControl<PanelMode>
               value={mode}
@@ -450,8 +441,7 @@ export function DatabasePage({
             />
             {hiddenModes.length > 0 ? (
               <span className="db-ui-modes-hint">
-                {hiddenModes.map((item) => PANEL_LABELS[item]).join(' · ')}{' '}
-                hidden: {MIN_VERSION_HINT}
+                {hiddenModes.map((item) => PANEL_LABELS[item]).join(' · ')} hidden: {MIN_VERSION_HINT}
               </span>
             ) : null}
           </div>
@@ -472,39 +462,26 @@ export function DatabasePage({
               header={
                 <div className="db-ui-side-head">
                   <span className="label">Tables</span>
-                  {tableCount > 0 ? (
-                    <span className="count">{tableCount}</span>
-                  ) : null}
+                  {tableCount > 0 ? <span className="count">{tableCount}</span> : null}
                   <span className="spacer" />
                 </div>
               }
             >
               {passiveAside ? (
                 <p className="db-ui-side-note">
-                  {mode === 'health'
-                    ? 'Selection is not used on Health.'
-                    : 'Selection only seeds the SQL starter.'}
+                  {mode === 'health' ? 'Selection is not used on Health.' : 'Selection only seeds the SQL starter.'}
                 </p>
               ) : null}
               <div className="db-ui-side-scroll">
                 {tablesRead.error ? (
-                  <p
-                    className="db-tree-msg alert"
-                    style={{ padding: '8px 12px' }}
-                  >
+                  <p className="db-tree-msg alert" style={{ padding: '8px 12px' }}>
                     {tablesRead.error}
                   </p>
                 ) : tablesRead.loading && tables.length === 0 ? (
                   <div className="db-skel">
-                    <Skeleton
-                      style={{ display: 'block', height: 20, width: '100%' }}
-                    />
-                    <Skeleton
-                      style={{ display: 'block', height: 20, width: '75%' }}
-                    />
-                    <Skeleton
-                      style={{ display: 'block', height: 20, width: '83%' }}
-                    />
+                    <Skeleton style={{ display: 'block', height: 20, width: '100%' }} />
+                    <Skeleton style={{ display: 'block', height: 20, width: '75%' }} />
+                    <Skeleton style={{ display: 'block', height: 20, width: '83%' }} />
                   </div>
                 ) : tables.length === 0 ? (
                   <p className="db-msg">No tables</p>
@@ -534,31 +511,17 @@ export function DatabasePage({
               </div>
             </PageSidebar>
 
-            <PageMain
-              className="db-ui-main"
-              hidden={!showMain}
-              aria-label="database workspace"
-            >
+            <PageMain className="db-ui-main" hidden={!showMain} aria-label="database workspace">
               {narrow ? (
                 <Toolbar aria-label="drill-in" className="db-ui-backbar">
-                  <IconButton
-                    label="back to the table list"
-                    onClick={() => setDrilled(false)}
-                  >
+                  <IconButton label="back to the table list" onClick={() => setDrilled(false)}>
                     <ChevronLeft size={16} aria-hidden />
                   </IconButton>
-                  <span className="title">
-                    {mode === 'data' && selectedTable
-                      ? selectedTable
-                      : PANEL_LABELS[mode]}
-                  </span>
+                  <span className="title">{mode === 'data' && selectedTable ? selectedTable : PANEL_LABELS[mode]}</span>
                 </Toolbar>
               ) : null}
               {trail.length > 0 && mode === 'data' ? (
-                <nav
-                  className={`${uiClasses.toolbar} db-bar`}
-                  aria-label="foreign key trail"
-                >
+                <nav className={`${uiClasses.toolbar} db-bar`} aria-label="foreign key trail">
                   <Button variant="ghost" size="sm" onClick={() => goBackTo(0)}>
                     {trail[0].table === selectedTable ? 'All tables' : 'Start'}
                   </Button>
@@ -595,6 +558,11 @@ export function DatabasePage({
                       ref={sqlPanelRef}
                       host={host}
                       db={activeDb.name}
+                      driver={activeDb.driver}
+                      canFormat={caps.has(DB.formatSql)}
+                      // `max_rows` shipped with formatSql: a worker that has
+                      // one honours the other.
+                      canLimit={caps.has(DB.formatSql)}
                       seedSql={seedSql}
                       tables={tables.map((t) => t.name)}
                       starterSql={starterSql}
@@ -611,9 +579,7 @@ export function DatabasePage({
                           description={
                             tableCount > 0
                               ? `${tableCount} table${tableCount === 1 ? '' : 's'}${
-                                  viewCount > 0
-                                    ? ` and ${viewCount} view${viewCount === 1 ? '' : 's'}`
-                                    : ''
+                                  viewCount > 0 ? ` and ${viewCount} view${viewCount === 1 ? '' : 's'}` : ''
                                 } in ${activeDb.name} — pick one to browse its rows, sort columns, and inspect values.`
                               : `No tables in ${activeDb.name} yet`
                           }
@@ -630,14 +596,18 @@ export function DatabasePage({
                         db={activeDb.name}
                         driver={activeDb.driver}
                         table={selectedTable}
+                        kind={tables.find((t) => t.name === selectedTable)?.kind}
+                        canInsert={caps.has(DB.insertRow)}
+                        canSuggest={caps.has(DB.distinctValues)}
+                        // Raw filters shipped with distinctValues; an older
+                        // worker would ignore `raw` and fail on the empty column.
+                        canRawFilter={caps.has(DB.distinctValues)}
                         initialFilters={arrival}
                         onFollow={follow}
                         enabled
                         refreshToken={bump}
                         onOpenInSql={(table) => {
-                          setSeedSql(
-                            `select * from ${quoteTableRef(activeDb.driver, table)} limit ${PAGE_SIZE}`,
-                          )
+                          setSeedSql(`select * from ${quoteTableRef(activeDb.driver, table)} limit ${PAGE_SIZE}`)
                           setMode('sql')
                         }}
                       />
@@ -667,9 +637,7 @@ export function DatabasePage({
                         host={host}
                         db={activeDb.name}
                         table={selectedTable}
-                        kind={
-                          tables.find((t) => t.name === selectedTable)?.kind
-                        }
+                        kind={tables.find((t) => t.name === selectedTable)?.kind}
                         onRefresh={refresh}
                       />
                     </div>
@@ -678,12 +646,7 @@ export function DatabasePage({
                       workspace — its auto-refresh must not poll a pane the
                       user drilled out of. */}
                   {mode === 'health' && showMain ? (
-                    <HealthPanel
-                      key={activeDb.name}
-                      host={host}
-                      db={activeDb.name}
-                      refreshToken={bump}
-                    />
+                    <HealthPanel key={activeDb.name} host={host} db={activeDb.name} refreshToken={bump} />
                   ) : null}
                 </>
               ) : null}

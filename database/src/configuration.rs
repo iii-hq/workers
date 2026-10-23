@@ -6,7 +6,7 @@ use crate::handlers::AppState;
 use crate::pool::{self, Pool};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -72,7 +72,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
         tracing::info!("no configuration value found; using built-in default configuration");
         return Ok(WorkerConfig::default());
     }
-    WorkerConfig::from_json(&value)
+    WorkerConfig::from_json_isolating(&value)
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
@@ -95,7 +95,45 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     }
 }
 
-/// Build connection pools for every configured database.
+/// The stored value as written (`raw: true`): `${VAR}` templates and
+/// `secret://` references unexpanded. `Value::Null` when nothing is stored.
+pub async fn get_raw_value(iii: &IIIClient) -> Result<Value, String> {
+    match trigger_configuration_with_retry(
+        iii,
+        "configuration::get",
+        json!({ "id": config_id(), "raw": true }),
+    )
+    .await
+    {
+        Ok(resp) => Ok(resp.get("value").cloned().unwrap_or(Value::Null)),
+        Err(e) if is_not_found(&e) => Ok(Value::Null),
+        Err(e) => Err(e),
+    }
+}
+
+/// Replace the stored value (validated against the registered schema by the
+/// configuration worker, which then notifies every consumer).
+pub async fn set_value(iii: &IIIClient, value: Value) -> Result<(), String> {
+    // One attempt: a rejected value (schema) must surface at once, and the
+    // caller reports a transport failure as such.
+    iii.trigger(
+        TriggerRequest {
+            function_id: "configuration::set".to_string(),
+            payload: json!({ "id": config_id(), "value": value }),
+            action: None,
+            timeout_ms: Some(CONFIG_TIMEOUT_MS),
+        }
+        .namespace("default"),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Build connection pools for every configured database from literal values
+/// (references fail), all-or-nothing. Tests and tools; the worker goes
+/// through [`apply_config`], which resolves references and isolates a
+/// failing connection from the rest.
 pub async fn build_pools(cfg: &WorkerConfig) -> Result<HashMap<String, Pool>, String> {
     let mut pools = HashMap::new();
     for (name, db) in &cfg.databases {
@@ -108,25 +146,228 @@ pub async fn build_pools(cfg: &WorkerConfig) -> Result<HashMap<String, Pool>, St
     Ok(pools)
 }
 
+/// Make `cfg` live: resolve its references, (re)build the pools whose entry
+/// or resolved secrets changed, keep the others as they are, and swap the
+/// snapshot. A connection that cannot be built (unresolvable reference, SSH
+/// failure, unreadable certificate) gets no pool and an error that
+/// `listDatabases` reports and its calls return; every other connection
+/// keeps working. Never fails as a whole: `cfg` was validated when parsed.
 pub async fn apply_config(
     state: &AppState,
     cfg: WorkerConfig,
     listeners: Option<&crate::triggers::NativeListeners>,
 ) -> Result<(), String> {
-    let new_pools = build_pools(&cfg).await?;
-    // A failed pool build leaves everything untouched, listeners included.
-    if let Some(listeners) = listeners {
-        listeners.sync(&cfg);
+    use crate::connector::{self, Connector, Material, Stage};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    let runtime = state.runtime.clone();
+    let _reload = runtime.reload.lock().await;
+
+    let references: BTreeSet<String> = cfg
+        .databases
+        .values()
+        .flat_map(connector::references)
+        .collect();
+    runtime.secrets.ensure(references.iter().cloned()).await;
+    runtime.secrets.retain(&references);
+
+    let current_pools = state.pools.read().await.clone();
+    let previous_errors = runtime.errors();
+    let builds = cfg.databases.iter().map(|(name, db)| {
+        let runtime = runtime.clone();
+        let current = current_pools
+            .get(name)
+            .cloned()
+            .zip(runtime.connector(name));
+        async move {
+            let material = Material::resolve(db, |key| runtime.secrets.lookup(key))?;
+            let fingerprint = connector::fingerprint(db, &material);
+            if let Some((pool, built_from)) = current {
+                if built_from.fingerprint == fingerprint {
+                    return Ok((pool, built_from));
+                }
+            }
+            let connector = Connector::build(name, db, &material)?;
+            connector.check_tunnel().await?;
+            let connector = Arc::new(connector);
+            let pool = pool::from_connector(name, connector.clone(), &db.pool).map_err(|e| {
+                let message = match e {
+                    crate::error::DbError::ConfigError { message } => message,
+                    other => other.to_string(),
+                };
+                connector::ConnectError::new(Stage::Config, message)
+            })?;
+            tracing::info!(db = %name, driver = ?pool.driver(), "pool ready");
+            Ok::<_, connector::ConnectError>((pool, connector))
+        }
+    });
+    let names: Vec<String> = cfg.databases.keys().cloned().collect();
+    let results = futures_util::future::join_all(builds).await;
+
+    let mut new_pools = HashMap::new();
+    let mut connectors = HashMap::new();
+    let mut errors = HashMap::new();
+    for (name, why) in &cfg.invalid {
+        if previous_errors.get(name).map(|p| &p.message) != Some(why) {
+            tracing::warn!(db = %name, error = %why, "connection entry invalid; skipped");
+        }
+        errors.insert(
+            name.clone(),
+            connector::ConnectError::new(Stage::Config, why.clone()),
+        );
+    }
+    for (name, result) in names.into_iter().zip(results) {
+        match result {
+            Ok((pool, connector)) => {
+                new_pools.insert(name.clone(), pool);
+                connectors.insert(name, connector);
+            }
+            Err(e) => {
+                // Only a new or changed failure is worth a log line: the
+                // maintenance tick retries failed connections.
+                if previous_errors.get(&name).map(|p| &p.message) != Some(&e.message) {
+                    tracing::warn!(db = %name, stage = ?e.stage, error = %e.message, "connection unavailable");
+                }
+                errors.insert(name, e);
+            }
+        }
+    }
+
+    let registered = runtime.listeners();
+    if let Some(listeners) = listeners.or(registered.as_deref()) {
+        listeners.sync_with(&cfg, &connectors);
     }
     // Swap pools and the config snapshot inside one critical section (pools
     // lock first, then config) so a concurrent reader never observes new
-    // pools paired with the old config or vice-versa. A failed build above
-    // leaves both untouched.
+    // pools paired with the old config or vice-versa.
     let mut pools_guard = state.pools.write().await;
     let mut config_guard = state.config.write().await;
     *pools_guard = new_pools;
     *config_guard = cfg;
+    runtime.replace(errors, connectors);
+    drop(config_guard);
+    drop(pools_guard);
+    // Observers the new config no longer supports (their database is gone)
+    // get a late rejection: their `ready()` side moves to `error`.
+    if let Some(bus) = &state.row_changes {
+        bus.capture().revalidate().await;
+    }
     Ok(())
+}
+
+/// How often the maintenance tick looks for failed connections to retry and
+/// secret values past their TTL.
+pub const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Retry failed connections (a secrets worker that came up late, a bastion
+/// back online) and re-read secrets past their TTL; a value that changed
+/// rebuilds only its connection's pool.
+pub fn spawn_maintenance(
+    state: AppState,
+    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(MAINTENANCE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if !(state.runtime.has_errors() || state.runtime.secrets.any_stale()) {
+                continue;
+            }
+            let cfg = state.config.read().await.clone();
+            let _ = apply_config(&state, cfg, listeners.as_deref()).await;
+        }
+    })
+}
+
+const SECRET_FN_ID: &str = "database::on-secret-change";
+
+/// Register the internal `secrets::changed` handler and bind it. A rotated,
+/// deleted or re-shared secret that a connection references is re-read, and
+/// only the connections whose resolved values changed are rebuilt. The
+/// payload is advisory (it never carries a value) and anything unrelated is
+/// ignored, so a direct call can at most cause a re-read.
+/// A `secrets::changed` delivery for `reference` (canonical). Whatever uses
+/// it, its cached value is dropped; when a stored connection uses it, it is
+/// re-read now and the connections whose resolved values changed are rebuilt
+/// (deleted → those connections report the error; re-created → they come
+/// back).
+pub async fn on_secret_changed(
+    state: &AppState,
+    reference: &str,
+    listeners: Option<&crate::triggers::NativeListeners>,
+) {
+    let cfg = state.config.read().await.clone();
+    let referenced = cfg.databases.values().any(|db| {
+        crate::connector::references(db)
+            .iter()
+            .any(|r| r == reference)
+    });
+    if !referenced {
+        state.runtime.secrets.forget(reference);
+        return;
+    }
+    state
+        .runtime
+        .secrets
+        .refresh([reference.to_string()], crate::secrets::Refetch::Invalidate)
+        .await;
+    let _ = apply_config(state, cfg, listeners).await;
+}
+
+pub fn register_secret_trigger(
+    iii: &IIIClient,
+    state: AppState,
+    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
+) {
+    let st = state.clone();
+    iii.register_function(
+        SECRET_FN_ID,
+        RegisterFunction::new_async(move |event: OnSecretChangeEvent| {
+            let st = st.clone();
+            let listeners = listeners.clone();
+            async move {
+                let payload = json!({ "name": event.name, "ref": event.reference });
+                let Some(reference) = crate::secrets::event_reference(&payload) else {
+                    return Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse {
+                        ok: false,
+                    });
+                };
+                on_secret_changed(&st, &reference, listeners.as_deref()).await;
+                Ok(OnConfigChangeResponse { ok: true })
+            }
+        })
+        .description(
+            "Internal: re-read a rotated or revoked secret:// / env:// value and rebuild the \
+             connections that reference it.",
+        )
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+    // `secrets::changed` belongs to the secrets worker: when it is absent the
+    // engine parks this binding and activates it once the type registers.
+    #[allow(deprecated)]
+    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+        crate::secrets::CHANGED_TRIGGER_TYPE.to_string(),
+        SECRET_FN_ID.to_string(),
+        json!({}),
+    )) {
+        tracing::warn!(error = %e, "binding secrets::changed failed; secret references refresh on their TTL only");
+    }
+}
+
+/// Advisory `secrets::changed` delivery (never carries a value).
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct OnSecretChangeEvent {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, rename = "ref")]
+    pub reference: Option<String>,
+    /// `created` | `rotated` | `deleted` | `access_changed` (advisory).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub action: Option<String>,
 }
 
 /// Event delivered to the internal `database::on-config-change` handler. A struct
@@ -147,12 +388,14 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration` trigger.
+/// Register the internal config-change handler. The returned binding hears
+/// the changes: [`ConfigBinding::follow`] picks the way the engine on the
+/// current connection serves them.
 pub fn register_config_trigger(
     iii: &IIIClient,
     state: AppState,
     listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
-) -> Result<(), Error> {
+) -> ConfigBinding {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -171,16 +414,78 @@ pub fn register_config_trigger(
         )
         .metadata(json!({ "internal": true })),
     );
+    ConfigBinding {
+        iii: iii.clone(),
+        observer: std::sync::Mutex::new(None),
+        trigger: std::sync::Mutex::new(None),
+    }
+}
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+/// How the worker hears its configuration entry change: an observer of the
+/// engine's `configuration::on-updated` on an engine with observe, the old
+/// `configuration` trigger on one without.
+pub struct ConfigBinding {
+    iii: IIIClient,
+    observer: std::sync::Mutex<Option<iii_sdk::ObserverHandle>>,
+    trigger: std::sync::Mutex<Option<iii_sdk::trigger::Trigger>>,
+}
+
+impl ConfigBinding {
+    /// Binds the way an engine that does (`true`) or does not (`false`)
+    /// support observe serves configuration changes, and drops the other.
+    /// Idempotent; called again when a reconnect lands on an engine of the
+    /// other kind (an upgrade or a rollback under the running worker).
+    pub fn follow(&self, engine_observes: bool) {
+        let mut observer = self.observer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut trigger = self.trigger.lock().unwrap_or_else(|e| e.into_inner());
+        if engine_observes {
+            if observer.is_none() {
+                *observer = Some(
+                    self.iii.observe(
+                        Source::function("configuration::on-updated")
+                            .namespace("default")
+                            .filters(json!({
+                                "input.id": { "$eq": config_id() },
+                                "input.event_type": { "$eq": "configuration:updated" },
+                            }))
+                            // The event's input carries the whole configuration value
+                            // (url passwords included), and whatever an activation
+                            // ships lands in this worker's trace span. The filter reads
+                            // the input; the activation ships only the caller — the
+                            // handler re-fetches the value anyway.
+                            .capture([iii_sdk::protocol::Capture::Caller])
+                            .deliver(Deliver::Envelope),
+                        CONFIG_FN_ID,
+                    ),
+                );
+            }
+            if let Some(old) = trigger.take() {
+                old.unregister();
+            }
+            return;
+        }
+        // An observer made on an earlier engine stays: the SDK fails it with
+        // `UNSUPPORTED` here and replays it to the next engine with observe.
+        if trigger.is_none() {
+            // Deprecated in 0.25; kept for engines without observe.
+            #[allow(deprecated)]
+            let bound = self.iii.register_trigger(RegisterTriggerInput::new(
+                "configuration".to_string(),
+                CONFIG_FN_ID.to_string(),
+                json!({
+                    "configuration_id": config_id(),
+                    "event_types": ["configuration:updated"],
+                }),
+            ));
+            match bound {
+                Ok(bound) => *trigger = Some(bound),
+                Err(e) => tracing::error!(
+                    error = %e,
+                    "binding the configuration trigger failed; configuration changes are not heard"
+                ),
+            }
+        }
+    }
 }
 
 /// Reload pools from the AUTHORITATIVE configuration.
@@ -293,5 +598,53 @@ mod tests {
     #[test]
     fn is_not_found_matches_only_the_envelope_code() {
         assert_missing_entry_contract(super::is_not_found);
+    }
+
+    /// A hand-edited entry with an absurd pool size becomes that
+    /// connection's error; the worker and the other connections carry on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bad_stored_entry_costs_only_its_connection() {
+        use crate::handlers::AppState;
+        let cfg = crate::config::WorkerConfig::from_json_isolating(&serde_json::json!({
+            "databases": {
+                "good": { "url": "sqlite::memory:" },
+                "huge": { "url": "sqlite::memory:", "pool": { "max": 1_000_000_000u64 } }
+            }
+        }))
+        .unwrap();
+        let st = AppState {
+            pools: Default::default(),
+            config: std::sync::Arc::new(tokio::sync::RwLock::new(cfg.clone())),
+            handles: std::sync::Arc::new(crate::handle::HandleRegistry::new()),
+            transactions: crate::transaction::TxRegistry::new(),
+            log: iii_helpers::observability::Logger::new(),
+            row_changes: None,
+            runtime: Default::default(),
+        };
+        super::apply_config(&st, cfg, None).await.unwrap();
+        let ok = crate::handlers::query::handle(
+            &st,
+            serde_json::from_value(serde_json::json!({ "db": "good", "sql": "SELECT 1 AS one" }))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.rows[0]["one"], 1);
+        let err = crate::handlers::query::handle(
+            &st,
+            serde_json::from_value(serde_json::json!({ "db": "huge", "sql": "SELECT 1" })).unwrap(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains("CONFIG_ERROR") && err.contains("`pool.max`"),
+            "{err}"
+        );
+        let listed = crate::handlers::list_databases::handle(&st, Default::default())
+            .await
+            .unwrap();
+        let huge = listed.databases.iter().find(|d| d.name == "huge").unwrap();
+        assert!(huge.error.as_deref().unwrap().contains("`pool.max`"));
+        assert_eq!(listed.count, 2);
     }
 }

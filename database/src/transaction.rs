@@ -161,7 +161,7 @@ impl TxRegistry {
     /// transaction whose deadline has passed, and removes the entry. The
     /// returned `JoinHandle` is owned by `main.rs` for the lifetime of the
     /// worker process; it loops forever until the runtime is dropped.
-    /// `row_changes` is the `database::row-changed` buffer, when one exists.
+    /// `row_changes` is the `database::on-row-changed` buffer, when one exists.
     /// A transaction the watcher rolls back must have its staged changes
     /// dropped with it: those rows never existed, and leaving the buffer
     /// behind both leaks and risks announcing them later.
