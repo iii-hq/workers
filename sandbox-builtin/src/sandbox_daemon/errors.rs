@@ -126,7 +126,7 @@ pub enum SandboxError {
     ImageNotInCatalog { image: String },
 
     #[error(
-        "rootfs missing on disk for image '{image}'. Enable iii-sandbox auto_install or pre-provision the sandbox image cache (see S101 docs)"
+        "rootfs missing on disk for image '{image}'. Enable auto_install in the sandbox-builtin config or pre-provision the sandbox image cache (see S101 docs)"
     )]
     RootfsMissing { image: String },
 
@@ -215,7 +215,7 @@ pub enum SandboxError {
     FsChannelAborted(String),
 
     #[error(
-        "fs operation unsupported by this sandbox supervisor; upgrade iii-worker to enable fs::* triggers (see S219 docs)"
+        "fs operation unsupported by this sandbox supervisor; upgrade sandbox-builtin to enable fs::* triggers (see S219 docs)"
     )]
     FsUnsupported,
 
