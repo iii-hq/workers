@@ -18,11 +18,17 @@ describe('composer inserts', () => {
     ])
   })
 
-  it('buffers a send request made before a composer is listening', () => {
+  it('buffers a send request made before a composer is listening, for every listener that mounts', async () => {
     insertIntoComposer('queued', { submit: true })
-    const seen: ComposerInsert[] = []
-    const off = onComposerInsert((insert) => seen.push(insert))
-    off()
-    expect(seen).toEqual([{ text: 'queued', inline: false, submit: true }])
+    const shell: ComposerInsert[] = []
+    const composer: ComposerInsert[] = []
+    const offShell = onComposerInsert((insert) => shell.push(insert))
+    const offComposer = onComposerInsert((insert) => composer.push(insert))
+    expect(shell).toEqual([])
+    await Promise.resolve()
+    offShell()
+    offComposer()
+    expect(shell).toEqual([{ text: 'queued', inline: false, submit: true }])
+    expect(composer).toEqual(shell)
   })
 })

@@ -173,7 +173,7 @@ def test_kanban_rust_binary_builds_its_ui_with_the_workspace_pnpm_policy():
     assert frontend["outputs"] == ["dist"]
     workspace = deployment_compiler.read_yaml(ROOT / frontend["workspace_root"] / "pnpm-workspace.yaml")
     assert "kanban/ui" in workspace["packages"]
-    assert workspace["allowBuilds"] == {"esbuild": True, "protobufjs": False}
+    assert workspace["allowBuilds"] == {"core-js": False, "esbuild": True, "protobufjs": False}
 
 
 def test_registry_projection_carries_the_skills_payload():

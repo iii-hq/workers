@@ -2,10 +2,12 @@
 //! is the source of truth for the catalog slice — ids, display names,
 //! context/output limits, and the capability tree all come from the API. Ids
 //! are namespaced `claude-code/<id>` and carry no pricing (subscription
-//! billing). When the endpoint rejects the OAuth token (401/403) the curated
-//! fallback slice is reconciled instead of blanking a working provider.
+//! billing). When the endpoint refuses the OAuth token (403) the curated
+//! fallback slice is reconciled instead of blanking a working provider. A 401
+//! (the token itself was turned down) or an expired token is `auth_expired`,
+//! and the last known slice stays.
 use crate::config::{extract_access_token, DEFAULT_API_URL};
-use crate::errors::upstream_unavailable;
+use crate::errors::{auth_expired, upstream_unavailable, SIGN_IN_EXPIRED, SIGN_IN_REJECTED};
 use crate::request::{auth_header, ANTHROPIC_VERSION, OAUTH_BETA};
 use crate::{auth, curated, router_client, state, PROVIDER_ID};
 use futures::future::BoxFuture;
@@ -113,7 +115,10 @@ pub fn parse_live_models(json: &Value) -> Vec<Model> {
 
 enum FetchOutcome {
     Ok(Vec<Model>),
+    /// 403: this endpoint refuses the token; streaming is gated separately.
     AuthFailed,
+    /// 401: Anthropic turned the token down.
+    Rejected,
     Transient(String),
 }
 
@@ -133,7 +138,10 @@ async fn fetch_live_models(
         Err(e) => return FetchOutcome::Transient(format!("models fetch failed: {e}")),
     };
     let status = resp.status().as_u16();
-    if status == 401 || status == 403 {
+    if status == 401 {
+        return FetchOutcome::Rejected;
+    }
+    if status == 403 {
         return FetchOutcome::AuthFailed;
     }
     if !(200..300).contains(&status) {
@@ -157,11 +165,8 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
 
     // No usable OAuth credential → genuinely unconfigured: prune the slice so
     // the picker reflects that instead of showing rows that can't be called.
-    let Some(access_token) = auth::fetch_fresh_credential(iii)
-        .await
-        .as_ref()
-        .and_then(extract_access_token)
-    else {
+    let credential = auth::fetch_fresh_credential(iii).await;
+    let Some(access_token) = credential.as_ref().and_then(extract_access_token) else {
         eprintln!(
             "[provider-claude-code] no Claude Code login found (vault, \
              ~/.claude/.credentials.json, macOS Keychain); listing no models"
@@ -169,6 +174,9 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
         router_client::reconcile(iii, vec![], token.as_deref()).await?;
         return Ok(0);
     };
+    if credential.as_ref().is_some_and(auth::expired) {
+        return Err(auth_expired(SIGN_IN_EXPIRED));
+    }
 
     let url = models_url(&api_url);
     match fetch_live_models(http, &url, &access_token).await {
@@ -178,15 +186,16 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
             Ok(count)
         }
         // Live endpoint accepted the token but returned nothing usable, or
-        // rejected the OAuth bearer entirely: the token is still good for
-        // streaming (that path is separately gated), so reconcile the curated
-        // fallback rather than blanking a working provider.
+        // refused the OAuth bearer for this endpoint: the token is still good
+        // for streaming (that path is separately gated), so reconcile the
+        // curated fallback rather than blanking a working provider.
         FetchOutcome::Ok(_) | FetchOutcome::AuthFailed => {
             let models = curated::curated_models();
             let count = models.len();
             router_client::reconcile(iii, models, token.as_deref()).await?;
             Ok(count)
         }
+        FetchOutcome::Rejected => Err(auth_expired(SIGN_IN_REJECTED)),
         // Blip: keep the previous slice (spec § reconcile-to-empty guidance).
         FetchOutcome::Transient(msg) => Err(upstream_unavailable(msg)),
     }
@@ -227,6 +236,39 @@ pub async fn refresh_models_periodically(iii: IIIClient, http: reqwest::Client) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// One-shot `/v1/models` stub answering `status` with an empty body.
+    async fn models_stub(status: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/v1/models")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_401_rejects_the_sign_in_while_a_403_only_refuses_the_endpoint() {
+        let http = reqwest::Client::new();
+        let url = models_stub("401 Unauthorized").await;
+        assert!(matches!(
+            fetch_live_models(&http, &url, "oauth-token").await,
+            FetchOutcome::Rejected
+        ));
+        let url = models_stub("403 Forbidden").await;
+        assert!(matches!(
+            fetch_live_models(&http, &url, "oauth-token").await,
+            FetchOutcome::AuthFailed
+        ));
+    }
 
     #[test]
     fn models_url_derives_from_messages_endpoint() {

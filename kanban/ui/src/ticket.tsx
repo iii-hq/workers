@@ -58,14 +58,17 @@ import {
   BOARD_PAGE_ID,
   PLAN_CHANGED_EVENT,
   PROJECTS_PAGE_ID,
-  PriorityChip,
+  Pills,
+  PriorityPicker,
   RELEASES_PAGE_ID,
   StatusGlyph,
+  StatusPicker,
   TICKET_PAGE_ID,
   api,
   noteOwnWrite,
   priorityLabel,
   statusLabel,
+  CONFIG_EVENT,
   subscribeChanges,
   type Activity,
   type AgentProfile,
@@ -482,7 +485,8 @@ export function TicketScreen({
   }, [refreshBoard])
   const boardTickets = useMemo(() => (board ? board.columns.flatMap((column) => column.tickets) : null), [board])
   const boardLabels = useMemo(() => allLabels(boardTickets ?? []), [boardTickets])
-  const doneStatus = board?.done_status || knownDoneStatus || columns[columns.length - 1]?.id || ''
+  // The page's configuration is read again on `config.updated`; the board data is not, so it comes second.
+  const doneStatus = knownDoneStatus || board?.done_status || columns[columns.length - 1]?.id || ''
   const canceledStatus = (board ? board.canceled_status : knownCanceledStatus) ?? null
 
   // A subtask shows its parent's numbers and its siblings: the parent as the worker returns it.
@@ -1030,20 +1034,26 @@ export function TicketScreen({
             <div className="kanban-record__head" data-area="head">
               <div className="kanban-record__eyebrow">
                 <span className="kanban-mono">{ticket.key}</span>
-                <Badge className="kanban-status-badge" variant={deleted ? 'alert' : 'default'}>
-                  {deleted ? (
+                {deleted ? (
+                  <Badge className="kanban-status-badge" variant="alert">
                     <StatusDot tone="alert" />
-                  ) : (
-                    <StatusGlyph
-                      canceledStatus={canceledStatus}
-                      columns={columns}
-                      doneStatus={doneStatus}
-                      status={ticket.status}
-                    />
-                  )}
-                  {deleted ? 'Deleted' : statusLabel(columns, ticket.status)}
-                </Badge>
-                <PriorityChip priorities={priorities} priority={ticket.priority} />
+                    Deleted
+                  </Badge>
+                ) : (
+                  <StatusPicker
+                    canceledStatus={canceledStatus}
+                    columns={columns}
+                    doneStatus={doneStatus}
+                    onChange={(next) => void patch({ status: next })}
+                    status={ticket.status}
+                  />
+                )}
+                <PriorityPicker
+                  disabled={deleted}
+                  onChange={(next) => void patch({ priority: next })}
+                  priorities={priorities}
+                  priority={ticket.priority}
+                />
               </div>
               {editingTitle ? (
                 <div className="kanban-record__title-edit">
@@ -1296,6 +1306,12 @@ export function TicketScreen({
                       />
                     </div>
                   </div>
+                  {ticket.pills?.length ? (
+                    <div className="kanban-prop kanban-prop--static">
+                      <span className="kanban-prop__label">Pills</span>
+                      <Pills pills={ticket.pills} />
+                    </div>
+                  ) : null}
                   <div className="kanban-prop kanban-prop--static">
                     <span className="kanban-prop__label">Created</span>
                     <span className="kanban-prop__value">
@@ -1634,10 +1650,20 @@ export function TicketPage({
   const [canceledStatus, setCanceledStatus] = useState<string | null>(null)
   const [agents, setAgents] = useState<AgentProfile[]>([])
   const { props: shell } = useShell()
+  // Bumped when the worker says its configuration changed: columns and statuses are read again.
+  const [configVersion, setConfigVersion] = useState(0)
 
   useEffect(() => {
     if (contextId) setStoredId(contextId)
   }, [contextId, panelContext?.id, setStoredId])
+
+  useEffect(
+    () =>
+      subscribeChanges(host.iii, (event) => {
+        if (event?.event === CONFIG_EVENT) setConfigVersion((version) => version + 1)
+      }),
+    [host],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -1660,7 +1686,7 @@ export function TicketPage({
     return () => {
       cancelled = true
     }
-  }, [host])
+  }, [host, configVersion])
 
   const id = contextId ?? storedId
 

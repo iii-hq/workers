@@ -40,6 +40,12 @@ board, a ticket, a releases and a projects page into the console.
   without polling.
 - The console should show a board or a ticket beside the conversation.
 
+Pills are small badges another worker pins on a ticket, shown on the card and
+the ticket page: `pills: [{ "icon": "calendar", "text": "Fri 17:00" }]` on
+`ticket::create` or `ticket::update` (`icon` is a lucide icon name; the list
+replaces the set, `[]` clears it). Use them for what the board does not model
+itself: a due date, an alarm, a source system.
+
 ## Boundaries
 
 - Not a general task queue or a durable job store; use `queue` for work that
@@ -53,15 +59,31 @@ board, a ticket, a releases and a projects page into the console.
 - Agent profiles are resolved through `iii-directory` (with the configured
   agents folder as the fallback); this worker does not create profiles.
 
+## Comment discipline
+
+Treat comments as a decision and handoff log, not an execution trace. Comment
+for a material scope/acceptance decision, a new actionable blocker or human
+question, a review rejection with evidence, or a consolidated final handoff.
+Do not post each tool call, dispatch, phase start/end, successful check or
+internal retry. Keep technical progress in session traces, state results or
+the evidence artifact; status changes already appear in activity.
+
+Read existing comments before posting, deduplicate unchanged facts, and
+consolidate same-turn facts with outcome, evidence reference and next action.
+A blocker warrants another comment only when something material changes.
+For delegated multi-phase work, leaves use the assigned result channel and
+the ticket owner consolidates the handoff. Preserve required reports and
+human decisions; fewer comments must not hide failures or open questions.
+
 ## Functions
 
 - `kanban::config::info` — resolved settings: board file path, columns, `done_status`, `canceled_status` (null when the board has none), priorities, key prefix, agents folder.
 - `kanban::board::get` — every column with its ticket summaries, plus `done_status`, `projects` and `releases` with their counts; `statuses`, `updated_since`, `limit` and `compact` keep the read small, and `parent_id`, `project_id` and `release_id` narrow it (`""` means none).
-- `kanban::ticket::create` — create a ticket (title, description, status, priority, assignee, labels, actor); `parent`, `project` and `release` file it as a subtask or under a project or release.
+- `kanban::ticket::create` — create a ticket (title, description, status, priority, assignee, labels, pills, actor); `parent`, `project` and `release` file it as a subtask or under a project or release.
 - `kanban::ticket::get` — one ticket with comments and activity, by uuid or key, plus its `parent`, its `children` and a `progress` count.
 - `kanban::ticket::list` — ticket summaries narrowed by column, assignee, `updated_since`, `parent_id`, `project_id` or `release_id`; `compact` rows for catch-up reads.
 - `kanban::ticket::links` — the tickets one ticket mentions and the tickets that mention it, by key in title, description or comments; summary rows, by uuid or key.
-- `kanban::ticket::update` — change title, description, status, priority, assignee, labels, `parent`, `project` or `release` (a string sets, `null` clears, absent leaves it); `add_labels` / `remove_labels` edit the current labels (ASCII case ignored, applied after `labels`, remove before add) so concurrent label edits do not overwrite each other. A patch that changes nothing records and fires nothing. A deleted ticket's other fields can be edited, but its status cannot be changed: restore it first.
+- `kanban::ticket::update` — change title, description, status, priority, assignee, labels, pills, `parent`, `project` or `release` (a string sets, `null` clears, absent leaves it); `add_labels` / `remove_labels` edit the current labels (ASCII case ignored, applied after `labels`, remove before add) so concurrent label edits do not overwrite each other. A patch that changes nothing records and fires nothing. A deleted ticket's other fields can be edited, but its status cannot be changed: restore it first.
 - `kanban::ticket::move` — move a ticket to a column and position (the board drag and drop); moving to where it already is changes nothing, and a deleted ticket cannot be moved.
 - `kanban::ticket::delete` / `kanban::ticket::restore` — soft delete and undo; human actions. Deleting a deleted ticket or restoring a live one changes nothing.
 - Writes (`ticket::create` / `update` / `move`, `comment::create`) return the whole ticket; pass `compact: true` to get only its compact row (key, title, status, priority, assignee, comment_count) when you don't need the rest.

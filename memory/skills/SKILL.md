@@ -42,7 +42,8 @@ rule; point-in-time information belongs in memories.
   `# Memory` header; a sub-agent shares its parent's), so leave it out unless
   the user names another bank.
 - Memory seems absent — `memory::doctor {}` runs a real save→recall roundtrip
-  and names which sibling (router, session-manager) is degraded.
+  and names what is degraded: a sibling (router, session-manager, state),
+  embeddings, or extraction passes that keep failing.
 
 ## Boundaries
 
@@ -82,7 +83,8 @@ rule; point-in-time information belongs in memories.
 - `memory::supersede` — retire one memory in favor of another (tombstone +
   pointer); the consolidation seam, agent-denied by default. `reinforce`
   makes it a merge; `reason` rides the item-changed events.
-- `memory::doctor` — end-to-end self-test plus sibling reachability.
+- `memory::doctor` — end-to-end self-test plus sibling, embeddings and
+  extraction health.
 - `memory::reload` — re-read every bank from disk after hand-editing files.
 
 ## Reactive triggers

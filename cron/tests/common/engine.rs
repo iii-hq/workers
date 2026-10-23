@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::json;
 use tokio::sync::OnceCell;
@@ -44,12 +45,18 @@ fn require_or_skip(connected: Option<Arc<IIIClient>>) -> Option<Arc<IIIClient>> 
     None
 }
 
-async fn try_connect_raw(namespace: Option<&str>) -> Option<Arc<IIIClient>> {
+async fn try_connect_raw(namespace: Option<&str>, name: Option<&str>) -> Option<Arc<IIIClient>> {
     let url = ws_url();
     let iii = Arc::new(register_worker(
         &url,
         InitOptions {
             namespace: namespace.map(str::to_owned),
+            // 0.25 engines refuse a second live worker with the same name in
+            // a namespace; the default name is per process.
+            metadata: name.map(|name| WorkerMetadata {
+                name: name.to_string(),
+                ..WorkerMetadata::default()
+            }),
             ..InitOptions::default()
         },
     ));
@@ -76,16 +83,22 @@ async fn try_connect_raw(namespace: Option<&str>) -> Option<Arc<IIIClient>> {
 }
 
 pub async fn connect_fresh() -> Option<Arc<IIIClient>> {
-    require_or_skip(try_connect_raw(None).await)
+    require_or_skip(try_connect_raw(None, None).await)
+}
+
+/// A fresh connection under its own worker name, for tests that connect
+/// several clients from one process.
+pub async fn connect_fresh_named(name: &str) -> Option<Arc<IIIClient>> {
+    require_or_skip(try_connect_raw(None, Some(name)).await)
 }
 
 pub async fn connect_fresh_in_namespace(namespace: &str) -> Option<Arc<IIIClient>> {
-    require_or_skip(try_connect_raw(Some(namespace)).await)
+    require_or_skip(try_connect_raw(Some(namespace), None).await)
 }
 
 pub async fn get_or_init() -> Option<Arc<IIIClient>> {
     ENGINE
-        .get_or_init(|| async { require_or_skip(try_connect_raw(None).await) })
+        .get_or_init(|| async { require_or_skip(try_connect_raw(None, None).await) })
         .await
         .clone()
 }

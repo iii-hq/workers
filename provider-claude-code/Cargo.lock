@@ -964,7 +964,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-router"
-version = "1.4.38"
+version = "1.4.39"
 dependencies = [
  "async-trait",
  "clap",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "provider-claude-code"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "clap",
  "futures",

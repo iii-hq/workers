@@ -62,6 +62,7 @@ describe('the Sections menu', () => {
       'subagents',
       'triggers',
       'links',
+      'tracking',
     ])
     const links = document.querySelector(
       'li[data-reorder-item="links"] input[type="checkbox"]',

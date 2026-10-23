@@ -396,8 +396,8 @@ export function ChatPanel({
       >
         {showList ? (
           <PageSidebar
-            // onboarding-conversations: tour anchor (workers/onboarding). Do not remove.
-            className="onboarding-conversations"
+            // learn-iii-conversations: tour anchor (workers/learn-iii). Do not remove.
+            className="learn-iii-conversations"
             label="Conversations"
             side={panelSide}
             storageKey="console:chat:conversations"

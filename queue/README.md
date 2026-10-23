@@ -23,6 +23,7 @@ Bind a function to `durable:subscriber` to consume a topic/queue:
 | `max_retries` | no | `3` | Maximum failed deliveries before the message moves to DLQ. |
 | `backoff_ms` | no | `1000` | Base retry delay in milliseconds. Retries use exponential backoff. |
 | `condition_function_id` | no | - | Function invoked first. Only explicit `false` skips the handler. |
+| `group` | no | - | Consumer group. Registrations on the topic with the same group share one durable queue, so each message is handled once by the group, whatever their function, namespace or worker. Without it a subscription belongs to its function (or harness binding) in its namespace. |
 
 The worker also accepts the built-in subscriber `queue_config` shape for
 compatibility, including `maxRetries` and `backoffDelayMs`.
@@ -88,6 +89,16 @@ wait is event-driven: the worker binds the engine's
 internal `queue::on-engine-change` function) and re-checks the target once per
 change, never on a timer. The same feed drives the
 `redeliver_on_engine_restart` restart check.
+
+`run_jobs_in` (read at boot) says which namespace runs a function-queue job:
+
+- `enqueuer` (default): the namespace the job was enqueued in.
+- `worker`: the namespace of the queue worker that takes the job, whichever
+  namespace enqueued it. A job whose function is not registered there goes
+  back to the broker (unspent) after one engine change or a second, for another
+  worker. Use it when one app is scaled out as several namespaces, each with
+  its own queue worker. Needs the `rabbitmq` adapter and
+  `engine::functions::info`.
 
 `poll_interval_ms` is deprecated and ignored (still accepted so existing
 definitions validate): consumers wake on enqueue, and a backed-off retry is

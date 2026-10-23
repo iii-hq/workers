@@ -8,6 +8,11 @@
 //! `state::get`, ...) on every call, and the SDK panics if the same id is
 //! registered twice on one client.
 
+// The suite binds the `state` trigger type the way old consumers do, with
+// `register_trigger`, deprecated in iii-sdk 0.25 and served by 0.24 and 0.25
+// engines.
+#![allow(deprecated)]
+
 mod common;
 
 use std::sync::Arc;

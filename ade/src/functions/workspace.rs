@@ -894,7 +894,7 @@ impl TriggerHandler for ChangedHandler {
 
 /// Ring every `console::workspace::changed` binding after each store write:
 /// browsers do not poll the layout, they re-read it on the ring. The writer's
-/// own tab is rung too: an injected page (onboarding) calling `open` over the
+/// own tab is rung too: an injected page (learn-iii) calling `open` over the
 /// bus is the tab that has to show the result.
 fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
     let bindings = Bindings::default();
@@ -1694,7 +1694,7 @@ mod tests {
         store
             .save(&json!({
                 "tabs": [
-                    { "id": "a", "columns": 2, "screens": ["chat", "ext:onboarding"] },
+                    { "id": "a", "columns": 2, "screens": ["chat", "ext:learn-iii"] },
                     { "id": "b", "columns": 2, "screens": ["chat", "traces"] }
                 ],
                 "activeTabId": "b",
@@ -1718,7 +1718,7 @@ mod tests {
         // A named anchor wins over the active pointer: the tab showing it.
         let out = open(
             &store,
-            input(json!({ "screen": "workers", "relative_to": "ext:onboarding" })),
+            input(json!({ "screen": "workers", "relative_to": "ext:learn-iii" })),
         )
         .await
         .unwrap();
@@ -1727,7 +1727,7 @@ mod tests {
         assert_eq!(doc["activeTabId"], "a");
         assert_eq!(
             doc["tabs"][0]["screens"],
-            json!(["chat", "ext:onboarding", "workers"])
+            json!(["chat", "ext:learn-iii", "workers"])
         );
 
         // `activate: false` on a mounted screen writes nothing.

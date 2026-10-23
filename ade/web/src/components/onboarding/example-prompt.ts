@@ -1,12 +1,14 @@
 import { agentProfileFromEntry } from '@/components/chat/agent-defaults'
 import { effortOptionsFor } from '@/components/chat/ModelPicker'
 import type { ConversationsApi } from '@/hooks/use-conversations'
-import type { AgentEntry } from '@/lib/backend/directory-prompts'
+import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
 import { sendDraftWhenReady } from '@/lib/composer-insert'
+import { getIiiClient } from '@/lib/iii-client'
 import {
   type ExamplePrompt,
   resolvePromptModel,
 } from '@/lib/onboarding/prompts'
+import { fetchNewChatWorkingDir } from '@/lib/working-dir'
 import type { ModelOption, ThinkingLevel } from '@/types/chat'
 
 /** What opening an example prompt needs from the conversations store. */
@@ -74,4 +76,50 @@ export function openExamplePrompt(
   if (agent && workingDir !== undefined) sendDraftWhenReady(id, prompt.prompt)
   api.openConversation(id)
   return id
+}
+
+/**
+ * The longest an example waits for its profile or folder lookup. Past it
+ * the chat opens with what is known, and the prompt waits for a manual send
+ * (see `openExamplePrompt`) while the chat looks up its folder itself.
+ */
+const LOOKUP_WAIT_MS = 3000
+
+function withinLookupWait<T>(lookup: Promise<T>, fallback: T): Promise<T> {
+  return Promise.race([
+    lookup,
+    new Promise<T>((resolve) =>
+      window.setTimeout(() => resolve(fallback), LOOKUP_WAIT_MS),
+    ),
+  ])
+}
+
+/**
+ * `openExamplePrompt` with its lookups: the agent profiles (when the caller
+ * has none in hand) and the folder a new chat starts in. The setup wizard's
+ * Ready step and a worker page's `host.chat.startChat` share this, so the
+ * learn-iii tour starts a chat exactly the way an example prompt does.
+ * Resolves to the chat's id.
+ */
+export async function startExamplePrompt(
+  api: PromptChatApi,
+  prompt: ExamplePrompt,
+  agents: readonly AgentEntry[] | null = null,
+): Promise<string> {
+  const [profiles, workingDir] = await Promise.all([
+    agents ??
+      withinLookupWait(
+        getIiiClient()
+          .then(listAgents)
+          .catch(() => []),
+        [],
+      ),
+    // `undefined` = the lookup did not finish, timed out or failed (not:
+    // it found none).
+    withinLookupWait<string | null | undefined>(
+      fetchNewChatWorkingDir().catch(() => undefined),
+      undefined,
+    ),
+  ])
+  return openExamplePrompt(api, prompt, profiles, workingDir)
 }

@@ -7,6 +7,7 @@ import { EmptyState, type EmptyStateProps } from './EmptyState'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
+  withAgentChoice,
 } from './system-prompt-selection'
 
 /** Mid-download progress for the live install console. */
@@ -113,6 +114,53 @@ export const Ready: Story = {
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
     agentEntries: agents,
+  },
+}
+
+/**
+ * Two kits with an update, one of them major and owning two visible
+ * profiles; only the selected card offers the review action.
+ */
+export const ReadyWithKitUpdate: Story = {
+  name: 'ready (kit updates available)',
+  render: (args) => <ConfiguredReadyStory {...args} />,
+  args: {
+    ...Ready.args,
+    agentEntries: [
+      {
+        id: 'deepwork',
+        name: 'Deepwork',
+        description:
+          'Runs a goal as kanban tickets: plans them as subtasks of one run ticket.',
+        logo: null,
+        icon: 'bot',
+        color: 'purple',
+        model: null,
+        skill_count: 2,
+        source: { kind: 'kit', kit: 'iii/deepwork' },
+        modified_at: '2026-08-27T00:00:00.000Z',
+      },
+      ...agents.map((agent) =>
+        agent.id === 'researcher'
+          ? agent
+          : { ...agent, source: { kind: 'kit', kit: 'acme/qa-team' } },
+      ),
+    ],
+    systemPrompt: withAgentChoice(DEFAULT_SYSTEM_PROMPT_STATE, 'deepwork'),
+    kitUpdates: [
+      {
+        kit: 'iii/deepwork',
+        current: '0.4.3',
+        available: '0.4.4',
+        major: false,
+      },
+      {
+        kit: 'acme/qa-team',
+        current: '1.4.0',
+        available: '2.0.0',
+        major: true,
+      },
+    ],
   },
 }
 

@@ -1,6 +1,6 @@
 //! `storage::presignUrl` — short-lived URL for browser direct upload/download.
 
-use super::{err_to_str, AppState};
+use super::{err_to_str, validate_key, AppState};
 use crate::backend::{PresignMethod, PresignReq as BackendPresignReq};
 use crate::error::{backend_error_to_storage, StorageError};
 use chrono::{DateTime, Utc};
@@ -44,11 +44,7 @@ pub struct PresignResp {
 }
 
 pub async fn handle(state: &AppState, req: PresignReq) -> Result<PresignResp, String> {
-    if req.key.is_empty() {
-        return Err(err_to_str(StorageError::ConfigError {
-            message: "key must not be empty".into(),
-        }));
-    }
+    validate_key(&req.key).map_err(err_to_str)?;
     if req.expires_in_seconds < MIN_EXPIRY || req.expires_in_seconds > MAX_EXPIRY {
         return Err(err_to_str(StorageError::InvalidPresignParams {
             reason: format!(

@@ -1,30 +1,101 @@
 //! Shared TLS connector construction for postgres and mysql pools.
 //!
-//! Three operator-visible modes (see `crate::config::TlsMode`):
+//! Five operator-visible modes (see `crate::config::TlsMode`):
 //!
 //!   - `disable`     → caller passes `NoTls`; this module never runs.
-//!   - `require`     → cert chain validated, hostname NOT verified
-//!     (matches libpq `sslmode=require`).
+//!   - `prefer`      → TLS when the server offers it, chain validated like
+//!     `require`; plaintext only when the server offers no TLS at all.
+//!   - `require` / `verify-ca` → cert chain validated, hostname NOT verified
+//!     (matches libpq `sslmode=require`; libpq's `verify-ca` is the same
+//!     check).
 //!   - `verify-full` → cert chain + hostname verified
 //!     (matches libpq `sslmode=verify-full`).
 //!
 //! Trust roots come from the OS-provided trust store
-//! (`rustls-native-certs`) by default. An optional `ca_cert` PEM file
-//! **replaces** the system store with the operator-supplied certs — useful
-//! for self-hosted databases with private CAs.
+//! (`rustls-native-certs`) by default. An optional `ca_cert` **extends**
+//! it (or replaces it with `trust_native: false`). `client_cert` +
+//! `client_key` add mutual TLS. Every certificate/key arrives here already
+//! read ([`ResolvedTls`]): from a path, inline PEM, or a resolved
+//! `secret://` / `env://` reference.
 //!
 //! `aws_lc_rs` is the rustls crypto provider; it's the modern default and
 //! lets us avoid an OpenSSL system dep. `tls12` and TLS 1.3 are both
 //! enabled because real-world managed Postgres still negotiates 1.2.
 
-use crate::config::{TlsConfig, TlsMode};
+use crate::config::TlsMode;
 use crate::error::DbError;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use std::sync::{Arc, Once};
+
+/// TLS settings with every certificate and key already loaded.
+#[derive(Clone, Default)]
+pub struct ResolvedTls {
+    pub mode: TlsMode,
+    pub trust_native: bool,
+    /// PEM bundle of extra trust anchors (`tls.ca_cert`).
+    pub ca_pem: Option<Vec<u8>>,
+    /// PEM client certificate chain (`tls.client_cert`).
+    pub client_cert_pem: Option<Vec<u8>>,
+    /// PEM client private key (`tls.client_key`). Wiped on drop.
+    pub client_key_pem: Option<crate::secrets::SecretValue>,
+}
+
+impl std::fmt::Debug for ResolvedTls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedTls")
+            .field("mode", &self.mode)
+            .field("trust_native", &self.trust_native)
+            .field("ca_pem", &self.ca_pem.is_some())
+            .field("client_cert_pem", &self.client_cert_pem.is_some())
+            .field("client_key_pem", &self.client_key_pem.is_some())
+            .finish()
+    }
+}
+
+impl ResolvedTls {
+    /// A mode with the default trust posture and no extra material.
+    pub fn mode(mode: TlsMode) -> Self {
+        Self {
+            mode,
+            trust_native: true,
+            ..Default::default()
+        }
+    }
+
+    fn client_identity(
+        &self,
+    ) -> Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>, DbError> {
+        let (Some(cert_pem), Some(key_pem)) = (&self.client_cert_pem, &self.client_key_pem) else {
+            return Ok(None);
+        };
+        let mut cursor = std::io::Cursor::new(cert_pem.as_slice());
+        let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cursor)
+            .collect::<Result<_, _>>()
+            .map_err(|e| DbError::ConfigError {
+                message: format!("tls.client_cert: not a PEM certificate: {e}"),
+            })?;
+        if certs.is_empty() {
+            return Err(DbError::ConfigError {
+                message: "tls.client_cert: no PEM CERTIFICATE blocks found".into(),
+            });
+        }
+        let mut cursor = std::io::Cursor::new(key_pem.expose().as_bytes());
+        let key = rustls_pemfile::private_key(&mut cursor)
+            .map_err(|_| DbError::ConfigError {
+                message: "tls.client_key: unreadable PEM private key".into(),
+            })?
+            .ok_or_else(|| DbError::ConfigError {
+                message: "tls.client_key: no PEM private key found (expected PKCS#8, PKCS#1 or \
+                          SEC1)"
+                    .into(),
+            })?;
+        Ok(Some((certs, key)))
+    }
+}
 
 /// Install `aws_lc_rs` as the process-level default rustls `CryptoProvider`.
 ///
@@ -52,7 +123,7 @@ fn ensure_crypto_provider_installed() {
 /// config. Returns `Ok(None)` when the operator chose `mode: disable` —
 /// callers should fall back to `NoTls` in that case.
 pub fn make_pg_connector(
-    tls: &TlsConfig,
+    tls: &ResolvedTls,
 ) -> Result<Option<tokio_postgres_rustls::MakeRustlsConnect>, DbError> {
     if matches!(tls.mode, TlsMode::Disable) {
         return Ok(None);
@@ -66,8 +137,13 @@ pub fn make_pg_connector(
 
 /// Build a `mysql_async::SslOpts` for the given TLS config. Returns
 /// `Ok(None)` when `mode: disable` — callers must NOT enable any TLS opts
-/// in that case.
-pub fn make_mysql_ssl_opts(tls: &TlsConfig) -> Result<Option<mysql_async::SslOpts>, DbError> {
+/// in that case. `hostname` overrides the name the server certificate is
+/// checked against (an SSH tunnel connects to 127.0.0.1 but the certificate
+/// names the database host).
+pub fn make_mysql_ssl_opts(
+    tls: &ResolvedTls,
+    hostname: Option<&str>,
+) -> Result<Option<mysql_async::SslOpts>, DbError> {
     use mysql_async::SslOpts;
     if matches!(tls.mode, TlsMode::Disable) {
         return Ok(None);
@@ -78,42 +154,118 @@ pub fn make_mysql_ssl_opts(tls: &TlsConfig) -> Result<Option<mysql_async::SslOpt
     // hang to the caller. See `ensure_crypto_provider_installed` doc.
     ensure_crypto_provider_installed();
     let mut opts = SslOpts::default();
-    if let Some(path) = tls.ca_cert.as_deref() {
-        // mysql_async accepts a PEM file path directly. `with_root_certs`
-        // adds to the loaded set without disabling the native store, so
-        // for the `trust_native = true` case we just feed the path. For
-        // the strict-isolation case, the same call is used but we also
-        // flip `with_danger_accept_invalid_certs(false)` (default already)
-        // and rely on mysql_async's own loader to use exactly what we hand
-        // it — there is no public knob to suppress the native store on
-        // mysql_async 0.34's rustls path, but the typical "private CA"
-        // posture is preserved because the server cert must validate
-        // against the supplied root regardless.
-        opts = opts.with_root_certs(vec![std::path::PathBuf::from(path).into()]);
+    if let Some(pem) = &tls.ca_pem {
+        // `with_root_certs` adds to mysql_async's bundled webpki roots;
+        // there is no public knob to suppress them on mysql_async 0.34's
+        // rustls path, but the server cert must still validate against a
+        // trusted root.
+        opts = opts.with_root_certs(vec![pem.clone().into()]);
     }
-    // libpq-aligned semantics: require = chain only (skip hostname);
-    // verify-full = chain + hostname.
-    if matches!(tls.mode, TlsMode::Require) {
+    if let (Some(cert), Some(key)) = (&tls.client_cert_pem, &tls.client_key_pem) {
+        // mysql_async reads only PKCS#1 RSA keys from PEM; hand it the DER
+        // instead, which it takes as-is.
+        let der = mysql_client_key_der(key.expose())?;
+        opts = opts.with_client_identity(Some(mysql_async::ClientIdentity::new(
+            cert.clone().into(),
+            der.into(),
+        )));
+    }
+    // libpq-aligned semantics: require/verify-ca/prefer = chain only (skip
+    // hostname); verify-full = chain + hostname.
+    if !matches!(tls.mode, TlsMode::VerifyFull) {
         opts = opts
             .with_danger_skip_domain_validation(true)
             .with_danger_accept_invalid_certs(false);
     }
+    if let Some(host) = hostname {
+        opts = opts.with_danger_tls_hostname_override(Some(host.to_string()));
+    }
     Ok(Some(opts))
+}
+
+/// The PKCS#1 DER of an RSA client key given as PEM (PKCS#1 or PKCS#8).
+/// mysql_async's rustls client identity is RSA-only.
+fn mysql_client_key_der(pem: &str) -> Result<Vec<u8>, DbError> {
+    let unsupported = || DbError::ConfigError {
+        message: "tls.client_key: mysql mutual TLS needs an RSA key (PKCS#1 or PKCS#8 PEM); \
+                  mysql_async cannot present EC or Ed25519 client keys"
+            .into(),
+    };
+    let mut cursor = std::io::Cursor::new(pem.as_bytes());
+    match rustls_pemfile::private_key(&mut cursor) {
+        Ok(Some(PrivateKeyDer::Pkcs1(k))) => Ok(k.secret_pkcs1_der().to_vec()),
+        Ok(Some(PrivateKeyDer::Pkcs8(k))) => {
+            pkcs8_rsa_inner(k.secret_pkcs8_der()).ok_or_else(unsupported)
+        }
+        Ok(Some(_)) => Err(unsupported()),
+        _ => Err(DbError::ConfigError {
+            message: "tls.client_key: no PEM private key found".into(),
+        }),
+    }
+}
+
+/// `PrivateKeyInfo ::= SEQUENCE { version, AlgorithmIdentifier, OCTET STRING }`:
+/// the OCTET STRING when the algorithm is rsaEncryption, else `None`.
+fn pkcs8_rsa_inner(der: &[u8]) -> Option<Vec<u8>> {
+    const RSA_OID: &[u8] = &[
+        0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+    ];
+    fn tlv(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+        let (&tag, rest) = input.split_first()?;
+        let (&first, rest) = rest.split_first()?;
+        let (len, rest) = if first < 0x80 {
+            (first as usize, rest)
+        } else {
+            let n = (first & 0x7f) as usize;
+            if n == 0 || n > 4 || rest.len() < n {
+                return None;
+            }
+            let len = rest[..n]
+                .iter()
+                .fold(0usize, |acc, b| (acc << 8) | *b as usize);
+            (len, &rest[n..])
+        };
+        if rest.len() < len {
+            return None;
+        }
+        Some((tag, &rest[..len], &rest[len..]))
+    }
+    let (0x30, body, _) = tlv(der)? else {
+        return None;
+    };
+    let (0x02, _version, rest) = tlv(body)? else {
+        return None;
+    };
+    let (0x30, algorithm, rest) = tlv(rest)? else {
+        return None;
+    };
+    if !algorithm.starts_with(RSA_OID) {
+        return None;
+    }
+    let (0x04, key, _) = tlv(rest)? else {
+        return None;
+    };
+    Some(key.to_vec())
 }
 
 /// Construct the `rustls::ClientConfig` matching `tls.mode`. Used by the
 /// postgres connector; the mysql side has its own knobs and doesn't share
 /// this `ClientConfig`.
-fn build_client_config(tls: &TlsConfig) -> Result<ClientConfig, DbError> {
-    let roots = build_root_store(tls.ca_cert.as_deref(), tls.trust_native)?;
+fn build_client_config(tls: &ResolvedTls) -> Result<ClientConfig, DbError> {
+    let roots = build_root_store(tls.ca_pem.as_deref(), tls.trust_native)?;
     let provider = Arc::new(default_provider());
+    let builder = ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| DbError::ConfigError {
+            message: format!("tls protocol negotiation failed: {e}"),
+        })?;
 
-    match tls.mode {
+    let builder = match tls.mode {
         TlsMode::Disable => {
             // Caller should have short-circuited; defensive panic-avoid path.
-            Err(DbError::ConfigError {
+            return Err(DbError::ConfigError {
                 message: "internal: build_client_config called with mode=disable".into(),
-            })
+            });
         }
         TlsMode::VerifyFull => {
             let verifier =
@@ -122,65 +274,65 @@ fn build_client_config(tls: &TlsConfig) -> Result<ClientConfig, DbError> {
                     .map_err(|e| DbError::ConfigError {
                         message: format!("tls verifier build failed: {e}"),
                     })?;
-            let cfg = ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .map_err(|e| DbError::ConfigError {
-                    message: format!("tls protocol negotiation failed: {e}"),
-                })?
-                .with_webpki_verifier(verifier)
-                .with_no_client_auth();
-            Ok(cfg)
+            builder.with_webpki_verifier(verifier)
         }
-        TlsMode::Require => {
+        TlsMode::Prefer | TlsMode::Require | TlsMode::VerifyCa => {
             // Chain-only verifier. Validates the certificate chain against
             // the trust store but does NOT verify the cert hostname matches
-            // the URL host. Same security posture as libpq's
+            // the server host. Same security posture as libpq's
             // `sslmode=require`: catches eavesdropping, doesn't catch a
             // determined MITM with their own valid-chain cert.
             let verifier = Arc::new(ChainOnlyVerifier {
                 roots: Arc::new(roots),
                 provider: provider.clone(),
             });
-            let cfg = ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .map_err(|e| DbError::ConfigError {
-                    message: format!("tls protocol negotiation failed: {e}"),
-                })?
+            builder
                 .dangerous()
                 .with_custom_certificate_verifier(verifier)
-                .with_no_client_auth();
-            Ok(cfg)
         }
+    };
+    match tls.client_identity()? {
+        Some((certs, key)) => {
+            builder
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| DbError::ConfigError {
+                    message: format!(
+                        "tls.client_cert/client_key: the key does not fit the certificate or is \
+                         unsupported: {e}"
+                    ),
+                })
+        }
+        None => Ok(builder.with_no_client_auth()),
     }
 }
 
 /// Build a `RootCertStore` from the OS trust store and/or an operator-
-/// supplied PEM file.
+/// supplied PEM bundle.
 ///
 /// Behavior:
 ///   - `trust_native = true`  (default): load `rustls_native_certs` and,
-///     if `ca_cert` is set, extend with its certs. This is the recommended
+///     if `ca_pem` is set, extend with its certs. This is the recommended
 ///     posture: managed providers whose certs already chain to a public
 ///     root keep working, and operators only need to point `ca_cert` at
 ///     a private CA when they have one (e.g. Supabase Intermediate 2021).
-///   - `trust_native = false`: trust only the certs in `ca_cert`. Used
+///   - `trust_native = false`: trust only the certs in `ca_pem`. Used
 ///     for strict-isolation deployments that explicitly do not want the
 ///     public web PKI accepted. With both `trust_native = false` *and*
-///     `ca_cert = None`, the result is a config error (no trust anchors).
+///     no `ca_pem`, the result is a config error (no trust anchors).
 ///
 /// Per-cert `RootCertStore::add` failures are non-fatal for the native
 /// store (a bad cert in the OS store shouldn't block the whole worker if
 /// the rest are usable) but are fatal for `ca_cert` (operator-supplied
 /// certs are intentional and we want loud failures).
 pub fn build_root_store(
-    ca_cert: Option<&str>,
+    ca_pem: Option<&[u8]>,
     trust_native: bool,
 ) -> Result<RootCertStore, DbError> {
     let mut store = RootCertStore::empty();
 
     if trust_native {
         let result = rustls_native_certs::load_native_certs();
-        if result.certs.is_empty() && ca_cert.is_none() {
+        if result.certs.is_empty() && ca_pem.is_none() {
             return Err(DbError::ConfigError {
                 message: format!(
                     "no native CA certificates loaded ({} errors); \
@@ -194,29 +346,26 @@ pub fn build_root_store(
         }
     }
 
-    if let Some(path) = ca_cert {
-        let pem = std::fs::read(path).map_err(|e| DbError::ConfigError {
-            message: format!("ca_cert read `{path}`: {e}"),
-        })?;
+    if let Some(pem) = ca_pem {
         let mut cursor = std::io::Cursor::new(pem);
         let mut added = 0usize;
         for item in rustls_pemfile::certs(&mut cursor) {
             let cert = item.map_err(|e| DbError::ConfigError {
-                message: format!("ca_cert parse `{path}`: {e}"),
+                message: format!("tls.ca_cert: unreadable PEM: {e}"),
             })?;
             store.add(cert).map_err(|e| DbError::ConfigError {
-                message: format!("ca_cert add `{path}`: {e}"),
+                message: format!("tls.ca_cert: certificate rejected: {e}"),
             })?;
             added += 1;
         }
         if added == 0 {
             return Err(DbError::ConfigError {
-                message: format!("ca_cert `{path}`: no PEM CERTIFICATE blocks found"),
+                message: "tls.ca_cert: no PEM CERTIFICATE blocks found".into(),
             });
         }
     }
 
-    if !trust_native && ca_cert.is_none() {
+    if !trust_native && ca_pem.is_none() {
         return Err(DbError::ConfigError {
             message: "tls.trust_native is false and tls.ca_cert is unset; \
                       no trust anchors available"
@@ -304,7 +453,6 @@ impl ServerCertVerifier for ChainOnlyVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     /// ISRG Root X1 (Let's Encrypt). Real, publicly-known, stable trust
     /// anchor that doesn't expire until 2035-06-04. We use it as a
@@ -344,12 +492,6 @@ mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d\n\
 emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n\
 -----END CERTIFICATE-----\n";
 
-    fn write_fixture_pem() -> tempfile::NamedTempFile {
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        f.write_all(FIXTURE_CA_PEM).unwrap();
-        f
-    }
-
     #[test]
     fn build_root_store_loads_native_certs() {
         // System trust store should have at least a few CAs on a normal
@@ -359,19 +501,10 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n\
     }
 
     #[test]
-    fn build_root_store_rejects_missing_file() {
-        let err = build_root_store(Some("/no/such/path/ca.pem"), true).unwrap_err();
-        let body = serde_json::to_string(&err).unwrap();
-        assert!(body.contains("ca_cert read"), "got: {body}");
-    }
-
-    #[test]
     fn build_root_store_rejects_pem_with_no_certs() {
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        // Write a PEM-shaped block that's not a certificate.
-        f.write_all(b"-----BEGIN PRIVATE KEY-----\nMIIBVQ==\n-----END PRIVATE KEY-----\n")
-            .unwrap();
-        let err = build_root_store(Some(f.path().to_str().unwrap()), true).unwrap_err();
+        // A PEM-shaped block that's not a certificate.
+        let pem = b"-----BEGIN PRIVATE KEY-----\nMIIBVQ==\n-----END PRIVATE KEY-----\n";
+        let err = build_root_store(Some(pem), true).unwrap_err();
         let body = serde_json::to_string(&err).unwrap();
         assert!(body.contains("no PEM CERTIFICATE"), "got: {body}");
     }
@@ -385,9 +518,7 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n\
     fn build_root_store_extends_native_when_trust_native_true() {
         let native_only = build_root_store(None, true).expect("native certs");
         let native_count = native_only.roots.len();
-        let f = write_fixture_pem();
-        let extended =
-            build_root_store(Some(f.path().to_str().unwrap()), true).expect("native + fixture");
+        let extended = build_root_store(Some(FIXTURE_CA_PEM), true).expect("native + fixture");
         assert_eq!(
             extended.roots.len(),
             native_count + 1,
@@ -401,9 +532,7 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n\
     /// "trust only my CA" posture from before the additive default.
     #[test]
     fn build_root_store_only_ca_cert_when_trust_native_false() {
-        let f = write_fixture_pem();
-        let store =
-            build_root_store(Some(f.path().to_str().unwrap()), false).expect("ca_cert only");
+        let store = build_root_store(Some(FIXTURE_CA_PEM), false).expect("ca_cert only");
         assert_eq!(store.roots.len(), 1, "expected exactly the fixture cert");
     }
 
@@ -422,58 +551,173 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=\n\
 
     #[test]
     fn make_pg_connector_disable_returns_none() {
-        let tls = TlsConfig {
-            mode: TlsMode::Disable,
-            ..Default::default()
-        };
-        assert!(make_pg_connector(&tls).unwrap().is_none());
+        assert!(make_pg_connector(&ResolvedTls::mode(TlsMode::Disable))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
-    fn make_pg_connector_require_returns_some() {
-        let tls = TlsConfig {
-            mode: TlsMode::Require,
-            ..Default::default()
-        };
-        let conn = make_pg_connector(&tls).expect("require mode builds");
-        assert!(conn.is_some());
-    }
-
-    #[test]
-    fn make_pg_connector_verify_full_returns_some() {
-        let tls = TlsConfig {
-            mode: TlsMode::VerifyFull,
-            ..Default::default()
-        };
-        let conn = make_pg_connector(&tls).expect("verify-full mode builds");
-        assert!(conn.is_some());
+    fn make_pg_connector_builds_for_every_tls_mode() {
+        for mode in [
+            TlsMode::Prefer,
+            TlsMode::Require,
+            TlsMode::VerifyCa,
+            TlsMode::VerifyFull,
+        ] {
+            let conn = make_pg_connector(&ResolvedTls::mode(mode))
+                .unwrap_or_else(|e| panic!("{mode:?} builds: {e}"));
+            assert!(conn.is_some(), "{mode:?}");
+        }
     }
 
     #[test]
     fn make_mysql_ssl_opts_disable_returns_none() {
-        let tls = TlsConfig {
-            mode: TlsMode::Disable,
-            ..Default::default()
-        };
-        assert!(make_mysql_ssl_opts(&tls).unwrap().is_none());
+        assert!(
+            make_mysql_ssl_opts(&ResolvedTls::mode(TlsMode::Disable), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
-    fn make_mysql_ssl_opts_require_skips_domain_validation() {
-        let tls = TlsConfig {
-            mode: TlsMode::Require,
-            ..Default::default()
+    fn make_mysql_ssl_opts_skips_domain_validation_except_verify_full() {
+        for (mode, skip) in [
+            (TlsMode::Prefer, true),
+            (TlsMode::Require, true),
+            (TlsMode::VerifyCa, true),
+            (TlsMode::VerifyFull, false),
+        ] {
+            let opts = make_mysql_ssl_opts(&ResolvedTls::mode(mode), None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(opts.skip_domain_validation(), skip, "{mode:?}");
+            assert!(
+                !opts.accept_invalid_certs(),
+                "{mode:?} must validate the chain"
+            );
+            assert_eq!(opts.tls_hostname_override(), None);
+        }
+        let tunneled =
+            make_mysql_ssl_opts(&ResolvedTls::mode(TlsMode::VerifyFull), Some("db.internal"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(tunneled.tls_hostname_override(), Some("db.internal"));
+    }
+
+    /// A throwaway self-signed RSA client certificate and its key in both
+    /// PEM encodings, generated by the openssl CLI (skips without it).
+    fn rsa_client_identity() -> Option<(Vec<u8>, String, String)> {
+        let dir = tempfile::tempdir().ok()?;
+        let key8 = dir.path().join("k8.pem");
+        let key1 = dir.path().join("k1.pem");
+        let cert = dir.path().join("c.pem");
+        let ok = std::process::Command::new("openssl")
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "2",
+                "-subj",
+                "/CN=client",
+            ])
+            .arg("-keyout")
+            .arg(&key8)
+            .arg("-out")
+            .arg(&cert)
+            .output()
+            .ok()?
+            .status
+            .success()
+            && std::process::Command::new("openssl")
+                .args(["rsa", "-traditional", "-in"])
+                .arg(&key8)
+                .arg("-out")
+                .arg(&key1)
+                .output()
+                .ok()?
+                .status
+                .success();
+        if !ok {
+            return None;
+        }
+        Some((
+            std::fs::read(cert).ok()?,
+            std::fs::read_to_string(key8).ok()?,
+            std::fs::read_to_string(key1).ok()?,
+        ))
+    }
+
+    #[test]
+    fn mutual_tls_identity_builds_for_postgres_and_mysql() {
+        let Some((cert, key8, key1)) = rsa_client_identity() else {
+            eprintln!("skipping: openssl CLI not available");
+            return;
         };
-        let opts = make_mysql_ssl_opts(&tls).unwrap().unwrap();
-        // SslOpts doesn't expose getters for its danger-flags directly,
-        // but Debug output captures the configuration. Use it as a
-        // proxy for the test contract: `require` mode disables domain
-        // validation, `verify-full` keeps it on.
-        let dbg = format!("{opts:?}");
-        assert!(
-            dbg.contains("skip_domain_validation: true")
-                || dbg.contains("DangerSkipDomainValidation: true"),
-            "expected domain validation off in require mode; got: {dbg}"
-        );
+        for key in [&key8, &key1] {
+            let tls = ResolvedTls {
+                mode: TlsMode::Require,
+                trust_native: true,
+                ca_pem: None,
+                client_cert_pem: Some(cert.clone()),
+                client_key_pem: Some(crate::secrets::SecretValue::new(key.clone())),
+            };
+            assert!(make_pg_connector(&tls).unwrap().is_some());
+            let opts = make_mysql_ssl_opts(&tls, None).unwrap().unwrap();
+            assert!(opts.client_identity().is_some());
+            // The DER handed to mysql_async is PKCS#1 whatever the PEM was.
+            let der = mysql_client_key_der(key).unwrap();
+            assert_eq!(der[0], 0x30);
+        }
+        // A key that does not belong to the certificate is refused up front.
+        let Some((_, other_key, _)) = rsa_client_identity() else {
+            return;
+        };
+        let tls = ResolvedTls {
+            mode: TlsMode::Require,
+            trust_native: true,
+            ca_pem: None,
+            client_cert_pem: Some(cert),
+            client_key_pem: Some(crate::secrets::SecretValue::new(other_key)),
+        };
+        let Err(err) = make_pg_connector(&tls) else {
+            panic!("a key that does not fit the certificate must be refused");
+        };
+        assert!(format!("{err}").contains("does not fit"), "{err}");
+    }
+
+    #[test]
+    fn mysql_mutual_tls_refuses_a_non_rsa_key_with_a_clear_message() {
+        let Ok(out) = std::process::Command::new("openssl")
+            .args([
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+            ])
+            .output()
+        else {
+            eprintln!("skipping: openssl CLI not available");
+            return;
+        };
+        let pem = String::from_utf8(out.stdout).unwrap();
+        if !pem.contains("PRIVATE KEY") {
+            return;
+        }
+        let err = mysql_client_key_der(&pem).unwrap_err();
+        assert!(format!("{err}").contains("needs an RSA key"), "{err}");
+        assert!(!format!("{err}").contains(&pem[30..60]));
+    }
+
+    #[test]
+    fn debug_never_prints_the_client_key() {
+        let tls = ResolvedTls {
+            client_key_pem: Some(crate::secrets::SecretValue::new("TOPSECRETKEY".into())),
+            ..ResolvedTls::mode(TlsMode::Require)
+        };
+        assert!(!format!("{tls:?}").contains("TOPSECRETKEY"));
     }
 }

@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "iii-queue"
-version = "0.21.22"
+version = "0.21.24"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1250,6 +1250,7 @@ dependencies = [
  "iii-worker-paths",
  "lapin",
  "redis",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",

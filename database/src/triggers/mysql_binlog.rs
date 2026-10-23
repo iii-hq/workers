@@ -29,14 +29,13 @@ use mysql_async::binlog::row::BinlogRow;
 use mysql_async::binlog::value::BinlogValue;
 use mysql_async::consts::ColumnFlags;
 use mysql_async::prelude::Queryable;
-use mysql_async::{BinlogStreamRequest, Conn, Opts, OptsBuilder};
+use mysql_async::BinlogStreamRequest;
 use serde_json::{Map, Value};
 
 use super::bus::{now_ms, RowChangeBus, RowChangedEvent, KEY_CAP};
 use super::sql::Op;
-use crate::config::TlsConfig;
+use crate::connector::Connector;
 use crate::driver::mysql::my_to_row_value;
-use crate::pool::tls::make_mysql_ssl_opts;
 
 /// Statements that report the current binlog file/position. 8.2 renamed the
 /// classic one; try newest first, fall back on "unknown statement".
@@ -61,19 +60,10 @@ fn server_id(db_name: &str) -> u32 {
     1_000_000_000 + (hasher.finish() % 1_000_000) as u32
 }
 
-pub(crate) fn build_opts(url: &str, tls: &TlsConfig) -> Result<Opts, String> {
-    let base = Opts::from_url(url).map_err(|_| "invalid mysql url".to_string())?;
-    let mut builder = OptsBuilder::from_opts(base);
-    if let Some(ssl) = make_mysql_ssl_opts(tls).map_err(|e| format!("{e:?}"))? {
-        builder = builder.ssl_opts(ssl);
-    }
-    Ok(builder.into())
-}
-
 /// The current binlog (file, position), or an actionable error. Requires
 /// REPLICATION CLIENT — this doubles as the registration-time privilege
 /// probe.
-pub(crate) async fn binlog_position(conn: &mut Conn) -> Result<(String, u64), String> {
+pub(crate) async fn binlog_position(conn: &mut mysql_async::Conn) -> Result<(String, u64), String> {
     let mut last_err = String::new();
     for sql in POSITION_STATEMENTS {
         match conn.query_first::<mysql_async::Row, _>(sql).await {
@@ -159,6 +149,7 @@ fn flush(
         let has_keys = !p.keys.is_empty();
         let _ = out.send(RowChangedEvent {
             db: db_name.to_string(),
+            schema: None,
             table: Some(p.table),
             op: p.op,
             affected_rows: p.n,
@@ -172,12 +163,7 @@ fn flush(
 /// Keep the stream alive forever, reconnecting with capped backoff. Events
 /// flow into `bus` via an unbounded channel so the decode loop never blocks
 /// on subscriber dispatch.
-pub(crate) async fn run_binlog(
-    db_name: String,
-    url: String,
-    tls: TlsConfig,
-    bus: Arc<RowChangeBus>,
-) {
+pub(crate) async fn run_binlog(db_name: String, connector: Arc<Connector>, bus: Arc<RowChangeBus>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RowChangedEvent>();
     // The forwarder dies with this task: aborting run_binlog drops `tx`,
     // recv() yields None, and the spawned task returns.
@@ -190,7 +176,7 @@ pub(crate) async fn run_binlog(
 
     let mut delay = Duration::from_secs(1);
     loop {
-        match stream_once(&db_name, &url, &tls, &tx).await {
+        match stream_once(&db_name, &connector, &tx).await {
             Ok(()) => {
                 tracing::warn!(db = %db_name, "binlog stream ended; reconnecting");
                 delay = Duration::from_secs(1);
@@ -207,15 +193,13 @@ pub(crate) async fn run_binlog(
 /// One replica session: snapshot position, stream, decode, emit.
 async fn stream_once(
     db_name: &str,
-    url: &str,
-    tls: &TlsConfig,
+    connector: &Connector,
     out: &tokio::sync::mpsc::UnboundedSender<RowChangedEvent>,
 ) -> Result<(), String> {
-    let opts = build_opts(url, tls)?;
     // Events for OTHER databases on the same server are not this handle's
     // business — a binding names a db handle, and the handle names a schema.
-    let schema = opts.db_name().map(str::to_string);
-    let mut conn = Conn::new(opts).await.map_err(|e| e.to_string())?;
+    let schema = connector.mysql_db_name();
+    let mut conn = connector.mysql_connect().await.map_err(|e| e.to_string())?;
     let (file, pos) = binlog_position(&mut conn).await?;
     let mut stream = conn
         .get_binlog_stream(
@@ -390,10 +374,10 @@ mod tests {
             eprintln!("skipping: TEST_MYSQL_URL not set");
             return;
         };
-        let tls = TlsConfig {
-            mode: crate::config::TlsMode::Disable,
-            ..Default::default()
-        };
+        let mut entry = crate::config::DatabaseConfig::from_url(url.as_str());
+        entry.tls.mode = crate::config::TlsMode::Disable;
+        entry.validate("primary").unwrap();
+        let connector = Arc::new(Connector::literal("primary", &entry).unwrap());
 
         let table = format!("iii_binlog_capture_{}", std::process::id());
         let bulk = format!("{table}_bulk");
@@ -432,10 +416,10 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let streamer = {
-            let url = url.clone();
+            let connector = connector.clone();
             let db = "primary".to_string();
             tokio::spawn(async move {
-                if let Err(e) = stream_once(&db, &url, &tls, &tx).await {
+                if let Err(e) = stream_once(&db, &connector, &tx).await {
                     panic!("stream_once failed: {e}");
                 }
             })

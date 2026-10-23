@@ -48,6 +48,7 @@
     "mermaid": "^11.12.0",
     "monaco-editor": "^0.56.0",
     "motion": "^14.0.0",
+    "posthog-js": "1.434.2",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

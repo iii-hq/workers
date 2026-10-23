@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 pub struct TxExecuteReq {
     pub transaction_id: String,
     /// The write statement. Put a `RETURNING` clause in the SQL itself to
-    /// get rows back and onto the `database::row-changed` event that
+    /// get rows back and onto the `database::on-row-changed` event that
     /// `commitTransaction` fires for this write (SQLite, Postgres; MySQL has
     /// no RETURNING).
     #[serde(alias = "query")]
@@ -75,6 +75,7 @@ pub async fn handle(state: &AppState, req: TxExecuteReq) -> Result<TxExecuteResp
                 .into(),
         }));
     }
+    crate::handlers::reject_session_prepared_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let lock = match state.transactions.lock(&req.transaction_id).await {
@@ -312,6 +313,7 @@ mod tests {
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         };
 
         crate::handlers::execute::handle(

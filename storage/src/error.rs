@@ -49,6 +49,10 @@ pub enum StorageError {
     )]
     ObjectTooLarge { size: u64, cap: u64 },
 
+    #[serde(rename = "INVALID_KEY")]
+    #[error("invalid key: {reason}")]
+    InvalidKey { reason: String },
+
     #[serde(rename = "INVALID_BASE64")]
     #[error("invalid base64 payload: {reason}")]
     InvalidBase64 { reason: String },

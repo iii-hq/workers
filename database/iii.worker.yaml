@@ -7,3 +7,12 @@ license: Apache-2.0
 bin: database
 tags: [sql, sqlite, postgres, mysql, db]
 description: Talk to PostgreSQL, MySQL, and SQLite from iii — query, execute, transactions, prepared statements, and change feeds.
+
+dependencies:
+  # The database configuration entry lives in the configuration worker.
+  configuration: "latest"
+  # Query history, saved queries and table views.
+  state: "latest"
+  # Connection passwords, keys and passphrases are referenced as
+  # secret://NAME (encrypted vault) or env://NAME and resolved through it.
+  secrets: "latest"

@@ -28,6 +28,7 @@ pub const REFRESH_FN_ID: &str = "oauth::claude-code::refresh";
 /// Token expiry (seconds since epoch) from the credential's `expires_at`.
 /// Anthropic OAuth access tokens are opaque, so there is no JWT fallback.
 fn credential_expires_at(cred: &Value) -> Option<i64> {
+    let cred = cred.get("credential").unwrap_or(cred);
     cred.get("expires_at").and_then(Value::as_i64)
 }
 
@@ -36,6 +37,12 @@ fn near_expiry(cred: &Value) -> bool {
         Some(exp) => exp <= crate::now_ms() / 1000 + EXPIRY_MARGIN_SECS,
         None => false, // unknown expiry: let the vault decide, don't force
     }
+}
+
+/// The credential's expiry has passed. The `claude` CLI renews its token when
+/// it runs; this provider never does, so an expired one is never sent.
+pub fn expired(cred: &Value) -> bool {
+    credential_expires_at(cred).is_some_and(|exp| exp <= crate::now_ms() / 1000)
 }
 
 /// `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json`.
@@ -356,5 +363,15 @@ mod tests {
         assert!(!near_expiry(&far));
         let unknown = json!({ "access_token": "no-exp" });
         assert!(!near_expiry(&unknown));
+    }
+
+    #[test]
+    fn expired_means_past_expiry_without_a_margin() {
+        assert!(expired(&json!({ "access_token": "a", "expires_at": 1 })));
+        let soon = json!({ "access_token": "a", "expires_at": crate::now_ms() / 1000 + 30 });
+        assert!(!expired(&soon));
+        assert!(!expired(&json!({ "access_token": "no-exp" })));
+        let nested = json!({ "credential": { "access_token": "a", "expires_at": 1 } });
+        assert!(expired(&nested));
     }
 }

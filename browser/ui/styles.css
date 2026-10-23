@@ -1738,12 +1738,7 @@
 }
 @media (hover: hover) and (pointer: fine) {
   [data-iii-ui="browser"] .br-ui-pip {
-    --panel-translate-y: 24px;
-    --pip-peek: -1;
-    --pip-fan-origin: bottom center;
-    top: auto;
     right: 16px;
-    bottom: 16px;
   }
 }
 [data-iii-ui="browser"] .br-ui-pip.is-pinching,
@@ -1827,8 +1822,8 @@
 }
 [data-iii-ui="browser"] .br-ui-pip-controls {
   position: absolute;
+  top: 6px;
   right: 6px;
-  bottom: 6px;
   display: flex;
   gap: 2px;
   padding: 2px;

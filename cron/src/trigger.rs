@@ -40,8 +40,11 @@ impl TriggerHandler for CronTriggerHandler {
                 "invalid cron trigger config (expression required): {e}"
             ))
         })?;
-        let scheduler = self.scheduler.read().await.clone();
-        scheduler
+        // The read guard is held through the call, so a lock-backend swap
+        // never runs between reading the cell and filing the binding.
+        self.scheduler
+            .read()
+            .await
             .register(JobSpec {
                 trigger_id: config.id,
                 expression: spec.expression,
@@ -54,8 +57,7 @@ impl TriggerHandler for CronTriggerHandler {
     }
 
     async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let scheduler = self.scheduler.read().await.clone();
-        let _ = scheduler.unregister(&config.id).await;
+        let _ = self.scheduler.read().await.unregister(&config.id).await;
         Ok(())
     }
 }
