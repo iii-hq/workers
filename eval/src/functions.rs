@@ -155,10 +155,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
                     .map_err(Error::from)
             }
         })
-        .description(
-            "Delete a terminal analysis and its stored previews. The turn stays marked as \
-             analyzed until retention, so it is not re-admitted automatically.",
-        ),
+        .description("Delete a terminal analysis and its stored previews."),
     );
 
     let current = deps.clone();

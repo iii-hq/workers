@@ -264,7 +264,7 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | `eval::status` | One compact record, or null. |
 | `eval::result` | Record plus evidence, diagnostics, triage, suggestions, the monitor's own consumption. |
 | `eval::cancel` | Signals the Jev call (`judge::cancel`) and stops the investigation (`harness::stop`); never touches the observed session. |
-| `eval::delete` | Deletes a terminal analysis; the turn stays marked as analyzed until retention. |
+| `eval::delete` | Deletes a terminal analysis and its stored previews. |
 | `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
 
 Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8)

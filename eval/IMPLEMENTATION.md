@@ -14,7 +14,7 @@ Manter o monitor dentro do worker `eval`, usando o bus do Engine e as dependênc
 | --- | --- |
 | `src/contract.rs` | Contratos do monitor, evidências, triagem, sugestões e vínculo E2E. |
 | `src/runtime.rs` | Configuração, admissão, coleta, máquina de estados, investigação e cancelamento. |
-| `src/state.rs` | Persistência dos registros, evidências e índice de observações. |
+| `src/state.rs` | Persistência dos registros e evidências. |
 | `src/ids.rs` | Identidade da observação, da análise e da sessão de investigação. |
 | `src/diagnostics.rs` | Detectores determinísticos e preparação de prévias. |
 | `src/functions.rs` e `src/surface.rs` | Registrar a nova superfície e seus schemas. |
@@ -112,16 +112,7 @@ Essa recuperação pressupõe que o state conservou os registros. O adapter `kv`
 
 Derivar a chave de observação de `session_id` e `turn_id`, com SHA-256 e separador inequívoco. Gerar um ID novo para cada análise admitida, reutilizando a dependência de UUID já presente na versão original do worker.
 
-Sob o lock da observação:
-
-1. Consultar o índice e reutilizar a análise existente para o evento ou request normal.
-2. Para uma reanálise manual, verificar que a anterior terminou.
-3. Persistir o novo registro antes de publicar seu ID no índice.
-4. Atualizar o índice e enfileirar a primeira etapa.
-
-Na recuperação, reconciliar registros admitidos cujo índice ainda não foi publicado. Uma falha entre as gravações não pode criar outra análise da mesma observação. O `sweep` recupera o caso em que o registro foi salvo e o enqueue falhou.
-
-Reconciliar esses registros na inicialização antes de admitir novos eventos. Um índice que aponta para uma análise removida ainda bloqueia a admissão automática; uma reanálise manual explícita pode criar a próxima análise.
+Não há índice de observações: a análise de um turno é encontrada filtrando os registros por `observation_key`. Uma reanálise manual exige que a anterior tenha terminado e a referencia em `supersedes`. Persistir o novo registro antes de enfileirar a primeira etapa; o `sweep` recupera o caso em que o registro foi salvo e o enqueue falhou.
 
 Derivar a sessão da LLM como `eval_monitor_<evaluation_id>` e usar o mesmo ID como `idempotency_key` de `harness::send`. Persistir sua identidade antes do envio.
 
@@ -372,7 +363,7 @@ Manter os escopos antigos `eval_job` e `eval_session` separados. Resultados A/B 
 
 ### Passo 2 — Admissão e recuperação
 
-Implementar configuração, índice de observações, persistência compacta, locks, step e sweep. Ligar os triggers e validar deduplicação antes de chamar modelos.
+Implementar configuração, persistência compacta, locks, step e sweep. Ligar os triggers e validar deduplicação antes de chamar modelos.
 
 **Check:** evento duplicado, enqueue perdido, gravação interrompida e reinício não produzem outra análise da mesma observação. Pausa bloqueia novas admissões automáticas; cancelamento afeta apenas o monitor.
 

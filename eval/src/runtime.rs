@@ -417,8 +417,6 @@ pub async fn delete(
             record.evaluation_id, record.status
         )));
     }
-    // The observation index stays until retention so the turn is not
-    // re-admitted automatically.
     state::delete_analysis(&deps.iii, &record.evaluation_id).await?;
     Ok(EvalDeleteResponseV1 { deleted: true })
 }
@@ -648,7 +646,7 @@ pub async fn sweep(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
 }
 
 /// Re-enqueues pending analyses, fails those past their deadline and, at most
-/// hourly, reconciles indexes and applies retention.
+/// hourly, applies retention.
 async fn resume_analyses(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
     let mut response = SweepResponseV1::default();
     let records = state::list_records(&deps.iii).await?;

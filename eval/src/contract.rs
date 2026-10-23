@@ -1,5 +1,5 @@
 //! Public contracts of the session monitor: configuration, analysis records,
-//! captured evidence, triage, suggestions and E2E validation links.
+//! captured evidence, triage and suggestions.
 
 use std::collections::BTreeMap;
 
@@ -789,19 +789,6 @@ pub struct ComparabilityV1 {
     pub checks: Vec<ComparabilityCheckV1>,
 }
 
-/// Baseline and candidate executions linked to one suggestion. A link is a
-/// reference, not a verdict: the improvement claim belongs to the E2E
-/// comparison and its criteria.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ValidationLinkV1 {
-    pub suggestion_index: usize,
-    pub baseline: E2eExecutionRefV1,
-    pub candidate: E2eExecutionRefV1,
-    pub comparability: ComparabilityV1,
-    pub attached_at: i64,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnalysisAssetsV1 {
@@ -1069,7 +1056,6 @@ pub struct SweepEventV1 {
 pub struct SweepResponseV1 {
     pub requeued: u64,
     pub expired: u64,
-    pub reconciled: u64,
     pub retained_deleted: u64,
 }
 

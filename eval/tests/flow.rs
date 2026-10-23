@@ -1157,8 +1157,6 @@ async fn recovery_requeues_lost_steps_and_deadlines_fail_pending_work() {
     h.world().steps.clear();
     h.restart();
     let recovered = runtime::recover(&h.deps).await.unwrap();
-    // No observation index exists any more, so there is nothing to republish.
-    assert_eq!(recovered.reconciled, 0);
     assert_eq!(recovered.requeued, 1);
     assert!(h
         .world()
