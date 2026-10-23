@@ -57,6 +57,9 @@ async fn cron_trigger_fires_bound_function_with_parity_payload() {
         );
     }
 
+    // The old consumer path: deprecated in iii-sdk 0.25, still served by the
+    // `cron` trigger type this worker keeps.
+    #[allow(deprecated)]
     let trigger = iii
         .register_trigger(RegisterTriggerInput::new(
             "cron".to_string(),

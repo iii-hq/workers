@@ -3,15 +3,18 @@ name: cron
 tags: cron, scheduling, triggers, jobs
 description: >-
   Schedule any registered function on a 6- or 7-field cron expression with the
-  standalone cron worker. Its whole surface is the `cron` trigger type.
+  standalone cron worker. Its surface is the `cron` trigger type and, on iii
+  0.25 engines, the observable function `cron::on-tick`.
 ---
 
 # cron
 
 The `cron` worker schedules registered functions to run on recurring cron
-expressions. It exposes no callable `cron::*` functions; its entire surface is
-the `cron` trigger type, bound through a worker SDK trigger registration such
-as `iii.registerTrigger({ type: 'cron', function_id, config })`.
+expressions. It exposes no callable `cron::*` functions. Its surface is the
+`cron` trigger type, bound through a worker SDK trigger registration such as
+`iii.registerTrigger({ type: 'cron', function_id, config })`, and, on iii 0.25
+engines, the observable function `cron::on-tick`, observed with
+`iii.observe({ function_id: 'cron::on-tick', args: { expression } }, target)`.
 
 Install it with `iii trigger compose::add worker=cron`. The legacy in-engine cron service must not
 run on the same engine because it also owns the `cron` trigger type. Remove the
@@ -52,8 +55,9 @@ across a fleet. The lock TTL is 30 seconds.
 
 ## Boundaries
 
-- No callable functions are exposed. Never invoke `cron::*`; bind the `cron`
-  trigger type to one of your own functions.
+- No callable functions are exposed. Never invoke `cron::*` (invoking
+  `cron::on-tick` is refused with `FORBIDDEN`); bind the `cron` trigger type
+  to one of your own functions, or observe `cron::on-tick` on a 0.25 engine.
 - The default `local` backend is process-local. Do not rely on it for once-only
   jobs in a multi-instance deployment.
 - The worker does not catch up missed runs after downtime. It schedules the
@@ -112,6 +116,31 @@ Event payload:
   "actual_time": "2026-07-03T12:00:00.123456789+00:00"
 }
 ```
+
+### How to observe (iii 0.25)
+
+`registerTrigger` is deprecated in iii 0.25 and keeps working. On a 0.25
+engine, observe `cron::on-tick` instead:
+
+```typescript
+iii.registerFunction('jobs::cleanup-old-data', async ({ input }) => {
+  // input: { trigger: 'cron', expression, scheduled_time, actual_time }
+})
+
+const cleanup = iii.observe(
+  { function_id: 'cron::on-tick', args: { expression: '0 0 2 * * *' } },
+  'jobs::cleanup-old-data',
+)
+await cleanup.ready()
+```
+
+`args` takes `expression` only; anything else fails `ready()` with
+`INVALID_ARGS`, and an expression that does not parse with
+`INVALID_CRON_EXPRESSION`. The tick has no `job_id` (the envelope's
+`observer_id` identifies the observer) and observers have no
+`condition_function_id`: use `filters` on the observer instead. Bindings and
+observers on the same expression share one job. Against a 0.24 engine,
+`observe` fails with `UNSUPPORTED`; bind the trigger type there.
 
 Configure the lock backend through the central configuration entry for worker
 `cron`:
