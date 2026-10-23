@@ -9,14 +9,18 @@
 //! CatalogCache), the live-connection gauge, and the actually-bound address
 //! (the source of truth `rbac-proxy::status` reports).
 
-use std::net::SocketAddr;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
+use axum::extract::ConnectInfo;
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::Router;
+use axum::{Extension, Router};
+use hyper::server::conn::http1;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use iii_sdk::IIIClient;
 use tokio::net::TcpListener;
 use tokio::sync::{watch, Mutex, RwLock};
@@ -69,7 +73,7 @@ async fn not_found() -> (StatusCode, &'static str) {
 }
 
 /// A rebindable public listener. Holds the shutdown trigger for the currently
-/// live `axum::serve` task; [`rebind`](ServerHandle::rebind) binds a new
+/// live accept loop; [`rebind`](ServerHandle::rebind) binds a new
 /// listener (last-good on failure) and gracefully retires the old one.
 pub struct ServerHandle {
     state: ProxyState,
@@ -129,26 +133,99 @@ async fn bind(host: &str, port: u16) -> anyhow::Result<TcpListener> {
         .with_context(|| format!("binding TCP listener on {host}:{port}"))
 }
 
-/// Spawn an `axum::serve` task on `listener`, returning its graceful-shutdown
-/// trigger. The `JoinHandle` is intentionally detached: the task ends when its
-/// shutdown trigger fires and in-flight connections drain.
+/// How long a client may take to send its request headers before the
+/// connection is closed. `axum::serve` sets no timer, so a socket that never
+/// finished its upgrade stayed open for good; the engine's own RBAC listener
+/// closed it after `handshake_timeout_ms` (10 s by default).
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Spawn the accept loop on `listener`, returning its graceful-shutdown
+/// trigger. The `JoinHandle` is intentionally detached: when the trigger
+/// fires the loop stops accepting and tells every connection in flight to
+/// shut down gracefully.
 fn spawn_server(listener: TcpListener, state: ProxyState) -> watch::Sender<bool> {
+    serve_with_deadline(listener, state, HEADER_READ_TIMEOUT)
+}
+
+/// What `axum::serve` does (HTTP/1 with upgrades, the peer address as
+/// `ConnectInfo`), plus a deadline on reading the request headers.
+fn serve_with_deadline(
+    listener: TcpListener,
+    state: ProxyState,
+    header_timeout: Duration,
+) -> watch::Sender<bool> {
     let (tx, mut rx) = watch::channel(false);
-    let app = router(state).into_make_service_with_connect_info::<SocketAddr>();
+    let app = router(state);
     tokio::spawn(async move {
-        let shutdown = async move {
-            while rx.changed().await.is_ok() {
-                if *rx.borrow() {
-                    break;
+        // Once the loop stops: idle keep-alive connections close at once, the
+        // rest after their response (the engine listener's shutdown).
+        let (conn_shutdown_tx, _) = watch::channel(false);
+        loop {
+            let (stream, peer) = tokio::select! {
+                accepted = listener.accept() => match accepted {
+                    Ok(conn) => conn,
+                    Err(e) if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::ConnectionReset
+                    ) => continue,
+                    Err(e) => {
+                        // Out of file descriptors and the like: wait, as axum does.
+                        tracing::error!(error = %e, "rbac-proxy accept failed");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                },
+                changed = rx.changed() => {
+                    if changed.is_err() || *rx.borrow() {
+                        break;
+                    }
+                    continue;
                 }
-            }
-        };
-        if let Err(e) = axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown)
-            .await
-        {
-            tracing::error!(error = %e, "rbac-proxy server task exited with error");
+            };
+            let service = TowerToHyperService::new(app.clone().layer(Extension(ConnectInfo(peer))));
+            let mut conn_shutdown_rx = conn_shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                let conn = http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(header_timeout)
+                    .serve_connection(TokioIo::new(stream), service)
+                    .with_upgrades();
+                tokio::pin!(conn);
+                // Completes on the shutdown send, or when the sender goes.
+                let conn_shutdown = async move {
+                    while conn_shutdown_rx.changed().await.is_ok() {
+                        if *conn_shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                };
+                tokio::pin!(conn_shutdown);
+                let mut graceful_sent = false;
+                loop {
+                    tokio::select! {
+                        served = conn.as_mut() => {
+                            match served {
+                                Err(e) if e.is_timeout() => tracing::warn!(
+                                    peer = %peer,
+                                    timeout_ms = header_timeout.as_millis() as u64,
+                                    "closed socket: request headers not received within the deadline"
+                                ),
+                                Err(e) => tracing::debug!(peer = %peer, error = %e, "connection ended"),
+                                Ok(()) => {}
+                            }
+                            break;
+                        }
+                        _ = &mut conn_shutdown, if !graceful_sent => {
+                            conn.as_mut().graceful_shutdown();
+                            graceful_sent = true;
+                        }
+                    }
+                }
+            });
         }
+        let _ = conn_shutdown_tx.send(true);
     });
     tx
 }
@@ -157,6 +234,7 @@ fn spawn_server(listener: TcpListener, state: ProxyState) -> watch::Sender<bool>
 mod tests {
     use super::*;
     use crate::config::WorkerConfig;
+    use std::net::SocketAddr;
 
     fn state() -> ProxyState {
         let iii = Arc::new(iii_sdk::register_worker(
@@ -183,6 +261,47 @@ mod tests {
         assert!(port2 > 0);
 
         h.shutdown().await;
+    }
+
+    async fn serve(header_timeout: Duration) -> (watch::Sender<bool>, SocketAddr) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (serve_with_deadline(listener, state(), header_timeout), addr)
+    }
+
+    #[tokio::test]
+    async fn stalled_headers_are_cut_off() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (tx, addr) = serve(Duration::from_millis(200)).await;
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // Headers that never end.
+        s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n").await.unwrap();
+        let mut buf = Vec::new();
+        let closed = tokio::time::timeout(Duration::from_secs(3), s.read_to_end(&mut buf)).await;
+        assert!(
+            closed.is_ok(),
+            "a connection whose headers never ended stayed open"
+        );
+        let _ = tx.send(true);
+    }
+
+    #[tokio::test]
+    async fn requests_still_reach_the_router_with_the_peer() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (tx, addr) = serve(Duration::from_secs(10)).await;
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), s.read_to_end(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let head = String::from_utf8_lossy(&buf);
+        // ws_upgrade reads ConnectInfo before WebSocketUpgrade: a missing peer is a 500.
+        assert!(head.starts_with("HTTP/1.1 4"), "{head}");
+        let _ = tx.send(true);
     }
 
     #[tokio::test]
