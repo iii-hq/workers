@@ -15,6 +15,7 @@ import {
   createEffect,
   createList,
   createMemo,
+  createRoot,
   createSignal,
   EmptyState,
   For,
@@ -76,13 +77,16 @@ import {
 import { pickAgent } from './pick'
 import { TicketView } from './ticket'
 
-/** The cards a lane shows: every row, or the ones that pass the filters. */
-function shownRows(l: Lane): Summary[] {
-  if (!filtering()) return l.rows
-  const f = filters()
-  const ctx = matchContext()
-  return l.rows.filter((row) => matches(row, f, ctx))
-}
+/** The cards each lane shows: every row, or the ones that pass the filters (one pass per change, shared). */
+const shownByLane = createRoot(() =>
+  createMemo(() => {
+    const f = filters()
+    const on = filtering()
+    const ctx = matchContext()
+    return new Map(lanes().map((l) => [l.id, on ? l.rows.filter((row) => matches(row, f, ctx)) : l.rows]))
+  }),
+)
+const shownRows = (l: Lane): Summary[] => shownByLane().get(l.id) ?? l.rows
 
 export function RootPage() {
   const [ready, setReady] = createSignal(false)
@@ -431,7 +435,7 @@ function Board(props: { onNew: () => void }) {
                 <Show when={!filtering() && laneState() && partial(laneState() as Lane)}>
                   <Column gap={6} padding={12} align="center">
                     <Text role="small" tone="muted">
-                      {`Showing ${laneState()?.rows.length ?? 0} of ${count(laneState()?.total ?? 0)}`}
+                      {`Showing ${laneState()?.rows.length ?? 0} of ${laneState()?.total ?? 0}`}
                     </Text>
                     <Button
                       small
