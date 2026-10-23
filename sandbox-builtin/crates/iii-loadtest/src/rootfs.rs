@@ -44,7 +44,7 @@ pub const BIN_DIR: &str = "opt/bench/bin";
 
 pub fn default_init() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".local/bin/iii-init");
+    let path = PathBuf::from(home).join(".iii/lib/iii-init");
     path.exists().then_some(path)
 }
 

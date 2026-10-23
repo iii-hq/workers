@@ -96,7 +96,7 @@ target/release/iii-loadtest suite --scenarios rpc,fanout \
 ```
 
 Without `--krunfw` and `--init` it uses an installed iii's
-`~/.iii/lib/libkrunfw.so` and `~/.local/bin/iii-init`, when they exist.
+`~/.iii/lib/libkrunfw.so` and `~/.iii/lib/iii-init`, when they exist.
 
 Results go to `target/loadtest/<timestamp>/`:
 - `report.md`: a capacity summary per profile, then every step of every scenario.

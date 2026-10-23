@@ -77,7 +77,7 @@ pub struct SuiteArgs {
     #[arg(long)]
     pub load_cpus: Option<String>,
 
-    /// iii-init for the guest (default `~/.local/bin/iii-init`).
+    /// iii-init for the guest (default `~/.iii/lib/iii-init`).
     #[arg(long)]
     pub init: Option<PathBuf>,
 
