@@ -699,11 +699,7 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
     use msb_krun::VmBuilder;
 
     #[cfg(target_os = "linux")]
-    {
-        if let Err(msg) = check_kvm_available() {
-            return Err(msg);
-        }
-    }
+    check_kvm_available()?;
 
     raise_fd_limit();
 
