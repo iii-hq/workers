@@ -152,7 +152,10 @@ export function applyRead(read: BoardRead, journal: readonly Write[], memo: Memo
   for (const lane of lanes) for (const row of lane.rows) memo.versions.set(row.id, time(row.updated_at))
   const readAt = time(read.as_of)
   for (const { summary, kind } of journal) {
-    if (time(summary.updated_at) > readAt) lanes = applyWrite(lanes, summary, memo, kind)
+    if (time(summary.updated_at) <= readAt) continue
+    // The read replaced the lanes: a write this app already applied must be applied again over it.
+    memo.versions.delete(summary.id)
+    lanes = applyWrite(lanes, summary, memo, kind)
   }
   return lanes
 }

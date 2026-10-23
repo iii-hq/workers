@@ -1,6 +1,6 @@
 /** The filters (design §8.2, §8.5, §8.6): a whole read when they start, the facets, storage, and the releases and projects pages. */
 import { describe, expect, it } from 'vitest'
-import { callsOf, keysOf, onTop, sample, start, topCard } from './fake'
+import { callsOf, FakeKanban, keysOf, onTop, sample, start, topCard } from './fake'
 
 describe('filters', () => {
   it('opening them reads the whole board, and the chips count what each option keeps', async () => {
@@ -98,6 +98,36 @@ describe('filters', () => {
     await host.settle()
     expect(host.prop('filters', 'active')).not.toBe(true)
     expect(host.prop(onTop(host, 'filter-text'), 'value')).toBe('')
+  })
+
+  it('after Clear all, the board pages again: a refresh reads the first page, not the whole board', async () => {
+    const fake = new FakeKanban()
+    for (let i = 0; i < 60; i++) fake.add({ title: `B${i}`, status: 'backlog', labels: ['x'] })
+    const { host } = await start({ fake, storage: { filters: { labels: ['x'] } } })
+    expect(callsOf(host, 'board::get')).toEqual([{}])
+    await host.press('filters')
+    await host.settle()
+    await host.press(onTop(host, 'clear-filters'))
+    await host.back()
+    await host.settle()
+    const before = callsOf(host, 'board::get').length
+    await host.emit('lane:backlog', 'refresh')
+    await host.settle()
+    expect(callsOf(host, 'board::get').slice(before)).toEqual([{ limit: 50 }])
+  })
+
+  it('filters too big to keep are kept shorter, and the person is told', async () => {
+    const { host } = await start()
+    await host.press('filters')
+    await host.settle()
+    await host.type(onTop(host, 'filter-text'), 'x'.repeat(70_000))
+    await host.tick(900)
+    const kept = host.storage.get('filters') as { q: string }
+    expect(kept.q).toHaveLength(200)
+    expect(JSON.stringify(kept).length).toBeLessThan(64 * 1024)
+    expect(host.toasts.at(-1)?.text).toBe(
+      'These filters are too long to keep on this device; a shorter version is kept',
+    )
   })
 
   it('labels: any or all of them', async () => {

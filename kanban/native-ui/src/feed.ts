@@ -8,46 +8,14 @@
  */
 
 import { type createList, untrack } from '@iii-dev/native-ui'
-import type { Summary } from './api'
-import { type CardContext, type CardRow, cardRow } from './cards'
+import type { CardRow } from './cards'
 
 type Source = ReturnType<typeof createList<CardRow>>
 
 /** Rows added per step when a lane grows a lot at once. */
 export const CHUNK = 300
-
-interface Entry {
-  ticket: Summary
-  base: object
-  parent: string | undefined
-  subs: string
-  selected: boolean
-  row: CardRow
-}
-
-/** `rowOf(ticket, ctx, base)`: the cached row while the ticket, `base` (the shared inputs) and its own lookups stay the same. */
-export function createCardCache(): (ticket: Summary, ctx: CardContext, base: object) => CardRow {
-  const cache = new Map<string, Entry>()
-  return (ticket, ctx, base) => {
-    const parent = ticket.parent_id ? ctx.keys.get(ticket.parent_id) : undefined
-    const stats = ctx.subs?.get(ticket.id)
-    const subs = stats ? `${stats.done}/${stats.total}` : ''
-    const selected = ctx.selected === ticket.key
-    const hit = cache.get(ticket.id)
-    if (
-      hit &&
-      hit.ticket === ticket &&
-      hit.base === base &&
-      hit.parent === parent &&
-      hit.subs === subs &&
-      hit.selected === selected
-    )
-      return hit.row
-    const row = cardRow(ticket, ctx)
-    cache.set(ticket.id, { ticket, base, parent, subs, selected, row })
-    return row
-  }
-}
+/** The pause between steps (ms): each step is a turn of its own, and a touch can come in between. */
+export const FEED_PAUSE = 1
 
 /** `feed(source, items)`: nothing when the items are the ones it has, else a set, or a big growth in steps. */
 export function createFeeder(): (source: Source, items: CardRow[]) => void {
@@ -70,9 +38,9 @@ export function createFeeder(): (source: Source, items: CardRow[]) => void {
       const next = Math.min(items.length, shown + CHUNK)
       source.splice(shown, 0, ...items.slice(shown, next))
       shown = next
-      if (shown < items.length) timers.set(source, setTimeout(step, 0))
+      if (shown < items.length) timers.set(source, setTimeout(step, FEED_PAUSE))
       else timers.delete(source)
     }
-    timers.set(source, setTimeout(step, 0))
+    timers.set(source, setTimeout(step, FEED_PAUSE))
   }
 }

@@ -15,6 +15,7 @@ import {
   itemOf,
   keysOf,
   piecesOf,
+  type Started,
   sample,
   start,
   tapLink,
@@ -101,7 +102,7 @@ describe('malformed worker data', () => {
     ])
   })
 
-  it('garbage events and an agent list that is not one change nothing', async () => {
+  it('garbage events change nothing on the board, but read it again once after the burst', async () => {
     const fake = sample()
     fake.overrides['agent::list'] = () => 'agents'
     const { host } = await start({ fake })
@@ -122,6 +123,41 @@ describe('malformed worker data', () => {
     expect(host.exceptions).toEqual([])
     expect(keysOf(host, 'in_progress')).toEqual(['KAN-1'])
     expect(cards(host, 'in_progress')[0]).toMatchObject({ assigneeIcon: 'bot' })
+    // Something changed that the app could not read: one quiet read, 400 ms after the last.
+    const reads = callsOf(host, 'board::get').length
+    await host.tick(400)
+    expect(callsOf(host, 'board::get')).toHaveLength(reads + 1)
+  })
+
+  it('comments in a parent cycle, their own parent, or replying to a reply are all listed', async () => {
+    const fake = sample()
+    const review = fake.get('KAN-4')
+    if (!review) throw new Error('no KAN-4')
+    const at = fake.stamp()
+    review.comments.push(
+      { id: 'self', ticket_id: 't4', parent_id: 'self', body: 'self-parent', author: 'user', created_at: at },
+      { id: 'cx', ticket_id: 't4', parent_id: 'cy', body: 'cycle-x', author: 'user', created_at: at },
+      { id: 'cy', ticket_id: 't4', parent_id: 'cx', body: 'cycle-y', author: 'user', created_at: at },
+      { id: 'deep', ticket_id: 't4', parent_id: 'c2', body: 'reply-to-a-reply', author: 'user', created_at: at },
+    )
+    review.activity.push(
+      { id: 'aself', ticket_id: 't4', seq: fake.seq++, type: 'comment.created', actor: 'user', at, comment_id: 'self' },
+      { id: 'adeep', ticket_id: 't4', seq: fake.seq++, type: 'comment.created', actor: 'user', at, comment_id: 'deep' },
+    )
+    const { host } = await start({ fake })
+    await host.itemPress('lane:in_review', 't4')
+    await host.settle()
+    const rows = activityOf(host).filter((r) => r.kind === 1)
+    expect(rows.map((r) => [r.text, r.isReply])).toEqual([
+      ['Pushed the fix; ready for review.', false],
+      ['Looks good, **merging**.', true],
+      // The reply to a reply goes under the same root, and replying to it answers that root.
+      ['reply-to-a-reply', true],
+      ['self-parent', false],
+      ['cycle-x', false],
+      ['cycle-y', false],
+    ])
+    expect(itemOf(host, 'c:deep')).toMatchObject({ root: 'c1' })
   })
 
   it('a card that moves to a column the app does not have leaves the board and its count', async () => {
@@ -297,6 +333,9 @@ describe('size', () => {
     await host.press('filters')
     await host.settle()
     expect(host.failed).toBeNull()
+    // The lane grows in steps of 300, a turn each (1 ms apart).
+    expect(cards(host, 'done')).toHaveLength(300)
+    await host.tick(20)
     await host.back()
     await host.settle()
     // A step that passes the VM's deadline inside a promise job stops it silently in the test host
@@ -308,6 +347,125 @@ describe('size', () => {
     expect(cards(host, 'done')).toHaveLength(3000)
     expect(keysOf(host, 'todo')).toEqual(['KAN-100', 'KAN-2'])
   })
+})
+
+describe('reads answered before a write and delivered after it', () => {
+  /** Holds the next board read, lets `write` happen, then delivers the read as the worker answered it before. */
+  async function staleRead(fake: FakeKanban, host: Started['host'], lane: string, write: () => Promise<unknown>) {
+    fake.hold('board::get')
+    await host.emit(`lane:${lane}`, 'refresh')
+    await host.settle()
+    const snapshot = fake.answer('kanban::board::get', fake.waiting('board::get')[0].payload)
+    await write()
+    fake.release('board::get', snapshot)
+    await host.settle()
+  }
+
+  it('a ticket created during the read stays, counted once', async () => {
+    const fake = new FakeKanban()
+    for (let i = 0; i < 3; i++) fake.add({ title: `D${i}`, status: 'done' })
+    const { host } = await start({ fake })
+    await staleRead(fake, host, 'done', () => fake.elsewhere('ticket::create', { title: 'NEW', status: 'done' }))
+    expect(host.lanes('lanes').counts[4]).toBe('4')
+    expect(keysOf(host, 'done')).toEqual(fake.column('done').map((t) => t.key))
+  })
+
+  it('a ticket restored during the read is listed', async () => {
+    const fake = new FakeKanban()
+    const gone = fake.add({ title: 'Gone then back', status: 'todo' })
+    fake.answer('kanban::ticket::delete', { id: gone.id })
+    const { host } = await start({ fake })
+    await staleRead(fake, host, 'todo', () => fake.elsewhere('ticket::restore', { id: gone.id }))
+    expect(host.lanes('lanes').counts[1]).toBe('1')
+    expect(keysOf(host, 'todo')).toEqual([gone.key])
+  })
+
+  it('a ticket from past the first page moved in during the read is drawn and counted', async () => {
+    const fake = new FakeKanban()
+    for (let i = 0; i < 3; i++) fake.add({ title: `D${i}`, status: 'done' })
+    for (let i = 0; i < 60; i++) fake.add({ title: `B${i}`, status: 'backlog' })
+    const far = fake.column('backlog')[59]
+    const { host } = await start({ fake })
+    await staleRead(fake, host, 'done', () => fake.elsewhere('ticket::move', { id: far.id, status: 'done', index: 0 }))
+    expect(keysOf(host, 'done')).toEqual(fake.column('done').map((t) => t.key))
+    expect(host.lanes('lanes').counts[4]).toBe('4')
+  })
+
+  /** xorshift32: the same sequence on every run. */
+  function rng(seed: number) {
+    let s = seed >>> 0 || 1
+    return () => {
+      s ^= s << 13
+      s >>>= 0
+      s ^= s >>> 17
+      s ^= s << 5
+      s >>>= 0
+      return s / 4294967296
+    }
+  }
+  const COLS = ['backlog', 'todo', 'in_progress', 'in_review', 'done']
+
+  // The review's fuzz: reads and pages held while writes land, then delivered stale; after each step every lane
+  // shows the start of its worker column, in order, and its count.
+  for (const seed of Array.from({ length: 25 }, (_, i) => i + 1)) {
+    it(`fuzz seed ${seed}`, async () => {
+      const r = rng(seed * 7717)
+      const fake = new FakeKanban()
+      for (let i = 0; i < 90; i++) fake.add({ title: `S${i}`, status: COLS[Math.floor(r() * COLS.length)] })
+      const { host } = await start({ fake })
+      const log: string[] = []
+      const check = (step: string) => {
+        for (const col of COLS) {
+          const shown = cards(host, col).map((c) => c.key as string)
+          const truth = fake.column(col).map((t) => t.id)
+          const count = host.lanes('lanes').counts[COLS.indexOf(col)]
+          const ok =
+            JSON.stringify(shown) === JSON.stringify(truth.slice(0, shown.length)) &&
+            shown.length <= truth.length &&
+            String(count) === String(truth.length)
+          if (!ok)
+            throw new Error(`[${step}] ${col}: shown ${shown} (${count}); worker ${truth}\n${log.slice(-8).join('\n')}`)
+        }
+      }
+      const live = () => {
+        const all = fake.tickets.filter((t) => !t.deleted_at)
+        return all[Math.floor(r() * all.length)]
+      }
+      for (let step = 0; step < 60; step++) {
+        const col = COLS[Math.floor(r() * COLS.length)]
+        if (r() < 0.5) {
+          const board = r() < 0.5
+          const fn = board ? 'board::get' : 'ticket::list'
+          fake.hold(fn)
+          log.push(board ? `refresh ${col}` : `endReached ${col}`)
+          await host.emit(`lane:${col}`, board ? 'refresh' : 'endReached')
+          await host.settle()
+          const snapshots = fake.waiting(fn).map((h) => fake.answer(`kanban::${fn}`, h.payload))
+          for (let w = 1 + Math.floor(r() * 4); w > 0; w--) {
+            const t = live()
+            const to = COLS[Math.floor(r() * COLS.length)]
+            const op = r()
+            log.push(`${op < 0.5 ? 'move' : op < 0.7 ? 'create' : op < 0.85 ? 'delete' : 'update'} ${t.key} ${to}`)
+            if (op < 0.5) await fake.elsewhere('ticket::move', { id: t.id, status: to, index: Math.floor(r() * 3) })
+            else if (op < 0.7) await fake.elsewhere('ticket::create', { title: `W${step}`, status: to })
+            else if (op < 0.85) await fake.elsewhere('ticket::delete', { id: t.id })
+            else await fake.elsewhere('ticket::update', { id: t.id, status: to })
+          }
+          for (const snapshot of snapshots) fake.release(fn, snapshot)
+          while (fake.waiting(fn).length) fake.release(fn)
+          await host.settle()
+        } else {
+          const t = live()
+          const to = COLS[Math.floor(r() * COLS.length)]
+          log.push(`move ${t.key} ${to}`)
+          await fake.elsewhere('ticket::move', { id: t.id, status: to, index: Math.floor(r() * 3) })
+          await host.settle()
+        }
+        check(`seed ${seed} step ${step}`)
+      }
+      expect(host.failed).toBeNull()
+    })
+  }
 })
 
 describe('the worker refusing', () => {

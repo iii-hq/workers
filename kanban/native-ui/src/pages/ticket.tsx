@@ -168,7 +168,13 @@ export function TicketView(props: { ticketKey: string }) {
     if (!id) return setParentView(null)
     try {
       const parent = await kanban.ticket(id)
-      if (ask === parentAsked) setParentView(parent)
+      // Never an older version over a newer one (an answer can be overtaken, like the ticket's own in show()).
+      if (ask === parentAsked)
+        setParentView((shown) =>
+          shown && shown.id === parent.id && Date.parse(shown.updated_at) > Date.parse(parent.updated_at)
+            ? shown
+            : parent,
+        )
     } catch {
       // The strip shows the parent the ticket carries.
     }
@@ -297,7 +303,8 @@ export function TicketView(props: { ticketKey: string }) {
       const key = href.slice(TICKET_HREF.length)
       if (linked().some((l) => l.key === key)) void iii.nav.push('ticket', { key })
       else toast("This link can't be opened here")
-    } else if (/^(https?:\/\/|mailto:)/i.test(href)) {
+    } else if (/^(https?:\/\/|mailto:)/i.test(href) && !/^https?:\/\/[^/?#]*@/i.test(href)) {
+      // A web address with a user name or password in it (https://user:pw@host) is refused: it hides where it goes.
       iii.openUrl(href).catch((err: unknown) => toast(readable(err), 'error'))
     } else toast("This link can't be opened here")
   }
@@ -335,13 +342,24 @@ export function TicketView(props: { ticketKey: string }) {
   }
 
   /** A write on other tickets (subtasks): one after the other; then this ticket is read again either way. */
-  const each = async (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>, moves = false) => {
+  const each = async (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>) => {
     if (!online()) return toast(OFFLINE, 'error')
     setBusy((b) => b + 1)
     try {
-      for (const child of children) wrote(await work(child), moves ? { moved: true, from: child.status } : {})
+      for (const child of children) wrote(await work(child))
     } catch (err) {
       toast(readable(err), 'error')
+    } finally {
+      setBusy((b) => b - 1)
+      void read(true)
+    }
+  }
+  /** Subtasks moved to a column, one after the other, each through its card's queue (moveTicket); stops at a failure. */
+  const moveAll = async (children: readonly Brief[], status: string) => {
+    if (!online()) return toast(OFFLINE, 'error')
+    setBusy((b) => b + 1)
+    try {
+      for (const child of children) if (!(await moveTicket(child.id, status, undefined, child.status))) break
     } finally {
       setBusy((b) => b - 1)
       void read(true)
@@ -786,7 +804,7 @@ export function TicketView(props: { ticketKey: string }) {
                 <Text testTag="meta" role="small" tone="muted">
                   {`Updated ${agoLong(t().updated_at, now())} · Created ${agoLong(t().created_at, now())} by ${nameOf(t().created_by)}`}
                 </Text>
-                <DoneWarning ticket={t()} busy={!editable()} onEach={each} onShow={show} />
+                <DoneWarning ticket={t()} busy={!editable()} onEach={each} onMoveAll={moveAll} onShow={show} />
                 <Row gap={8}>
                   <Text role="micro" tone="muted" weight={1}>
                     Description
@@ -950,7 +968,8 @@ function CommentCard(props: {
 function DoneWarning(props: {
   ticket: Ticket
   busy: boolean
-  onEach: (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>, moves?: boolean) => Promise<void>
+  onEach: (children: readonly Brief[], work: (child: Brief) => Promise<Ticket>) => Promise<void>
+  onMoveAll: (children: readonly Brief[], status: string) => Promise<void>
   onShow: (t: Ticket) => boolean
 }) {
   const warning = () => {
@@ -968,7 +987,7 @@ function DoneWarning(props: {
       message: `They move to ${doneLabel()}. ${props.ticket.key} stays where it is.`,
       confirm: `Close ${plural(open.length, 'subtask')}`,
     })
-    if (ok) await props.onEach(open, (c) => kanban.move(c.id, meta()?.done ?? ''), true)
+    if (ok) await props.onMoveAll(open, meta()?.done ?? '')
   }
   const detachAll = async (open: readonly Brief[]) => {
     const ok = await iii.ui.confirm({

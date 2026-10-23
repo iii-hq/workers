@@ -16,7 +16,7 @@ import {
   ticketOf,
 } from '../src/api'
 import { appendPage, applyRead, applyWrite, dropIndex, type Lane, newMemo, placeMove, upsert } from '../src/board'
-import { cardRow } from '../src/cards'
+import { cardRow, createCardCache } from '../src/cards'
 import { coerceFilters, EMPTY_FILTERS, facetCounts, isChangedSinceVisit, matches } from '../src/filters'
 import { ago, count, priorityRank, statusStep } from '../src/format'
 import { doneWarning, pickRefusal, subtaskDefaults } from '../src/rules'
@@ -338,6 +338,31 @@ describe('the activity', () => {
     expect(rows[2]).toMatchObject({ root: 'c1', comment: 'r1', who: 'You', icon: 'user' })
     expect(timeline(ticket, 'comments', columns, who, 0, true).map((r) => r.key)).toEqual(['c:c1', 'c:r1', 'c:c2'])
     expect(timeline(ticket, 'changes', columns, who, 0, true).every((r) => r.kind === 0)).toBe(true)
+  })
+})
+
+describe('the card cache', () => {
+  it('reuses a row while its inputs stay, and forgets the tickets no lane holds', () => {
+    const rowOf = createCardCache()
+    const ctx = {
+      match: { lastVisit: null, now: 0 },
+      agents: new Map(),
+      keys: new Map(),
+      subs: null,
+      highlight: [],
+      priorities: ['low', 'high'],
+      done: 'done',
+      selected: null,
+    }
+    const base = {}
+    const a = card('a', 'todo', 1)
+    const first = rowOf(a, ctx, base)
+    expect(rowOf(a, ctx, base)).toBe(first)
+    rowOf(card('b', 'todo', 2), ctx, base)
+    expect(rowOf.size()).toBe(2)
+    rowOf.prune(new Set(['a']))
+    expect(rowOf.size()).toBe(1)
+    expect(rowOf(a, ctx, base)).toBe(first)
   })
 })
 

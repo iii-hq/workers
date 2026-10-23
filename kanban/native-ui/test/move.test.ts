@@ -4,7 +4,7 @@
  * the optimistic splice with its revert, one card's writes in order.
  */
 import { describe, expect, it } from 'vitest'
-import { callsOf, FakeKanban, keysOf, start } from './fake'
+import { callsOf, cards, FakeKanban, keysOf, sample, start } from './fake'
 
 /** Five cards in To do (KAN-1 … KAN-5), labelled so a filter can show only some, and two in Doing. */
 function board(): FakeKanban {
@@ -179,5 +179,39 @@ describe('the card menu', () => {
     await host.settle()
     expect(callsOf(host, 'ticket::update')).toEqual([{ id: 't1', assignee: 'frontend-engineer', actor: 'user' }])
     expect(host.toasts.at(-1)).toEqual({ text: 'Assigned KAN-1 to Frontend Engineer', kind: 'info' })
+  })
+})
+
+describe('what the Haiku review caught', () => {
+  it('a card dropped while a read that began earlier is out stays where it was dropped', async () => {
+    const fake = sample()
+    const { host } = await start({ fake })
+    fake.hold('board::get')
+    await host.emit('lane:todo', 'refresh')
+    await host.settle()
+    fake.hold('ticket::move')
+    await host.drop('lane:in_progress', 't2', 0, 'lane:todo')
+    expect(cards(host, 'in_progress').map((c) => c.key)).toEqual(['t2', 't1'])
+    // The read answers now, from the worker as it was before the move: the move is drawn again over it.
+    fake.release('board::get')
+    await host.settle()
+    expect(cards(host, 'in_progress').map((c) => c.key)).toEqual(['t2', 't1'])
+    expect(cards(host, 'todo')).toEqual([])
+    fake.release('ticket::move')
+    await host.settle()
+    expect(cards(host, 'in_progress').map((c) => c.key)).toEqual(['t2', 't1'])
+  })
+
+  it('a drop while a filtered lane is still being fed maps against every card it shows, not the fed ones', async () => {
+    const fake = new FakeKanban()
+    const x = fake.add({ title: 'X', status: 'todo', labels: ['even'] })
+    for (let i = 0; i < 1000; i++) fake.add({ title: `D${i}`, status: 'done', labels: [i % 2 ? 'odd' : 'even'] })
+    const { host } = await start({ fake, live: false, storage: { filters: { labels: ['even'] } } })
+    // 500 cards pass the filter; the host holds the first 300 until the next step (1 ms).
+    expect(cards(host, 'done')).toHaveLength(300)
+    await host.drop('lane:done', x.id, 300, 'lane:todo')
+    await host.settle()
+    // Before the 301st even card, at column position 600 (not right after the 300th, at 599).
+    expect(callsOf(host, 'ticket::move')).toEqual([{ id: x.id, status: 'done', index: 600, actor: 'user' }])
   })
 })
