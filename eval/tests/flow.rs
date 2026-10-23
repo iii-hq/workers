@@ -171,6 +171,21 @@ impl World {
                 self.state.remove(&scope_key());
                 json!({})
             }
+            // Set-if-absent when `expected` is omitted, as the engine answers.
+            "state::compare-and-set" => {
+                let key = scope_key();
+                let current = self.state.get(&key).cloned();
+                let matches = match data.get("expected") {
+                    None | Some(Value::Null) => current.is_none(),
+                    Some(expected) => current.as_ref() == Some(expected),
+                };
+                if matches {
+                    self.state.insert(key, data["value"].clone());
+                    json!({"swapped": true, "current": data["value"]})
+                } else {
+                    json!({"swapped": false, "current": current.unwrap_or(Value::Null)})
+                }
+            }
             "state::list" => Value::Array(
                 self.state
                     .iter()
@@ -2690,4 +2705,390 @@ async fn discarded_ids_are_not_registered() {
         .state
         .keys()
         .all(|(scope, _)| scope != "eval_observation" && scope != "eval_suggestion"));
+}
+
+// ---------------------------------------------------------------------------
+// Execution input: terminal E2E executions admitted into the loop (KAN-442)
+// ---------------------------------------------------------------------------
+
+/// One execution as the E2E lists it: `extra` fields override the defaults.
+fn execution(execution_id: &str, status: &str, extra: Value) -> Value {
+    let mut entry = json!({"id": execution_id, "status": status});
+    for (field, value) in extra.as_object().cloned().unwrap_or_default() {
+        entry[field] = value;
+    }
+    entry
+}
+
+/// Makes `e2e::dashboard::execution-get` answer `entry` for its execution.
+fn put_execution(h: &Harness, entry: &Value) {
+    let execution_id = entry["id"].as_str().unwrap().to_string();
+    h.world().executions.insert(
+        execution_id,
+        json!({"manifest": {"executions": [entry.clone()]}, "detail": {}}),
+    );
+}
+
+async fn changed(h: &Harness, event: Value) -> ExecutionAdmissionResponseV1 {
+    runtime::execution_changed(&h.deps, serde_json::from_value(event).unwrap())
+        .await
+        .unwrap()
+}
+
+fn admissions(h: &Harness) -> Vec<AdmissionV1> {
+    h.world()
+        .state
+        .iter()
+        .filter(|((scope, key), _)| {
+            scope == state::ADMISSION_SCOPE && key != state::ADMISSION_CHECKPOINT_KEY
+        })
+        .map(|(_, value)| serde_json::from_value(value.clone()).unwrap())
+        .collect()
+}
+
+fn admission_checkpoint(h: &Harness) -> Option<AdmissionCheckpointV1> {
+    h.world()
+        .state
+        .get(&(
+            state::ADMISSION_SCOPE.to_string(),
+            state::ADMISSION_CHECKPOINT_KEY.to_string(),
+        ))
+        .map(|value| serde_json::from_value(value.clone()).unwrap())
+}
+
+fn execution_gets(h: &Harness, execution_id: &str) -> usize {
+    h.world()
+        .calls_to("e2e::dashboard::execution-get")
+        .iter()
+        .filter(|payload| payload["execution_id"] == execution_id)
+        .count()
+}
+
+#[tokio::test]
+async fn terminal_execution_event_admits_one_cycle() {
+    let h = Harness::start(World::new()).await;
+    put_execution(
+        &h,
+        &execution(
+            "exec-pass",
+            "passed",
+            json!({"run_id": "run-1", "attempt_id": "att-1"}),
+        ),
+    );
+    put_execution(
+        &h,
+        &execution("exec-fail", "failed", json!({"kind": "normal"})),
+    );
+
+    // A passed execution is admitted into one queued cycle of its own.
+    let passed = changed(&h, json!({"execution_id": "exec-pass"})).await;
+    assert!(passed.admitted, "{passed:?}");
+    let passed_cycle = passed.cycle_id.clone().expect("admitted into a cycle");
+    assert!(ids::is_cycle(&passed_cycle));
+    assert_eq!(
+        h.world().calls_to("e2e::dashboard::execution-get"),
+        [json!({"execution_id": "exec-pass"})],
+        "execution-get is re-read as the source of truth"
+    );
+    assert_eq!(stored_cycles(&h), [passed_cycle.clone()]);
+    let record = cycle(&h, &passed_cycle).await;
+    assert_eq!(record.input, CycleInputV1::ExecutionId("exec-pass".into()));
+    assert_eq!(record.status, CycleStatusV1::Queued);
+    assert_eq!(statuses(&record), [CycleStatusV1::Queued]);
+    assert_eq!(h.world().steps.len(), 1);
+
+    // The claim names the execution, its run and its attempt.
+    let claims = admissions(&h);
+    assert_eq!(claims.len(), 1);
+    let claim = &claims[0];
+    assert_eq!(claim.execution_id, "exec-pass");
+    assert_eq!(claim.run_id.as_deref(), Some("run-1"));
+    assert_eq!(claim.attempt_id.as_deref(), Some("att-1"));
+    assert_eq!(claim.kind, AdmissionKindV1::Cycle);
+    assert_eq!(claim.cycle_id, passed_cycle);
+    assert!(h
+        .world()
+        .calls_to("state::compare-and-set")
+        .iter()
+        .all(|payload| payload["scope"] == state::ADMISSION_SCOPE));
+
+    // A failed normal execution is admitted too, through the event's `id`.
+    let failed = changed(&h, json!({"id": "exec-fail"})).await;
+    assert!(failed.admitted, "{failed:?}");
+    let failed_cycle = failed.cycle_id.clone().unwrap();
+    assert_ne!(failed_cycle, passed_cycle);
+    let mut expected = vec![passed_cycle.clone(), failed_cycle.clone()];
+    expected.sort();
+    assert_eq!(stored_cycles(&h), expected);
+    assert_eq!(
+        cycle(&h, &failed_cycle).await.input,
+        CycleInputV1::ExecutionId("exec-fail".into())
+    );
+    assert_eq!(admissions(&h).len(), 2);
+
+    // Both go through the loop's run queue like any other cycle.
+    assert_eq!(h.world().steps.len(), 2);
+    h.drain().await;
+    for cycle_id in [&passed_cycle, &failed_cycle] {
+        assert_eq!(cycle(&h, cycle_id).await.status, CycleStatusV1::Running);
+    }
+}
+
+#[tokio::test]
+async fn running_or_non_normal_execution_is_not_admitted() {
+    let h = Harness::start(World::new()).await;
+    for entry in [
+        execution("exec-running", "running", json!({})),
+        execution("exec-queued", "queued", json!({})),
+        execution("exec-cancelled", "cancelled", json!({})),
+        execution("exec-replay", "passed", json!({"kind": "replay"})),
+    ] {
+        put_execution(&h, &entry);
+    }
+    // The listing answers, but without the execution the event names.
+    h.world().executions.insert(
+        "exec-unlisted".into(),
+        json!({"manifest": {"executions": [execution("other", "passed", json!({}))]}}),
+    );
+
+    for execution_id in [
+        "exec-running",
+        "exec-queued",
+        "exec-cancelled",
+        "exec-replay",
+        "exec-unlisted",
+    ] {
+        // The event's own status is only a hint: execution-get decides.
+        let response = changed(
+            &h,
+            json!({"execution_id": execution_id, "status": "passed"}),
+        )
+        .await;
+        assert!(!response.admitted, "{execution_id}: {response:?}");
+        assert_eq!(response.cycle_id, None, "{execution_id}");
+        assert!(!response.reason.is_empty(), "{execution_id}");
+        assert_eq!(execution_gets(&h, execution_id), 1, "{execution_id}");
+    }
+    assert!(stored_cycles(&h).is_empty());
+    assert!(admissions(&h).is_empty(), "nothing is claimed");
+    assert!(h.world().steps.is_empty());
+    assert!(h.world().calls_to("state::compare-and-set").is_empty());
+
+    // Once the running execution finishes, its next event admits it.
+    put_execution(&h, &execution("exec-running", "passed", json!({})));
+    let finished = changed(&h, json!({"execution_id": "exec-running"})).await;
+    assert!(finished.admitted, "{finished:?}");
+    assert_eq!(stored_cycles(&h), [finished.cycle_id.unwrap()]);
+}
+
+#[tokio::test]
+async fn redelivery_and_restart_do_not_duplicate_analysis() {
+    let mut h = Harness::start(World::new()).await;
+    put_execution(
+        &h,
+        &execution(
+            "exec-r",
+            "passed",
+            json!({"run_id": "run-r", "attempt_id": "att-1"}),
+        ),
+    );
+    let event = json!({"execution_id": "exec-r"});
+    let first = changed(&h, event.clone()).await;
+    assert!(first.admitted);
+    let cycle_id = first.cycle_id.clone().unwrap();
+    let created = cycle(&h, &cycle_id).await;
+
+    // Redelivered: the claim is found and nothing new is created or queued.
+    for _ in 0..2 {
+        let again = changed(&h, event.clone()).await;
+        assert!(!again.admitted, "{again:?}");
+        assert_eq!(again.reason, "already admitted");
+        assert_eq!(again.cycle_id.as_deref(), Some(cycle_id.as_str()));
+    }
+    // Restarted: a fresh process on the same storage finds the same claim.
+    h.restart();
+    let after_restart = changed(&h, event.clone()).await;
+    assert!(!after_restart.admitted);
+    assert_eq!(after_restart.cycle_id.as_deref(), Some(cycle_id.as_str()));
+    assert_eq!(stored_cycles(&h), [cycle_id.clone()]);
+    assert_eq!(
+        cycle(&h, &cycle_id).await,
+        created,
+        "the cycle is untouched"
+    );
+    assert_eq!(admissions(&h).len(), 1);
+    assert_eq!(h.world().steps.len(), 1, "one step only");
+
+    // A restart between the claim and the cycle: the claim survived, the
+    // cycle and its step were lost. Redelivery completes it under the claimed
+    // id, once.
+    {
+        let mut world = h.world();
+        world
+            .state
+            .remove(&(state::CYCLE_SCOPE.to_string(), cycle_id.clone()));
+        world.steps.clear();
+    }
+    h.restart();
+    let completed = changed(&h, event.clone()).await;
+    assert!(!completed.admitted, "the claim was already set");
+    assert_eq!(completed.cycle_id.as_deref(), Some(cycle_id.as_str()));
+    assert_eq!(stored_cycles(&h), [cycle_id.clone()]);
+    assert_eq!(
+        cycle(&h, &cycle_id).await.input,
+        CycleInputV1::ExecutionId("exec-r".into())
+    );
+    assert_eq!(h.world().steps.len(), 1);
+    changed(&h, event.clone()).await;
+    assert_eq!(stored_cycles(&h), [cycle_id.clone()]);
+    assert_eq!(h.world().steps.len(), 1);
+    assert_eq!(admissions(&h).len(), 1);
+
+    // Another attempt of the same execution is another admission.
+    put_execution(
+        &h,
+        &execution(
+            "exec-r",
+            "failed",
+            json!({"run_id": "run-r", "attempt_id": "att-2"}),
+        ),
+    );
+    let retried = changed(&h, event).await;
+    assert!(retried.admitted, "{retried:?}");
+    assert_ne!(retried.cycle_id.as_deref(), Some(cycle_id.as_str()));
+    assert_eq!(admissions(&h).len(), 2);
+    assert_eq!(stored_cycles(&h).len(), 2);
+}
+
+#[tokio::test]
+async fn missed_event_is_recovered_by_sweep_checkpoint() {
+    let mut h = Harness::start(World::new()).await;
+    let early = execution("exec-a", "passed", json!({"finished_at": 1_000}));
+    let open = execution("exec-b", "running", json!({"started_at": 2_000}));
+    let late = execution("exec-c", "failed", json!({"finished_at": 3_000}));
+    for entry in [&early, &open, &late] {
+        put_execution(&h, entry);
+    }
+
+    // The E2E is down: the sweep still succeeds and moves no checkpoint.
+    runtime::sweep(&h.deps).await.unwrap();
+    assert!(stored_cycles(&h).is_empty());
+    assert_eq!(admission_checkpoint(&h), None);
+
+    // No event ever arrived: the sweep admits both terminal executions and
+    // its checkpoint stops before the one still running.
+    h.world().executions_list = Some(json!({"executions": [early, open, late]}));
+    runtime::sweep(&h.deps).await.unwrap();
+    let cycles = stored_cycles(&h);
+    assert_eq!(cycles.len(), 2);
+    let mut admitted: Vec<_> = admissions(&h)
+        .into_iter()
+        .map(|claim| claim.execution_id)
+        .collect();
+    admitted.sort();
+    assert_eq!(admitted, ["exec-a", "exec-c"]);
+    assert_eq!(execution_gets(&h, "exec-b"), 0, "an open execution waits");
+    assert_eq!(admission_checkpoint(&h).unwrap().since, 2_000);
+    assert_eq!(h.world().steps.len(), 2);
+
+    // After a restart, an event naming no execution runs the same sweep: what
+    // is behind the checkpoint is not read again, nothing is admitted twice.
+    h.restart();
+    let swept = changed(&h, json!({})).await;
+    assert!(!swept.admitted, "{swept:?}");
+    assert_eq!(execution_gets(&h, "exec-a"), 1, "behind the checkpoint");
+    assert_eq!(stored_cycles(&h), cycles);
+    assert_eq!(admissions(&h).len(), 2);
+    assert_eq!(h.world().steps.len(), 2);
+    assert_eq!(admission_checkpoint(&h).unwrap().since, 2_000);
+
+    // The running execution finishes and its event is lost too.
+    let finished = execution("exec-b", "passed", json!({"finished_at": 4_000}));
+    put_execution(&h, &finished);
+    h.world().executions_list = Some(json!({"executions": [early, finished, late]}));
+    runtime::sweep(&h.deps).await.unwrap();
+    assert_eq!(stored_cycles(&h).len(), 3);
+    assert_eq!(admissions(&h).len(), 3);
+    assert_eq!(h.world().steps.len(), 3);
+    assert_eq!(admission_checkpoint(&h).unwrap().since, 4_000);
+    runtime::sweep(&h.deps).await.unwrap();
+    assert_eq!(stored_cycles(&h).len(), 3, "a later sweep admits nothing");
+}
+
+#[tokio::test]
+async fn candidate_validation_execution_returns_to_original_cycle() {
+    let h = Harness::start(World::new()).await;
+    let origin = start_cycle(&h, json!({"objective": "Fewer rediscoveries"}))
+        .await
+        .unwrap()
+        .cycle_id;
+    h.drain().await;
+    let before = cycle(&h, &origin).await;
+    put_execution(
+        &h,
+        &execution(
+            "exec-val",
+            "passed",
+            json!({"run_id": "run-v", "eval_cycle_id": origin}),
+        ),
+    );
+    put_execution(
+        &h,
+        &execution(
+            "exec-val-meta",
+            "failed",
+            json!({"metadata": {"cycle_id": origin}}),
+        ),
+    );
+
+    // The validation run returns to its cycle and starts no other.
+    let validated = changed(&h, json!({"execution_id": "exec-val"})).await;
+    assert!(validated.admitted, "{validated:?}");
+    assert_eq!(validated.cycle_id.as_deref(), Some(origin.as_str()));
+    assert_eq!(stored_cycles(&h), [origin.clone()]);
+    assert!(h.world().steps.is_empty(), "no new cycle is queued");
+    let claims = admissions(&h);
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].kind, AdmissionKindV1::CandidateValidation);
+    assert_eq!(claims[0].cycle_id, origin);
+    let record = cycle(&h, &origin).await;
+    assert_eq!(record.input, before.input);
+    assert_eq!(record.status, before.status);
+    assert_eq!(record.history.len(), before.history.len() + 1);
+    let returned = record.history.last().unwrap().detail.clone().unwrap();
+    assert!(returned.contains("exec-val"), "{returned}");
+    assert!(returned.contains("run-v"), "{returned}");
+    assert!(returned.ends_with("passed"), "{returned}");
+
+    // Redelivered, it is recorded once.
+    let again = changed(&h, json!({"execution_id": "exec-val"})).await;
+    assert!(!again.admitted);
+    assert_eq!(again.cycle_id.as_deref(), Some(origin.as_str()));
+    assert_eq!(cycle(&h, &origin).await, record);
+
+    // The cycle id carried in the metadata is recognized the same way.
+    let meta = changed(&h, json!({"execution_id": "exec-val-meta"})).await;
+    assert!(meta.admitted, "{meta:?}");
+    assert_eq!(meta.cycle_id.as_deref(), Some(origin.as_str()));
+    assert_eq!(stored_cycles(&h), [origin.clone()]);
+    assert_eq!(
+        cycle(&h, &origin).await.history.len(),
+        record.history.len() + 1
+    );
+
+    // A validation of a cycle eval does not know starts nothing.
+    put_execution(
+        &h,
+        &execution(
+            "exec-stray",
+            "passed",
+            json!({"eval_cycle_id": "cycle_unknown"}),
+        ),
+    );
+    let stray = changed(&h, json!({"execution_id": "exec-stray"})).await;
+    assert!(!stray.admitted, "{stray:?}");
+    assert_eq!(stray.cycle_id, None);
+    assert_eq!(stored_cycles(&h), [origin]);
+    assert_eq!(admissions(&h).len(), 2);
+    assert!(h.world().steps.is_empty());
 }

@@ -1,0 +1,50 @@
+{
+  "function_id": "eval::execution-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "An `e2e::dashboard::changed` event. Only the execution it names is read; `execution-get` stays the source of truth. An event naming none runs the checkpointed admission sweep instead.",
+    "properties": {
+      "execution_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ExecutionChangedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "admitted": {
+        "description": "True only when this call claimed the execution.",
+        "type": "boolean"
+      },
+      "cycle_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "admitted",
+      "reason"
+    ],
+    "title": "ExecutionAdmissionResponseV1",
+    "type": "object"
+  }
+}
