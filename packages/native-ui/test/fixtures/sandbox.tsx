@@ -66,6 +66,34 @@ function Root() {
           }}
         />
         <Button
+          testTag="spin-in-job"
+          text="Spin in a promise job"
+          onPress={() => {
+            note('before')
+            void Promise.resolve().then(() => {
+              for (;;) {}
+            })
+          }}
+        />
+        <Button
+          testTag="spin-in-await"
+          text="Spin after an await"
+          onPress={async () => {
+            await Promise.resolve()
+            for (;;) {}
+          }}
+        />
+        <Button
+          testTag="hog-in-timer"
+          text="Hog in a timer"
+          onPress={() => {
+            setTimeout(() => {
+              const keep: number[][] = []
+              for (;;) keep.push(new Array(100_000).fill(keep.length))
+            }, 0)
+          }}
+        />
+        <Button
           testTag="hog"
           text="Hog"
           onPress={() => {

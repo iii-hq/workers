@@ -134,7 +134,14 @@ class TestHost {
     this.rt = QuickJS.newRuntime()
     this.rt.setMemoryLimit(o.memoryLimit ?? catalog.limits.heapBytesDefault)
     this.rt.setMaxStackSize(o.stackSize ?? 1024 * 1024)
-    this.rt.setInterruptHandler(() => Date.now() > this.deadline)
+    // Like the device's VM (iiiui_deadline_passed), the interrupt leaves a
+    // flag: QuickJS turns an interrupt inside a promise job (a `.then`, the
+    // code after an `await`) into a rejection, which nothing would report.
+    this.rt.setInterruptHandler(() => {
+      if (Date.now() <= this.deadline) return false
+      this.interrupted = true
+      return true
+    })
     this.ctx = this.rt.newContext()
   }
 
@@ -148,7 +155,12 @@ class TestHost {
       }),
       ctx.newFunction('hostNow', () => ctx.newNumber(this.clock)),
       ctx.newFunction('hostFail', (kind, text) => {
-        this.exceptions.push({ where: ctx.getString(kind), message: ctx.getString(text) })
+        const where = ctx.getString(kind)
+        const message = ctx.getString(text)
+        // The prelude's timers and microtasks catch what a callback throws;
+        // running out of memory there stops the VM, as on the device.
+        if (/^InternalError: out of memory/.test(message)) this.outOfMemory = `the VM ran out of memory (${where})`
+        else this.exceptions.push({ where, message })
       }),
       ctx.newFunction('hostSend', (text) => {
         const s = ctx.getString(text)
@@ -178,7 +190,7 @@ class TestHost {
       seed.dispose()
     }
 
-    this._budget(this.loadBudgetMs, () => {
+    this._budget(this.loadBudgetMs, 'load', () => {
       const r = ctx.evalCode(this.options.bundle, 'native.js', { type: 'global' })
       const v = this._unwrap(r, 'load', true)
       v?.dispose()
@@ -209,12 +221,25 @@ class TestHost {
     }
   }
 
-  _budget(ms, fn) {
+  /**
+   * Runs `fn` under a deadline of `ms`. Once the deadline passed the step
+   * failed, whatever the script did with the interrupt (QuickJS turns one in
+   * a promise job into a rejection): the device's VM reports
+   * IIIUI_INTERRUPTED and drops the VM.
+   */
+  _budget(ms, where, fn) {
     this.deadline = Date.now() + ms
+    this.interrupted = false
+    this.outOfMemory = null
     try {
       return fn()
     } finally {
       this.deadline = Number.POSITIVE_INFINITY
+      if (this.interrupted) {
+        this.interrupted = false
+        this._fail('watchdog', `a script ran for more than ${ms} ms (${where})`)
+      }
+      if (this.outOfMemory) this._fail('memory', this.outOfMemory)
     }
   }
 
@@ -224,8 +249,10 @@ class TestHost {
       const err = this.ctx.dump(result.error)
       result.error.dispose()
       const message = err && typeof err === 'object' ? `${err.name}: ${err.message}` : String(err)
-      if (/interrupted/i.test(message))
-        this._fail('watchdog', `a script ran for more than ${this.stepBudgetMs} ms (${where})`)
+      if (/interrupted/i.test(message)) {
+        const ms = where === 'load' ? this.loadBudgetMs : this.stepBudgetMs
+        this._fail('watchdog', `a script ran for more than ${ms} ms (${where})`)
+      }
       if (/out of memory/i.test(message)) this._fail('memory', `the VM ran out of memory (${where})`)
       this.exceptions.push({ where, message, stack: err?.stack })
       if (where === 'prelude' || where === 'load') this._fail(where, message)
@@ -284,7 +311,7 @@ class TestHost {
     if (this.failed) throw new VmFailure(this.failed.kind, this.failed.message)
     const entries = this.queue.splice(0)
     const unmounted = this.unmountedRoots.splice(0)
-    this._budget(this.stepBudgetMs, () => {
+    this._budget(this.stepBudgetMs, 'deliver', () => {
       if (entries.length) {
         const message = `[${entries.map((e) => e.text).join(',')}]`
         this.toVm.push(message)
@@ -295,15 +322,21 @@ class TestHost {
           this._fail('protocol', 'the bundle defines no __vm_receive')
         }
         const arg = this.ctx.newString(message)
+        if (this.ctx.typeof(arg) !== 'string') {
+          // No room for the message itself: the device's deliver fails the same way.
+          arg.dispose()
+          receive.dispose()
+          this._fail('memory', 'the VM ran out of memory (deliver)')
+        }
         this._unwrap(this.ctx.callFunction(receive, this.ctx.undefined, arg), 'deliver')?.dispose()
         arg.dispose()
         receive.dispose()
       }
     })
-    this._budget(this.stepBudgetMs, () => {
+    this._budget(this.stepBudgetMs, 'timers', () => {
       this._unwrap(this.ctx.callFunction(this.runTimersFn, this.ctx.undefined), 'timers')?.dispose()
     })
-    this._budget(this.stepBudgetMs, () => this._runJobs('jobs'))
+    this._budget(this.stepBudgetMs, 'jobs', () => this._runJobs('jobs'))
     for (const id of unmounted) this.model.touched.add(id)
     this._drainOutbox()
     if (unmounted.length) this.model.endOfMessage()
