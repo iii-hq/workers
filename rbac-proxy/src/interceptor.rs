@@ -81,6 +81,9 @@ const OBSERVER_FUNCTIONS_PREFIX: &str = "engine::observers::";
 /// `RegistrationRejected.code` for a namespace the session may not declare.
 const NAMESPACE_FORBIDDEN: &str = "NAMESPACE_FORBIDDEN";
 
+/// Prefix of every worker name a proxied connection declares.
+const WORKER_NAME_PREFIX: &str = "rbac-proxy:";
+
 /// Observe error code for what this proxy does not support.
 const UNSUPPORTED: &str = "UNSUPPORTED";
 
@@ -642,6 +645,11 @@ impl Interceptor {
         }
         if let Some(data) = v.get_mut("data").and_then(Value::as_object_mut) {
             retain_supported_features(data);
+            // A proxied worker cannot claim a trusted worker's name (the engine
+            // keeps one live worker per name and rejects the other one).
+            if let Some(Value::String(name)) = data.get_mut("name") {
+                *name = format!("{WORKER_NAME_PREFIX}{name}");
+            }
         }
         DownstreamAction::Forward(v.to_string())
     }
@@ -1078,6 +1086,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn declared_worker_name_is_prefixed() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "queue", "runtime": "browser" },
+            "action": { "type": "void" }
+        });
+        let DownstreamAction::Forward(out) = i.handle_downstream(&frame.to_string()).await else {
+            panic!("expected the registration forwarded");
+        };
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["data"]["name"], "rbac-proxy:queue");
+    }
+
+    #[tokio::test]
     async fn void_worker_registration_still_goes_through() {
         let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
         let frame = json!({
@@ -1435,7 +1459,7 @@ mod tests {
         });
         let o = forwarded(i.handle_downstream(&register.to_string()).await);
         assert!(o["data"].get("features").is_none());
-        assert_eq!(o["data"]["name"], "w");
+        assert_eq!(o["data"]["name"], "rbac-proxy:w");
 
         let registered = json!({
             "type": "workerregistered",
