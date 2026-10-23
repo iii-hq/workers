@@ -2790,7 +2790,7 @@ async fn terminal_execution_event_admits_one_cycle() {
         [json!({"execution_id": "exec-pass"})],
         "execution-get is re-read as the source of truth"
     );
-    assert_eq!(stored_cycles(&h), [passed_cycle.clone()]);
+    assert_eq!(stored_cycles(&h), std::slice::from_ref(&passed_cycle));
     let record = cycle(&h, &passed_cycle).await;
     assert_eq!(record.input, CycleInputV1::ExecutionId("exec-pass".into()));
     assert_eq!(record.status, CycleStatusV1::Queued);
@@ -2910,7 +2910,7 @@ async fn redelivery_and_restart_do_not_duplicate_analysis() {
     let after_restart = changed(&h, event.clone()).await;
     assert!(!after_restart.admitted);
     assert_eq!(after_restart.cycle_id.as_deref(), Some(cycle_id.as_str()));
-    assert_eq!(stored_cycles(&h), [cycle_id.clone()]);
+    assert_eq!(stored_cycles(&h), std::slice::from_ref(&cycle_id));
     assert_eq!(
         cycle(&h, &cycle_id).await,
         created,
@@ -2933,14 +2933,14 @@ async fn redelivery_and_restart_do_not_duplicate_analysis() {
     let completed = changed(&h, event.clone()).await;
     assert!(!completed.admitted, "the claim was already set");
     assert_eq!(completed.cycle_id.as_deref(), Some(cycle_id.as_str()));
-    assert_eq!(stored_cycles(&h), [cycle_id.clone()]);
+    assert_eq!(stored_cycles(&h), std::slice::from_ref(&cycle_id));
     assert_eq!(
         cycle(&h, &cycle_id).await.input,
         CycleInputV1::ExecutionId("exec-r".into())
     );
     assert_eq!(h.world().steps.len(), 1);
     changed(&h, event.clone()).await;
-    assert_eq!(stored_cycles(&h), [cycle_id.clone()]);
+    assert_eq!(stored_cycles(&h), std::slice::from_ref(&cycle_id));
     assert_eq!(h.world().steps.len(), 1);
     assert_eq!(admissions(&h).len(), 1);
 
@@ -3045,7 +3045,7 @@ async fn candidate_validation_execution_returns_to_original_cycle() {
     let validated = changed(&h, json!({"execution_id": "exec-val"})).await;
     assert!(validated.admitted, "{validated:?}");
     assert_eq!(validated.cycle_id.as_deref(), Some(origin.as_str()));
-    assert_eq!(stored_cycles(&h), [origin.clone()]);
+    assert_eq!(stored_cycles(&h), std::slice::from_ref(&origin));
     assert!(h.world().steps.is_empty(), "no new cycle is queued");
     let claims = admissions(&h);
     assert_eq!(claims.len(), 1);
@@ -3070,7 +3070,7 @@ async fn candidate_validation_execution_returns_to_original_cycle() {
     let meta = changed(&h, json!({"execution_id": "exec-val-meta"})).await;
     assert!(meta.admitted, "{meta:?}");
     assert_eq!(meta.cycle_id.as_deref(), Some(origin.as_str()));
-    assert_eq!(stored_cycles(&h), [origin.clone()]);
+    assert_eq!(stored_cycles(&h), std::slice::from_ref(&origin));
     assert_eq!(
         cycle(&h, &origin).await.history.len(),
         record.history.len() + 1
