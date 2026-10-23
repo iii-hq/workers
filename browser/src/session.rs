@@ -848,11 +848,18 @@ pub struct Session {
     /// Frame pixels per CSS pixel the running screencast was started with
     /// (f64 bits); a change of viewers that moves it restarts the cast.
     cast_density: AtomicU64,
-    /// Whether the running screencast was started with a frame-size cap.
-    /// Chromium fixes a cap when the cast starts: a start sent to a running
-    /// cast keeps the old one, and a resize under it keeps streaming at the
-    /// old size, so a capped cast restarts with a stop first.
-    cast_capped: AtomicBool,
+    /// The frame-size cap the running screencast was started with (None:
+    /// uncapped). Chromium fixes a cap when the cast starts: a start sent to
+    /// a running cast keeps the old one, and a resize under it keeps
+    /// streaming at the old size, so a change of cap restarts with a stop.
+    cast_limits: Mutex<Option<(i64, i64)>>,
+    /// Held across every `Page.startScreencast` / `Page.stopScreencast` and
+    /// the consumer count it follows, so Chromium's cast always ends up as
+    /// the last transition left it: on while anyone holds it.
+    cast: tokio::sync::Mutex<()>,
+    /// Frames Chromium sent (published or dropped): how the worker tells a
+    /// live cast from one Chromium has gone silent on.
+    cast_frames: AtomicU64,
     /// Phone emulation in force (`browser::resize` with `mobile: true`):
     /// touch input and an Android user agent on top of the mobile viewport.
     mobile: AtomicBool,
@@ -1286,11 +1293,53 @@ impl Session {
     /// The density the running screencast's frames come at: the one it was
     /// started with when capped, CSS pixels otherwise.
     fn cast_frame_density(&self) -> f64 {
-        if self.cast_capped.load(Ordering::Relaxed) {
+        if self
+            .cast_limits
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
             f64::from_bits(self.cast_density.load(Ordering::Relaxed))
         } else {
             1.0
         }
+    }
+
+    /// `Page.startScreencast` at the density the viewers call for
+    /// (`Session::frame_limits`), remembered so a change of viewers that
+    /// moves it can restart the cast. Called with `cast` held.
+    async fn start_cast(&self, quality: i64) -> Result<(), CdpError> {
+        let (density, limits) = self.frame_limits();
+        let mut params = cdp_page::StartScreencastParams::builder()
+            .format(cdp_page::StartScreencastFormat::Jpeg)
+            .quality(quality)
+            .every_nth_frame(1);
+        if let Some((max_width, max_height)) = limits {
+            params = params.max_width(max_width).max_height(max_height);
+        }
+        self.page.execute(params.build()).await?;
+        self.cast_density
+            .store(density.to_bits(), Ordering::Relaxed);
+        *self.cast_limits.lock().unwrap_or_else(|p| p.into_inner()) = limits;
+        Ok(())
+    }
+
+    /// Start a running screencast again for the current viewport and
+    /// viewers (`force_stop`: from scratch). Called with `cast` held. A
+    /// start sent to the running cast is enough when the frame cap stays
+    /// (and pushes a fresh frame); a new cap only takes with a stop first.
+    /// A stop and start right at a navigation's commit can leave Chromium
+    /// sending nothing at all, so a navigation, whose cap never changes,
+    /// never stops the cast.
+    async fn restart_cast(&self, quality: i64, force_stop: bool) {
+        let running = *self.cast_limits.lock().unwrap_or_else(|p| p.into_inner());
+        if force_stop || running != self.frame_limits().1 {
+            let _ = self
+                .page
+                .execute(cdp_page::StopScreencastParams::default())
+                .await;
+        }
+        let _ = self.start_cast(quality).await;
     }
 
     /// Whether anyone still watches the live view: a console pane or
@@ -1986,7 +2035,9 @@ impl Sessions {
             viewer_scale: AtomicU64::new(0),
             anon_viewers: AtomicUsize::new(0),
             cast_density: AtomicU64::new(1.0f64.to_bits()),
-            cast_capped: AtomicBool::new(false),
+            cast_limits: Mutex::new(None),
+            cast: tokio::sync::Mutex::new(()),
+            cast_frames: AtomicU64::new(0),
             mobile: AtomicBool::new(false),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
@@ -2365,7 +2416,9 @@ impl Sessions {
             viewer_scale: AtomicU64::new(0),
             anon_viewers: AtomicUsize::new(0),
             cast_density: AtomicU64::new(1.0f64.to_bits()),
-            cast_capped: AtomicBool::new(false),
+            cast_limits: Mutex::new(None),
+            cast: tokio::sync::Mutex::new(()),
+            cast_frames: AtomicU64::new(0),
             mobile: AtomicBool::new(false),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
@@ -2724,43 +2777,27 @@ impl Sessions {
     /// acquisitions just bump the count. On a CDP start failure the count is
     /// rolled back so it stays honest.
     pub async fn acquire_screencast(&self, session: &Arc<Session>) -> Result<bool, String> {
+        let cast = session.cast.lock().await;
         let prev = session
             .screencast_consumers
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if prev > 0 {
             return Ok(false);
         }
-        if let Err(e) = self.start_screencast(session).await {
+        if let Err(e) = session.start_cast(self.cast_quality()).await {
             session
                 .screencast_consumers
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return Err(format!("screencast start failed: {e}"));
         }
+        drop(cast);
         self.expect_fresh_frame(session, true);
         Ok(true)
     }
 
-    /// `Page.startScreencast` at the density the session's viewers call for
-    /// (`Session::frame_limits`), remembered so a change of viewers that
-    /// moves it can restart the cast.
-    async fn start_screencast(&self, session: &Session) -> Result<(), CdpError> {
-        let quality = self.config.load().screenshot_quality as i64;
-        let (density, limits) = session.frame_limits();
-        let mut params = cdp_page::StartScreencastParams::builder()
-            .format(cdp_page::StartScreencastFormat::Jpeg)
-            .quality(quality)
-            .every_nth_frame(1);
-        if let Some((max_width, max_height)) = limits {
-            params = params.max_width(max_width).max_height(max_height);
-        }
-        session.page.execute(params.build()).await?;
-        session
-            .cast_density
-            .store(density.to_bits(), Ordering::Relaxed);
-        session
-            .cast_capped
-            .store(limits.is_some(), Ordering::Relaxed);
-        Ok(())
+    /// The JPEG quality screencast frames are encoded at.
+    fn cast_quality(&self) -> i64 {
+        self.config.load().screenshot_quality as i64
     }
 
     /// A (re)started screencast owes its viewers a frame of the current
@@ -2785,7 +2822,7 @@ impl Sessions {
         // runs on its own.
         let epoch = newer.then(|| session.fresh_epoch.fetch_add(1, Ordering::Relaxed) + 1);
         let since = newer.then(|| session.tab.frame_seq.load(Ordering::Relaxed));
-        let quality = self.config.load().screenshot_quality as i64;
+        let quality = self.cast_quality();
         let session = session.clone();
         runtime.spawn(async move {
             tokio::time::sleep(FRESH_FRAME_GRACE).await;
@@ -2819,6 +2856,8 @@ impl Sessions {
                             attempt,
                             "no screencast frame of the new viewport came; published a capture"
                         );
+                        drop(emulation);
+                        revive_silent_cast(&session, quality, epoch).await;
                         return;
                     }
                     // The capture's own redraw usually makes Chromium send
@@ -2835,20 +2874,6 @@ impl Sessions {
                 tokio::time::sleep(FRESH_FRAME_RETRY).await;
             }
         });
-    }
-
-    /// Start a running screencast again for the current viewport and
-    /// viewers. Uncapped, a start sent to the running cast is enough (and
-    /// pushes a fresh frame); a cap, the old one or the new, only changes
-    /// with a stop first (see `Session::cast_capped`).
-    async fn restart_screencast(&self, session: &Session) {
-        if session.cast_capped.load(Ordering::Relaxed) || session.frame_limits().1.is_some() {
-            let _ = session
-                .page
-                .execute(cdp_page::StopScreencastParams::default())
-                .await;
-        }
-        let _ = self.start_screencast(session).await;
     }
 
     /// The viewers changed: restart a running screencast whose density no
@@ -3054,7 +3079,7 @@ impl Sessions {
 
     /// Force a fresh screencast frame (e.g. after a viewport resize) without
     /// racing the acquire/release counter: hold a consumer slot of our own
-    /// while restarting the cast (`restart_screencast`, which also sizes
+    /// while restarting the cast (`Session::restart_cast`, which also sizes
     /// its frames to the new viewport), so a real viewer's release cannot
     /// hit the 1 -> 0 stop transition mid-restart. With no other viewer the
     /// acquire starts and the release stops the cast; both are the counted
@@ -3063,12 +3088,18 @@ impl Sessions {
         if self.acquire_screencast(session).await.is_err() {
             return;
         }
-        if session
-            .screencast_consumers
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 1
-        {
-            self.restart_screencast(session).await;
+        let restarted = {
+            let _cast = session.cast.lock().await;
+            let others = session
+                .screencast_consumers
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 1;
+            if others {
+                session.restart_cast(self.cast_quality(), false).await;
+            }
+            others
+        };
+        if restarted {
             self.expect_fresh_frame(session, true);
         }
         self.release_screencast(session).await;
@@ -3169,6 +3200,7 @@ impl Sessions {
     /// touch comes after the count drops, so the idle timer it wakes sees
     /// the tab unwatched.
     pub async fn release_screencast(&self, session: &Arc<Session>) {
+        let _cast = session.cast.lock().await;
         let prev = session
             .screencast_consumers
             .fetch_update(
@@ -4148,6 +4180,7 @@ async fn spawn_event_pumps(
                     _ = tokio::time::sleep(wait), if held.is_some() => None,
                 };
                 if let Some(event) = next {
+                    s.cast_frames.fetch_add(1, Ordering::Relaxed);
                     let ack = cdp_page::ScreencastFrameAckParams::new(event.session_id);
                     if let Err(e) = s.page.execute(ack).await {
                         tracing::debug!(session_id = %s.id, error = %e, "screencast ack failed");
@@ -4267,6 +4300,33 @@ async fn spawn_event_pumps(
     }
 
     Ok(tasks)
+}
+
+/// How long after a capture stood in for a restart's frame Chromium gets to
+/// show its cast is alive (any frame, published or not) before the worker
+/// starts it again.
+const SILENT_CAST_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// The worker had to capture the frame a restart owed. On a page that does
+/// not repaint that is all there is to it, but Chromium can also have gone
+/// silent on the cast itself (seen after a stop and start racing a
+/// navigation's commit): then not even the capture's redraw brings a frame,
+/// and nothing would until the next restart. So when no frame at all comes
+/// within `SILENT_CAST_WAIT`, start the cast again, once.
+async fn revive_silent_cast(session: &Arc<Session>, quality: i64, epoch: Option<u64>) {
+    let seen = session.cast_frames.load(Ordering::Relaxed);
+    tokio::time::sleep(SILENT_CAST_WAIT).await;
+    let superseded =
+        epoch.is_some_and(|epoch| session.fresh_epoch.load(Ordering::Relaxed) != epoch);
+    if superseded || session.cast_frames.load(Ordering::Relaxed) != seen {
+        return;
+    }
+    let _cast = session.cast.lock().await;
+    if !session.screencast_on() {
+        return;
+    }
+    tracing::info!(session_id = %session.id, "the screencast stayed silent after its restart; starting it again");
+    session.restart_cast(quality, true).await;
 }
 
 /// Whether the JPEG's pixel aspect matches the viewport its metadata claims

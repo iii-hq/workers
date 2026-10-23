@@ -666,6 +666,82 @@ async fn a_resize_over_a_static_page_brings_a_frame_of_the_new_size() {
     client.shutdown_async().await;
 }
 
+/// A viewer's first start and the phone resize that comes with it, sent at
+/// once (the iii app does, 3 ms apart), then the reload for the phone's user
+/// agent: the cast must end up running, so a change on the page arrives as
+/// a newer frame of the phone's size. At the default `frame_density` (2)
+/// the cast is capped, and the worker used to stop and start it again at the
+/// reload's commit too; there Chromium could go silent on it for good while
+/// the worker counted a viewer, and the page never repainted in the viewer.
+/// It takes a release build's timing to show (`cargo test --release`): it
+/// failed within ten rounds there, never in a debug build.
+#[tokio::test]
+async fn a_start_racing_the_first_resize_leaves_the_cast_running() {
+    let Some(h) = boot("  max_sessions: 4\n").await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = connect(&h).await;
+    let url = serve_html(STATIC_PAGE);
+    for round in 0..20 {
+        let id = open(&client, &url).await;
+        // The numbers of the emulator the app test failed on (a folded
+        // Fold: 443x795 dp at 2.4375).
+        let start = json!({ "session_id": id, "viewer_id": format!("android-race-{round}"),
+                            "lease_ms": 20000, "scale": 2.44 });
+        let resize = json!({ "session_id": id, "width": 443, "height": 795,
+                             "device_scale_factor": 2.4375, "mobile": true, "fit": true });
+        let (started, resized) = tokio::join!(
+            call(&client, "browser::screencast::start", start),
+            call(&client, "browser::resize", resize),
+        );
+        assert_eq!(started["ok"], true, "{started}");
+        assert_eq!(resized["mobile"], true, "{resized}");
+        // The app reloads once for the phone's user agent.
+        if resized["mode_changed"] == true {
+            call(
+                &client,
+                "browser::history",
+                json!({ "session_id": id, "action": "reload" }),
+            )
+            .await;
+        }
+        // Let the restarts' own frames (or the worker's captures) settle.
+        sleep(Duration::from_millis(1_200)).await;
+        let before = frame_seq(&call(&client, "browser::frame", json!({ "session_id": id })).await);
+        evaluate(
+            &client,
+            &id,
+            &format!(
+                "document.body.style.background = 'rgb({}, 40, 90)'; true",
+                10 + round * 9
+            ),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let frame = call(&client, "browser::frame", json!({ "session_id": id })).await;
+            if frame_seq(&frame) > before {
+                let size = image_size(frame["frame"].as_str().expect("frame"));
+                assert_eq!(size, (886, 1590), "round {round}: a frame of another size");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "round {round}: the page changed but no frame came after seq {before}: the cast stopped"
+            );
+            sleep(Duration::from_millis(100)).await;
+        }
+        call(
+            &client,
+            "browser::sessions::stop",
+            json!({ "session_id": id }),
+        )
+        .await;
+    }
+    client.shutdown_async().await;
+}
+
 /// At `frame_density` 1 a named viewer's `scale` above 1 cannot sharpen
 /// anything: frames stay CSS-sized. Below 1 it shrinks them (less to send),
 /// unless the console also watches.
