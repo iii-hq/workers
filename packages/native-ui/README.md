@@ -22,7 +22,7 @@ ships an app end to end: [`docs/sops/native-ui.md`](../../docs/sops/native-ui.md
 
 | Entry | What |
 |---|---|
-| `@iii-dev/native-ui` | `defineApp`, the components (`Column` … `RemoteScreen`), `createList` and `List`, the `iii` capability object, the hooks, `parseUrl`, `IiiError`, and the Solid primitives an app needs |
+| `@iii-dev/native-ui` | `defineApp`, the components (`Column` … `RemoteScreen`), `createList`, `List` and `itemHandler`, the `iii` capability object, the hooks, `parseUrl`, `IiiError`, and the Solid primitives an app needs |
 | `@iii-dev/native-ui/renderer` | The `solid-js/universal` renderer the JSX compiles against (the build wires it; apps never import it) |
 | `@iii-dev/native-ui/build` | `buildNativeUi`: TSX → one IIFE bundle, with size limits, a smoke run and `--watch` |
 | `@iii-dev/native-ui/testing` | `createTestHost`: the bundle in `quickjs-emscripten` with the device VM's globals, driven like the app drives it |
@@ -269,7 +269,12 @@ const tabs = createList<Tab>({ key: 'key', kind: 'kind' })
   what the host got. Don't bind the same field to a text prop too.
 - Handlers inside a template get the item first (found by the key of the
   host's `itemEvent`). Argument-less handlers are typed `(item?: any)`;
-  inside a template, annotate the item (`(item: Tab) => …`).
+  inside a template, annotate the item (`(item: Tab) => …`). A handler
+  whose event has arguments (a Markdown's `onLink`, a Switch's `onChange`)
+  is typed for those arguments only; wrap it in `itemHandler` to take the
+  item first, typed:
+  `<Markdown dense text={row.body} onLink={itemHandler((c: Comment, href: string) => open(c, href))} />`.
+  The harness fires it with `itemEmit(list, key, node, 'link', [href])`.
 - `createList({ key, kind?, items? })`: `items()` (reactive), `set(all)`
   (only what changed travels: the changed positions when keys keep their
   order, else one splice between the common head and tail), `splice`,

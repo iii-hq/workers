@@ -163,6 +163,15 @@ describe('ListDetail.listFill and Markdown', () => {
   })
 })
 
+describe('Markdown in a List template', () => {
+  it('gets the item first, then the href (itemHandler types it)', async () => {
+    const h = await createTestHost({ bundle: await fixture('board') })
+    await h.mount('comments')
+    await h.itemEmit('comments', 'c2', 'comment', 'link', ['https://example.com/pr/1'])
+    expect(h.prop('comment-link', 'text')).toBe('c2 https://example.com/pr/1')
+  })
+})
+
 describe('the test host', () => {
   it('fails a List whose items hold a bound field of the wrong type', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-ui-bound-'))

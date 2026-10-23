@@ -12,6 +12,7 @@ import {
   createSignal,
   defineApp,
   Icon,
+  itemHandler,
   Lanes,
   List,
   ListDetail,
@@ -125,6 +126,42 @@ function Board() {
   )
 }
 
+interface Comment {
+  key: string
+  body: string
+}
+
+/** Comments: a Markdown per row, its links with the item first. */
+function Comments() {
+  const [last, setLast] = createSignal('')
+  const comments = createList<Comment>({
+    key: 'key',
+    items: [
+      { key: 'c1', body: 'See [KAN-2](kan:KAN-2).' },
+      { key: 'c2', body: 'Done in https://example.com/pr/1' },
+    ],
+  })
+  return (
+    <Column>
+      <Text testTag="comment-link">{last()}</Text>
+      <List
+        testTag="comments"
+        source={comments}
+        templates={[
+          (row) => (
+            <Markdown
+              testTag="comment"
+              dense
+              text={row.body}
+              onLink={itemHandler((c: Comment, href: string) => setLast(`${c.key} ${href}`))}
+            />
+          ),
+        ]}
+      />
+    </Column>
+  )
+}
+
 /** A Lanes whose app keeps lane 1, whatever the person picks. */
 function Stubborn() {
   return (
@@ -136,4 +173,4 @@ function Stubborn() {
   )
 }
 
-defineApp({ catalog: 2, pages: { root: Board, stubborn: Stubborn } })
+defineApp({ catalog: 2, pages: { root: Board, stubborn: Stubborn, comments: Comments } })
