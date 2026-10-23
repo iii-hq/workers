@@ -11,7 +11,7 @@ installs this adapter when a project needs it.
 
 Compose adds it on its own when a project needs sandboxes or VM workers. To
 add it by hand on iii 0.26 or later, use the `iii-sandbox` alias, which pins
-the adapter to the sandbox contract major the engine speaks:
+the adapter to the sandbox contract major the engine supports:
 
 ```bash
 iii trigger compose::add worker=iii-sandbox
