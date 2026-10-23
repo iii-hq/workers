@@ -3,9 +3,8 @@
 //! No external engine, GitHub, cloudflared, credentials, or skipped tests.
 //! Run: CARGO_TARGET_DIR=target-integration-82238077 cargo test --offline --test webhooks_integration
 
-// The mocks and the suite register trigger types and bindings the way old
-// consumers do, with `register_trigger_type` / `register_trigger`, deprecated
-// in iii-sdk 0.25 and served by 0.24 and 0.25 engines.
+// The worker binds triggers with `register_trigger` / `register_trigger_type`,
+// deprecated in iii-sdk 0.25; the mocks stand in for the same calls.
 #![allow(deprecated)]
 
 #[path = "support/webhook_engine.rs"]

@@ -14,9 +14,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-# The iii 0.25 Rust SDK (observable functions), on its release candidate
-# until 0.25.0 is published. Exact pins: a caret requirement on a prerelease
-# would also accept later candidates.
+# The iii 0.25 Rust SDK (observable functions).
 iii-sdk = "=0.25.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-helpers = "=0.25.0"

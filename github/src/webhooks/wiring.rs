@@ -122,8 +122,8 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         #[cfg(test)]
         bus: None,
     });
-    // Deprecated in iii-sdk 0.25. Kept until the trigger type is retired; old
-    // consumers bind it on 0.24 and 0.25 engines.
+    // `register_trigger_type` is deprecated in iii-sdk 0.25. Kept until the
+    // trigger type is retired; consumers bind it on 0.24 and 0.25 engines.
     #[allow(deprecated)]
     iii.register_trigger_type(RegisterTriggerType::new("github::pr::event", "Durable PR lifecycle, comment, review and per-entity CI events. Arm before watch and read one snapshot after watch.", EventHandler(service.clone())).trigger_request_format::<EventFilter>().call_request_format::<notifications::NotificationEvent>());
     macro_rules! function {
@@ -335,8 +335,8 @@ async fn activate(s: &Arc<Service>) -> Result<()> {
             json!({"expression":"*/10 * * * * *"}),
         ),
     ] {
-        // Deprecated in iii-sdk 0.25; 0.24 and 0.25 engines still serve these
-        // trigger types.
+        // `register_trigger` is deprecated in iii-sdk 0.25; engines 0.24 and
+        // 0.25 both serve it.
         #[allow(deprecated)]
         s.iii
             .register_trigger(RegisterTriggerInput::new(kind, function, config))?;

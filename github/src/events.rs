@@ -191,8 +191,8 @@ impl CalledEmitter {
 /// so the emitter is ready to thread through them.
 pub fn register_called_trigger(iii: &Arc<IIIClient>) -> CalledEmitter {
     let subscribers = SubscriberSet::new();
-    // Deprecated in iii-sdk 0.25. Kept until the trigger type is retired; old
-    // consumers bind it on 0.24 and 0.25 engines.
+    // `register_trigger_type` is deprecated in iii-sdk 0.25. Kept until the
+    // trigger type is retired; consumers bind it on 0.24 and 0.25 engines.
     #[allow(deprecated)]
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         CALLED,
