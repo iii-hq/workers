@@ -9,6 +9,17 @@ pub fn evaluation_id() -> String {
     format!("eval_{}", Uuid::new_v4().simple())
 }
 
+/// Prefix of every loop cycle id; `eval::step` routes on it.
+pub const CYCLE_PREFIX: &str = "cycle_";
+
+pub fn cycle_id() -> String {
+    format!("{CYCLE_PREFIX}{}", Uuid::new_v4().simple())
+}
+
+pub fn is_cycle(id: &str) -> bool {
+    id.starts_with(CYCLE_PREFIX)
+}
+
 /// Stable identity of one observed session turn. The length prefix keeps the
 /// two parts unambiguous.
 pub fn observation_key(session_id: &str, turn_id: &str) -> String {

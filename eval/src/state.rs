@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::contract::{
-    AnalysisAssetsV1, AnalysisRecordV1, CapacityRejectionV1, MonitorConfigV1, SuggestionReviewV1,
+    AnalysisAssetsV1, AnalysisRecordV1, CapacityRejectionV1, CycleRecordV1, MonitorConfigV1,
+    SuggestionReviewV1,
 };
 use crate::error::EvalError;
 
@@ -25,6 +26,9 @@ pub const ASSETS_SCOPE: &str = "eval_analysis_assets";
 pub const REVIEW_SCOPE: &str = "eval_suggestion";
 /// The Harness's own turn records, keyed by session: only the latest turn.
 pub const HARNESS_TURN_SCOPE: &str = "harness_turn";
+/// The loop's own cycle records, keyed by `cycle_id`. Cycle functions read
+/// and write only this scope, never the monitor's scopes above.
+pub const CYCLE_SCOPE: &str = "eval_loop_cycle";
 const DISPATCH_TIMEOUT_MS: u64 = 10_000;
 
 /// Marks one observed session turn as admitted. It outlives a deleted
@@ -132,6 +136,21 @@ pub async fn get_assets(
 
 pub async fn put_assets(iii: &IIIClient, assets: &AnalysisAssetsV1) -> Result<(), EvalError> {
     set(iii, ASSETS_SCOPE, &assets.evaluation_id, assets).await
+}
+
+pub async fn get_cycle(
+    iii: &IIIClient,
+    cycle_id: &str,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    get(iii, CYCLE_SCOPE, cycle_id).await
+}
+
+pub async fn put_cycle(iii: &IIIClient, record: &CycleRecordV1) -> Result<(), EvalError> {
+    set(iii, CYCLE_SCOPE, &record.cycle_id, record).await
+}
+
+pub async fn list_cycles(iii: &IIIClient) -> Result<Vec<CycleRecordV1>, EvalError> {
+    list(iii, CYCLE_SCOPE).await
 }
 
 fn review_key(evaluation_id: &str, suggestion_index: usize) -> String {

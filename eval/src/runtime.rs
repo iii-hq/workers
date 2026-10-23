@@ -857,6 +857,151 @@ pub async fn delete(
     Ok(EvalDeleteResponseV1 { deleted: true })
 }
 
+// ---------------------------------------------------------------------------
+// Loop cycles: one record per cycle in the loop's own scope, whichever input
+// started it. Nothing here reads the monitor's scopes.
+// ---------------------------------------------------------------------------
+
+fn cycle_event(at: i64, status: CycleStatusV1, detail: &str) -> CycleEventV1 {
+    CycleEventV1 {
+        at,
+        status,
+        detail: Some(detail.into()),
+    }
+}
+
+/// Persists the cycle before enqueueing its first step, so a lost enqueue is
+/// resumed by the recovery sweep.
+pub async fn cycle_start(
+    deps: &Deps,
+    request: CycleStartRequestV1,
+) -> Result<CycleStartResponseV1, EvalError> {
+    let input = request.input()?;
+    let now = ids::now_ms();
+    let detail = match &input {
+        CycleInputV1::Objective(_) => "started from objective",
+        CycleInputV1::ExecutionId(_) => "started from execution_id",
+    };
+    let record = CycleRecordV1 {
+        schema_version: CYCLE_SCHEMA_VERSION,
+        cycle_id: ids::cycle_id(),
+        input,
+        status: CycleStatusV1::Queued,
+        step: 0,
+        created_at: now,
+        updated_at: now,
+        completed_at: None,
+        history: vec![cycle_event(now, CycleStatusV1::Queued, detail)],
+        result: None,
+        failure: None,
+    };
+    state::put_cycle(&deps.iii, &record).await?;
+    queue::enqueue_step(&deps.iii, &record.cycle_id, record.step).await?;
+    Ok(CycleStartResponseV1 {
+        cycle_id: record.cycle_id,
+        status: record.status,
+    })
+}
+
+pub async fn cycle_status(
+    deps: &Deps,
+    request: CycleIdRequestV1,
+) -> Result<Option<CycleRecordV1>, EvalError> {
+    state::get_cycle(&deps.iii, &request.cycle_id).await
+}
+
+pub async fn cycle_result(
+    deps: &Deps,
+    request: CycleIdRequestV1,
+) -> Result<Option<CycleResultResponseV1>, EvalError> {
+    Ok(state::get_cycle(&deps.iii, &request.cycle_id)
+        .await?
+        .map(|cycle| CycleResultResponseV1 {
+            result: cycle.result.clone(),
+            cycle,
+        }))
+}
+
+pub async fn cycle_list(
+    deps: &Deps,
+    request: CycleListRequestV1,
+) -> Result<CycleListResponseV1, EvalError> {
+    let limit = request.normalized_limit()?;
+    let mut cycles = state::list_cycles(&deps.iii).await?;
+    cycles.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.cycle_id.cmp(&left.cycle_id))
+    });
+    cycles.truncate(limit);
+    Ok(CycleListResponseV1 { cycles })
+}
+
+/// Bumps `step` so a queued step of the cancelled cycle is skipped.
+pub async fn cycle_cancel(
+    deps: &Deps,
+    request: CycleIdRequestV1,
+) -> Result<CycleCancelResponseV1, EvalError> {
+    let _guard = deps.locks.guard(&request.cycle_id).await;
+    let mut record = state::get_cycle(&deps.iii, &request.cycle_id)
+        .await?
+        .ok_or_else(|| EvalError::NotFound(request.cycle_id.clone()))?;
+    if record.status.is_terminal() {
+        return Ok(CycleCancelResponseV1 {
+            cancelled: false,
+            status: record.status,
+        });
+    }
+    let now = ids::now_ms();
+    record.status = CycleStatusV1::Cancelled;
+    record.step += 1;
+    record.updated_at = now;
+    record.completed_at = Some(now);
+    record
+        .history
+        .push(cycle_event(now, CycleStatusV1::Cancelled, "cancelled"));
+    state::put_cycle(&deps.iii, &record).await?;
+    Ok(CycleCancelResponseV1 {
+        cancelled: true,
+        status: record.status,
+    })
+}
+
+/// The cycle's durable step on the shared run queue: a queued cycle starts
+/// running. The work a running cycle does is added by later cards.
+async fn cycle_step(deps: &Deps, request: StepRequestV1) -> Result<StepResponseV1, EvalError> {
+    let _guard = deps.locks.guard(&request.evaluation_id).await;
+    let Some(mut record) = state::get_cycle(&deps.iii, &request.evaluation_id).await? else {
+        return Ok(skipped(EvalStatusV1::Cancelled));
+    };
+    if record.status != CycleStatusV1::Queued || request.step != record.step {
+        return Ok(skipped(record.status.as_step_status()));
+    }
+    let now = ids::now_ms();
+    record.status = CycleStatusV1::Running;
+    record.step += 1;
+    record.updated_at = now;
+    record
+        .history
+        .push(cycle_event(now, CycleStatusV1::Running, "running"));
+    state::put_cycle(&deps.iii, &record).await?;
+    Ok(StepResponseV1 {
+        skipped: false,
+        status: record.status.as_step_status(),
+    })
+}
+
+/// Re-enqueues every cycle still waiting for its first step.
+async fn resume_cycles(deps: &Deps) -> Result<(), EvalError> {
+    for cycle in state::list_cycles(&deps.iii).await? {
+        if cycle.status == CycleStatusV1::Queued {
+            queue::enqueue_step(&deps.iii, &cycle.cycle_id, cycle.step).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Links two existing E2E executions to a suggestion. The links are
 /// references for review; the verdict belongs to the E2E comparison. When the
 /// suggestion's scenario is known the runs of both sides are also measured
@@ -1274,6 +1419,7 @@ pub async fn recover(deps: &Deps) -> Result<SweepResponseV1, EvalError> {
         .store(ids::now_ms(), Ordering::Relaxed);
     let mut response = resume_analyses(deps).await?;
     response.reconciled += reconciled;
+    resume_cycles(deps).await?;
     Ok(response)
 }
 
@@ -1447,6 +1593,9 @@ async fn stop_session(deps: &Deps, session_id: &str, turn_id: Option<&str>) {
 // ---------------------------------------------------------------------------
 
 pub async fn step(deps: &Deps, request: StepRequestV1) -> Result<StepResponseV1, EvalError> {
+    if ids::is_cycle(&request.evaluation_id) {
+        return cycle_step(deps, request).await;
+    }
     let guard = deps.locks.guard(&request.evaluation_id).await;
     let Some(record) = state::get_record(&deps.iii, &request.evaluation_id).await? else {
         return Ok(skipped(EvalStatusV1::Cancelled));

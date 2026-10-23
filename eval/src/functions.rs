@@ -5,16 +5,17 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 
 use crate::contract::{
-    AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, EvalListRequestV1,
-    EvaluationIdRequestV1, MonitorStateRequestV1, RecurrenceRequestV1, ReproduceRequestV1,
-    ReviewRequestV1, ReviewsRequestV1, StartValidationRequestV1, StepRequestV1, SweepEventV1,
-    WakeEventV1,
+    AnalyzeSessionRequestV1, AttachValidationRequestV1, ConfigureRequestV1, CycleIdRequestV1,
+    CycleListRequestV1, CycleStartRequestV1, EvaluationIdRequestV1, MonitorStateRequestV1,
+    RecurrenceRequestV1, ReproduceRequestV1, ReviewRequestV1, ReviewsRequestV1,
+    StartValidationRequestV1, StepRequestV1, SweepEventV1, WakeEventV1,
 };
 use crate::runtime::Deps;
 
 pub const CONFIGURE_ID: &str = "eval::configure";
 pub const CONFIG_ID: &str = "eval::config";
 pub const ANALYZE_SESSION_ID: &str = "eval::analyze-session";
+pub const START_ID: &str = "eval::start";
 pub const LIST_ID: &str = "eval::list";
 pub const STATUS_ID: &str = "eval::status";
 pub const RESULT_ID: &str = "eval::result";
@@ -97,68 +98,82 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let current = deps.clone();
     iii.register_function(
-        LIST_ID,
-        RegisterFunction::new_async(move |request: EvalListRequestV1| {
+        START_ID,
+        RegisterFunction::new_async(move |request: CycleStartRequestV1| {
             let deps = current.clone();
             async move {
-                crate::runtime::list(&deps, request)
+                crate::runtime::cycle_start(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
         .description(
-            "List recent monitor analyses as compact records, newest first, without evidence; \
-             observation_key keeps only the analyses of one observed turn.",
+            "Start one loop cycle from exactly one input: a free `objective`, or the \
+             `execution_id` of an existing E2E execution. Both inputs create the same cycle \
+             record in the loop's own history; follow it with eval::status and eval::result \
+             and stop it with eval::cancel.",
+        ),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        LIST_ID,
+        RegisterFunction::new_async(move |request: CycleListRequestV1| {
+            let deps = current.clone();
+            async move {
+                crate::runtime::cycle_list(&deps, request)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(
+            "List loop cycles, newest first, whichever input started them, each with its \
+             history.",
         ),
     );
 
     let current = deps.clone();
     iii.register_function(
         STATUS_ID,
-        RegisterFunction::new_async(move |request: EvaluationIdRequestV1| {
+        RegisterFunction::new_async(move |request: CycleIdRequestV1| {
             let deps = current.clone();
             async move {
-                crate::runtime::status(&deps, request)
+                crate::runtime::cycle_status(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description("Read one analysis record (status, counters, failure stage) or null."),
+        .description("Read one loop cycle record (input, status, history) or null."),
     );
 
     let current = deps.clone();
     iii.register_function(
         RESULT_ID,
-        RegisterFunction::new_async(move |request: EvaluationIdRequestV1| {
+        RegisterFunction::new_async(move |request: CycleIdRequestV1| {
             let deps = current.clone();
             async move {
-                crate::runtime::result(&deps, request)
+                crate::runtime::cycle_result(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
         .description(
-            "Read an analysis with its captured evidence, deterministic diagnostics, Jev triage, \
-             suggestions, the monitor's own consumption and linked E2E executions, or null. A \
-             completed analysis is not a validated improvement.",
+            "Read one loop cycle with its result (null until the cycle completes), or null.",
         ),
     );
 
     let current = deps.clone();
     iii.register_function(
         CANCEL_ID,
-        RegisterFunction::new_async(move |request: EvaluationIdRequestV1| {
+        RegisterFunction::new_async(move |request: CycleIdRequestV1| {
             let deps = current.clone();
             async move {
-                crate::runtime::cancel(&deps, request)
+                crate::runtime::cycle_cancel(&deps, request)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(
-            "Cancel an analysis: signals its Jev call and stops its investigation session. Never \
-             touches the observed session or the captured evidence.",
-        ),
+        .description("Cancel a loop cycle that is not finished; a finished cycle is left as is."),
     );
 
     let current = deps.clone();

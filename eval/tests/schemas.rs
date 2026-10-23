@@ -15,6 +15,7 @@ fn catalog_matches_the_registered_surface() {
             "eval::configure",
             "eval::config",
             "eval::analyze-session",
+            "eval::start",
             "eval::list",
             "eval::status",
             "eval::result",

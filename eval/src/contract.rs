@@ -948,6 +948,169 @@ pub struct EvalDeleteResponseV1 {
     pub deleted: bool,
 }
 
+/// Version of the loop cycle record; the cycle scope holds only this shape.
+pub const CYCLE_SCHEMA_VERSION: u32 = 1;
+
+/// What started a loop cycle: a free objective, or an existing E2E
+/// execution. Both start the same cycle and land in the same history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CycleInputV1 {
+    Objective(String),
+    ExecutionId(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CycleStatusV1 {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl CycleStatusV1 {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+
+    /// The cycle status as the shared `eval::step` response reports it.
+    pub fn as_step_status(self) -> EvalStatusV1 {
+        match self {
+            Self::Queued => EvalStatusV1::Queued,
+            Self::Running => EvalStatusV1::Collecting,
+            Self::Completed => EvalStatusV1::Completed,
+            Self::Failed => EvalStatusV1::Failed,
+            Self::Cancelled => EvalStatusV1::Cancelled,
+        }
+    }
+}
+
+/// One status change of a cycle, oldest first in `CycleRecordV1::history`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleEventV1 {
+    pub at: i64,
+    pub status: CycleStatusV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// What a finished cycle produced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleResultV1 {
+    pub summary: String,
+    /// The E2E executions the cycle read or started.
+    #[serde(default)]
+    pub execution_ids: Vec<String>,
+}
+
+/// The one record of a loop cycle, whichever input started it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleRecordV1 {
+    pub schema_version: u32,
+    pub cycle_id: String,
+    pub input: CycleInputV1,
+    pub status: CycleStatusV1,
+    /// Durable step counter; a queued step that does not match is stale.
+    pub step: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+    pub history: Vec<CycleEventV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<CycleResultV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+}
+
+/// Starts a cycle from exactly one of `objective` or `execution_id`.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct CycleStartRequestV1 {
+    #[serde(default)]
+    pub objective: Option<String>,
+    #[serde(default)]
+    pub execution_id: Option<String>,
+}
+
+impl CycleStartRequestV1 {
+    pub fn input(&self) -> Result<CycleInputV1, EvalError> {
+        let objective = self
+            .objective
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let execution_id = self
+            .execution_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        match (objective, execution_id) {
+            (Some(objective), None) => Ok(CycleInputV1::Objective(objective.into())),
+            (None, Some(execution_id)) => Ok(CycleInputV1::ExecutionId(execution_id.into())),
+            _ => Err(EvalError::InvalidRequest(
+                "give exactly one of objective or execution_id".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleStartResponseV1 {
+    pub cycle_id: String,
+    pub status: CycleStatusV1,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CycleIdRequestV1 {
+    pub cycle_id: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct CycleListRequestV1 {
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl CycleListRequestV1 {
+    pub fn normalized_limit(&self) -> Result<usize, EvalError> {
+        let limit = self.limit.unwrap_or(DEFAULT_LIST_LIMIT);
+        if !(1..=MAX_LIST_LIMIT).contains(&limit) {
+            return Err(EvalError::InvalidRequest(format!(
+                "limit must be between 1 and {MAX_LIST_LIMIT}"
+            )));
+        }
+        Ok(limit as usize)
+    }
+}
+
+/// Every cycle, newest first, whichever input started it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleListResponseV1 {
+    pub cycles: Vec<CycleRecordV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleResultResponseV1 {
+    pub cycle: CycleRecordV1,
+    /// `null` until the cycle completes.
+    pub result: Option<CycleResultV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CycleCancelResponseV1 {
+    pub cancelled: bool,
+    pub status: CycleStatusV1,
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct AttachValidationRequestV1 {
     pub evaluation_id: String,
