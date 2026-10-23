@@ -3,7 +3,8 @@
 ## 0.5.0
 
 - Dev cards run one Code phase each. The existing wave is the batch boundary: integrate successful cards, write their regression tests together, then verify and review the combined result. `Tests:` replaces `Test first:`; test-first proof is no longer required. Plain reading/research cards keep their existing flow.
-- Cards remain In progress until their batch passes, for both isolation modes. A batch rejection retries aggregate repairs and checks, without replaying all implementations. Exhausted or inconclusive checks park the integrated cards as unverified; their changes and evidence remain on the run branch. With `verify=off`, tests are written but not checked, and cards are accepted.
+- Cards remain In progress until their batch passes, for both isolation modes. A batch rejection retries aggregate repairs and checks, without replaying all implementations. A batch still failing after its attempts no longer ends the run: the round closes and the next round repairs that batch first, with every reason; only when rounds run out are its cards parked as unverified, their changes and evidence kept on the run branch. With `verify=off`, tests are written but not checked, and cards are accepted.
+- Resume continues instead of starting over: it repairs the run's unverified batch (its cards are not re-queued) and moves `unfinished` cards back to To do with a retry that builds on what is already committed. The final report says so instead of asking you to drag cards back.
 - Identical verification commands run once per batch. The branch review reuses suite/lint evidence only for the same commit and commands. `release=` remains board filing; it does not collect unrelated release cards for validation.
 - Finish existing runs before updating: the phase and card contracts changed. This update changes the kit sources; an installed kit needs to be updated separately.
 
