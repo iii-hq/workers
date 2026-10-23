@@ -989,11 +989,18 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         .quality(cfg.screenshot_quality as i64)
                 };
                 let params = params.build();
-                let bytes = session
-                    .page
-                    .screenshot(params)
-                    .await
-                    .map_err(|e| handler_err(format!("screenshot failed: {e}")))?;
+                let full_page = req.full_page.unwrap_or(false);
+                let emulation = session.emulation.lock().await;
+                let shot = session.page.screenshot(params).await;
+                // A full-page capture sizes the page to its content and then
+                // clears every device-metrics override: put back the tab's
+                // own (a phone stays a phone, a pane-fitted tab keeps its
+                // size).
+                if full_page && cfg.engine != crate::config::BrowserEngine::Lightpanda {
+                    let _ = session.page.execute(session.device_metrics()).await;
+                }
+                drop(emulation);
+                let bytes = shot.map_err(|e| handler_err(format!("screenshot failed: {e}")))?;
 
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 let size = bytes.len();
@@ -2888,6 +2895,9 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         });
                     }
                 }
+                // Not while a full-page screenshot or a frame capture has the
+                // page's emulation in hand: either would roll this back.
+                let emulation = session.emulation.lock().await;
                 let mode_changed = sx
                     .emulate_mobile(&session, mobile)
                     .await
@@ -2907,6 +2917,7 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .map_err(|e| handler_err(format!("resize failed: {e}")))?;
                 session.set_viewport(width, height);
                 session.set_device_scale_factor(dpr);
+                drop(emulation);
                 // The page content did not change, so the compositor may not
                 // push a screencast frame at the new size on its own; nudge
                 // one out through the counted screencast paths. The restart

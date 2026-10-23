@@ -321,7 +321,6 @@ fn frame_seq(frame: &Value) -> u64 {
     frame["frame_seq"].as_u64().expect("frame_seq")
 }
 
-
 /// `browser::frame` for a viewer, with an optional `since_frame` cursor.
 async fn frame_now(client: &IIIClient, session_id: &str, since: Option<Value>) -> Value {
     let mut payload = json!({ "session_id": session_id });
@@ -411,7 +410,10 @@ async fn hostile_viewer_ids_are_refused_or_held_exactly() {
     let too_long = "v".repeat(129);
     let r = try_call(&client, "browser::screencast::start", start(&too_long)).await;
     assert!(r.is_err(), "a 129-character viewer_id was accepted");
-    assert!(!screencast_active(&client, &id).await, "a refused viewer took the screencast");
+    assert!(
+        !screencast_active(&client, &id).await,
+        "a refused viewer took the screencast"
+    );
 
     // Accepted: padding is trimmed away, 128 multi-byte characters fit.
     let padded = format!("  {}  ", "v".repeat(128));
@@ -425,9 +427,20 @@ async fn hostile_viewer_ids_are_refused_or_held_exactly() {
     call(&client, "browser::screencast::start", start("android-a")).await;
     call(&client, "browser::screencast::start", start(zws)).await;
     call(&client, "browser::screencast::start", start("anonymous")).await;
-    call(&client, "browser::screencast::start", json!({ "session_id": id })).await;
+    call(
+        &client,
+        "browser::screencast::start",
+        json!({ "session_id": id }),
+    )
+    .await;
 
-    for viewer in [padded.as_str(), accented.as_str(), emoji.as_str(), "android-a", "anonymous"] {
+    for viewer in [
+        padded.as_str(),
+        accented.as_str(),
+        emoji.as_str(),
+        "android-a",
+        "anonymous",
+    ] {
         call(
             &client,
             "browser::screencast::stop",
@@ -439,7 +452,12 @@ async fn hostile_viewer_ids_are_refused_or_held_exactly() {
         screencast_active(&client, &id).await,
         "stopping the other viewers released the zero-width-space viewer's or the console's hold"
     );
-    call(&client, "browser::screencast::stop", json!({ "session_id": id })).await;
+    call(
+        &client,
+        "browser::screencast::stop",
+        json!({ "session_id": id }),
+    )
+    .await;
     assert!(
         screencast_active(&client, &id).await,
         "the zero-width-space viewer still holds the screencast"
@@ -450,7 +468,10 @@ async fn hostile_viewer_ids_are_refused_or_held_exactly() {
         json!({ "session_id": id, "viewer_id": zws }),
     )
     .await;
-    assert!(!screencast_active(&client, &id).await, "a viewer's hold leaked");
+    assert!(
+        !screencast_active(&client, &id).await,
+        "a viewer's hold leaked"
+    );
     client.shutdown_async().await;
 }
 
@@ -472,7 +493,10 @@ async fn lease_extremes_are_held_to_the_bounds() {
         json!({ "session_id": id, "viewer_id": "neg", "lease_ms": -1 }),
     )
     .await;
-    assert!(refused.is_err(), "a negative lease was accepted: {refused:?}");
+    assert!(
+        refused.is_err(),
+        "a negative lease was accepted: {refused:?}"
+    );
     assert!(!screencast_active(&client, &id).await);
 
     call(
@@ -529,9 +553,7 @@ async fn scale_extremes_are_clamped_and_renewals_move_both_ways() {
     let client = connect(&h).await;
     let id = open(&client, &serve_html(ANIMATED_PAGE)).await;
     resize_to(&client, &id, 400, 800).await;
-    let start = |scale: Value| {
-        json!({ "session_id": id, "viewer_id": "scales", "lease_ms": 20_000, "scale": scale })
-    };
+    let start = |scale: Value| json!({ "session_id": id, "viewer_id": "scales", "lease_ms": 20_000, "scale": scale });
 
     call(&client, "browser::screencast::start", start(json!(1e308))).await;
     let frame = await_frame(&client, &id, 0, (1200, 2400), Duration::from_secs(10))
@@ -540,14 +562,26 @@ async fn scale_extremes_are_clamped_and_renewals_move_both_ways() {
     assert_eq!(frame["width"], 400, "the payload left CSS pixels");
 
     call(&client, "browser::screencast::start", start(json!(-5.0))).await;
-    let small = await_frame(&client, &id, seq_of(&frame), (200, 400), Duration::from_secs(10))
-        .await
-        .unwrap_or_else(|e| panic!("scale -5: {e}"));
+    let small = await_frame(
+        &client,
+        &id,
+        seq_of(&frame),
+        (200, 400),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("scale -5: {e}"));
 
     call(&client, "browser::screencast::start", start(json!(0.0))).await;
-    await_frame(&client, &id, seq_of(&small), (200, 400), Duration::from_secs(10))
-        .await
-        .unwrap_or_else(|e| panic!("scale 0: {e}"));
+    await_frame(
+        &client,
+        &id,
+        seq_of(&small),
+        (200, 400),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("scale 0: {e}"));
 
     call(
         &client,
@@ -555,9 +589,15 @@ async fn scale_extremes_are_clamped_and_renewals_move_both_ways() {
         json!({ "session_id": id, "viewer_id": "scales", "lease_ms": 20_000 }),
     )
     .await;
-    let back = await_frame(&client, &id, seq_of(&small), (400, 800), Duration::from_secs(10))
-        .await
-        .unwrap_or_else(|e| panic!("an absent scale is 1x: {e}"));
+    let back = await_frame(
+        &client,
+        &id,
+        seq_of(&small),
+        (400, 800),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("an absent scale is 1x: {e}"));
     assert_eq!(back["width"], 400);
     call(
         &client,
@@ -701,7 +741,10 @@ async fn rapid_resizes_publish_no_mismatched_frame_and_no_decreasing_seq() {
             jw.abs_diff(*pw as u32) <= 1 && jh.abs_diff(*ph as u32) <= 1,
             "frame seq {seq} names {pw}x{ph} but its JPEG is {jw}x{jh}"
         );
-        assert!(*seq >= last_seq, "frame_seq went back: {last_seq} then {seq}");
+        assert!(
+            *seq >= last_seq,
+            "frame_seq went back: {last_seq} then {seq}"
+        );
         last_seq = *seq;
         let named = size_of_seq.entry(*seq).or_insert((*pw, *ph));
         assert_eq!(*named, (*pw, *ph), "frame seq {seq} named two sizes");
@@ -715,7 +758,6 @@ async fn rapid_resizes_publish_no_mismatched_frame_and_no_decreasing_seq() {
 /// On a page that never repaints, every resize brings a frame of the new
 /// size within 1.5 s: Chromium's own frame or the worker's capture (D28).
 #[tokio::test]
-#[ignore = "finding 1: a resize on a static page publishes a frame whose payload names the new viewport but whose JPEG is the old size, and no correct frame follows within 1.5 s (intermittent)"]
 async fn a_resize_over_a_static_page_shows_within_one_and_a_half_seconds() {
     let Some(h) = boot("  max_sessions: 4\n").await else {
         eprintln!("skipping: `iii` or Chromium not available");
@@ -729,7 +771,11 @@ async fn a_resize_over_a_static_page_shows_within_one_and_a_half_seconds() {
         json!({ "session_id": id, "viewer_id": "timed" }),
     )
     .await;
-    let mut seq = seq_of(&await_frame(&client, &id, 0, (1280, 800), Duration::from_secs(8)).await.expect("first frame"));
+    let mut seq = seq_of(
+        &await_frame(&client, &id, 0, (1280, 800), Duration::from_secs(8))
+            .await
+            .expect("first frame"),
+    );
     for (w, h2) in [(412, 600), (412, 860), (800, 700), (419, 337), (300, 900)] {
         let before = seq;
         resize_to(&client, &id, w, h2).await;
@@ -813,9 +859,8 @@ async fn act_click_count_is_bounded() {
         ),
     )
     .await;
-    let answered = out.unwrap_or_else(|_| {
-        panic!("a click_count of 1000000 was still dispatching after 20 s")
-    });
+    let answered =
+        out.unwrap_or_else(|_| panic!("a click_count of 1000000 was still dispatching after 20 s"));
     answered.unwrap_or_else(|e| panic!("{e}"));
 }
 
@@ -847,7 +892,11 @@ async fn ghost_cursor_false_never_injects_for_any_pointer_action() {
     ];
     for action in &quiet {
         call(&client, "browser::act", action.clone()).await;
-        assert_eq!(evaluate(&client, &id, cursor).await, false, "{action} drew the agent cursor");
+        assert_eq!(
+            evaluate(&client, &id, cursor).await,
+            false,
+            "{action} drew the agent cursor"
+        );
     }
 
     call(
@@ -862,7 +911,11 @@ async fn ghost_cursor_false_never_injects_for_any_pointer_action() {
         json!({ "session_id": id, "action": "drag", "x": 20, "y": 30, "x2": 200, "y2": 300, "ghost_cursor": false }),
     ] {
         call(&client, "browser::act", action.clone()).await;
-        assert_eq!(evaluate(&client, &id, cursor).await, false, "phone {action} drew the cursor");
+        assert_eq!(
+            evaluate(&client, &id, cursor).await,
+            false,
+            "phone {action} drew the cursor"
+        );
     }
 
     let wrong_type = try_call(
@@ -871,7 +924,10 @@ async fn ghost_cursor_false_never_injects_for_any_pointer_action() {
         json!({ "session_id": id, "action": "click", "x": 50, "y": 60, "ghost_cursor": "no" }),
     )
     .await;
-    assert!(wrong_type.is_err(), "a string ghost_cursor was accepted: {wrong_type:?}");
+    assert!(
+        wrong_type.is_err(),
+        "a string ghost_cursor was accepted: {wrong_type:?}"
+    );
 
     call(
         &client,
@@ -879,7 +935,11 @@ async fn ghost_cursor_false_never_injects_for_any_pointer_action() {
         json!({ "session_id": id, "action": "hover", "x": 80, "y": 90 }),
     )
     .await;
-    assert_eq!(evaluate(&client, &id, cursor).await, true, "the default lost its agent cursor");
+    assert_eq!(
+        evaluate(&client, &id, cursor).await,
+        true,
+        "the default lost its agent cursor"
+    );
     call(
         &client,
         "browser::screencast::stop",
@@ -916,7 +976,11 @@ async fn act_coordinates_outside_the_viewport_return_and_leave_the_worker_answer
             "{case} did not return: {out:?}"
         );
     }
-    assert_eq!(evaluate(&client, &id, "1 + 1").await, 2, "the worker stopped answering");
+    assert_eq!(
+        evaluate(&client, &id, "1 + 1").await,
+        2,
+        "the worker stopped answering"
+    );
     client.shutdown_async().await;
 }
 
@@ -933,7 +997,12 @@ async fn history_walks_pushstate_entries_in_order_and_never_blank() {
     let b = serve_html(INPUT_PAGE);
     let a_one = format!("{a}one");
     let id = open(&client, &a).await;
-    let pushed = evaluate(&client, &id, "history.pushState({}, '', '/one'); location.href").await;
+    let pushed = evaluate(
+        &client,
+        &id,
+        "history.pushState({}, '', '/one'); location.href",
+    )
+    .await;
     assert_eq!(pushed, a_one.as_str(), "pushState did not change the url");
     call(
         &client,
@@ -1068,7 +1137,10 @@ async fn back_after_the_tab_slept_returns_to_the_remembered_page() {
     )
     .await;
     sleep(Duration::from_millis(4_000)).await;
-    assert!(!tab_active(&client, &id).await, "the idle tab did not sleep");
+    assert!(
+        !tab_active(&client, &id).await,
+        "the idle tab did not sleep"
+    );
     let out = call(
         &client,
         "browser::history",
@@ -1114,7 +1186,10 @@ async fn since_frame_extremes_answer_or_refuse_without_hanging() {
     );
     for cursor in [json!(seq + 1000), json!(u64::MAX), Value::Null] {
         let out = frame_now(&client, &id, Some(cursor.clone())).await;
-        assert!(!out["frame"].is_null(), "cursor {cursor} got no frame: {out}");
+        assert!(
+            !out["frame"].is_null(),
+            "cursor {cursor} got no frame: {out}"
+        );
     }
     for bad in [json!(-1), json!("abc"), json!(1.5)] {
         let r = try_call(
@@ -1151,7 +1226,12 @@ async fn a_viewer_of_a_closed_session_gets_answers_not_hangs() {
         json!({ "session_id": id, "viewer_id": "orphan" }),
     )
     .await;
-    call(&client, "browser::sessions::stop", json!({ "session_id": id })).await;
+    call(
+        &client,
+        "browser::sessions::stop",
+        json!({ "session_id": id }),
+    )
+    .await;
 
     call(
         &client,
@@ -1161,7 +1241,10 @@ async fn a_viewer_of_a_closed_session_gets_answers_not_hangs() {
     .await;
     let frame = try_call(&client, "browser::frame", json!({ "session_id": id })).await;
     if let Ok(frame) = &frame {
-        assert_ne!(frame["active"], true, "a closed session reports an active screencast");
+        assert_ne!(
+            frame["active"], true,
+            "a closed session reports an active screencast"
+        );
     }
     let start = try_call(
         &client,
@@ -1216,7 +1299,12 @@ async fn a_stop_during_a_resize_storm_returns() {
         let client = client.clone();
         let id = id.clone();
         tokio::spawn(async move {
-            try_call(&client, "browser::sessions::stop", json!({ "session_id": id })).await
+            try_call(
+                &client,
+                "browser::sessions::stop",
+                json!({ "session_id": id }),
+            )
+            .await
         })
     };
     let all = timeout(Duration::from_secs(40), async {
@@ -1226,7 +1314,10 @@ async fn a_stop_during_a_resize_storm_returns() {
         let _ = stop.await;
     })
     .await;
-    assert!(all.is_ok(), "the resize and stop storm did not return within 40 s");
+    assert!(
+        all.is_ok(),
+        "the resize and stop storm did not return within 40 s"
+    );
     client.shutdown_async().await;
 }
 
@@ -1249,10 +1340,19 @@ async fn storm_viewer(client: IIIClient, id: String, viewer: String) -> Result<(
 }
 
 async fn storm_anonymous(client: IIIClient, id: String) -> Result<(), String> {
-    try_call(&client, "browser::screencast::start", json!({ "session_id": id })).await?;
-    try_call(&client, "browser::screencast::stop", json!({ "session_id": id }))
-        .await
-        .map(|_| ())
+    try_call(
+        &client,
+        "browser::screencast::start",
+        json!({ "session_id": id }),
+    )
+    .await?;
+    try_call(
+        &client,
+        "browser::screencast::stop",
+        json!({ "session_id": id }),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Thirty named viewers, each renewing three times and stopping, run
@@ -1268,7 +1368,11 @@ async fn a_viewer_storm_leaves_no_consumer_behind() {
     let id = open(&client, &serve_html(ANIMATED_PAGE)).await;
     let mut tasks = Vec::new();
     for v in 0..30 {
-        tasks.push(tokio::spawn(storm_viewer(client.clone(), id.clone(), format!("storm-{v}"))));
+        tasks.push(tokio::spawn(storm_viewer(
+            client.clone(),
+            id.clone(),
+            format!("storm-{v}"),
+        )));
     }
     for _ in 0..10 {
         tasks.push(tokio::spawn(storm_anonymous(client.clone(), id.clone())));
@@ -1282,9 +1386,19 @@ async fn a_viewer_storm_leaves_no_consumer_behind() {
         !screencast_active(&client, &id).await,
         "a storm left a consumer holding the screencast"
     );
-    call(&client, "browser::screencast::start", json!({ "session_id": id })).await;
+    call(
+        &client,
+        "browser::screencast::start",
+        json!({ "session_id": id }),
+    )
+    .await;
     assert!(screencast_active(&client, &id).await);
-    call(&client, "browser::screencast::stop", json!({ "session_id": id })).await;
+    call(
+        &client,
+        "browser::screencast::stop",
+        json!({ "session_id": id }),
+    )
+    .await;
     assert!(!screencast_active(&client, &id).await);
     client.shutdown_async().await;
 }
@@ -1316,13 +1430,32 @@ async fn a_lease_lapsing_as_its_stop_arrives_releases_once() {
         .await;
         let deadline = Instant::now() + Duration::from_secs(2);
         while screencast_active(&client, &id).await {
-            assert!(Instant::now() < deadline, "round {round}: a lapsed-and-stopped viewer leaked the screencast");
+            assert!(
+                Instant::now() < deadline,
+                "round {round}: a lapsed-and-stopped viewer leaked the screencast"
+            );
             sleep(Duration::from_millis(100)).await;
         }
-        call(&client, "browser::screencast::start", json!({ "session_id": id })).await;
-        assert!(screencast_active(&client, &id).await, "round {round}: the console could not start");
-        call(&client, "browser::screencast::stop", json!({ "session_id": id })).await;
-        assert!(!screencast_active(&client, &id).await, "round {round}: the console's stop left it running");
+        call(
+            &client,
+            "browser::screencast::start",
+            json!({ "session_id": id }),
+        )
+        .await;
+        assert!(
+            screencast_active(&client, &id).await,
+            "round {round}: the console could not start"
+        );
+        call(
+            &client,
+            "browser::screencast::stop",
+            json!({ "session_id": id }),
+        )
+        .await;
+        assert!(
+            !screencast_active(&client, &id).await,
+            "round {round}: the console's stop left it running"
+        );
     }
     client.shutdown_async().await;
 }
@@ -1360,9 +1493,15 @@ async fn the_largest_scale_drives_the_stream_and_each_leave_drops_it() {
         json!({ "session_id": id, "viewer_id": "A" }),
     )
     .await;
-    let mid = await_frame(&client, &id, seq_of(&both), (600, 1200), Duration::from_secs(8))
-        .await
-        .unwrap_or_else(|e| panic!("after A left: {e}"));
+    let mid = await_frame(
+        &client,
+        &id,
+        seq_of(&both),
+        (600, 1200),
+        Duration::from_secs(8),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("after A left: {e}"));
     call(
         &client,
         "browser::screencast::stop",
@@ -1371,11 +1510,25 @@ async fn the_largest_scale_drives_the_stream_and_each_leave_drops_it() {
     .await;
     // Nobody watches, so Chromium sends nothing: the cast is off until the
     // next viewer joins, which then streams at the density it asks for.
-    assert!(!screencast_active(&client, &id).await, "B's stop left the screencast running");
-    call(&client, "browser::screencast::start", json!({ "session_id": id })).await;
-    await_frame(&client, &id, seq_of(&mid), (400, 800), Duration::from_secs(8))
-        .await
-        .unwrap_or_else(|e| panic!("after B left and the console joined: {e}"));
+    assert!(
+        !screencast_active(&client, &id).await,
+        "B's stop left the screencast running"
+    );
+    call(
+        &client,
+        "browser::screencast::start",
+        json!({ "session_id": id }),
+    )
+    .await;
+    await_frame(
+        &client,
+        &id,
+        seq_of(&mid),
+        (400, 800),
+        Duration::from_secs(8),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("after B left and the console joined: {e}"));
     client.shutdown_async().await;
 }
 
@@ -1390,7 +1543,12 @@ async fn the_badge_stays_while_a_console_still_watches() {
     };
     let client = connect(&h).await;
     let id = open(&client, &serve_html(ANIMATED_PAGE)).await;
-    call(&client, "browser::screencast::start", json!({ "session_id": id })).await;
+    call(
+        &client,
+        "browser::screencast::start",
+        json!({ "session_id": id }),
+    )
+    .await;
     call(
         &client,
         "browser::screencast::start",
@@ -1403,9 +1561,17 @@ async fn the_badge_stays_while_a_console_still_watches() {
         json!({ "session_id": id, "viewer_id": "badge" }),
     )
     .await;
-    assert!(screencast_active(&client, &id).await, "the console's hold went");
+    assert!(
+        screencast_active(&client, &id).await,
+        "the console's hold went"
+    );
     assert_eq!(
-        evaluate(&client, &id, "!!document.getElementById('iii-session-badge')").await,
+        evaluate(
+            &client,
+            &id,
+            "!!document.getElementById('iii-session-badge')"
+        )
+        .await,
         true,
         "the badge left while the console still watches"
     );
@@ -1450,8 +1616,14 @@ async fn a_viewer_joining_a_tab_asleep_from_idle_wakes_it() {
             json!({ "session_id": id, "viewer_id": "idle" }),
         )
         .await;
-        assert!(started.is_ok(), "round {round}: a start on a sleeping tab failed: {started:?}");
-        assert!(screencast_active(&client, &id).await, "round {round}: the woken tab is not streaming");
+        assert!(
+            started.is_ok(),
+            "round {round}: a start on a sleeping tab failed: {started:?}"
+        );
+        assert!(
+            screencast_active(&client, &id).await,
+            "round {round}: the woken tab is not streaming"
+        );
     }
     call(
         &client,

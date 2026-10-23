@@ -65,6 +65,10 @@ const VIEWER_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// (`Sessions::expect_fresh_frame`). Chromium's own frame comes within tens
 /// of milliseconds when it comes at all.
 const FRESH_FRAME_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
+/// How many times, `FRESH_FRAME_RETRY` apart, the worker tries to capture
+/// that frame while the page has not laid out its new size yet.
+const FRESH_FRAME_ATTEMPTS: u32 = 10;
+const FRESH_FRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 /// Chromium's error text for a committed HTTP error status (a 4xx/5xx with
 /// an empty body). The tab shows the response like any browser does, so it is
 /// reported rather than treated as a failed navigation.
@@ -816,6 +820,11 @@ pub struct Session {
     /// The device scale factor `browser::resize` emulates (f64 bits; 1 as
     /// every page opens), which a captured frame is scaled against.
     device_scale_factor: AtomicU64,
+    /// Held by whatever changes the page's device emulation: a resize, a
+    /// full-page screenshot, and the worker's own frame capture, whose clip
+    /// Chromium applies as a temporary emulation and then rolls back to what
+    /// it found. Interleaved, that rollback undid a resize sent meanwhile.
+    pub emulation: tokio::sync::Mutex<()>,
     /// Number of live consumers of the Chromium screencast: each console
     /// viewer and each recording counts as one. The CDP screencast runs
     /// while this is > 0; it starts on the 0->1 transition and stops on
@@ -1121,6 +1130,19 @@ impl Session {
             .store(dpr.to_bits(), Ordering::Relaxed);
     }
 
+    /// The device-metrics override the tab is meant to have: its viewport,
+    /// device scale factor and phone mode, as `browser::resize` last set
+    /// them (or as the page opened).
+    pub fn device_metrics(&self) -> cdp_emulation::SetDeviceMetricsOverrideParams {
+        let (width, height) = self.viewport();
+        cdp_emulation::SetDeviceMetricsOverrideParams::new(
+            i64::from(width),
+            i64::from(height),
+            f64::from_bits(self.device_scale_factor.load(Ordering::Relaxed)),
+            self.is_mobile(),
+        )
+    }
+
     /// Hand a frame to viewers as the newest: the next `frame_seq`, the
     /// `browser::frame` slot, and the `browser::frame-event` push. The one
     /// way a frame goes out, for the screencast pump and the worker's own
@@ -1152,7 +1174,10 @@ impl Session {
     }
 
     /// The visible viewport as a frame like the screencast's: a JPEG at the
-    /// density the viewers call for, described in CSS pixels.
+    /// density the viewers call for, described in CSS pixels. Refused (to be
+    /// tried again) while the page still lays out at another size than the
+    /// viewport the worker set: a picture of the old size must never go out
+    /// as a frame of the new one.
     async fn capture_frame(&self, quality: i64) -> Result<ScreencastFrameEvent, String> {
         let metrics = self
             .page
@@ -1161,6 +1186,23 @@ impl Session {
             .map_err(|e| format!("layout metrics: {e}"))?
             .result;
         let visual = &metrics.css_visual_viewport;
+        if let Backing::Shared(_) = &self.backing {
+            let (width, height) = self.viewport();
+            let laid_out = (
+                visual.client_width * visual.scale,
+                visual.client_height * visual.scale,
+            );
+            // A headful window draws scrollbars inside the viewport.
+            let slack = if self.headless { 1.0 } else { 24.0 };
+            if (laid_out.0 - f64::from(width)).abs() > slack
+                || (laid_out.1 - f64::from(height)).abs() > slack
+            {
+                return Err(format!(
+                    "the page still lays out at {:.0}x{:.0}, not {width}x{height}",
+                    laid_out.0, laid_out.1
+                ));
+            }
+        }
         let (density, _) = self.frame_limits();
         let (width, height, scale) = match &self.backing {
             // The clip is in document pixels and comes out at its size times
@@ -1200,7 +1242,7 @@ impl Session {
                 .await
                 .map_err(|_| "capture timed out".to_string())?
                 .map_err(|e| format!("capture: {e}"))?;
-        Ok(ScreencastFrameEvent {
+        let frame = ScreencastFrameEvent {
             data: shot.result.data.clone(),
             metadata: cdp_page::ScreencastFrameMetadata {
                 offset_top: 0.0,
@@ -1212,7 +1254,43 @@ impl Session {
                 timestamp: None,
             },
             session_id: 0,
-        })
+        };
+        // The same check the pump makes of Chromium's own frames.
+        let data: &str = frame.data.as_ref();
+        let bytes = STANDARD.decode(data).map_err(|e| format!("capture: {e}"))?;
+        if !self.frame_fits(&frame, &bytes, density) {
+            return Err("the capture came out at another size than its viewport".to_string());
+        }
+        Ok(frame)
+    }
+
+    /// Whether a frame's JPEG is the picture its metadata names. In the
+    /// worker's own headless browser the size is known: the viewport in CSS
+    /// pixels times `density` (±2 px for Chromium's rounding), so a frame
+    /// rendered at the previous size, or squeezed into it, never passes.
+    /// Elsewhere (a headful window, a browser the worker did not launch,
+    /// whose pixel density it does not know) the aspect must match within 2%.
+    fn frame_fits(&self, frame: &ScreencastFrameEvent, jpeg: &[u8], density: f64) -> bool {
+        let known = matches!(self.backing, Backing::Shared(_)) && self.headless;
+        if !known {
+            return frame_matches_metadata(frame, jpeg);
+        }
+        let Some((width, height)) = jpeg_size(jpeg) else {
+            return false;
+        };
+        let expected = |css: f64| (css * density).ceil();
+        (f64::from(width) - expected(frame.metadata.device_width)).abs() <= 2.0
+            && (f64::from(height) - expected(frame.metadata.device_height)).abs() <= 2.0
+    }
+
+    /// The density the running screencast's frames come at: the one it was
+    /// started with when capped, CSS pixels otherwise.
+    fn cast_frame_density(&self) -> f64 {
+        if self.cast_capped.load(Ordering::Relaxed) {
+            f64::from_bits(self.cast_density.load(Ordering::Relaxed))
+        } else {
+            1.0
+        }
     }
 
     /// True while `browser::resize` keeps the page in phone emulation.
@@ -1895,6 +1973,7 @@ impl Sessions {
             frames: tokio::sync::watch::channel(None).0,
             fresh_epoch: AtomicU64::new(0),
             device_scale_factor: AtomicU64::new(1.0f64.to_bits()),
+            emulation: tokio::sync::Mutex::new(()),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             viewers: tokio::sync::Mutex::new(HashMap::new()),
@@ -2263,6 +2342,7 @@ impl Sessions {
             frames: tokio::sync::watch::channel(None).0,
             fresh_epoch: AtomicU64::new(0),
             device_scale_factor: AtomicU64::new(1.0f64.to_bits()),
+            emulation: tokio::sync::Mutex::new(()),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             viewers: tokio::sync::Mutex::new(HashMap::new()),
@@ -2627,12 +2707,12 @@ impl Sessions {
     /// Starts the Chromium screencast on the 0->1 transition; later
     /// acquisitions just bump the count. On a CDP start failure the count is
     /// rolled back so it stays honest.
-    pub async fn acquire_screencast(&self, session: &Arc<Session>) -> Result<(), String> {
+    pub async fn acquire_screencast(&self, session: &Arc<Session>) -> Result<bool, String> {
         let prev = session
             .screencast_consumers
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if prev > 0 {
-            return Ok(());
+            return Ok(false);
         }
         if let Err(e) = self.start_screencast(session).await {
             session
@@ -2641,7 +2721,7 @@ impl Sessions {
             return Err(format!("screencast start failed: {e}"));
         }
         self.expect_fresh_frame(session, true);
-        Ok(())
+        Ok(true)
     }
 
     /// `Page.startScreencast` at the density the session's viewers call for
@@ -2693,32 +2773,50 @@ impl Sessions {
         let session = session.clone();
         runtime.spawn(async move {
             tokio::time::sleep(FRESH_FRAME_GRACE).await;
-            let superseded =
-                epoch.is_some_and(|epoch| session.fresh_epoch.load(Ordering::Relaxed) != epoch);
-            if superseded || !session.screencast_on() || session.has_fresh_frame(since) {
-                return;
-            }
-            match session.capture_frame(quality).await {
-                // Checked again: a real frame may have come meanwhile, and
-                // it is the newer picture.
-                Ok(frame) if !session.has_fresh_frame(since) => {
-                    let published = session.publish_frame(Arc::new(frame));
-                    tracing::debug!(
-                        session_id = %session.id,
-                        frame_seq = published.seq,
-                        width = published.width(),
-                        height = published.height(),
-                        "no screencast frame of the new viewport came; published a capture"
-                    );
+            for attempt in 1..=FRESH_FRAME_ATTEMPTS {
+                let superseded = epoch
+                    .is_some_and(|epoch| session.fresh_epoch.load(Ordering::Relaxed) != epoch);
+                if superseded || !session.screencast_on() || session.has_fresh_frame(since) {
+                    return;
                 }
-                // The capture's own redraw usually makes Chromium send the
-                // frame it owed.
-                Ok(_) => {
-                    tracing::debug!(session_id = %session.id, "the screencast frame came during the capture");
+                // No resize may land between the layout check, the capture
+                // (and Chromium's rollback of its clip) and the publish.
+                let emulation = session.emulation.lock().await;
+                let captured = session.capture_frame(quality).await;
+                let current = |frame: &ScreencastFrameEvent| {
+                    !matches!(session.backing, Backing::Shared(_))
+                        || (
+                            frame.metadata.device_width as u32,
+                            frame.metadata.device_height as u32,
+                        ) == session.viewport()
+                };
+                match captured {
+                    // Checked again: a real frame may have come meanwhile,
+                    // and it is the newer picture.
+                    Ok(frame) if !session.has_fresh_frame(since) && current(&frame) => {
+                        let published = session.publish_frame(Arc::new(frame));
+                        tracing::debug!(
+                            session_id = %session.id,
+                            frame_seq = published.seq,
+                            width = published.width(),
+                            height = published.height(),
+                            attempt,
+                            "no screencast frame of the new viewport came; published a capture"
+                        );
+                        return;
+                    }
+                    // The capture's own redraw usually makes Chromium send
+                    // the frame it owed.
+                    Ok(_) => {
+                        tracing::debug!(session_id = %session.id, "the screencast frame came during the capture");
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::debug!(session_id = %session.id, %error, attempt, "fresh frame capture failed");
+                    }
                 }
-                Err(error) => {
-                    tracing::debug!(session_id = %session.id, %error, "fresh frame capture failed");
-                }
+                drop(emulation);
+                tokio::time::sleep(FRESH_FRAME_RETRY).await;
             }
         });
     }
@@ -2759,13 +2857,16 @@ impl Sessions {
         session: &Arc<Session>,
         preview: bool,
     ) -> Result<(), String> {
-        self.acquire_screencast(session).await?;
+        let started = self.acquire_screencast(session).await?;
         session.anon_viewers.fetch_add(1, Ordering::Relaxed);
         if !preview {
             session.pane_viewers.fetch_add(1, Ordering::Relaxed);
         }
         self.refresh_cast_density(session).await;
-        self.expect_fresh_frame(session, false);
+        // A cast this start began already checks for a frame of its own.
+        if !started {
+            self.expect_fresh_frame(session, false);
+        }
         Ok(())
     }
 
@@ -2821,13 +2922,20 @@ impl Sessions {
                 // Counted before the acquire so a first start already
                 // streams at this viewer's density.
                 session.note_viewer_scale(&viewers);
-                if let Err(error) = self.acquire_screencast(session).await {
-                    viewers.remove(&lease.viewer_id);
-                    session.note_viewer_scale(&viewers);
-                    return Err(error);
-                }
+                let started = match self.acquire_screencast(session).await {
+                    Ok(started) => started,
+                    Err(error) => {
+                        viewers.remove(&lease.viewer_id);
+                        session.note_viewer_scale(&viewers);
+                        return Err(error);
+                    }
+                };
                 if !preview {
                     session.pane_viewers.fetch_add(1, Ordering::Relaxed);
+                }
+                // A cast this start began already checks for a frame.
+                if !started {
+                    self.expect_fresh_frame(session, false);
                 }
                 true
             }
@@ -2842,7 +2950,6 @@ impl Sessions {
                 scale = lease.scale,
                 "screencast viewer joined"
             );
-            self.expect_fresh_frame(session, false);
         } else {
             tracing::trace!(session_id = %session.id, viewer_id = %lease.viewer_id, "screencast viewer lease renewed");
         }
@@ -4025,13 +4132,14 @@ async fn spawn_event_pumps(
                         continue;
                     };
                     // Right after a (re)start Chromium can emit one frame
-                    // rendered at the previous surface size while its
-                    // metadata already reports the new viewport. Pushed, it
-                    // would show letterboxed and map clicks off by the
-                    // difference. The corrected frame usually follows at
-                    // once; on a page that does not repaint it may not, and
+                    // rendered at the previous surface size (or squeezed
+                    // into it) while its metadata already reports the new
+                    // viewport. Pushed, it would show letterboxed or blurred
+                    // and map clicks off by the difference. The corrected
+                    // frame usually follows at once; on a page that does
+                    // not repaint it may not, and
                     // `Sessions::expect_fresh_frame` captures one instead.
-                    if !frame_matches_metadata(&event, &bytes) {
+                    if !s.frame_fits(&event, &bytes, s.cast_frame_density()) {
                         tracing::debug!(
                             session_id = %s.id,
                             width = event.metadata.device_width,
@@ -4139,10 +4247,7 @@ async fn spawn_event_pumps(
 /// Whether the JPEG's pixel aspect matches the viewport its metadata claims
 /// (the frame is always CSS-pixel sized, whatever the device scale factor).
 fn frame_matches_metadata(event: &ScreencastFrameEvent, jpeg: &[u8]) -> bool {
-    let Ok(Ok((width, height))) = image::ImageReader::new(std::io::Cursor::new(jpeg))
-        .with_guessed_format()
-        .map(|reader| reader.into_dimensions())
-    else {
+    let Some((width, height)) = jpeg_size(jpeg) else {
         return true;
     };
     let (meta_w, meta_h) = (event.metadata.device_width, event.metadata.device_height);
@@ -4152,6 +4257,15 @@ fn frame_matches_metadata(event: &ScreencastFrameEvent, jpeg: &[u8]) -> bool {
     let jpeg_aspect = width as f64 / height as f64;
     let meta_aspect = meta_w / meta_h;
     (jpeg_aspect - meta_aspect).abs() / meta_aspect < 0.02
+}
+
+/// A JPEG's (or PNG's) pixel size, read from its header.
+fn jpeg_size(jpeg: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(jpeg))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 async fn emit_download_changed(sessions: &Arc<Sessions>, session: &Arc<Session>) {
