@@ -110,6 +110,8 @@ class TestHost {
     this.inflight = new Set()
     this.outbox = []
     this.busyEdits = []
+    /** reqId → the fake-clock time a pending `call` fails with `timeout`. */
+    this.callDeadlines = new Map()
     this.unmountedRoots = []
     this.nextInst = 1
     this.deadline = Number.POSITIVE_INFINITY
@@ -342,6 +344,7 @@ class TestHost {
   }
 
   _respond(reqId, ok, value) {
+    this.callDeadlines.delete(reqId)
     if (!this.pending.delete(reqId)) return
     this._enqueue([8, reqId, ok ? 1 : 0, ok ? (value === undefined ? null : value) : value])
   }
@@ -381,6 +384,11 @@ class TestHost {
             throw new HostError('function_not_found', `Function ${args.fn} not found`)
           })
         }
+        // Like the device host: the call fails after its timeoutMs (default
+        // limits.callTimeoutMsDefault, at most callTimeoutMsMax) on the fake clock.
+        const limits = catalog.limits
+        const asked = Number.isInteger(args.timeoutMs) ? args.timeoutMs : limits.callTimeoutMsDefault
+        this.callDeadlines.set(reqId, this.clock + Math.min(Math.max(asked, 1), limits.callTimeoutMsMax))
         return this._answer(reqId, () =>
           typeof handler === 'function' ? handler(args.payload ?? null, this) : handler,
         )
@@ -554,11 +562,24 @@ class TestHost {
       await this.settle()
       const due = this._timerDue()
       if (due === true) continue
-      if (due < 0 || due > target) break
-      this.clock = due
+      const next = Math.min(due < 0 ? Number.POSITIVE_INFINITY : due, ...this.callDeadlines.values())
+      if (next > target) break
+      this.clock = Math.max(this.clock, next)
+      this._expireCalls()
     }
     this.clock = target
+    this._expireCalls()
     await this.settle()
+  }
+
+  /**
+   * Fails every pending call whose deadline passed, with what the device
+   * host sends (its withTimeout → `timeout`); a later answer is dropped.
+   */
+  _expireCalls() {
+    for (const [reqId, due] of this.callDeadlines) {
+      if (due <= this.clock) this._error(reqId, 'timeout', "The engine didn't answer in time")
+    }
   }
 
   /** Sends host → VM entries as they are (the conformance flows). */

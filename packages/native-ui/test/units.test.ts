@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { lastPerKey } from '../src/keys'
 import { diffItems } from '../src/runtime/diff'
 import { parseUrl } from '../src/url'
 
@@ -76,5 +77,27 @@ describe('parseUrl', () => {
   it('refuses what has no scheme', () => {
     expect(parseUrl('example.com/path')).toBeNull()
     expect(parseUrl('')).toBeNull()
+  })
+})
+
+describe('lastPerKey', () => {
+  it('keeps the last entry of each key, where it last appears', () => {
+    const items = [
+      { key: 'a', v: 1 },
+      { key: 'b', v: 1 },
+      { key: 'a', v: 2 },
+      { key: 'c', v: 1 },
+      { key: 'b', v: 2 },
+    ]
+    expect(lastPerKey(items, 'key')).toEqual([
+      { key: 'a', v: 2 },
+      { key: 'c', v: 1 },
+      { key: 'b', v: 2 },
+    ])
+    expect(lastPerKey(items, (i) => i.v)).toEqual([
+      { key: 'c', v: 1 },
+      { key: 'b', v: 2 },
+    ])
+    expect(lastPerKey([], 'key')).toEqual([])
   })
 })

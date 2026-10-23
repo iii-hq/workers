@@ -12,5 +12,5 @@
     "types": ["node"],
     "checkJs": false
   },
-  "include": ["test/*.ts", "scripts/*.mjs", "src/runtime/diff.ts", "src/url.ts"]
+  "include": ["test/*.ts", "scripts/*.mjs", "src/runtime/diff.ts", "src/url.ts", "src/keys.ts"]
 }

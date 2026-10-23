@@ -11,6 +11,9 @@ function Root() {
   const actions: Record<string, () => void> = {
     'call-own': () => show(iii.call('demo::echo', { a: 1 }, { timeoutMs: 999_999 })),
     'call-missing': () => show(iii.call('demo::missing')),
+    'call-hung': () => show(iii.call('demo::hang', {})),
+    'call-hung-short': () => show(iii.call('demo::hang', {}, { timeoutMs: 500 })),
+    'call-slow': () => show(iii.call('demo::slow', {}, { timeoutMs: 1000 })),
     'call-other': () => show(iii.call('state::get', {})),
     'call-engine': () => show(iii.call('engine::functions::list', {})),
     'bind-other': () => {

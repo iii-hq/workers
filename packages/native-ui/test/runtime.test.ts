@@ -92,6 +92,49 @@ describe('the capability object', () => {
     expect(h.prop('out', 'text')).toBe('error function_not_found: Function demo::missing not found')
   })
 
+  it('fails a call that does not answer in time, as the device host does', async () => {
+    let finishSlow: (v: unknown) => void = () => {}
+    const h = await mounted('capabilities', {
+      calls: {
+        ...calls,
+        'demo::hang': () => new Promise(() => {}),
+        'demo::slow': () =>
+          new Promise((resolve) => {
+            finishSlow = resolve
+          }),
+      },
+    })
+    const timedOut = "error timeout: The engine didn't answer in time"
+
+    await h.press('call-hung')
+    await h.tick(29_999)
+    expect(h.prop('out', 'text')).toBeUndefined()
+    expect(h.pending.size).toBe(1)
+    await h.tick(1)
+    expect(h.prop('out', 'text')).toBe(timedOut)
+    expect(h.toVm.at(-1)).toBe(
+      `[[8,${h.requests.at(-1)?.reqId},0,{"code":"timeout","message":"The engine didn't answer in time"}]]`,
+    )
+    expect(h.pending.size).toBe(0)
+
+    await h.press('call-own')
+    await h.press('call-hung-short')
+    await h.tick(499)
+    expect(h.prop('out', 'text')).toBe('ok {"echo":{"a":1}}')
+    await h.tick(1)
+    expect(h.prop('out', 'text')).toBe(timedOut)
+
+    // An answer after the timeout is dropped: the script already got its failure.
+    await h.press('call-slow')
+    await h.tick(1000)
+    expect(h.prop('out', 'text')).toBe(timedOut)
+    const delivered = h.toVm.length
+    finishSlow({ late: true })
+    await h.settle()
+    expect(h.toVm.length).toBe(delivered)
+    expect(h.prop('out', 'text')).toBe(timedOut)
+  })
+
   it('refuses other namespaces before anything reaches the host', async () => {
     const h = await mounted('capabilities', { calls })
     const sent = h.requests.length

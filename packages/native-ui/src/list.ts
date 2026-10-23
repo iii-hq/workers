@@ -77,6 +77,9 @@ export function createList<T extends object>(options: {
       return items
     },
     set(all) {
+      if (new Set(all.map(keyOf)).size !== all.length) {
+        warnOnce(`a List got the same ${keyField} twice; pass its items through lastPerKey`)
+      }
       const ops = diffItems(items, all, keyOf)
       for (const [start, del, added] of ops) apply(start, del, added)
       if (ops.length) changed()

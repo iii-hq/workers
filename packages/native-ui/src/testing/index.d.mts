@@ -63,7 +63,14 @@ export interface TestHostOptions {
   host?: string
   engine?: string
   env?: Partial<Env>
-  /** Answers of `call` by function id: a value, or a function of the payload (it may return a Promise or throw a HostError). */
+  /**
+   * Answers of `call` by function id: a value, or a function of the payload
+   * (it may return a Promise or throw a HostError). Like the device host, a
+   * call that has not answered when the fake clock passes its `timeoutMs`
+   * (default `limits.callTimeoutMsDefault`, 30 000) fails with
+   * `{code: "timeout", message: "The engine didn't answer in time"}`; a
+   * later answer is dropped. `tick()` moves the clock.
+   */
   calls?: Record<string, Json | ((payload: Json, host: TestHost) => unknown)>
   /** Answers of the dialogs; without one: actionMenu -1, confirm false, prompt null, openUrl true. */
   ui?: {

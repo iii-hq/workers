@@ -90,6 +90,7 @@ export {
   type ShareText,
   type Ui,
 } from './iii'
+export { lastPerKey } from './keys'
 export { createList, List, type ListProps, type ListSource } from './list'
 export type { Binding, Bound, IconName, JsonObject, JsonValue, NodeRef, Padding, Prop, Unsubscribe } from './types'
 export { parseUrl } from './url'
