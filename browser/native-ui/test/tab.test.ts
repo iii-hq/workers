@@ -332,6 +332,94 @@ describe('the mobile user agent (design §9.3)', () => {
   })
 })
 
+describe('a mode change during a navigation of the app', () => {
+  const reloads = (host: TestHost, id: string) =>
+    callsOf(host, 'browser::history').filter((p) => p.session_id === id && p.action === 'reload')
+
+  /** Opens `id` and submits `typed` in the address bar, with the navigate held open. */
+  async function navigating(id: string, typed: string, options: Parameters<typeof start>[0] = {}) {
+    const started = await opened(id, options)
+    started.fake.hold('browser::navigate')
+    await started.host.press('address')
+    await started.host.type('address-field', typed)
+    await started.host.submit('address-field')
+    expect(started.fake.waiting('browser::navigate')).toHaveLength(1)
+    return started
+  }
+
+  it('reloads exactly once, after the navigation settles, however many changes came meanwhile', async () => {
+    const { host, fake } = await navigating('t1', 'iii.dev')
+    await host.emit('screen', 'frame', [412, 780, true])
+    await host.emit('screen', 'frame', [412, 700, true])
+    expect(reloads(host, 't1')).toEqual([])
+    fake.release('browser::navigate')
+    await host.settle()
+    expect(reloads(host, 't1')).toHaveLength(1)
+    // After the navigate's answer: the page it loaded is the one reloaded.
+    const order = host.requests.map((r) => r.args.fn)
+    expect(order.lastIndexOf('browser::history')).toBeGreaterThan(order.lastIndexOf('browser::navigate'))
+    expect(loading(host)).toBe(false)
+    await host.emit('screen', 'frame', [412, 700, false])
+    expect(reloads(host, 't1')).toHaveLength(1)
+  })
+
+  it('still reloads once when the navigation fails', async () => {
+    const { host, fake } = await navigating('t1', 'nope.invalid')
+    await host.emit('screen', 'frame', [412, 780, true])
+    fake.release('browser::navigate', {
+      ok: false,
+      url: 'chrome-error://chromewebdata/',
+      error: 'net::ERR_NAME_NOT_RESOLVED',
+    })
+    await host.settle()
+    expect(exists(host, 'load-error')).toBe(true)
+    expect(reloads(host, 't1')).toHaveLength(1)
+  })
+
+  it('reloads at once when the tab is idle', async () => {
+    const { host } = await opened('t1')
+    await host.emit('screen', 'frame', [412, 780, true])
+    expect(reloads(host, 't1')).toHaveLength(1)
+  })
+
+  it('never reloads a blank page, even when its navigation was refused', async () => {
+    const fake = new FakeBrowser([{ session_id: 'b', url: 'about:blank' }])
+    const { host } = await start({ fake })
+    await host.itemPress('tabs', 'b')
+    await host.emit('screen', 'frame', [412, 780, true])
+    expect(reloads(host, 'b')).toEqual([])
+
+    fake.hold('browser::navigate')
+    await host.press('address')
+    await host.type('address-field', 'file:///etc/hosts')
+    await host.submit('address-field')
+    await host.emit('screen', 'frame', [412, 780, true])
+    fake.waiting('browser::navigate')[0].reject(new Error("scheme 'file' is not allowed"))
+    await host.settle()
+    expect(host.toasts.at(-1)).toEqual({ text: "scheme 'file' is not allowed", kind: 'error' })
+    expect(host.find('address').props?.text).toBe('Type an address')
+    expect(reloads(host, 'b')).toEqual([])
+  })
+
+  it('drops the reload when the tab closes before the navigation settles', async () => {
+    const { host, fake } = await navigating('t1', 'iii.dev')
+    await host.emit('screen', 'frame', [412, 780, true])
+    await host.itemPress('tabs', 't1', 'tab-close')
+    fake.release('browser::navigate')
+    await host.settle()
+    expect(reloads(host, 't1')).toEqual([])
+  })
+
+  it('drops it too when the tab is stopped elsewhere meanwhile', async () => {
+    const { host, fake } = await navigating('t1', 'iii.dev')
+    await host.emit('screen', 'frame', [412, 780, true])
+    await host.emitTrigger('browser::session-stopped', { session_id: 't1', reason: 'crashed', timestamp: 1 })
+    fake.release('browser::navigate')
+    await host.settle()
+    expect(reloads(host, 't1')).toEqual([])
+  })
+})
+
 describe('the page menu', () => {
   const MENU = [
     'Find in page',

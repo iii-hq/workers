@@ -143,7 +143,11 @@ function applyList(fresh: SessionInfo[]): void {
     if (s.url && tab.navigating === 0) tab.setUrl(s.url)
     tab.setTitle(s.title ?? '')
   }
-  for (const id of [...openTabs.keys()]) if (!ids.has(id) && id !== sel) openTabs.delete(id)
+  for (const id of [...openTabs.keys()]) {
+    if (ids.has(id) || id === sel) continue
+    openTabs.delete(id)
+    reloadAfterLoad.delete(id)
+  }
   setSessions(list)
 }
 
@@ -205,6 +209,7 @@ export async function closeTab(id: string): Promise<void> {
     select(order[i + 1] ?? order[i - 1] ?? null)
   }
   closing.add(id)
+  reloadAfterLoad.delete(id)
   if (held?.session_id === id) held = null
   setSessions((list) => list.filter((s) => s.session_id !== id))
   try {
@@ -221,6 +226,7 @@ export async function closeTab(id: string): Promise<void> {
 export function lifecycle(type: string, payload: SessionStopped | SessionUpdated | Navigated): void {
   const id = payload.session_id
   const tab = typeof id === 'string' ? openTabs.get(id) : undefined
+  if (type === TRIGGER.sessionStopped && typeof id === 'string') reloadAfterLoad.delete(id)
   if (tab) {
     if (type === TRIGGER.sessionStopped) {
       if (id === selected() && !closing.has(id)) tab.setClosed((payload as SessionStopped).reason || 'closed')
@@ -351,7 +357,12 @@ export async function navigate(tab: OpenTab, url: string): Promise<void> {
     if (info) tab.setUrl(info.url)
   } finally {
     tab.navigating--
-    if (tab.navigating === 0) tab.setLoading(false)
+    if (tab.navigating === 0) {
+      tab.setLoading(false)
+      // The view turned the tab into a phone while this load was out (with
+      // the desktop user agent): reload now that it settled, loaded or not.
+      if (reloadAfterLoad.delete(tab.id) && openTabs.get(tab.id) === tab && !tab.closed()) reloadForMode(tab)
+    }
   }
 }
 
@@ -417,6 +428,14 @@ function settle(tab: OpenTab): void {
  */
 const modeWatch = new Map<string, number | null>()
 
+/**
+ * Tabs whose mode changed while a navigate of this app was out: that page
+ * was requested with the desktop user agent, so they reload once when the
+ * last navigate settles (`navigate`'s finally). A Set: two changes meanwhile
+ * still make one reload. Closing the tab drops the entry.
+ */
+const reloadAfterLoad = new Set<string>()
+
 function watchMode(id: string): void {
   modeWatch.set(id, null)
 }
@@ -443,7 +462,12 @@ export function framed(tab: OpenTab, width: number, modeChanged?: unknown): void
 }
 
 function reloadForMode(tab: OpenTab): void {
-  if (isBlank(tab.url()) || tab.navigating > 0) return
+  if (tab.navigating > 0) {
+    reloadAfterLoad.add(tab.id)
+    return
+  }
+  // A blank page has nothing to reload: its next navigation carries the phone user agent.
+  if (isBlank(tab.url())) return
   tab.setLoading(true)
   browser
     .history(tab.id, 'reload')
