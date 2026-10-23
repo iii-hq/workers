@@ -43,8 +43,7 @@ use uuid::Uuid;
 #[serde(deny_unknown_fields)]
 pub struct RbacConfig {
     /// Engine function id invoked once per upgrade to authenticate the
-    /// connection. Unset ⇒ permissive default session; `expose_functions`
-    /// alone gates access.
+    /// connection. Unset ⇒ every upgrade is refused.
     #[serde(default)]
     pub auth_function_id: Option<String>,
     /// Filters exposing functions for invocation/discovery; a function is
@@ -668,9 +667,9 @@ pub struct AuthRejection {
 ///
 /// Invokes `rbac.auth_function_id` **once per upgrade** over the control
 /// connection (`iii.trigger`), exactly as the engine invokes it via
-/// `engine.call` (rbac_session.rs:67-107). Distinguishes "unset" (permissive
-/// default) from "set but unresolvable/errored" (**fail closed** — reject the
-/// upgrade); a broken control plane never opens the door.
+/// `engine.call` (rbac_session.rs:67-107). Unset, unresolvable or errored all
+/// **fail closed** (reject the upgrade): neither a missing setting nor a
+/// broken control plane opens the door.
 pub async fn resolve_session(
     iii: &IIIClient,
     rbac: Option<&RbacConfig>,
@@ -679,9 +678,13 @@ pub async fn resolve_session(
     ip_address: String,
 ) -> Result<ProxySession, AuthRejection> {
     let Some(auth_fn) = rbac.and_then(|c| c.auth_function_id.as_deref()) else {
-        // No auth function: permissive default session (expose_functions alone
-        // gates access) — identical to the engine default.
-        return Ok(ProxySession::permissive(ip_address));
+        // No auth function: refuse (unlike the engine's permissive default).
+        // The proxy's stored default entry has none, so a lost override must
+        // close the door, not open it.
+        return Err(AuthRejection {
+            code: "AUTH_ERROR".to_string(),
+            message: "rbac.auth_function_id is not set".to_string(),
+        });
     };
 
     let input = json!({
@@ -992,6 +995,23 @@ mod tests {
         assert!(r.allow_function_registration); // default true
         assert_eq!(r.context, json!({}));
         assert!(r.function_registration_prefix.is_none());
+    }
+
+    #[tokio::test]
+    async fn no_auth_function_refuses_the_connection() {
+        let iii = iii_sdk::register_worker("ws://127.0.0.1:1", iii_sdk::InitOptions::default());
+        for rbac in [None, Some(RbacConfig::default())] {
+            let refused = resolve_session(
+                &iii,
+                rbac.as_ref(),
+                HashMap::new(),
+                HashMap::new(),
+                "ip".into(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused.code, "AUTH_ERROR");
+        }
     }
 
     #[test]
