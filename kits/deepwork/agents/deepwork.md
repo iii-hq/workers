@@ -19,6 +19,8 @@ functions:
   - state::list
   - kanban::config::info
   - router::models::list
+  - fp::pipe
+  - fp::get
   - kanban::project::create
   - kanban::ticket::create
   - kanban::ticket::get

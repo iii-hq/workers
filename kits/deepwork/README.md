@@ -92,6 +92,8 @@ iii trigger harness::send --json '{"message":"<goal + args>","model":"<provider:
 
 You must pass `model`, because the profile sets none. Every model the run uses needs catalog pricing, judges included. With `approve=on`, design, plan and finish questions show up in that session in the console. The default `approve=auto` asks only when a consequential decision cannot be resolved from the goal, evidence and repository conventions. Material assumptions go on the run ticket; push, merge, discard and production writes are never implied by autonomy.
 
+A profile's `functions:` list is the contracts it preloads into the prompt, not a permission list. If you restrict the session with `options.functions`, don't copy that list: the run also needs `state::barrier` (the wave and phase wakes are its conditions), `fp::pipe`/`fp::get`, `router::models::list`, `directory::search_functions`, `engine::functions::info`, the `shell::job-finished` wake, and every function its phases use (`coder::*`, `shell::*`, the cards' Verify lines), because a child's policy can't exceed its parent's. The simplest is `"functions":{"allow":["*"]}`, plus your own `deny`.
+
 ## The dev flow
 
 1. **Design.** Deepwork reads the repository, chooses the simplest in-scope reversible approach and records material assumptions. It asks one consolidated question with a recommendation only for consequential ambiguity (scope, acceptance, compatibility, security, data loss or external cost); `approve=on` opts into the full design approval flow.
