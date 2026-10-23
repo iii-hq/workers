@@ -3092,3 +3092,442 @@ async fn candidate_validation_execution_returns_to_original_cycle() {
     assert_eq!(admissions(&h).len(), 2);
     assert!(h.world().steps.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Durable E2E evidence and the deterministic first pass (KAN-459)
+// ---------------------------------------------------------------------------
+
+/// A native `execution-get` report captured from the E2E.
+fn captured_report(name: &str) -> Value {
+    let text = match name {
+        "passed" => include_str!("fixtures/e2e/execution-passed.json"),
+        "failed-infra" => include_str!("fixtures/e2e/execution-failed-infra.json"),
+        "sparse" => include_str!("fixtures/e2e/execution-sparse.json"),
+        other => panic!("no captured report {other}"),
+    };
+    serde_json::from_str(text).unwrap()
+}
+
+/// The captured passed report with the root transcript it preserved.
+fn passed_report() -> Value {
+    let mut report = captured_report("passed");
+    report["transcripts"] = json!([{"session_id": ROOT, "entries": rediscovery_transcript()}]);
+    report
+}
+
+/// Serves `report` as the `execution-get` answer of the execution it lists.
+fn put_report(h: &Harness, report: &Value) -> String {
+    let execution_id = report["manifest"]["executions"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    h.world()
+        .executions
+        .insert(execution_id.clone(), report.clone());
+    execution_id
+}
+
+fn stored_evidence(h: &Harness) -> Vec<ExecutionEvidenceV1> {
+    h.world()
+        .state
+        .iter()
+        .filter(|((scope, _), _)| scope == state::EVIDENCE_SCOPE)
+        .map(|(_, value)| serde_json::from_value(value.clone()).unwrap())
+        .collect()
+}
+
+fn evidence_of(h: &Harness, execution_id: &str) -> ExecutionEvidenceV1 {
+    let mut found: Vec<_> = stored_evidence(h)
+        .into_iter()
+        .filter(|evidence| evidence.execution_id == execution_id)
+        .collect();
+    assert_eq!(found.len(), 1, "one stored copy of {execution_id}");
+    found.remove(0)
+}
+
+fn classes(evidence: &ExecutionEvidenceV1) -> Vec<FindingClassV1> {
+    let mut classes: Vec<_> = evidence
+        .findings
+        .iter()
+        .map(|finding| finding.class)
+        .collect();
+    classes.sort();
+    classes.dedup();
+    classes
+}
+
+fn signals(evidence: &ExecutionEvidenceV1) -> Vec<String> {
+    let mut signals: Vec<_> = evidence
+        .findings
+        .iter()
+        .map(|finding| finding.signal.clone())
+        .collect();
+    signals.sort();
+    signals.dedup();
+    signals
+}
+
+/// Calls that reach a model, the analyst or a new E2E campaign.
+fn model_or_campaign_calls(h: &Harness, from: usize) -> Vec<String> {
+    h.world().calls[from..]
+        .iter()
+        .map(|(function, _)| function.clone())
+        .filter(|function| {
+            function.starts_with("harness::")
+                || function.starts_with("judge::")
+                || function.starts_with("router::")
+                || function == "e2e::dashboard::execution-start"
+        })
+        .collect()
+}
+
+fn evidence_writes(h: &Harness) -> usize {
+    h.world()
+        .calls
+        .iter()
+        .filter(|(function, payload)| {
+            function.starts_with("state::") && payload["scope"] == state::EVIDENCE_SCOPE
+        })
+        .filter(|(function, _)| function != "state::get")
+        .count()
+}
+
+#[tokio::test]
+async fn analysis_survives_teardown_and_retention_from_imported_reports() {
+    let mut h = Harness::start(World::new()).await;
+    let report = passed_report();
+    let execution_id = put_report(&h, &report);
+    let admitted = changed(&h, json!({"execution_id": execution_id})).await;
+    assert!(admitted.admitted, "{admitted:?}");
+
+    // The native report is copied whole into the loop scope, keyed by the
+    // admission key, with its digest and the execution's identity.
+    let claim = admissions(&h).remove(0);
+    let imported = evidence_of(&h, "exec-cap");
+    assert_eq!(imported.admission_key, claim.admission_key);
+    assert!(h.world().state.contains_key(&(
+        state::EVIDENCE_SCOPE.to_string(),
+        claim.admission_key.clone()
+    )));
+    assert_eq!(imported.bundle, report);
+    assert_eq!(imported.bundle_digest, ids::sha256_json(&report));
+    let manifest = &report["manifest"];
+    let identity = &imported.identity;
+    assert_eq!(
+        identity.scenario_digest,
+        Some(ids::sha256_json(&manifest["scenario"]))
+    );
+    assert_eq!(
+        identity.contract_digest,
+        Some(ids::sha256_json(&manifest["contract"]))
+    );
+    assert_eq!(
+        identity.artifacts_digest,
+        Some(ids::sha256_json(&manifest["artifacts"]))
+    );
+    assert_eq!(
+        identity.stack_digest,
+        Some(ids::sha256_json(&manifest["stack"]))
+    );
+    assert_eq!(identity.model.as_deref(), Some("task-model"));
+    assert_eq!(identity.provider.as_deref(), Some("p"));
+    assert_eq!(identity.revision.as_deref(), Some("4f2c9e1"));
+    assert!(imported.analyzed);
+    assert!(signals(&imported).contains(&"repeated_contract_discovery".to_string()));
+
+    // Teardown and retention: the containers are gone and the E2E no longer
+    // has the execution. The stored copy and its analysis are unaffected.
+    {
+        let mut world = h.world();
+        world.executions.clear();
+        world.executions_down = true;
+    }
+    h.restart();
+    assert_eq!(evidence_of(&h, "exec-cap"), imported);
+
+    // Copied before retention, analyzed after it: the first pass reads the
+    // stored copy only, never what the source still has.
+    let h = Harness::start(World::new()).await;
+    let admission_key = ids::sha256_json(&("exec-cap", Some("run-cap"), Some("att-1")));
+    let copy = ExecutionEvidenceV1 {
+        admission_key: admission_key.clone(),
+        execution_id: "exec-cap".into(),
+        imported_at: 1,
+        bundle_digest: ids::sha256_json(&report),
+        bundle: report.clone(),
+        identity: EvidenceIdentityV1::default(),
+        analyzed: false,
+        findings: Vec::new(),
+        unknowns: Vec::new(),
+        child_transcripts_complete: false,
+        deepen: false,
+    };
+    h.world().state.insert(
+        (state::EVIDENCE_SCOPE.to_string(), admission_key.clone()),
+        serde_json::to_value(&copy).unwrap(),
+    );
+    // What the source keeps after retention: no transcript, no coverage.
+    let mut retained = captured_report("passed");
+    retained.as_object_mut().unwrap().remove("coverage");
+    put_report(&h, &retained);
+    let calls_before = h.world().calls.len();
+    let late = changed(&h, json!({"execution_id": "exec-cap"})).await;
+    assert!(late.admitted, "{late:?}");
+    let analyzed = evidence_of(&h, "exec-cap");
+    assert_eq!(analyzed.admission_key, admission_key);
+    assert_eq!(analyzed.bundle, report, "the first copy is kept");
+    assert_eq!(analyzed.imported_at, 1);
+    assert!(analyzed.analyzed);
+    assert_eq!(
+        signals(&analyzed),
+        ["coverage_gap", "repeated_contract_discovery"],
+        "findings come from the stored transcript and coverage"
+    );
+    assert!(analyzed.deepen);
+    assert_eq!(
+        model_or_campaign_calls(&h, calls_before),
+        Vec::<String>::new()
+    );
+}
+
+#[tokio::test]
+async fn first_pass_classifies_without_model_calls() {
+    let h = Harness::start(World::new()).await;
+    let calls_before = h.world().calls.len();
+    put_report(&h, &passed_report());
+    put_report(&h, &captured_report("failed-infra"));
+    put_execution(
+        &h,
+        &execution(
+            "exec-defect",
+            "failed",
+            json!({"failure": {"kind": "assertion mismatch: no receipt in the reply"}}),
+        ),
+    );
+    put_execution(&h, &execution("exec-mute", "failed", json!({})));
+    put_report(
+        &h,
+        &json!({
+            "manifest": {"executions": [execution("exec-clean", "passed", json!({}))]},
+            "detail": {},
+            "transcripts": [{"session_id": CHILD, "entries": [
+                user("e_spawn_1", "Inspect the profile."),
+                assistant_text("e_t_child_0_assistant", "Done."),
+            ]}],
+        }),
+    );
+    for execution_id in [
+        "exec-cap",
+        "exec-infra",
+        "exec-defect",
+        "exec-mute",
+        "exec-clean",
+    ] {
+        let response = changed(&h, json!({"execution_id": execution_id})).await;
+        assert!(response.admitted, "{execution_id}: {response:?}");
+    }
+
+    // A diagnostics signal and a coverage gap: pertinent, so deepening is flagged.
+    let cap = evidence_of(&h, "exec-cap");
+    assert_eq!(
+        classes(&cap),
+        [
+            FindingClassV1::ImprovementOpportunity,
+            FindingClassV1::EvaluationGap
+        ]
+    );
+    let gap = cap
+        .findings
+        .iter()
+        .find(|finding| finding.class == FindingClassV1::EvaluationGap)
+        .unwrap();
+    assert_eq!(gap.signal, "coverage_gap");
+    assert!(gap.observation.contains("never asserted"), "{gap:?}");
+    assert!(cap.deepen);
+
+    // A failure the environment caused: not pertinent, no deepening.
+    let infra = evidence_of(&h, "exec-infra");
+    assert_eq!(
+        classes(&infra),
+        [FindingClassV1::InfrastructureOrEvaluatorFailure]
+    );
+    assert!(infra.findings[0].observation.contains("teardown timeout"));
+    assert!(!infra.deepen);
+
+    // A failure the agent caused is a defect.
+    let defect = evidence_of(&h, "exec-defect");
+    assert_eq!(classes(&defect), [FindingClassV1::Defect]);
+    assert!(defect.deepen);
+
+    // A failure with no cause and nothing to read is insufficient evidence.
+    let mute = evidence_of(&h, "exec-mute");
+    assert_eq!(classes(&mute), [FindingClassV1::InsufficientEvidence]);
+    assert!(!mute.deepen);
+
+    // A pass whose transcript shows nothing wrong is expected behaviour.
+    let clean = evidence_of(&h, "exec-clean");
+    assert_eq!(classes(&clean), [FindingClassV1::ExpectedBehavior]);
+    assert!(!clean.deepen);
+
+    for evidence in [&cap, &infra, &defect, &mute, &clean] {
+        assert!(evidence.analyzed, "{}", evidence.execution_id);
+        assert_eq!(
+            evidence.deepen,
+            evidence
+                .findings
+                .iter()
+                .any(|finding| finding.class.is_pertinent()),
+            "{}",
+            evidence.execution_id
+        );
+    }
+    // The first pass called no model, no analyst and started no campaign.
+    assert_eq!(
+        model_or_campaign_calls(&h, calls_before),
+        Vec::<String>::new()
+    );
+    assert!(h.world().calls_to("judge::evaluate").is_empty());
+    assert!(h.world().calls_to("harness::send").is_empty());
+    assert!(h
+        .world()
+        .calls_to("e2e::dashboard::execution-start")
+        .is_empty());
+}
+
+#[tokio::test]
+async fn missing_information_stays_unknown() {
+    let h = Harness::start(World::new()).await;
+    put_report(&h, &captured_report("sparse"));
+    assert!(
+        changed(&h, json!({"execution_id": "exec-sparse"}))
+            .await
+            .admitted
+    );
+    let sparse = evidence_of(&h, "exec-sparse");
+    assert_eq!(sparse.identity, EvidenceIdentityV1::default());
+    for field in [
+        "scenario",
+        "contract",
+        "artifacts",
+        "stack",
+        "model",
+        "provider",
+        "revision",
+        "transcripts",
+        "child transcripts",
+    ] {
+        assert!(
+            sparse
+                .unknowns
+                .iter()
+                .any(|unknown| unknown.starts_with(&format!("{field}:"))),
+            "{field} is unknown: {:?}",
+            sparse.unknowns
+        );
+    }
+    assert!(!sparse.child_transcripts_complete);
+    // A pass with nothing preserved is not taken as expected behaviour.
+    assert_eq!(classes(&sparse), [FindingClassV1::InsufficientEvidence]);
+    assert!(!sparse.deepen);
+
+    // Only the root transcript was preserved: child coverage stays unknown.
+    put_report(&h, &passed_report());
+    changed(&h, json!({"execution_id": "exec-cap"})).await;
+    let partial = evidence_of(&h, "exec-cap");
+    assert!(!partial.child_transcripts_complete);
+    assert!(partial
+        .unknowns
+        .iter()
+        .any(|unknown| unknown.starts_with("child transcripts:")));
+    assert!(!partial
+        .unknowns
+        .iter()
+        .any(|unknown| unknown.starts_with("scenario:") || unknown.starts_with("model:")));
+
+    // Full coverage only when the report itself says every child transcript
+    // was preserved.
+    let mut complete = passed_report();
+    complete["manifest"]["executions"][0]["id"] = json!("exec-full");
+    complete["coverage"]["child_transcripts"] = json!("complete");
+    put_report(&h, &complete);
+    changed(&h, json!({"execution_id": "exec-full"})).await;
+    let full = evidence_of(&h, "exec-full");
+    assert!(full.child_transcripts_complete);
+    assert!(!full
+        .unknowns
+        .iter()
+        .any(|unknown| unknown.starts_with("child transcripts:")));
+
+    // A completeness claim without any transcript is not believed.
+    let mut claimed = captured_report("sparse");
+    claimed["manifest"]["executions"][0]["id"] = json!("exec-claimed");
+    claimed["child_transcripts_complete"] = json!(true);
+    put_report(&h, &claimed);
+    changed(&h, json!({"execution_id": "exec-claimed"})).await;
+    assert!(!evidence_of(&h, "exec-claimed").child_transcripts_complete);
+}
+
+#[tokio::test]
+async fn reimport_does_not_duplicate_findings() {
+    let mut h = Harness::start(World::new()).await;
+    // The same transcript bundled twice yields each finding once.
+    let mut report = passed_report();
+    let transcript = report["transcripts"][0].clone();
+    report["transcripts"] = json!([transcript.clone(), transcript]);
+    put_report(&h, &report);
+    let event = json!({"execution_id": "exec-cap"});
+    assert!(changed(&h, event.clone()).await.admitted);
+    let first = evidence_of(&h, "exec-cap");
+    let mut fingerprints: Vec<_> = first
+        .findings
+        .iter()
+        .map(|finding| finding.fingerprint.clone())
+        .collect();
+    let found = fingerprints.len();
+    fingerprints.sort();
+    fingerprints.dedup();
+    assert_eq!(fingerprints.len(), found, "{:?}", first.findings);
+    assert_eq!(
+        signals(&first),
+        ["coverage_gap", "repeated_contract_discovery"]
+    );
+    let writes = evidence_writes(&h);
+
+    // Redelivered and restarted: the analyzed copy is neither re-imported
+    // nor re-analyzed, even if the source changed meanwhile.
+    for _ in 0..2 {
+        assert!(!changed(&h, event.clone()).await.admitted);
+    }
+    h.restart();
+    let mut changed_source = report.clone();
+    changed_source["coverage"]["gaps"] = json!(["another gap", "yet another gap"]);
+    put_report(&h, &changed_source);
+    assert!(!changed(&h, event.clone()).await.admitted);
+    assert_eq!(evidence_of(&h, "exec-cap"), first);
+    assert_eq!(stored_evidence(&h).len(), 1);
+    assert_eq!(evidence_writes(&h), writes, "nothing is written again");
+
+    // A restart between the copy and its analysis: redelivery analyzes the
+    // stored copy once, with the same findings.
+    {
+        let mut pending = first.clone();
+        pending.analyzed = false;
+        pending.findings.clear();
+        pending.unknowns.clear();
+        pending.deepen = false;
+        h.world().state.insert(
+            (
+                state::EVIDENCE_SCOPE.to_string(),
+                first.admission_key.clone(),
+            ),
+            serde_json::to_value(&pending).unwrap(),
+        );
+    }
+    h.restart();
+    assert!(!changed(&h, event.clone()).await.admitted);
+    let reanalyzed = evidence_of(&h, "exec-cap");
+    assert_eq!(reanalyzed, first);
+    changed(&h, event).await;
+    assert_eq!(evidence_of(&h, "exec-cap"), first);
+    assert_eq!(stored_evidence(&h).len(), 1);
+}

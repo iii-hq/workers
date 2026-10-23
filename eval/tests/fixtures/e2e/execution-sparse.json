@@ -1,0 +1,8 @@
+{
+  "manifest": {
+    "executions": [
+      { "id": "exec-sparse", "status": "passed" }
+    ]
+  },
+  "detail": {}
+}

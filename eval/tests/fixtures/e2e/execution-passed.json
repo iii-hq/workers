@@ -1,0 +1,39 @@
+{
+  "manifest": {
+    "executions": [
+      {
+        "id": "exec-cap",
+        "status": "passed",
+        "kind": "normal",
+        "run_id": "run-cap",
+        "attempt_id": "att-1",
+        "model": "task-model",
+        "provider": "p",
+        "revision": "4f2c9e1",
+        "started_at": 1792780000000,
+        "finished_at": 1792780094000
+      }
+    ],
+    "scenario": {
+      "id": "crm-follow-up",
+      "steps": ["Schedule the follow-up from the old runbook."]
+    },
+    "contract": {
+      "assert": [{ "reply_contains": "receipt" }]
+    },
+    "stack": {
+      "engine": "0.11.2",
+      "workers": ["crm", "harness"]
+    },
+    "artifacts": [
+      { "path": "reports/junit.xml", "sha256": "9b1d6f0c2e" },
+      { "path": "reports/trace.json", "sha256": "07aa41c3d5" }
+    ]
+  },
+  "detail": {
+    "run_id": "run-cap"
+  },
+  "coverage": {
+    "gaps": ["the child session's reply is never asserted"]
+  }
+}

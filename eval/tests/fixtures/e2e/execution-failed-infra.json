@@ -1,0 +1,24 @@
+{
+  "manifest": {
+    "executions": [
+      {
+        "id": "exec-infra",
+        "status": "failed",
+        "run_id": "run-infra",
+        "model": "task-model",
+        "provider": "p",
+        "failure": { "kind": "Container teardown timeout" },
+        "finished_at": 1792780200000
+      }
+    ],
+    "scenario": {
+      "id": "crm-follow-up",
+      "steps": ["Schedule the follow-up from the old runbook."]
+    },
+    "stack": {
+      "engine": "0.11.2",
+      "workers": ["crm", "harness"]
+    }
+  },
+  "detail": {}
+}
